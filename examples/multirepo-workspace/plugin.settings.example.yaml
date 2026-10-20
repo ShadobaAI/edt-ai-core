@@ -1,0 +1,18 @@
+schema: 1c-ai.plugin-settings/v1
+state:
+  directory: "${CODEX_HOME}/1c-ai-core"
+runtime:
+  version_source: release-lock
+  updates: explicit
+limits:
+  concurrent_reads: 4
+  read_timeout_ms: 30000
+  result_page_chars: 16000
+kora:
+  quick_search_candidates: 5
+  detailed_candidates: 3
+logging:
+  level: info
+  retention_days: 14
+ui:
+  language: ru

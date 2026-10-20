@@ -1,0 +1,502 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "project",
+    "repositories",
+    "roots",
+    "authorities",
+    "policy",
+    "testing",
+    "knowledge",
+    "compatibility"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1"
+    },
+    "profile_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "profile_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "project": {
+      "type": "object",
+      "required": [
+        "id",
+        "purpose"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "path",
+          "alias"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+          },
+          "alias": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+          },
+          "edt_project": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "roots": {
+      "type": "object",
+      "required": [
+        "source",
+        "protected"
+      ],
+      "properties": {
+        "source": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+          },
+          "uniqueItems": true
+        },
+        "protected": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "authorities": {
+      "type": "object",
+      "required": [
+        "edt_writer",
+        "code_index",
+        "bsl_ls",
+        "v8std"
+      ],
+      "properties": {
+        "edt_writer": {
+          "const": "edt"
+        },
+        "code_index": {
+          "const": "code-index"
+        },
+        "bsl_ls": {
+          "const": "bsl-ls"
+        },
+        "v8std": {
+          "const": "v8std"
+        }
+      },
+      "additionalProperties": false
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "const": "conservative"
+        },
+        "allow_shell_source_read": {
+          "const": false
+        },
+        "require_explicit_confirmation": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "cleanup",
+              "launch",
+              "database",
+              "remote_git"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "edt_repository_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+          },
+          "uniqueItems": true
+        },
+        "unbound_edt_repositories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+          },
+          "uniqueItems": true
+        },
+        "exceptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+              },
+              "selectors": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "repository_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+                },
+                "uniqueItems": true
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "source": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "id",
+              "selectors",
+              "repository_ids",
+              "reason",
+              "source"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "testing": {
+      "type": "object",
+      "properties": {
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+              },
+              "repository_id": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+              },
+              "argv": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "effects": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "cleanup",
+                    "launch",
+                    "database",
+                    "remote_git"
+                  ]
+                },
+                "uniqueItems": true
+              },
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": [
+              "id",
+              "repository_id",
+              "argv",
+              "effects"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "yaxunit": {
+          "type": "boolean"
+        },
+        "vanessa": {
+          "type": "boolean"
+        },
+        "yaxunit_config": {
+          "type": "object",
+          "properties": {
+            "repository_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+            },
+            "framework_repository_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+            },
+            "product_repository_ids": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+              },
+              "uniqueItems": true
+            },
+            "runner": {
+              "const": "edt"
+            },
+            "results": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+            },
+            "launch_configuration": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "repository_id",
+            "runner",
+            "results"
+          ],
+          "additionalProperties": false
+        },
+        "vanessa_config": {
+          "type": "object",
+          "properties": {
+            "repository_id": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$"
+            },
+            "runtime_profile": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+            },
+            "features": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+            },
+            "results": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+            },
+            "server_name": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]+$"
+            }
+          },
+          "required": [
+            "repository_id",
+            "runtime_profile",
+            "features",
+            "results",
+            "server_name"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "commands",
+        "yaxunit",
+        "vanessa"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "yaxunit": {
+                "const": true
+              }
+            },
+            "required": [
+              "yaxunit"
+            ]
+          },
+          "then": {
+            "required": [
+              "yaxunit_config"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "vanessa": {
+                "const": true
+              }
+            },
+            "required": [
+              "vanessa"
+            ]
+          },
+          "then": {
+            "required": [
+              "vanessa_config"
+            ]
+          }
+        }
+      ]
+    },
+    "knowledge": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "enum": [
+            "none",
+            "openviking"
+          ]
+        },
+        "manifest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "collections": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "provider",
+        "manifest"
+      ],
+      "additionalProperties": false
+    },
+    "compatibility": {
+      "type": "object",
+      "required": [
+        "core"
+      ],
+      "properties": {
+        "core": {
+          "const": ">=0.1.0 <0.2.0"
+        }
+      },
+      "additionalProperties": false
+    },
+    "connections": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "edt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^https?://[^\\s]+$"
+            },
+            "url_env": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        },
+        "v8std": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^https?://[^\\s]+$"
+            },
+            "url_env": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

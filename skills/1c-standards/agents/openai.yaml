@@ -1,0 +1,15 @@
+interface:
+  display_name: "1C Standards"
+  short_description: "Work policy and general 1C standards"
+  default_prompt: "Use $1c-standards to select applicable requirements with policy, read exact v8std text, and verify proposal/result evidence."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "policy"
+      description: "Bundled read-only requirement selection and proposal/result ledger checks"
+      transport: "stdio"
+    - type: "mcp"
+      value: "v8std"
+      description: "Required additional work policy, general 1C, diagnostics, and snippet corpus"
+      transport: "stdio"

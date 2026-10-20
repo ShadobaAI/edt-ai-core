@@ -1,0 +1,11 @@
+interface:
+  display_name: "1C code-index"
+  short_description: "Read-only indexed search and impact analysis"
+  default_prompt: "Use $1c-code-index to investigate this 1C project through its exact alias and confirm through EDT only when authoritative live state is required."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "code-index"
+      description: "Read-only indexed search, metadata, and graph analysis"
+      transport: "stdio"

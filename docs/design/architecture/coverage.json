@@ -1,0 +1,153 @@
+{
+  "status": "passed",
+  "scope": "static architecture coverage and example consistency; not live acceptance",
+  "diagram": {
+    "nodes": 105,
+    "connections": 119,
+    "core_components": 16,
+    "adapters": 11,
+    "named_mcp_routes": 9,
+    "facade": "H02",
+    "canonical_source": "docs/design/architecture/technical-plugin.mmd"
+  },
+  "active_skills": {
+    "edt-ai-core": "W10",
+    "1c-routing": "W11",
+    "1c-code-change": "W03",
+    "1c-code-index": "W12",
+    "1c-platform-docs": "W13",
+    "1c-standards": "W14",
+    "bsl-ls-mcp": "W15",
+    "task-orchestration": "W16",
+    "yaxunit-tests": "W05",
+    "vanessa-ui-tests": "W06",
+    "1c-branch-review": "W04"
+  },
+  "planned_skills": {
+    "1c-analysis": "W01",
+    "1c-design": "W02",
+    "1c-extension-patch": "W07"
+  },
+  "current_mcp_servers": {
+    "1c-ai-settings": "M01",
+    "edt": "M02",
+    "code-index": "M03",
+    "bsl-ls": "M04",
+    "v8std": "M05",
+    "policy": "M06"
+  },
+  "planned_mcp_routes": {
+    "OpenViking": "M07",
+    "Vanessa": "M08",
+    "optional_infobase_service": "M09",
+    "1c-workspace": "H02"
+  },
+  "policy_tools": {
+    "get_action_policy": [
+      "C10"
+    ],
+    "check_action": [
+      "C10",
+      "C11"
+    ],
+    "detect_1c_mechanisms": [
+      "N01"
+    ],
+    "select_1c_requirements": [
+      "N02",
+      "N03"
+    ],
+    "select_yaxunit_requirements": [
+      "N02",
+      "N03",
+      "D04"
+    ],
+    "validate_compliance": [
+      "N04",
+      "N05"
+    ]
+  },
+  "kora_coverage": {
+    "reuse_control": [
+      "W08",
+      "D03"
+    ],
+    "sufficiency_control": [
+      "W09",
+      "W03"
+    ],
+    "published_cards": [
+      "P01",
+      "O02"
+    ],
+    "provenance_versions_compatibility": [
+      "O03",
+      "C06"
+    ],
+    "allowed_manifest": [
+      "O04"
+    ],
+    "review_publish": [
+      "P02",
+      "P03"
+    ],
+    "add_change_delete": [
+      "O05"
+    ],
+    "git_index_revision_pair": [
+      "P04"
+    ],
+    "retrieval_quality": [
+      "O06"
+    ],
+    "read_only_boundary": [
+      "O01",
+      "A05",
+      "M07"
+    ],
+    "no_capture_and_data_security": [
+      "O09",
+      "H05",
+      "S03"
+    ],
+    "block_dependent_step_without_fallback": [
+      "O07",
+      "C09"
+    ],
+    "knowledge_pair_recovery": [
+      "O08",
+      "P04"
+    ],
+    "approved_model_routes": [
+      "X09",
+      "O09"
+    ],
+    "index_and_content_store": [
+      "X05",
+      "X10"
+    ],
+    "optional_infobase": [
+      "D08",
+      "A11",
+      "M09",
+      "X08",
+      "R03"
+    ]
+  },
+  "intentional_changes": {
+    "KORA_D09": "Block dependent operations; allow independent diagnostics and reconciliation, as explicitly described in target architecture"
+  },
+  "intentionally_excluded": [
+    "HelpSearchServer",
+    "1c-docs-mcp",
+    "1c-ssl-mcp"
+  ],
+  "example": {
+    "yaml_files": 10,
+    "repositories": 6,
+    "components": 6,
+    "edt_bindings": 8,
+    "assemblies": 4
+  },
+  "source_sha256": "4b0642fbd4e0ea2b3daed714b8f83e950891dc717f0d4d5fab81ef8a89125e7c"
+}

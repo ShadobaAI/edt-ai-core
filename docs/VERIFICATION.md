@@ -1,0 +1,672 @@
+# Структура репозитория — 20 октября 2026
+
+Корень репозитория теперь является корнем одного плагина. Runtime, навыки,
+настройки и схемы перенесены из `1c-ai-core/`; сборочные инструменты находятся
+в `tools/`, документация — в `docs/`, регрессии — в `tests/`.
+Профили и локальные экспорты CRM/Kafka удалены по решению пользователя;
+проработка реальных профилей отложена до отдельной задачи. В поставке и CLI
+остаётся только `generic-1c`. Это не отменяет импорт профилей из проектов.
+
+После переноса прошли 164 Python-теста полной регрессии, затем адресно проверены
+4 теста профилей (включая новый запрет встроенных CRM/Kafka presets), изоляция
+подготовленного пакета и состав ZIP. Также прошли 13 Node-тестов и Vanessa fixture
+suite; ссылки Markdown, YAML workflows, локальная сборка и распакованный policy
+MCP проверены. Live-приёмка внешних сервисов этими проверками не подтверждается.
+
+Временные сборки и старые receipts из `.work/` очищены. Ниже сохранён исторический
+журнал проверок; ссылки на прежние временные файлы больше не являются доступными
+локальными артефактами. Актуальные регрессии воспроизводятся командами из README.
+
+# Ревью policy/settings — 20 октября 2026
+
+Исправлены три исходных дефекта: общий URL до появления профиля, блокировка
+экрана при пустых roots и завершение только bootstrap по общему таймауту.
+Settings теперь разделяет session root, instance connections и shared runtime
+settings. Проверка MCP — одна наблюдаемая операция; polling не повторяет
+preparation. Импорт старых URL ограничен выбранным экземпляром, экспорт переносит
+tracked defaults. Дополнительно проверены Git-root до init, environment precedence,
+masked override revision, rollback трёх файлов и конфликт bidirectional RPC IDs.
+
+Финальная Python-регрессия: **149 тестов**, все прошли. Node: **10 BSL proxy**
+и **3 settings UI harness** теста прошли. JSON Schemas и локальные ссылки
+изменённой документации проверены отдельно. Исполнение UI harness проверяет
+логику браузерного скрипта с host fixture, а не визуальную карточку Codex.
+
+Отдельно собран изолированный пакет и выполнен сценарий через его реальные
+stdio entrypoints: пустой выбор проекта, два экземпляра до init, импорт
+профиля, сохранение обоих URL и перенос tracked defaults в третий каталог.
+Сохранённый CLI active_project остался прежним; instance URL не попал в экспорт.
+Bundled policy отказал в объявленном database effect без authorization evidence.
+Receipt от корня repo: `.work/settings-review-evidence.json`.
+
+Policy runtime/протокол не менялись; уточнены границы ledger completeness и
+workflow-запрета writer. Эти проверки не доказывают истинность caller evidence,
+совместимость скачанного JAR, готовность EDT/v8std или поведение проекта/ИБ.
+Рабочие подключения, установленная копия плагина и конфигурации не менялись.
+История операций пока хранится в памяти MCP-сессии; cross-file crash recovery
+не реализован. Разбор подхода и следующие изменения —
+[SETTINGS_REVIEW.md](SETTINGS_REVIEW.md).
+
+# Использование EDT — 20 октября 2026
+
+Сверены реализация, протокол и сценарии предоставленного сервера с routing,
+skills и MCP relay ядра. Исправления определяются живыми capabilities; исходный
+репозиторий, фиксированная версия и каталог операций не добавлены в зависимости
+плагина. Прежняя привязка описания model-gate recovery к номеру сборки заменена
+фактическими условиями отказа до записи; сам bounded recovery сохранён.
+
+Выявлены и исправлены:
+
+- Явный discovery возвращал устаревший кэш. Теперь он получает все страницы
+  текущего каталога, в том числе после внешнего изменения. Обычные вызовы не
+  вызывают повторного discovery; раскрытие группы с последующим discovery не
+  перечитывает каждую страницу дважды.
+- Проверка подключений писала общий reconnect token. Теперь его ключ включает
+  canonical profile root и instance; другие каталоги/экземпляры не переподключаются.
+  Legacy EDT URL другого выбранного проекта также не используется как fallback.
+- Пустой HTTP ack на запрос мог выглядеть как результат. Теперь отсутствие
+  result сохраняет unknown outcome без повторной отправки. Inline SSE surface
+  notifications инвалидируют каталог, не теряя owning result.
+- Необязательные каталоги, которых сервер не поддерживает, больше не создают
+  ложную ошибку подключения. Только method-not-found первой страницы означает
+  пустой optional catalogue; ошибка continuation остаётся неполным результатом.
+- Добавлены условные маршруты profiling, runtime investigation, внешних объектов,
+  локализации и специализированных артефактов. Внешняя AI-помощь требует явного
+  поручения. Общие правила бюджета используют минимальный достаточный ответ,
+  фильтры, batches, переиспользование evidence и точную инвалидацию.
+
+Параллельная работа требует назначенного запущенного EDT-MCP для каждой независимо
+выбранной конфигурации/каталога. Точное соответствие EDT-проекта проверяется до
+model-dependent работы; отдельные HTTP sessions не объявляются изоляцией общего
+debugger, toolsets, profiling или comparison state одного EDT.
+
+Проверки: полная Python-регрессия **124 теста**, затем после финальной оптимизации
+discovery **12 адресных тестов** lazy/index relay; все прошли. Vanessa UI regression
+прошла. Четыре изменённых skill entrypoints прошли `quick_validate.py`; **59**
+локальных ссылок skills разрешаются. Loopback fixtures подтверждают раздельные
+URLs, directory/instance reconnect, независимое закрытие HTTP sessions, полную
+пагинацию и отсутствие лишнего discovery после обычных вызовов.
+
+Это source/fixture-проверка интеграции, а не live-приёмка всех сценариев EDT.
+Рабочие конфигурации, внешние серверы и установленная копия плагина не менялись.
+Relay использует явный pull каталога и уведомления внутри ответов; отдельной
+постоянной GET SSE-подписки нет. Серверные callback-запросы не поддержаны.
+Если сервер отдаёт всю поверхность, локальный фильтр её не сокращает: экономия
+schema зависит от его режима disclosure. Фактическое списание лимита и численное
+сокращение токенов на пользовательских задачах не измерялись.
+
+# Collections corporate/Vanessa/YaXUnit — 20 октября 2026
+
+Семь read-only запросов к предоставленному живому v8std подтвердили context
+подбор отдельно в `corporate`, `vanessa`, `yaxunit`, точное неусечённое чтение
+одного выбранного документа каждой collection и mixed context query.
+Примеры найденного: corporate `bsl-change-policy` (type rule), Vanessa
+`steps-assertions`/`editor-workflow` (pattern), YaXUnit `data-isolation` (pattern)
+и API card (reference). Evidence от корня repo:
+`.work/v8std-collections-20261020/live-results.json`.
+
+В исходниках v8std `explain_snippet` ограничен типами diagnostic/standard/pattern;
+corporate rule и framework reference этим маршрутом не покрываются.
+`get_requirements_for_context` включает standard/pattern/rule/reference во всех
+четырёх collections. Mixed top-10 с corporate/vanessa/yaxunit вернул только
+vanessa/yaxunit, поэтому skills требуют отдельного адресного context подбора
+для каждой относящейся к задаче collection. Это не гарантия исчерпывающего поиска.
+
+Исправлен пропуск Vanessa в discovery routing и additionalRequirements schema.
+YaXUnit/Vanessa skills используют общий разбор кандидатов и точного текста;
+справочная API/tool card не превращается автоматически в обязательную норму.
+Vanessa patterns читаются через page/section: get_pattern поддерживает YaXUnit.
+Самостоятельный Gherkin workflow сохраняет нормативные оценки в статическом
+отчёте; отдельный policy selector для Gherkin не реализован. BSL/SDBL snippet
+не используется как Gherkin analyzer. Run-only не получает authoring gate.
+
+Пройдены **35 policy-тестов**: добавлен общий ledger для corporate/YaXUnit/Vanessa,
+пропуск и unverified additions блокируются, API/tool-card IDs отвергаются как
+нормативные additions. Три изменённых skills проходят quick_validate, 18 локальных
+ссылок разрешаются. Тесты используют синтетический source evidence; реальный
+UI/unit test и полная нормативная приёмка проекта не выполнялись. Установленная
+копия плагина, настройки и исходники v8std не менялись.
+
+# Подбор v8std и включение дополнительных норм — 20 октября 2026
+
+Основной маршрут design/change/review переведён на native v8std code/context
+retrieval с последующим чтением точного текста и разбором применимости.
+Registry сохранён как baseline. Policy protocol `2.1.0` (пакет `0.2.1`) принимает
+`additionalRequirements` в обоих selectors и current: exact selector, strength,
+basis. Additions входят в digest и тот же ledger; не ослабляют baseline,
+не скрывают registry gaps и не создают authoring gate для run/report.
+Пустые additions сохраняют selections/digests 2.0.
+
+На предоставленном пользователем живом v8std проверены 11 инструментов, 14
+синтетических snippets, бюджет рекомендаций, граница 4000 символов, context
+retrieval и точное чтение отдельных норм. Полученные ID для 14 snippets совпали
+с source-only индексом checkout `9aabd7de7cbddaad01b431518ab3a6bc164c3223`;
+это не доказывает идентичность всего опубликованного корпуса. ServerInfo version
+`1.27.0` не использована как corpus revision; последняя неизвестна.
+Evidence: `.work/v8std-code-selection-20261020/live-results.json` от корня repo.
+
+Отдельная проверка live retrieval → exact text → новый local policy выполнила
+5 read-only запросов на синтетических данных. Найденный std740 отсутствовал
+в baseline и вошёл в mandatory selection с основанием по полному §3.1.
+Ledger без него отвергнут; `unverified` даёт `blocked`; удаление additions из
+current требует reselect. Сигнал std485 на комментарии исключён по содержимому
+фрагмента. Диагностические кандидаты транзакции раскрыты в std783/std499.
+Receipt: `.work/v8std-integration-20261020/live-acceptance.json` от корня repo.
+
+Локальный regression: **106 Python-тестов**, включая **34 policy-теста**.
+Шесть новых сценариев проверяют additions вне registry, общий ledger, обязательную
+силу, digest/current binding, ошибочные diagnostic IDs, coverage/run-only scope
+и совместимость пустого массива. JSON schemas также проверяются независимым
+Draft202012Validator. Обновлённый skill проходит quick_validate.
+
+Подбор эвристический: comments/strings/чужой receiver могут дать сигнал с
+confidence 1.0, а combined top-N может скрыть нужную норму. Эти ограничения и
+разбор применимости закреплены в
+[discovery contract](../skills/1c-standards/references/discovery.md).
+Автоматический перехват writer, behavioral eval агента, нормативная приёмка
+реального EDT-изменения и всего корпуса не выполнялись. Изменены исходники
+плагина; установленная копия, настройки подключения и checkout v8std не менялись.
+
+# Сверка исходников v8std и контракт диагностики — 20 октября 2026
+
+Проверен предоставленный checkout v8std на ревизии
+`9aabd7de7cbddaad01b431518ab3a6bc164c3223`, working tree clean.
+Source-only аудит использовал собственные генератор документов и `V8StdIndex`
+v8std: 513 исходных Markdown-документов в областях std, corporate/work,
+yaxunit/patterns и diagnostics/v8-code-style дали 511 индексных записей.
+Все **73 уникальных selectors** policy нашли точный ID и требуемый heading,
+с непустым неусечённым текстом при поддерживаемом лимите чтения.
+YaXUnit snapshot прошёл собственную проверку manifest.
+
+У **18 selectors** summary при максимуме 6000 символов усекает документ.
+Инструкции уточнены: page до 30000 символов либо необходимые полные sections;
+truncation проверяется в фактическом месте ответа (`page` или result section).
+Audit receipts содержат SHA-256 исходных файлов и полученных текстов, hash
+индекса, revision и registry hash. Evidence от корня repo:
+`.work/policy-v8std-audit-20261020/verification.json`.
+
+Полный `build_site_ai_index` не прошёл проверку Vanessa manifest: у 27 документов
+в docs/vanessa/patterns фактические SHA-256 отличаются от manifest. Первый отказ —
+`patterns/browser-and-external-ui.md`. Его несовпадение не объясняется CRLF.
+Это отдельный дефект целостности исходного пакета, а не отсутствующая ссылка
+policy. Hosted MCP, полная runtime-сборка и семантическая полнота mapping не
+объявляются проверенными. Исходники v8std не изменялись.
+
+В corporate BSL change policy формулировка «не должен добавлять диагностики EDT
+code-style» не предусматривает обработку false positives. Пользователь уточнил,
+что EDT на практике выдаёт ложные замечания, особенно в больших проектах.
+Текущий критерий приёмки не отделяет сообщение analyzer от подтверждённого
+нарушения; предложена замена критерия и ограничение проверки changed scope и
+непосредственно затронутыми контрактами. Подготовленный patch сохранён
+в `.work/policy-v8std-audit-20261020/v8std-diagnostics.patch`, не применён к v8std.
+Patch исправляет этот пробел процесса; существование конкретного false positive
+по-прежнему требует проверки фактов, а не вывода из одного размера проекта.
+
+Общий контракт диагностики вынесен в
+[1c-routing/references/diagnostics.md](../skills/1c-routing/references/diagnostics.md)
+и подключён к routing, code-change и BSL LS. EDT primary validation не трактуется
+как безошибочность; для обоих analyzer различаются подтверждённое нарушение,
+false positive, settings/coverage issue и неопределённость. Официальные описания
+BSL LS LogicalOrInTheWhereSectionOfQuery и DenyIncompleteValues прямо допускают
+ложные срабатывания, поэтому абсолютная гарантия для всех правил не закреплена.
+
+# Ревью и изменение policy — 20 октября 2026
+
+Исходный пакет обновлён до `0.2.0`, policy protocol — до `2.0.0`, registry schema —
+до `2`, registry — до `2026-10-20.1`. Новый [контракт](../policy/README.md) описывает
+несовместимость сохранённых selections/ledgers и границы доказательности.
+
+Ручная сверка реализации и инструкций выявила и устранила ложную семантическую
+классификацию по sourceText, автоматическое превращение неизвестного receiver
+в обработчик запроса, authoring gate при YaXUnit run/report, неподтверждённые
+query/data implications, маскировку пробелов registry общими baseline rows и
+отсутствие привязки ledger к target/текущему source reference. Нормализация теперь
+сохраняет явные assessments, а retrieval/анализ остаются у назначенных authorities.
+Design получает YaXUnit baseline и допускает proposal; review допускает result.
+Нарушения/непроверенные нормы фиксируются как `blocked`, структурно согласованный
+ledger — как `ledger_valid`, без заявления о доказанном соответствии.
+
+Проверено локально:
+
+- Финальный полный Python regression текущего workspace: **100 тестов**, OK.
+  Policy/runtime probe также проверен отдельным прогоном **28 policy-тестов**, OK. Проверены
+  реальные stdio entrypoints, подготовленный install package, отрицательные
+  ledgers, смена target/revision, фазы и отсутствие пустого compliance selection.
+- Матрица **688** одиночных механизмов по поддержанным artifact/operation:
+  652 selections, 8 ожидаемых `unavailable`, 28 `not_applicable`, без сбоев.
+  Это не перебор всех сочетаний механизмов.
+- Registry и опубликованные JSON schemas проверены независимым
+  `Draft202012Validator`; skill validator и 15 локальных ссылок документов проходят.
+- Startup probe проверяет реальный непустой selection и отрицательный ledger
+  с synthetic/unverified evidence, не заявляя проверки нормативного текста.
+
+Реальные v8std selectors/headings, редакции текста и EDT source evidence не
+проверялись; новый протокол не доказывает live нормативное соответствие.
+Установленная копия плагина и исходные CRM/Kafka не обновлялись. Рекомендации по
+доверенным receipts, сверке корпуса и семантической классификации через
+существующие authorities приведены в контракте policy.
+
+# Предшествующие проверки — 19 октября 2026
+
+## Перенос EDT model-gate recovery в общий навык
+
+По решению пользователя `edt-model-gate-recovery` workflow из исходного CRM
+перенесён в `skills/1c-code-change/references/edt-recovery.md` без проектных
+aliases, путей и имён EDT-проектов. Родительский навык раскрывает его при точном
+подтверждённом отказе `create_metadata`/`modify_metadata` до записи. Сохранены
+адресный владелец, проверки target/guards/diagnostics, три recovery-попытки,
+один разрешённый clean и один последний writer после подтверждённого rebuild.
+Timeout и pending write job не входят в это исключение.
+
+Локально проверены:
+
+- `quick_validate.py`: изменённый `1c-code-change` валиден; каталог YAML и
+  39 локальных ссылок навыков корректны.
+- Временная install-сборка содержит recovery reference, родительский навык,
+  каталог решений и skills README с теми же bytes, что в исходниках.
+- `test_remote_mcp.py`: 3 теста пройдены, включая отсутствие повторного mutation
+  dispatch при неизвестном исходе. Это проверка транспорта, а не исполнения навыка.
+- Независимый read-only dry-run 10 синтетических ситуаций: обычное восстановление,
+  timeout, отсутствующий владелец, async revalidation, изменённые target/guards,
+  исчерпание бюджета, наличие/отсутствие cleanup agreement, смена версии/binding
+  и сохранение счётчика между ходами. Найденная неоднозначность reconciliation
+  устранена: техническая смена hash/proposal не сбрасывает счётчик или факт clean;
+  общий предел writer сохраняется при переходе между workflows. Повторная проверка
+  затронутых ситуаций E/I/G/J не оставила actionable findings в этом scope.
+
+Это перенос и проверка инструкции. Реальный EDT, revalidation, clean и запись
+1С-метаданных в этой работе не выполнялись. Применимость к установленному
+контракту EDT и успешное восстановление требуют отдельной live-проверки.
+
+## Исправления последнего ревью и повторная проверка
+
+Шесть замечаний последнего ревью исправлены. Дополнительный дефект передачи
+prepared Python в установленный hook найден независимым reviewer и также
+исправлен с повторной проверкой новой сборки.
+
+| Замечание | Исправление и проверка |
+| --- | --- |
+| YAML install settings читались как JSON | Builder пишет settings.json с переносом прежнего YAML; Node использует общий Python reader. Проверены read/update из новой install-сборки и legacy YAML. |
+| Move to обходил source guard | Проверяются оба пути patch, включая destination, traversal и перенос из source. Safe docs move разрешён. |
+| Vanessa хешировала другие аргументы | Один absolute path от caller cwd; Node сверяет ожидаемый hash прочитанного buffer и использует его parsed arguments. Проверены разные одноимённые файлы и отказ до dispatch при смене bytes. |
+| Выбор BSL LS | Прежняя настройка единственного репозитория удалена. Конфигурации регистрируются штатным API в своей stdio-сессии; результаты и ограничение установленного JAR описаны в `mcp/BSL_LS_REVIEW.md`. |
+| Разные roots read/import/export | Общая нормализация до ближайшего профиля для native settings и CLI; проверены подкаталог, замена без вложенного .ai и отказ на другом Git root. |
+| Потерян EDT toolsets workflow | Добавлен общий routing reference для disclosure и bounded update audit из обоих источников, без project allowlists. |
+| Hook не получал env MCP entrypoint | В install-копию записывается отдельный runtime binding; проверены docs allow и source deny без EDT_AI_* с пустым CODEX_HOME. |
+
+URL precedence сохранён. Выбор BSL LS из старых shared settings не переносится
+между проектами. Portable export сохраняет tracked defaults; instance overrides
+остаются локальными, что явно указано в UI/README. Явный --state-dir имеет
+приоритет над EDT_AI_STATE_DIR и используется также для instance overrides.
+Изменение effective instance после preview инвалидирует применение старого preview.
+
+Результаты:
+
+- Python regression: **81/81**, OK; реальные stdio entrypoints и локальные
+  HTTP fixtures, без запуска 1С/ИБ или скачивания runtime.
+- `node tests/test-vanessa-ui.mjs`: OK, включая hash аргументов,
+  сохранение результата/receipt и отсутствие повторного mutation dispatch.
+- Структурная проверка: 11 навыков, 5 schemas, 3 profile templates и все
+  локальные ссылки валидны; общие defaults и нормативные workflow не дублируются
+  отдельными CRM/Kafka деревьями.
+- Повторены исходные probes в `.work/re-review-20261019`; прежние дефекты в них
+  больше не воспроизводятся. Они используются как проверки закрытия, а не как
+  доказательство live-приёмки.
+- Fresh independent review: `.work/fixes-fresh-review-20261019` от workspace root.
+  Подтверждены новая install-сборка/hook, profile/default round trip, instance
+  isolation, explicit state и actual Python → Node → loopback Vanessa цепочка.
+  Последняя перепроверка не оставила actionable findings в проверенном scope.
+
+Реальные EDT/v8std/YaXUnit/Vanessa/ИБ, нативный экран Codex и фактическая host
+активация hook не проверялись. Корпуса и бизнес-результаты требуют live-приёмки;
+отсутствие Help остаётся принятым исключением. Исходные CRM/Kafka, установленный
+plugin/cache и прежний core.zip не изменялись. Для установки нужна свежая сборка.
+
+## Предыдущая проверка профилей экземпляров
+
+Исправлены замечания повторного ревью: scope Vanessa теперь различает абсолютные
+корни клонов и точные runtime bytes; lazy MCP получает все страницы tools,
+обновляет discovery и передаёт resources/prompts; выбор проекта следует каталогу
+сессии. Восстановлены branch preparation/readiness, bounded reuse и отдельный
+контракт read-only reviewer. Install-сборка сохраняет все шесть MCP, source guard
+включён в manifest. Дублирующий `settings/plugin.yaml` удалён: defaults читаются
+из одного JSON во всех entrypoints.
+
+Tracked `.ai/project.yaml` задаёт default URL. Overrides экземпляра хранятся в
+Codex или репозитории, process environment имеет высший приоритет. Два экземпляра
+одного CRM-каталога и три отдельных Kafka-каталога проверены независимо. Чтение
+effective profile не создаёт файл и не переписывает tracked defaults. Missing
+explicit override, неверный профиль и неоднозначный host root блокируют binding;
+импорт не может переключить каталог через вложенные settings.
+
+Итоговая локальная проверка:
+
+- Python regression: **68 тестов**, включая реальные stdio entrypoints,
+  пагинацию, динамический discovery/resources, смену roots, отсутствие site
+  dependencies, isolation экземпляров/клонов и hook decisions.
+- `node tests/test-vanessa-ui.mjs`: пройден, включая изменение runtime
+  bytes после согласования и единственный dispatch при timeout.
+- Skill validation: **11 навыков**, 5 JSON schemas, 3 profile templates,
+  33 локальные ссылки навыков и 6 YAML UI metadata валидны.
+- Независимые forward probes: **45 результатов** полного harness и
+  **13 результатов** canonical startup. System Python и `-S` открывают все
+  entrypoints без профиля и записи state; configured EDT проходит через
+  prepared relay к собственному loopback MCP. Найденные startup/settings дефекты
+  исправлены и перепроверены. Отчёт:
+  `.work/profile-forward-independent-20261019/independent-review.md` от корня repo.
+
+Реальные EDT/v8std/YaXUnit/Vanessa и нативная активация hooks не проверялись.
+Hook требует host trust; его локальная исполнимость не подтверждает активацию.
+Исходные CRM/Kafka, установленный plugin/cache и прежний `core.zip` не менялись.
+Для установки новой версии требуется свежая сборка из текущих исходников.
+Полная live миграционная приёмка остаётся pending; принятое исключение Help
+и выбранная пользователем модель directory/instance учитываются при оценке.
+
+## История предшествующих проверок
+
+Проверено локально на Windows x64, Python 3.12, Node.js и Java 25.0.2.
+Работа выполнялась на синтетических проектах `.work/demo-project` и
+`.work/cold-project`; существующие CRM/Kafka не запускались и не изменялись.
+
+| Проверка | Результат |
+| --- | --- |
+| Import/export generic-1c, CRM и Kafka | Пройдена: round trip сохраняет данные |
+| Merge/replace, backup и защита от перезаписи | Пройдены |
+| Неверные типы, версия, paths, aliases, credentials | Импорт отклонён, действующий профиль сохранён |
+| YAML duplicate keys | Отклонены |
+| Настройки и генерация четырёх MCP bindings | Пройдены |
+| Отсутствующие EDT/v8std URLs | Полная readiness не объявляется |
+| OpenViking выключен/не настроен | Не блокирует managed-проверку |
+| Установка code-index 1.14.0 | Скачан GitHub artifact, размер и SHA-256 совпали |
+| Установка BSL LS 1.0.7 | Скачан JAR, размер и SHA-256 совпали |
+| Первый запуск через managed_mcp из пустого state | Автоматическое скачивание обоих runtime и успешные MCP-вызовы |
+| code-index | 37 MCP tools; индекс ready, найден символ «Сложить» |
+| BSL LS | 10 MCP tools; найдены символы и получена диагностика |
+| Намеренная синтаксическая ошибка BSL | Выявлена анализатором |
+| Обращение BSL LS вне project root | Отклонено |
+| Lifecycle | Project daemon остановлен штатно; Java/Node сессии завершены |
+| Регрессионные тесты | 11 тестов, OK |
+
+Подробные MCP-ответы сохранены в `.work/live-result.json` и
+`.work/cold-result.json`; runtime digests — в
+`.work/state/runtime-lock.json` и `.work/cold-state/runtime-lock.json`.
+Cold smoke выполнен до добавления отдельной проверки намеренной syntax error;
+повторный live smoke уже включает её.
+
+Источники runtime: [code-index](https://github.com/Regsorm/code-index-mcp/releases/tag/v1.14.0),
+[BSL Language Server](https://github.com/1c-syntax/bsl-language-server/releases/tag/v1.0.7).
+GitHub release API использован для проверки artifact size и опубликованного
+`sha256:` digest перед активацией.
+
+Границы результата:
+
+- проверены source package, CLI и реальные stdio entrypoints, но не установка
+  и обнаружение плагина внутри Codex;
+- EDT/v8std остаются обязательными внешними сервисами; URL не предоставлены,
+  их live-приёмка не выполнена;
+- профили CRM/Kafka пока заготовки; реальная топология должна быть подтверждена;
+- детали legacy skills доступны в исходных репозиториях из `docs/SOURCES.md`;
+  это не утверждение, что весь
+  policy/reviewer/Vanessa runtime уже перенесён;
+
+После уточнения границ репозитория пользователем архивные копии проектных
+skills и неиспользуемые проектные references удалены. Источники и наблюдаемые
+ревизии записаны в `skills/catalog.yaml`; локальные экспорты настроек исключены
+из Git. Это структурная очистка, а не завершение переноса поведения навыков.
+
+Следующие этапы перечислены в `ROADMAP.md`.
+
+## Восстановление защитных проверок изменения кода — 19 октября 2026
+
+В `skills/1c-code-change/SKILL.md` восстановлен общий контракт безопасной записи,
+а механика BSL, запросов, DCS и метаданных адаптирована в
+`skills/1c-code-change/references/edt-editing.md`. Учтено принятое решение
+`platform-documentation-edt-only`; проектные aliases, префиксы и обход ошибки
+конкретной версии CRM EDT не включены в общий алгоритм.
+
+Проверено локально:
+
+- `quick_validate.py` с Python `-X utf8`: 11 из 11 активных навыков валидны.
+- Ссылки на reference и четыре используемых навыка разрешаются; YAML UI metadata
+  разбирается без ошибок.
+- `python -X utf8 -m unittest discover -s tests -p test_remote_mcp.py -v`:
+  три теста пройдены, включая отсутствие автоматического retry при неизвестном
+  исходе mutation. Это проверка транспорта, а не исполнения навыка моделью.
+
+При чтении обновлённых инструкций отдельно разобраны следующие сценарии:
+
+| Сценарий | Предписанное решение |
+| --- | --- |
+| Запрошено только ревью | Находки не разрешают запись |
+| Требуемый diagnostic baseline ошибочный или неполный | Запись заблокирована |
+| Writer отказал по stale hash | Новое чтение и reconciliation; без overwrite/bypass |
+| Timeout, target ещё не изменён, job может выполняться | Проверять тот же job; не повторять writer |
+| Ack или job ID без окончательного результата | Ожидать подтверждённого исхода |
+| Запись подтверждена, обязательная post-validation ненадёжна | Не объявлять завершение |
+| DCS replace сбросит не входящие в scope настройки | Ограничить изменение; не применять такой replacement |
+| Запрос изменён в test-only файле | Не классифицировать как L по имени файла |
+
+Эта сверка сценариев — проверка текста контракта, не независимый behavioral eval
+агента и не live-приёмка EDT. Рабочие CRM/Kafka и установленная копия плагина не
+изменялись. На этом этапе formal policy/compliance runtime ещё не был восстановлен;
+его последующая проверка описана ниже. Полная сверка остальных навыков остаётся
+отдельной незавершённой работой.
+
+## Восстановление нормативного workflow — 19 октября 2026
+
+В `1c-standards` и его `references/requirements.md` теперь один общий контракт:
+полный detection → selection → точные тексты v8std → proposal/result ledger.
+Изменение кода и нормативная часть YaXUnit ссылаются на него без второй таблицы
+применимости. Встроенный Node MCP `policy` включён в canonical `mcp.json`,
+CLI-generated config, подготовленный install package, live doctor и connection
+check настроек. Внешний policy-сервис и новые URL не требуются.
+
+Локальные результаты:
+
+- Все 35 Python regression tests пройдены; 14 новых policy-тестов используют
+  настоящий stdio MCP. Проверяются unknown/неполные/противоречивые assessments,
+  exact selector strength и дедупликация, обе явные фазы, stale registry/digest,
+  изменение механизмов, integrity selection, полнота ledger, обязательный status,
+  recommended deviation reason и невозможность принять unavailable coverage.
+- Canonical entrypoint и policy внутри отдельно собранного временного install
+  package запускаются и возвращают selection. Doctor отражает отказ policy и
+  сохраняет `full_development_readiness: not_verified`.
+- `quick_validate.py`: 11 из 11 активных навыков валидны; локальные ссылки и YAML
+  metadata проверены. Реестр проверен независимым JSON Schema validator.
+- Сопоставлены все правила двух исходных registry: 48 общих oneC и 16 YaXUnit
+  совпадают; сохранены ещё девять общих metadata/extension правил из CRM с
+  нейтральными ID. Итого 57 oneC и 16 YaXUnit rules. Нормативный текст не скопирован.
+- Независимый агент выполнил реальные stdio probes для query-review и изменения
+  прав metadata. Две найденные проблемы согласованности selection/query artifact
+  исправлены и закреплены regression tests; повторная проверка их отклоняет.
+  Результат сохранён в `.work/normative-independent-20261019-1/results.json`
+  относительно корня репозитория.
+
+Это приёмка локального протокола, интеграции и инструкций. Policy проверяет
+согласованность переданного evidence/ledger, но не истинность утверждений о коде
+или норме. Реальные тексты/ревизии внешнего v8std и живые EDT evidence в этой
+проверке не использовались; нормативное соответствие реального изменения не
+объявляется. Пользовательские CRM/Kafka, установленный плагин и `core.zip` не
+изменены. Полная миграционная приёмка остаётся pending.
+
+## YaXUnit, Vanessa, action policy и контракт профиля — 19 октября 2026
+
+Восстановлены полные YaXUnit authoring/review/run/debug и Vanessa
+research/recording/authoring/selected-run workflow. Общие нормативные проверки
+остаются в `1c-standards`, общие согласования — в
+`1c-routing/references/action-policy.md` и `policy/default.json`. Дублирующий
+неиспользуемый `policy/default.yaml` заменён одним читаемым JSON-источником.
+Policy MCP protocol `1.1.0` добавляет `get_action_policy`/`check_action`; effective
+policy подключена к profile validation, doctor и settings check. Навыки используют
+реальные эффекты и уже выданное разрешение для того же scope. Checker проверяет
+утверждения вызывающего агента, не аутентифицирует пользователя и не заменяет
+host approvals.
+
+Bundled Vanessa adapter и bounded HTTP transport адаптированы из Kafka.
+Публичный `scripts/vanessa.py` проверяет portable/local binding и action policy
+до запуска CLI. Поддерживаемый наблюдаемый wire contract — Vanessa Single
+1.2.043.45 / MCP 1.31. Цепочка проверяет readiness, schema, syntax, выбранный
+файл/сценарий и исполняемый текст; сохраняет receipt со статусом `unverified`.
+Успех control chain не превращается в passing business test автоматически.
+
+Schema профиля теперь типизирует policy, testing и knowledge; включённые
+capabilities требуют соответствующих bindings. Дополнительно проверяются IDs,
+ссылки на репозитории, отдельное владение YaXUnit core/тестами, EDT binding,
+путь features внутри владельца, containment вложенных путей и невозможность
+ослабить общие согласования. Validation не запускает описанные test commands.
+
+Результаты локальной проверки:
+
+- `python -X utf8 -m unittest discover -s tests -p test_*.py`:
+  **48 тестов пройдены**. Реальный stdio policy MCP проверен в source package
+  и отдельной временной install-сборке, включая обе action tools. В сборку
+  включены Vanessa CLI, transport, schemas и shared defaults.
+- CLI и native MCP settings preview/apply отвергают неверные типы, неизвестные
+  связи, отсутствующие bindings, traversal и ослабление policy до записи.
+  Действующие profile/settings и отсутствие лишнего backup проверены.
+- `node tests/test-vanessa-ui.mjs`: пройден набор profile/isolation,
+  schema/HTTP, readiness, recording ownership, editor transition и ошибок.
+  Регрессии реального HTTP deadline проверяют ровно один dispatch mutation,
+  сохранение tool/reports/receipt и различие timeout и `tool_error/responded`.
+- `quick_validate.py`: **11 из 11 навыков валидны**. Проверены все JSON schemas,
+  три шаблона профиля, 30 локальных ссылок навыков и YAML UI metadata.
+- Независимый forward test прошёл profile wrapper → policy MCP → Node CLI →
+  собственный loopback runtime. Найденные timeout race, Windows stdout Unicode
+  и несовпадение server-name schemas исправлены; повторная проверка без
+  обхода кодировки подтвердила исправления. Дополнительно исправлена и проверена
+  классификация явного runtime error. Сохранены syntax/stale-content/version
+  gates; stale/zero-count results остаются unverified. Итоговый отчёт:
+  `.work/test-workflows-independent-20261019a/final-report.md` от корня репозитория.
+
+Реальные EDT/v8std, YaXUnit runner и Vanessa/1С не запускались. Корпус patterns,
+EDT writes/diagnostics, UI recording и business assertions на реальной базе
+требуют отдельной live-приёмки. Исходные CRM/Kafka, установленный plugin/cache
+и `core.zip` не изменялись. Полная миграционная приёмка остаётся pending.
+
+## Режимы skills и фазы evidence — 20 октября 2026
+
+Обычное branch review теперь использует существующие точные SHA без обязательных
+commit/checkout/fetch или ожидания live-модели для независимых Git reads. Подготовка
+и live-проверки выполняются только когда нужны порученному результату и разрешены.
+Текущая модель/индекс другой ревизии не объявляются evidence проверяемого target.
+
+Requirements различает baseline, проектируемый переход и actual result/reviewed
+revision. Новые механизмы проверяются до writer, а rename/delete сохраняются как
+факты перехода после него. Design использует proposal, review — result, изменение
+— обе фазы. Skills согласованы с параллельно обновлённым policy 2.0: target,
+selector/source_ref, ledger_valid/blocked и непроходящие failed/unverified записи.
+
+У Vanessa разделены статические design/review/authoring, research/record,
+run/report-only и debug. Run/report не разрешает fixes, offline authoring не
+требует запуска manager. Уточнены YaXUnit phase/operation mapping, границы SDD/ADR,
+привязка BSL LS, session toolset enable и пределы поддержки нормативных исключений.
+
+Выполнено локально:
+
+- `python -X utf8 -m unittest discover -s tests -p test_*.py`:
+  **100 тестов пройдены** на текущем snapshot с policy 2.0.
+- Новый `tests/test_workflow_phases.py`: **5 сценариев** через настоящий stdio MCP
+  — первый запрос, создание ещё не существующего объекта, удаление, частичное
+  review и смена design → change. Проверены устаревший ledger и неожиданный
+  новый механизм. Эти fixtures не доказывают истинность синтетического evidence.
+- `node tests/test-vanessa-ui.mjs`: fixture suite пройден.
+- `quick_validate.py` в UTF-8 режиме: **11/11** навыков валидны; **43** локальные
+  ссылки разрешаются, YAML metadata читается.
+
+Это проверка локальных контрактов и инструкций, не behavioral eval агента и не
+live-приёмка исторических EDT interfaces, v8std, YaXUnit runner или Vanessa/1С.
+Принятые исключения Help/SSL и ограничения migration acceptance сохраняются.
+
+## Code-index: эффективность и параллельные проекты — 20 октября 2026
+
+Проверены исходные контракты MCP, выдача, готовность слоёв, конфигурация демона,
+расположение индексных баз и жизненный цикл readers. Привязка к исследованному
+checkout или фиксированной версии в workflow не добавлялась. Поверхность остаётся
+динамической, без каталога инструментов и allowlist.
+
+Выявлены и исправлены:
+
+- Навык охватывал базовую навигацию, но недостаточно направлял к компактным
+  специализированным ответам по объектам, формам, исполнению, влиянию, правам,
+  проведению и СКД. Выбор по вопросу и условно загружаемые детали теперь включают
+  также limits, continuation, неоднозначность и неполное покрытие.
+- Общий lock установки удерживался во время старта project daemon: независимый
+  профиль мог получить отказ из-за запуска другого. Теперь установка защищается
+  общим lock только на своё время, запуск/остановка — lock конкретного профиля;
+  одновременные readers одного корня дожидаются его единственного демона.
+- Readiness сверяла aliases, но не фактические пути, и принимала отсутствие
+  `data_version.stale` за свежесть. Теперь требуются точные пути, отсутствие
+  дубликатов, ready и явно положительное подтверждение свежести. Эта проверка
+  не объявляется доказательством полноты каждого слоя.
+- Proxy раскрывал все schema после каждого обычного вызова. Для code-index
+  переиспользуется текущая поверхность с обновлением по уведомлению, смене
+  binding или явному запросу host. Полная пагинация и payload сохраняются.
+- Live-проверка выявила различие обычного и verbatim Windows-пути (`\\?\`):
+  добавлены общая нормализация и регрессия. Ownership сохраняется сразу после
+  старта процесса, чтобы timeout не лишал точных данных для scoped recovery.
+
+Синтетическая live-приёмка через реальные lazy/managed stdio entrypoints прошла:
+два профиля с одинаковыми alias и именем процедуры получили разные PID/порты
+и свои результаты; дополнительный reader того же профиля разделяет демон и
+получает данные независимо от истории выдачи первого. Смена каталога и отключение
+reader не останавливают демон другой сессии. Оба тестовых демона остановлены.
+Локальный отчёт: `.work/code-index-audit-20261020/result.json` от корня репозитория.
+
+Дополнительно пройдены детерминированные проверки конкурентного запуска,
+ownership, соответствия путей, freshness, paginated/dynamic discovery и сохранения
+маркеров выдачи. Полная Python-регрессия: **113 тестов пройдены**.
+`quick_validate.py`: 11/11 навыков; 52 локальные ссылки разрешаются.
+
+Это проверка интеграции и инструкций, а не доказательство оптимального поведения
+агента на всех задачах или численного сокращения токенов. Специализированные
+метаданные/СКД/проведение на реальных конфигурациях и параллельные пользовательские
+экземпляры требуют отдельного behavioral/live evidence. Внешние серверы и
+установленная копия плагина не менялись; рабочие проекты 1С не запускались.
+
+## v8std: полнота маршрутов, бюджет и общий сервер — 20 октября 2026
+
+Изучены исходная реализация и живой MCP-контракт предоставленного пользователем
+сервера. Проверены все объявленные возможности чтения, четыре предметные
+коллекции и разные формы ответа. Исследованный checkout и серверная версия не
+стали зависимостью плагина; статического каталога операций в навыках нет.
+
+Выявлены и исправлены:
+
+- Relay терял инструкции согласованного внешнего подключения. Для v8std
+  локальный status теперь доступен и после discovery: он возвращает инструкции,
+  capabilities и binding текущего проекта/экземпляра с отдельной connection ID.
+  Получение статуса не повторяет discovery и не вызывает серверный инструмент.
+- Timeout v8std увеличен с 30 до 60 секунд. Повтор прерванного запроса не
+  выполняется автоматически. Согласованный протокол и серверные payload сохраняются.
+- Навыки содержали имена операций и ограничения исследованной реализации,
+  недостаточно направляли к компактным связям, API member cards и reuse полного
+  текста из context-ответа. Теперь выбирается живая возможность по нужному факту;
+  отдельно ограничиваются число кандидатов и body, учитываются pagination,
+  неоднозначность, truncation и существенные условия нормативного текста.
+- Общий read-only corpus явно отделён от проектных оценок. Один endpoint допустим
+  для параллельных проектов; snippets/context, sourceRef, selections и ledgers
+  не переносятся между ними. В relay нет общего кэша ответов. Неизвестная редакция
+  корпуса ограничивает reuse текущей задачей/подключением; версия SDK её не заменяет.
+
+Ограниченная live-проверка прошла на синтетических запросах через прямой HTTP и
+реальные lazy stdio entrypoints: два временных проектных профиля одновременно
+читали один сервер, сохраняя независимые bindings и предметные контексты.
+Закрытие одного не нарушило чтение другим. Сервер stateless: session ID не выдаёт,
+клиент не отправляет DELETE. Проверены точные ссылки, continuation, полный и
+усечённый текст, предметные фильтры, диагностики и адресные framework-справки.
+Отчёт и воспроизводимый probe находятся в `.work/v8std-audit-20261020/`;
+endpoint передаётся аргументом запуска, а не сохраняется в коде probe.
+
+Сопоставление одного набора связанных ID: компактный MCP payload — 1920 байт,
+с описаниями — 3241 байт (примерно на 41% меньше). Это размер JSON-представления
+на конкретном запросе, не оценка списания токенов. Усечённый компактный body не
+считался заменой полному тексту. Редакция корпуса в исследованных tool responses
+не предоставляется; hash текста не доказывает актуальность следующей задачи.
+
+Пройдены полная Python-регрессия — **129 тестов**, в том числе новые проверки
+stateless lifecycle, сохранения контракта, изоляции ответа и переключения endpoint
+без переподключения соседнего проекта. **11/11** навыков валидны, **66** локальных
+ссылок разрешаются. Это не behavioral eval расхода лимита и не нормативная приёмка
+реальных конфигураций. Общий сервер, его репозиторий, настройки пользовательских
+проектов и установленная копия плагина не менялись.
+

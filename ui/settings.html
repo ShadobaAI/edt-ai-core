@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Настройки 1C AI Core</title>
+<style>
+:root{color-scheme:light dark;font:14px/1.5 system-ui,sans-serif;color:var(--color-text-primary,#202124);background:var(--color-background-primary,#fff)}
+*{box-sizing:border-box}body{margin:0;padding:24px;min-width:280px}main{max-width:700px;margin:auto}h1{font-size:22px;margin:0 0 6px}p{margin:0 0 20px;color:var(--color-text-secondary,#667085)}
+.tabs{display:flex;gap:8px;border-bottom:1px solid #8892a333;margin:24px 0;padding-bottom:12px}button{font:inherit;border:1px solid #8892a366;border-radius:9px;padding:9px 16px;background:var(--color-background-secondary,#f4f5f7);color:inherit;cursor:pointer}button.primary{background:#157753;color:#fff;border-color:#157753}button:disabled{opacity:.5;cursor:default}.tabs button[aria-selected=true]{background:#15775318;border-color:#157753;color:var(--color-text-primary,#175c44)}
+label{display:block;font-weight:550;margin:16px 0 7px}input[type=text]{width:100%;padding:11px 12px;border:1px solid #8892a366;border-radius:9px;background:transparent;color:inherit;font:inherit}input[type=file]{width:100%;padding:16px;border:1px dashed #8892a388;border-radius:10px}input[type=checkbox]{margin-right:8px}.panel{padding:18px;border:1px solid #8892a333;border-radius:12px;margin:16px 0}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:8px 0}.muted{font-size:13px;color:var(--color-text-secondary,#667085)}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}.status{padding:13px;border-radius:9px;margin:16px 0;background:#15775312;white-space:pre-wrap}.status.error{background:#d92d2012;color:#b42318}.good{color:#157753}.warning{color:#b56a00}[hidden]{display:none!important}ul{padding-left:20px;margin:10px 0;overflow-wrap:anywhere}#previewRoot{overflow-wrap:anywhere}@media(prefers-color-scheme:dark){:root{background:var(--color-background-primary,#1c1d20);color:var(--color-text-primary,#f1f1f2)}p,.muted{color:var(--color-text-secondary,#a8adb7)}button{background:var(--color-background-secondary,#2b2e33)}.tabs button[aria-selected=true]{color:#a6e1c8}.good{color:#7fd3ad}.status.error{color:#ffa99e}.warning{color:#e9bc6b}}@media(max-width:440px){body{padding:16px}.tabs{flex-wrap:wrap}.row{align-items:flex-start}}
+</style>
+</head>
+<body>
+<main>
+<h1>Настройки 1C AI Core</h1>
+<p>Перенесите настройки из файла и проверьте подключения проекта.</p>
+<nav class="tabs" aria-label="Раздел">
+<button id="importTab" role="tab" aria-selected="true">Импорт</button>
+<button id="exportTab" role="tab" aria-selected="false">Экспорт</button>
+<button id="checkTab" role="tab" aria-selected="false">Подготовка MCP</button>
+</nav>
+<section id="importPanel">
+<label for="file">Файл настроек</label>
+<input id="file" type="file" accept=".json,.yaml,.yml">
+<div class="muted">Экспорт 1C AI Core или профиль проекта. До 2 МиБ.</div>
+<label for="projectRoot">Папка проекта на этом компьютере</label>
+<input id="projectRoot" type="text" placeholder="C:\EDT\projects\my-project" autocomplete="off">
+<div class="actions"><button id="previewButton">Проверить файл</button></div>
+<div class="panel" id="preview" hidden>
+<div class="row"><strong>Профиль</strong><span id="previewProfile"></span></div>
+<div id="previewRoot" class="muted"></div>
+<ul id="repositories"></ul>
+<div id="importEffects" class="muted"></div>
+<div class="row"><span>EDT</span><span id="edtStatus"></span></div>
+<div class="row"><span>v8std</span><span id="v8Status"></span></div>
+<label id="replaceLabel" hidden><input id="replace" type="checkbox">Заменить существующий профиль с резервной копией</label>
+<div class="actions"><button id="applyButton" class="primary">Импортировать</button></div>
+</div>
+</section>
+<section id="exportPanel" hidden>
+<div class="panel"><strong>Общие настройки и шаблон проекта</strong><p style="margin:8px 0 0">Файл содержит общие настройки runtime и сохранённый шаблон проекта. Выбор папки и overrides текущего экземпляра остаются локальными. При импорте выберите папку назначения.</p></div>
+<div class="actions"><button id="downloadButton" class="primary">Скачать настройки</button></div>
+</section>
+<section id="checkPanel" hidden>
+<p>Подготовка может скачать runtime и запустить code-index/BSL LS. Проверяются MCP-протокол, workspace API BSL LS и health индекса. Соответствие EDT-проекту и поведение кода здесь не проверяются.</p>
+<div id="connections" class="panel" hidden></div>
+<div class="actions"><button id="checkButton" class="primary">Подготовить и проверить MCP</button><button id="operationButton">Состояние операции</button></div>
+</section>
+<div id="status" class="status" role="status">Подключаемся к плагину…</div>
+</main>
+<script>
+"use strict";
+let seq=0, hostOrigin="*", connected=false;
+const waiting=new Map(), status=document.getElementById("status");
+const $=id=>document.getElementById(id);
+function notice(text,error=false){status.textContent=text;status.classList.toggle("error",error);}
+function rpc(method,params={}){
+  if(window.parent===window) return Promise.reject(new Error("Откройте этот экран из настроек плагина в Codex."));
+  return new Promise((resolve,reject)=>{
+    const id=++seq;
+    const timer=setTimeout(()=>{waiting.delete(id);const error=new Error("Ответ не получен. Операция могла продолжиться. Проверьте её состояние перед повтором.");error.outcomeUnknown=true;reject(error);},240000);
+    waiting.set(id,{resolve,reject,timer});
+    window.parent.postMessage({jsonrpc:"2.0",id,method,params},hostOrigin);
+  });
+}
+function notify(method,params={}){window.parent.postMessage({jsonrpc:"2.0",method,params},hostOrigin);}
+window.addEventListener("message",event=>{
+  if(event.source!==window.parent)return;
+  const msg=event.data;if(!msg||msg.jsonrpc!=="2.0")return;
+  if(msg.id&&waiting.has(msg.id)){
+    if(hostOrigin==="*"&&event.origin!=="null")hostOrigin=event.origin;
+    const item=waiting.get(msg.id);waiting.delete(msg.id);clearTimeout(item.timer);
+    msg.error?item.reject(new Error(msg.error.message)):item.resolve(msg.result);
+  }else if(msg.method==="ui/notifications/tool-result"){
+    initial(msg.params);
+  }else if(msg.method==="ui/notifications/host-context-changed"){applyStyle(msg.params);}
+});
+function applyStyle(context){
+  const vars=context?.styles?.variables||{};
+  for(const[key,value]of Object.entries(vars))if(typeof value==="string")document.documentElement.style.setProperty(key,value);
+}
+async function tool(name,args={}){
+  if(!connected)throw new Error("Подключение к плагину ещё не установлено.");
+  const response=await rpc("tools/call",{name,arguments:args});
+  if(response.isError)throw new Error(response.content?.find(x=>x.type==="text")?.text||"Не удалось выполнить действие.");
+  return response._meta?.data||response.structuredContent||{};
+}
+function show(mode){
+  for(const key of ["import","export","check"]){$(key+"Panel").hidden=key!==mode;$(key+"Tab").setAttribute("aria-selected",String(key===mode));}
+  notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
+}
+let initialData=null, lastPreview=null, fileText="", checkTimer=null, activeOperation=null, inputRevision=0, polling=false;
+function initial(result){
+  initialData=result?.structuredContent||result;
+  if(initialData?.values?.projectRoot)$("projectRoot").value=initialData.values.projectRoot;
+  if(connected&&initialData?.mode)show(initialData.mode==="operation"?"check":initialData.mode);
+  if(connected&&initialData?.mode==="operation")pollOperation(initialData.id).catch(error=>notice(error.message,true));
+}
+async function busy(label,action){
+  const controls=[...document.querySelectorAll("button,input")], disabled=controls.map(control=>control.disabled);
+  controls.forEach(control=>control.disabled=true);notice(label);
+  try{return await action();}catch(error){notice(error.message,true);throw error;}
+  finally{controls.forEach((control,index)=>control.disabled=disabled[index]);$("checkButton").disabled=activeOperation?.status==="running";}
+}
+function invalidate(){inputRevision++;lastPreview=null;$("preview").hidden=true;}
+$("projectRoot").addEventListener("input",invalidate);
+$("file").addEventListener("change",invalidate);
+$("importTab").onclick=()=>show("import");$("exportTab").onclick=()=>show("export");$("checkTab").onclick=()=>show("check");
+$("previewButton").onclick=()=>busy("Проверяем настройки…",async()=>{
+  const file=$("file").files[0];if(!file)throw new Error("Выберите файл настроек.");
+  const revision=inputRevision;
+  if(file.size>2*1024*1024)throw new Error("Файл превышает 2 МиБ.");
+  fileText=await file.text();
+  const args={text:fileText};
+  if($("projectRoot").value.trim())args.projectRoot=$("projectRoot").value.trim();
+  const preview=await tool("settings.preview",args);
+  if(revision!==inputRevision)throw new Error("Файл или папка изменились во время проверки. Проверьте их заново.");
+  lastPreview=preview;
+  $("projectRoot").value=lastPreview.projectRoot;
+  $("previewProfile").textContent=lastPreview.profileId||"Настройки плагина";
+  $("previewRoot").textContent=lastPreview.projectRoot||"Папка проекта не выбрана";
+  $("repositories").replaceChildren(...lastPreview.repositories.map(repo=>{
+    const item=document.createElement("li");item.textContent=repo.id+" · "+repo.path;return item;}));
+  $("edtStatus").textContent=lastPreview.connectionUrls?.edt||"Адрес не указан";
+  $("v8Status").textContent=lastPreview.connectionUrls?.v8std||"Адрес не указан";
+  $("importEffects").textContent=(lastPreview.writesInstanceConnections?"URL из settings-файла сохранятся для текущего экземпляра. ":"")+
+    (Object.keys(lastPreview.sharedRuntimeChanges||{}).length?"Изменятся общие параметры runtime (включая программы запуска): "+JSON.stringify(lastPreview.sharedRuntimeChanges):"");
+  $("replaceLabel").hidden=!lastPreview.replacesProfile;$("replace").checked=false;$("preview").hidden=false;
+  notice("Файл проверен. Проверьте папку проекта перед импортом.");
+}).catch(()=>{});
+$("applyButton").onclick=()=>busy("Сохраняем настройки…",async()=>{
+  if(!lastPreview)throw new Error("Сначала проверьте файл.");
+  if(lastPreview.replacesProfile&&!$("replace").checked)throw new Error("Подтвердите замену существующего профиля.");
+  await tool("settings.apply",{text:fileText,projectRoot:$("projectRoot").value.trim(),revision:lastPreview.revision,replace:$("replace").checked});
+  invalidate();notice("Настройки импортированы. Для работы выберите эту папку проекта в Codex. Подготавливаем MCP…");show("check");await performCheck();
+}).catch(()=>{});
+$("downloadButton").onclick=()=>busy("Готовим файл настроек…",async()=>{
+  const exported=await tool("settings.export_data");
+  const url=URL.createObjectURL(new Blob([exported.text],{type:"application/json;charset=utf-8"}));
+  const link=document.createElement("a");link.href=url;link.download=exported.filename;link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);notice("Файл настроек подготовлен.");
+}).catch(()=>{});
+async function pollOperation(operationId){
+  if(polling)return;
+  polling=true;
+  try{
+  if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}
+  const operation=await tool("settings.operation",operationId?{operationId}:{});
+  activeOperation=operation;
+  if(operation.status==="running"){
+    $("checkButton").disabled=true;
+    notice("Выполняется "+operation.action+" · "+(operation.projectRoot||"без папки")+" · экземпляр "+operation.instance+". Ожидаем результат; повтор не запускается.");
+    checkTimer=setTimeout(()=>pollOperation(operation.id).catch(error=>notice(error.message,true)),1000);
+    return;
+  }
+  $("checkButton").disabled=false;
+  if(operation.status==="idle"){notice("В этой MCP-сессии нет операций.");return;}
+  if(operation.status!=="completed"){notice(operation.error+(operation.status==="outcome_unknown"?" Проверьте фактические настройки и runtime перед повтором.":""),true);return;}
+  if(operation.action!=="check"){notice("Операция "+operation.action+" завершена. Обновите настройки, чтобы проверить результат.");return;}
+  renderCheck(operation.result,operation);
+  }finally{polling=false;}
+}
+function renderCheck(result,operation){
+  const box=$("connections");box.replaceChildren();
+  const scope=document.createElement("div");scope.className="muted";scope.textContent=operation.projectRoot+" · экземпляр "+operation.instance;box.append(scope);
+  for(const item of result.managed){
+    const line=document.createElement("div");line.className="row";
+    const name=document.createElement("span");name.textContent=item.name;
+    const value=document.createElement("span");value.className=item.ready?"good":"warning";value.textContent=item.ready?(item.name==="code-index"?"Индекс актуален по health":item.name==="bsl-ls"?"MCP и workspace API доступны":"Протокол проверен на тестовых данных"):item.state==="indexing"?"Индексируется…":item.state==="preparing"?"Подготовка…":"Проверка не пройдена";
+    line.append(name,value);box.append(line);
+    if(!item.ready){const detail=document.createElement("div");detail.className="muted";detail.textContent=item.detail;box.append(detail);}
+  }
+  for(const[name,item]of Object.entries(result.external)){
+    const line=document.createElement("div");line.className="row";line.textContent=name+": "+(item.configured?"Адрес указан; live-проверка не выполнена":"Укажите адрес в настройках плагина");box.append(line);
+  }
+  const indexing=result.managed.some(x=>x.state==="indexing"||x.state==="preparing");
+  box.hidden=false;notice(result.managed.every(x=>x.ready)?"Указанные MCP-проверки пройдены. Нормативное соответствие и полная готовность проекта не проверялись.":indexing?"Подготовка или индексация ещё не завершена. Обновите проверку позже кнопкой; автоматического переподключения нет.":"Часть MCP-проверок не пройдена. Подробности выше.",!indexing&&!result.managed.every(x=>x.ready));
+}
+async function performCheck(){
+  const operation=await tool("settings.run_check");
+  activeOperation=operation;
+  await pollOperation(operation.id);
+}
+$("checkButton").onclick=()=>busy("Проверяем подключения…",performCheck).catch(()=>{});
+$("operationButton").onclick=()=>pollOperation(activeOperation?.id).catch(error=>notice(error.message,true));
+(async()=>{
+  try{
+    const host=await rpc("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"1C AI Core Settings",version:"0.1.1"},
+      appCapabilities:{availableDisplayModes:["inline"]}});
+    const desktop=/desktop/i.test(host?.hostInfo?.name||"")||host?.hostContext?.platform==="desktop";
+    const actual=(host?.hostInfo?.version||"").split(".").map(Number),minimum=[26,928,20710];
+    if(desktop&&actual.length>=3&&actual.every(Number.isFinite)){
+      const first=minimum.findIndex((value,index)=>actual[index]!==value);
+      if(first>=0&&actual[first]<minimum[first])throw new Error("Обновите приложение до версии 26.928.20710 или новее, чтобы использовать настройки плагина.");
+    }
+    connected=true;applyStyle(host?.hostContext);
+    notify("ui/notifications/initialized");
+    const current=await tool("settings.read");
+    if(current.values?.projectRoot)$("projectRoot").value=current.values.projectRoot;
+    $("projectRoot").readOnly=Boolean(current.schema?.properties?.projectRoot?.readOnly);
+    if(initialData?.mode)show(initialData.mode==="operation"?"check":initialData.mode);
+    notice(current.projectSelection?.detail||"Выберите файл настроек для импорта.",Boolean(current.projectSelection?.detail));
+    if(initialData?.mode==="operation")await pollOperation(initialData.id);
+  }catch(error){notice(error.message,true);}
+})();
+</script>
+</body>
+</html>
+

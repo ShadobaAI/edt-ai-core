@@ -1,0 +1,53 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "policy": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/policy/read-only-mcp.mjs"]
+    },
+    "1c-ai-settings": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/mcp/settings.mjs"
+      ]
+    },
+    "code-index": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "--component",
+        "code-index"
+      ]
+    },
+    "bsl-ls": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "--component",
+        "bsl-ls"
+      ]
+    },
+    "edt": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "--component",
+        "edt"
+      ]
+    },
+    "v8std": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "--component",
+        "v8std"
+      ]
+    }
+  }
+}

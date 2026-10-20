@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "version",
+    "state_dir",
+    "active_project",
+    "mcp"
+  ],
+  "properties": {
+    "version": {
+      "const": "0.1.0"
+    },
+    "state_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "active_project": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mcp": {
+      "type": "object",
+      "required": [
+        "required",
+        "managed",
+        "optional"
+      ],
+      "properties": {
+        "required": {
+          "type": "object",
+          "required": [
+            "edt",
+            "v8std"
+          ],
+          "properties": {
+            "edt": {
+              "type": "object",
+              "required": [
+                "mode",
+                "url"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "user"
+                },
+                "url": {
+                  "type": "string",
+                  "pattern": "^(?:https?://[^\\s]+)?$"
+                }
+              },
+              "additionalProperties": false
+            },
+            "v8std": {
+              "type": "object",
+              "required": [
+                "mode",
+                "url"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "user"
+                },
+                "url": {
+                  "type": "string",
+                  "pattern": "^(?:https?://[^\\s]+)?$"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "managed": {
+          "type": "object",
+          "required": [
+            "code-index",
+            "bsl-ls"
+          ],
+          "properties": {
+            "code-index": {
+              "type": "object",
+              "required": [
+                "mode",
+                "version"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "auto"
+                },
+                "version": {
+                  "type": "string",
+                  "pattern": "^(latest|v?\\d+\\.\\d+\\.\\d+)$"
+                }
+              },
+              "additionalProperties": false
+            },
+            "bsl-ls": {
+              "type": "object",
+              "required": [
+                "mode",
+                "version"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "auto"
+                },
+                "version": {
+                  "type": "string",
+                  "pattern": "^(latest|v?\\d+\\.\\d+\\.\\d+)$"
+                },
+                "java": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "node": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "configuration": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "optional": {
+          "type": "object",
+          "properties": {
+            "openviking": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "url": { "type": "string", "pattern": "^(?:https?://[^\\s]+)?$" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

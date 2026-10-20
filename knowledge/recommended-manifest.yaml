@@ -1,0 +1,16 @@
+version: 0.1.0
+provider: openviking
+required: false
+collections:
+  - id: bsp
+    description: Описание БСП и проверенных платформенных механизмов
+  - id: project
+    description: Описание проекта CRM или Kafka и его архитектурные границы
+  - id: documentation
+    description: Документация, SDD, ADR и контракты
+  - id: memory
+    description: Проверенная память команды и результаты ревью
+  - id: experience
+    description: Опубликованный переносимый опыт с provenance
+metadata:
+  required: [provenance, scope, revision, compatibility, status]

@@ -1,0 +1,124 @@
+schema: 1c-ai.workspace/v1
+workspace:
+  id: demo-product
+  title: Большой продукт 1С
+  instructions: [.ai/WORKSPACE.md]
+repositories:
+  base: {role: vendor, write_policy: deny}
+  product: {role: product, write_policy: task_scope}
+  patch: {role: patch, write_policy: task_scope}
+  unit-tests: {role: tests, write_policy: task_scope}
+  framework: {role: framework, write_policy: deny}
+  ui-tests: {role: tests, write_policy: task_scope}
+components:
+  base:
+    repository: base
+    kind: configuration
+    origin: vendor
+    source_roots: [src]
+    protected_roots: [src]
+    canonical_binding: base-live
+  product:
+    repository: product
+    kind: extension
+    origin: project
+    source_roots: [src]
+    protected_roots: [src]
+    canonical_binding: product-live
+  patch:
+    repository: patch
+    kind: patch-extension
+    origin: project
+    source_roots: [src]
+    protected_roots: [src]
+    canonical_binding: patch-live
+  unit:
+    repository: unit-tests
+    kind: test-extension
+    origin: project
+    source_roots: [src]
+    protected_roots: [src]
+    canonical_binding: unit-live
+  framework:
+    repository: framework
+    kind: test-framework-extension
+    origin: upstream
+    source_roots: [src]
+    protected_roots: [src]
+    canonical_binding: framework-live
+  ui:
+    repository: ui-tests
+    kind: gherkin-suite
+    origin: project
+    source_roots: [features]
+    protected_roots: []
+    editable_roots: [features]
+dependencies:
+  - {from: product, to: base, kind: uses}
+  - {from: patch, to: product, kind: patches}
+  - {from: unit, to: product, kind: tests}
+  - {from: unit, to: patch, kind: tests}
+  - {from: unit, to: framework, kind: uses}
+edt_bindings:
+  base-live: {component: base, connection: edt-main, project: Base, mode: canonical}
+  product-live: {component: product, connection: edt-main, project: Product, mode: canonical}
+  patch-live: {component: patch, connection: edt-main, project: Product.Patch, mode: canonical}
+  unit-live: {component: unit, connection: edt-tests, project: Product.Tests, mode: canonical}
+  framework-live: {component: framework, connection: edt-tests, project: YAXUNIT, mode: canonical}
+  unit-base: {component: base, connection: edt-tests, project: Base.ForTests, mode: read_only_projection}
+  unit-product: {component: product, connection: edt-tests, project: Product.ForTests, mode: read_only_projection}
+  unit-patch: {component: patch, connection: edt-tests, project: Patch.ForTests, mode: read_only_projection}
+assemblies:
+  development:
+    base: base
+    extensions: [product]
+    bindings: {base: base-live, product: product-live}
+  patch-unit:
+    base: base
+    extensions: [product, patch, framework, unit]
+    bindings: {base: unit-base, product: unit-product, patch: unit-patch, framework: framework-live, unit: unit-live}
+  patch-ui:
+    base: base
+    extensions: [product, patch]
+    bindings: {base: base-live, product: product-live, patch: patch-live}
+  release:
+    base: base
+    extensions: [product, patch]
+    bindings: {base: base-live, product: product-live, patch: patch-live}
+providers:
+  source_index: {adapter: code-index, lifecycle: managed}
+  bsl_analyzer: {adapter: bsl-ls, lifecycle: session}
+  standards: {adapter: v8std, connection: v8std}
+  knowledge: {adapter: openviking-read, connection: knowledge}
+  vanessa: {adapter: vanessa, connection: vanessa-ui}
+  extension_builder: {adapter: native-1c-builder, local_binding: cfe-builder}
+knowledge:
+  dataset: team-published
+  scopes: [bsp, projects/demo-product, experience]
+  publication_policy: verified-pair
+review:
+  independent_required_for: [H]
+testing:
+  yaxunit:
+    test_component: unit
+    framework_component: framework
+    product_components: [product, patch]
+    assembly: patch-unit
+    runner_binding: unit-live
+    environment_binding: unit-local
+  vanessa:
+    feature_component: ui
+    features: features
+    assembly: patch-ui
+    runtime_provider: vanessa
+    environment_binding: ui-local
+build_profiles:
+  patch:
+    component: patch
+    assembly: release
+    provider: extension_builder
+    environment_binding: build-local
+    artifact_kind: cfe
+compatibility:
+  core_api: '1'
+  adapter_api: '1'

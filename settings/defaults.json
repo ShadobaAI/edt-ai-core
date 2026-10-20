@@ -1,0 +1,36 @@
+{
+  "version": "0.1.0",
+  "state_dir": "${CODEX_HOME}/1c-ai-core",
+  "active_project": null,
+  "mcp": {
+    "required": {
+      "edt": {
+        "mode": "user",
+        "url": ""
+      },
+      "v8std": {
+        "mode": "user",
+        "url": ""
+      }
+    },
+    "managed": {
+      "code-index": {
+        "mode": "auto",
+        "version": "latest"
+      },
+      "bsl-ls": {
+        "mode": "auto",
+        "version": "latest",
+        "java": "java",
+        "node": "node",
+        "configuration": null
+      }
+    },
+    "optional": {
+      "openviking": {
+        "enabled": false,
+        "url": ""
+      }
+    }
+  }
+}

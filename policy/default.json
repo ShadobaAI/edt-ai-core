@@ -1,0 +1,11 @@
+{
+  "version": "0.1.0",
+  "mode": "conservative",
+  "allow_shell_source_read": false,
+  "require_explicit_confirmation": [
+    "cleanup",
+    "launch",
+    "database",
+    "remote_git"
+  ]
+}

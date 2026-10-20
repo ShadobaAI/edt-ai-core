@@ -1,0 +1,994 @@
+{
+  "registryVersion": "2026-10-20.1",
+  "selectorSyntax": "document-id#exact-heading",
+  "oneC": {
+    "artifacts": [
+      "bsl",
+      "query",
+      "metadata"
+    ],
+    "operations": [
+      "design",
+      "create",
+      "change",
+      "review"
+    ],
+    "mechanisms": [
+      "method_contract",
+      "complex_types",
+      "method_naming",
+      "local_assignment",
+      "module_variable",
+      "collection_types",
+      "tabular_data",
+      "universal_container",
+      "new_module",
+      "strict_types",
+      "control_flow",
+      "method_structure",
+      "comment",
+      "literal",
+      "function_result",
+      "multiline_arguments",
+      "module_structure",
+      "export_contract",
+      "client_server_boundary",
+      "query_text",
+      "temporary_query_table",
+      "existence_query",
+      "query_result_processing",
+      "query_in_loop",
+      "predefined_values",
+      "exception_handler",
+      "error_presentation",
+      "common_module",
+      "unbounded_query_result",
+      "explicit_transaction",
+      "file_resource",
+      "session_time",
+      "privileged_mode",
+      "full_access_module",
+      "select_allowed",
+      "localized_text",
+      "technical_text",
+      "changed_signature",
+      "query_parameters",
+      "extension_interception",
+      "metadata_naming",
+      "event_subscription",
+      "subsystem_membership",
+      "access_rights",
+      "object_write_handler",
+      "data_migration",
+      "metadata_rename",
+      "metadata_delete"
+    ],
+    "rules": [
+      {
+        "id": "c01",
+        "strength": "mandatory",
+        "artifacts": [
+          "bsl",
+          "query"
+        ],
+        "selectors": [
+          "corporate:work:bsl-change-policy:overview"
+        ]
+      },
+      {
+        "id": "c01b",
+        "strength": "mandatory",
+        "any": [
+          "comment"
+        ],
+        "selectors": [
+          "corporate:work:bsl-change-policy:overview"
+        ]
+      },
+      {
+        "id": "c02",
+        "strength": "mandatory",
+        "artifacts": [
+          "bsl"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Общий принцип",
+          "std444",
+          "std456",
+          "corporate:work:bsl-formatting:overview#Логические этапы",
+          "corporate:work:bsl-readability:overview#Временный код"
+        ]
+      },
+      {
+        "id": "c03",
+        "strength": "mandatory",
+        "any": [
+          "method_contract",
+          "changed_signature"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Контракты методов",
+          "corporate:work:bsl-readability:overview#Параметры"
+        ]
+      },
+      {
+        "id": "c04",
+        "strength": "mandatory",
+        "any": [
+          "local_assignment"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Переменные"
+        ]
+      },
+      {
+        "id": "c05",
+        "strength": "mandatory",
+        "any": [
+          "module_variable"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Переменные"
+        ]
+      },
+      {
+        "id": "c06",
+        "strength": "mandatory",
+        "any": [
+          "collection_types"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Структуры и коллекции"
+        ]
+      },
+      {
+        "id": "c07",
+        "strength": "mandatory",
+        "any": [
+          "tabular_data"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Табличные данные и конструкторы"
+        ]
+      },
+      {
+        "id": "c08",
+        "strength": "mandatory",
+        "any": [
+          "universal_container"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Универсальные контейнеры"
+        ]
+      },
+      {
+        "id": "c09",
+        "strength": "mandatory",
+        "any": [
+          "new_module",
+          "strict_types"
+        ],
+        "selectors": [
+          "corporate:work:bsl-type-transparency:overview#Строгая типизация"
+        ]
+      },
+      {
+        "id": "c10",
+        "strength": "mandatory",
+        "any": [
+          "control_flow"
+        ],
+        "selectors": [
+          "corporate:work:bsl-readability:overview#Поток управления",
+          "corporate:work:bsl-readability:overview#Булевы условия",
+          "corporate:work:bsl-formatting:overview#Многострочные блоки"
+        ]
+      },
+      {
+        "id": "c11",
+        "strength": "mandatory",
+        "any": [
+          "method_structure"
+        ],
+        "selectors": [
+          "corporate:work:bsl-readability:overview#Границы метода",
+          "corporate:work:module-organization:overview#Области"
+        ]
+      },
+      {
+        "id": "c12",
+        "strength": "mandatory",
+        "any": [
+          "comment"
+        ],
+        "selectors": [
+          "corporate:work:bsl-readability:overview#Комментарии",
+          "corporate:work:bsl-readability:overview#Временный код",
+          "std444"
+        ]
+      },
+      {
+        "id": "c13",
+        "strength": "mandatory",
+        "any": [
+          "literal"
+        ],
+        "selectors": [
+          "corporate:work:bsl-readability:overview#Литералы"
+        ]
+      },
+      {
+        "id": "c14",
+        "strength": "mandatory",
+        "any": [
+          "function_result"
+        ],
+        "selectors": [
+          "corporate:work:bsl-readability:overview#Результат функции",
+          "corporate:work:bsl-type-transparency:overview#Контракты методов"
+        ]
+      },
+      {
+        "id": "c15",
+        "strength": "mandatory",
+        "any": [
+          "multiline_arguments"
+        ],
+        "selectors": [
+          "std444"
+        ]
+      },
+      {
+        "id": "c16",
+        "strength": "mandatory",
+        "any": [
+          "module_structure",
+          "new_module"
+        ],
+        "selectors": [
+          "corporate:work:module-organization:overview#Области"
+        ]
+      },
+      {
+        "id": "c17",
+        "strength": "mandatory",
+        "any": [
+          "export_contract"
+        ],
+        "selectors": [
+          "corporate:work:module-organization:overview#Экспорт"
+        ]
+      },
+      {
+        "id": "c18",
+        "strength": "mandatory",
+        "any": [
+          "client_server_boundary"
+        ],
+        "selectors": [
+          "std636",
+          "std487"
+        ]
+      },
+      {
+        "id": "c19",
+        "strength": "mandatory",
+        "any": [
+          "query_text",
+          "query_parameters"
+        ],
+        "selectors": [
+          "corporate:work:query-conventions:overview#Параметры и поля",
+          "std437",
+          "corporate:work:query-conventions:overview#Установка параметров"
+        ]
+      },
+      {
+        "id": "c20",
+        "strength": "mandatory",
+        "any": [
+          "temporary_query_table"
+        ],
+        "selectors": [
+          "corporate:work:query-conventions:overview#Временные таблицы"
+        ]
+      },
+      {
+        "id": "c21",
+        "strength": "mandatory",
+        "any": [
+          "existence_query"
+        ],
+        "selectors": [
+          "std438"
+        ]
+      },
+      {
+        "id": "c22",
+        "strength": "mandatory",
+        "any": [
+          "query_result_processing"
+        ],
+        "selectors": [
+          "corporate:work:query-conventions:overview#Обработка результата"
+        ]
+      },
+      {
+        "id": "c23",
+        "strength": "recommended",
+        "any": [
+          "query_in_loop"
+        ],
+        "selectors": [
+          "std436"
+        ]
+      },
+      {
+        "id": "c24",
+        "strength": "mandatory",
+        "any": [
+          "predefined_values"
+        ],
+        "selectors": [
+          "std443",
+          "std697"
+        ]
+      },
+      {
+        "id": "c25",
+        "strength": "mandatory",
+        "any": [
+          "exception_handler"
+        ],
+        "selectors": [
+          "std499"
+        ]
+      },
+      {
+        "id": "c26",
+        "strength": "mandatory",
+        "any": [
+          "error_presentation"
+        ],
+        "selectors": [
+          "std499"
+        ]
+      },
+      {
+        "id": "s01",
+        "strength": "mandatory",
+        "artifacts": [
+          "bsl",
+          "query"
+        ],
+        "selectors": [
+          "std444"
+        ]
+      },
+      {
+        "id": "s02",
+        "strength": "mandatory",
+        "any": [
+          "method_contract",
+          "changed_signature"
+        ],
+        "selectors": [
+          "std453",
+          "std640"
+        ]
+      },
+      {
+        "id": "s03",
+        "strength": "mandatory",
+        "any": [
+          "complex_types"
+        ],
+        "selectors": [
+          "std641"
+        ]
+      },
+      {
+        "id": "s04",
+        "strength": "mandatory",
+        "any": [
+          "method_naming"
+        ],
+        "selectors": [
+          "std647"
+        ]
+      },
+      {
+        "id": "s05",
+        "strength": "mandatory",
+        "any": [
+          "method_structure",
+          "new_module",
+          "module_structure"
+        ],
+        "selectors": [
+          "std455"
+        ]
+      },
+      {
+        "id": "s06",
+        "strength": "mandatory",
+        "any": [
+          "common_module"
+        ],
+        "selectors": [
+          "std469"
+        ]
+      },
+      {
+        "id": "s07",
+        "strength": "mandatory",
+        "any": [
+          "export_contract"
+        ],
+        "selectors": [
+          "std453",
+          "std544"
+        ]
+      },
+      {
+        "id": "s08",
+        "strength": "mandatory",
+        "any": [
+          "query_text"
+        ],
+        "selectors": [
+          "std437"
+        ]
+      },
+      {
+        "id": "s09",
+        "strength": "mandatory",
+        "any": [
+          "existence_query"
+        ],
+        "selectors": [
+          "std438"
+        ]
+      },
+      {
+        "id": "s10",
+        "strength": "recommended",
+        "any": [
+          "query_in_loop"
+        ],
+        "selectors": [
+          "std436"
+        ]
+      },
+      {
+        "id": "s11",
+        "strength": "mandatory",
+        "any": [
+          "unbounded_query_result"
+        ],
+        "selectors": [
+          "std725"
+        ]
+      },
+      {
+        "id": "s12",
+        "strength": "mandatory",
+        "any": [
+          "client_server_boundary"
+        ],
+        "selectors": [
+          "std487",
+          "std636"
+        ]
+      },
+      {
+        "id": "s13",
+        "strength": "mandatory",
+        "any": [
+          "exception_handler"
+        ],
+        "selectors": [
+          "std499"
+        ]
+      },
+      {
+        "id": "s14",
+        "strength": "mandatory",
+        "any": [
+          "explicit_transaction"
+        ],
+        "selectors": [
+          "std783"
+        ]
+      },
+      {
+        "id": "s15",
+        "strength": "mandatory",
+        "any": [
+          "file_resource"
+        ],
+        "selectors": [
+          "std542"
+        ]
+      },
+      {
+        "id": "s16",
+        "strength": "mandatory",
+        "any": [
+          "session_time"
+        ],
+        "selectors": [
+          "std643"
+        ]
+      },
+      {
+        "id": "s17",
+        "strength": "mandatory",
+        "any": [
+          "predefined_values"
+        ],
+        "selectors": [
+          "std443",
+          "std697"
+        ]
+      },
+      {
+        "id": "s18",
+        "strength": "mandatory",
+        "any": [
+          "privileged_mode"
+        ],
+        "selectors": [
+          "std485"
+        ]
+      },
+      {
+        "id": "s19",
+        "strength": "mandatory",
+        "any": [
+          "full_access_module"
+        ],
+        "selectors": [
+          "std469",
+          "std488"
+        ]
+      },
+      {
+        "id": "s20",
+        "strength": "mandatory",
+        "any": [
+          "select_allowed"
+        ],
+        "selectors": [
+          "std415",
+          "std437",
+          "std444"
+        ]
+      },
+      {
+        "id": "s21",
+        "strength": "mandatory",
+        "any": [
+          "localized_text",
+          "technical_text"
+        ],
+        "selectors": [
+          "std761",
+          "std762",
+          "std764",
+          "std765"
+        ]
+      },
+      {
+        "id": "metadata-naming",
+        "strength": "mandatory",
+        "artifacts": [
+          "metadata"
+        ],
+        "any": [
+          "metadata_naming"
+        ],
+        "selectors": [
+          "std474",
+          "std550"
+        ]
+      },
+      {
+        "id": "event-subscription",
+        "strength": "mandatory",
+        "any": [
+          "event_subscription"
+        ],
+        "selectors": [
+          "std550"
+        ]
+      },
+      {
+        "id": "subsystem-membership",
+        "strength": "mandatory",
+        "any": [
+          "subsystem_membership"
+        ],
+        "selectors": [
+          "std543"
+        ]
+      },
+      {
+        "id": "access-rights",
+        "strength": "mandatory",
+        "any": [
+          "access_rights"
+        ],
+        "selectors": [
+          "std689"
+        ]
+      },
+      {
+        "id": "object-write-handler",
+        "strength": "mandatory",
+        "any": [
+          "object_write_handler"
+        ],
+        "selectors": [
+          "std773"
+        ]
+      },
+      {
+        "id": "data-migration",
+        "strength": "mandatory",
+        "any": [
+          "data_migration"
+        ],
+        "selectors": [
+          "std690"
+        ]
+      },
+      {
+        "id": "metadata-rename",
+        "strength": "mandatory",
+        "any": [
+          "metadata_rename"
+        ],
+        "selectors": [
+          "std706"
+        ]
+      },
+      {
+        "id": "metadata-delete",
+        "strength": "mandatory",
+        "any": [
+          "metadata_delete"
+        ],
+        "selectors": [
+          "std534",
+          "std706"
+        ]
+      },
+      {
+        "id": "extension-interception",
+        "strength": "mandatory",
+        "any": [
+          "extension_interception"
+        ],
+        "selectors": [
+          "v8cs:change-and-validate-instead-of-around"
+        ]
+      }
+    ]
+  },
+  "yaxunit": {
+    "operations": [
+      "design",
+      "create",
+      "change",
+      "review",
+      "debug",
+      "migrate",
+      "run",
+      "report"
+    ],
+    "mechanisms": [
+      "test_behavior",
+      "test_module",
+      "module_naming",
+      "registration",
+      "assertions",
+      "database_assertion",
+      "nontrivial_predicate",
+      "test_data",
+      "persistent_data",
+      "transactional_test",
+      "mocks",
+      "query_helpers",
+      "file_xdto_dependency",
+      "hooks_context"
+    ],
+    "rules": [
+      {
+        "id": "y01",
+        "strength": "mandatory",
+        "operations": [
+          "design",
+          "create"
+        ],
+        "selectors": [
+          "yaxunit:patterns:authoring-baseline"
+        ],
+        "covers": [
+          "test_behavior"
+        ]
+      },
+      {
+        "id": "y01b",
+        "strength": "mandatory",
+        "operations": [
+          "change"
+        ],
+        "any": [
+          "test_behavior"
+        ],
+        "selectors": [
+          "yaxunit:patterns:authoring-baseline"
+        ]
+      },
+      {
+        "id": "y02",
+        "strength": "mandatory",
+        "operations": [
+          "design",
+          "create"
+        ],
+        "any": [
+          "test_module"
+        ],
+        "selectors": [
+          "yaxunit:patterns:authoring-baseline",
+          "yaxunit:patterns:test-module",
+          "yaxunit:patterns:naming"
+        ]
+      },
+      {
+        "id": "y03",
+        "strength": "mandatory",
+        "any": [
+          "test_module"
+        ],
+        "selectors": [
+          "yaxunit:patterns:test-module"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y04",
+        "strength": "mandatory",
+        "any": [
+          "module_naming"
+        ],
+        "selectors": [
+          "yaxunit:patterns:naming"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y05",
+        "strength": "mandatory",
+        "any": [
+          "registration"
+        ],
+        "selectors": [
+          "yaxunit:patterns:registration-and-parameters",
+          "yaxunit:patterns:test-module"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y06",
+        "strength": "mandatory",
+        "any": [
+          "assertions"
+        ],
+        "selectors": [
+          "yaxunit:patterns:assertions"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y07",
+        "strength": "mandatory",
+        "any": [
+          "database_assertion"
+        ],
+        "selectors": [
+          "yaxunit:patterns:assertions"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y08",
+        "strength": "mandatory",
+        "any": [
+          "nontrivial_predicate"
+        ],
+        "selectors": [
+          "yaxunit:patterns:predicates-and-queries"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y09",
+        "strength": "mandatory",
+        "any": [
+          "test_data"
+        ],
+        "selectors": [
+          "yaxunit:patterns:test-data"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y10",
+        "strength": "mandatory",
+        "any": [
+          "persistent_data",
+          "transactional_test"
+        ],
+        "selectors": [
+          "yaxunit:patterns:data-isolation"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y11",
+        "strength": "mandatory",
+        "any": [
+          "mocks"
+        ],
+        "selectors": [
+          "yaxunit:patterns:mocking"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y12",
+        "strength": "mandatory",
+        "any": [
+          "query_helpers"
+        ],
+        "selectors": [
+          "yaxunit:patterns:predicates-and-queries"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y13",
+        "strength": "mandatory",
+        "any": [
+          "file_xdto_dependency"
+        ],
+        "selectors": [
+          "yaxunit:patterns:dependencies"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y14",
+        "strength": "mandatory",
+        "any": [
+          "hooks_context"
+        ],
+        "selectors": [
+          "yaxunit:patterns:lifecycle-and-contexts"
+        ],
+        "operations": [
+          "design",
+          "create",
+          "change",
+          "review",
+          "debug",
+          "migrate"
+        ]
+      },
+      {
+        "id": "y15",
+        "strength": "mandatory",
+        "operations": [
+          "review",
+          "debug",
+          "migrate"
+        ],
+        "selectors": [
+          "yaxunit:patterns:test-analysis-and-migration"
+        ],
+        "covers": [
+          "test_behavior"
+        ]
+      }
+    ],
+    "authoringOperations": [
+      "design",
+      "create",
+      "change",
+      "review",
+      "debug",
+      "migrate"
+    ]
+  },
+  "registrySchemaVersion": 2
+}

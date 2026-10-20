@@ -1,0 +1,17 @@
+.venv/
+.work/
+__pycache__/
+*.pyc
+.build/
+node_modules/
+.pytest_cache/
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+/hooks/runtime.local.json
+/settings/local.yaml
+# Project profiles and machine exports belong to the consuming repositories.
+/profiles/*
+!/profiles/generic-1c/

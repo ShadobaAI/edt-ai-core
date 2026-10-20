@@ -1,0 +1,154 @@
+version: 0.1.0
+source_projects:
+  crm:
+    repository: https://git.fsk.ru/ShadobaAI/crm-ai-dev.git
+    skills_path: skills
+    observed_revision: 706d678b8cf321602716ab80c1020a3b4d28bdf8
+  kafka:
+    repository: https://github.com/ShadobaAI/kafka-tools.git
+    skills_path: ai/.codex/skills
+    observed_revision: 2552aa7ddcc0cbe6fa41080c791a60d56bef55ad
+active:
+  - edt-ai-core
+  - 1c-routing
+  - 1c-code-change
+  - 1c-code-index
+  - 1c-platform-docs
+  - 1c-standards
+  - bsl-ls-mcp
+  - task-orchestration
+  - yaxunit-tests
+  - vanessa-ui-tests
+  - 1c-branch-review
+migration_acceptance: pending_detailed_behavior_reconciliation
+migration_decisions:
+  project-profiles-outside-plugin:
+    status: accepted
+    decided_on: '2026-10-20'
+    decided_by: user
+    scope: repository layout, bundled profiles, CLI presets and package contents
+    consequences:
+      - Репозиторий посвящён только универсальному плагину; его корень является корнем плагина.
+      - Профили CRM/Kafka и их локальные экспорты удалены; копии сохранены пользователем вне репозитория.
+      - Проработка CRM/Kafka-профилей отложена до отдельной задачи; восстанавливать их в составе уборки или проверки полноты не требуется.
+      - В поставке остаётся только generic-1c; реальные профили принадлежат репозиториям проектов или локальным настройкам пользователя.
+  bsl-native-multi-workspace:
+    status: accepted
+    decided_on: '2026-10-20'
+    decided_by: user
+    scope: BSL LS proxy, managed runtime, settings and skills
+    consequences:
+      - Пути конфигураций предоставляет обязательный назначенный EDT-MCP; Codex передаёт их прокси, который не дублирует discovery EDT.
+      - BSL LS регистрирует несколько workspace штатными инструментами; контекст задаётся файлом или workspaceFolder без перезапуска при переключении.
+      - Каждая stdio-сессия владеет своим процессом и регистрациями; другие проекты и сессии не переключаются.
+      - Выбор единственного репозитория в settings, профилях и CLI удалён; обратная совместимость не требуется.
+      - Необязательный конфиг передаётся штатным глобальному и workspace-загрузчикам; пустой файл взамен отсутствующего не создаётся.
+      - Наличие native workspace API проверяется по живому контракту, без закрепления версии и без fallback через roots.
+    review_contract:
+      - Отличать поддержку предоставленных исходников от фактически установленного JAR; несовместимость артефакта ограничивает live-приёмку.
+      - Проверять изоляцию сессий, Unicode и URI, границы каталогов, маршрутизацию ID, очередь запросов и завершение дочернего процесса.
+  platform-documentation-edt-only:
+    status: accepted
+    decided_on: '2026-10-19'
+    decided_by: user
+    scope: 1c-ai-core skills, project profiles, installation and readiness checks
+    authority: edt
+    excluded_source_servers:
+      - HelpSearchServer
+      - 1c-docs-mcp
+    rationale:
+      - Help усложняет установку и существенно повышает требования к окружению.
+      - В CRM Help уже доступен, а для Kafka потребовалась бы дополнительная покупка платного MCP и его сопровождение.
+    consequences:
+      - Help исключён из ядра, включая роль дополнительного провайдера; его наличие в исходном CRM не меняет маршрут ядра.
+      - Справка платформы и проверка применимости API выполняются через назначенный EDT.
+      - v8std сохраняет роль нормативного корпуса, а code-index — поиска установленных библиотечных контрактов.
+      - Подробная справка EDT и get_content_assist с extendedDocumentation используются по конкретной необходимости.
+      - Недостающие defaults, примечания, контексты, руководства и история версий отмечаются как пробелы; полнота замены Help не объявляется доказанной.
+    review_contract:
+      - Отсутствие Help и его инструментов само по себе не является дефектом миграции и не требует их восстановления.
+      - Проверять корректность маршрута через EDT, достаточность фактов и честное описание оставшихся ограничений.
+      - Решение не закрывает остальные незавершённые части сверки CRM и Kafka.
+  bsp-documentation-without-ssl-mcp:
+    status: accepted
+    decided_on: '2026-10-19'
+    decided_by: user
+    scope: 1c-ai-core skills, project profiles, installation and readiness checks
+    basis: docs/design/KORA_3_1.md, D-01 and section 7.3; confirmed by user
+    excluded_source_servers:
+      - 1c-ssl-mcp
+    rationale:
+      - KORA предусматривает удаление legacy SSL-MCP и замену базой возможностей БСП в Git с поиском через OpenViking.
+    consequences:
+      - 1c-ssl-mcp исключён из ядра, включая дополнительное подключение и резервный источник; прежние SSL-маршруты, настройки и readiness-пробы не восстанавливаются.
+      - Установленные библиотечные контракты проверяются через code-index, недостающие live-факты — через назначенный EDT.
+      - Целевая база БСП и поиск через OpenViking реализуются и принимаются отдельно; исключение SSL-MCP не доказывает готовность этой замены и не активирует будущие KORA gates в текущем прототипе.
+    review_contract:
+      - Отсутствие 1c-ssl-mcp и его инструментов не является дефектом миграции и не требует восстановления или установки сервера, в том числе как fallback.
+      - Проверять фактический маршрут БСП, достаточность фактов и отдельную готовность целевой базы знаний; её пробелы не являются основанием возвращать SSL-MCP.
+      - Вместе с platform-documentation-edt-only это фиксирует исключение обоих серверов — 1c-docs-mcp и 1c-ssl-mcp — для будущих ревью.
+      - Решение не закрывает остальные незавершённые части сверки CRM и Kafka.
+  project-defined-supplier-maintenance:
+    status: accepted
+    decided_on: '2026-10-19'
+    decided_by: user
+    scope: 1c-ai-core change workflow and project instructions
+    consequences:
+      - Определение происхождения, границ поставки и принадлежности объектов является общим механизмом ядра для любых проектов, а не особенностью CRM.
+      - Конкретные префиксы, правила изменения поставки, именования и маркировки собственных доработок задаются проектным AGENTS.md или указанными в нём инструкциями.
+      - Продукт поставщика включает встроенные библиотеки и собственные объекты вендора, в том числе с префиксами; они не становятся собственными объектами текущего проекта по наличию префикса.
+      - Префикс используется для классификации по явно заданным проектным соответствиям; при неоднозначности проверяется только недостающий факт.
+    review_contract:
+      - Проверять общий механизм определения принадлежности и применения проектных правил до изменения и на результате.
+      - Конкретные CRM-префиксы и форматы маркировки не должны копироваться в универсальный навык.
+      - Отсутствие CRM-специфичных значений в ядре не является дефектом переноса общего механизма сопровождения.
+  edt-model-gate-recovery:
+    status: accepted
+    decided_on: '2026-10-19'
+    decided_by: user
+    scope: 1c-ai-core code-change skill and EDT recovery workflow
+    basis: User requires transfer of the EDT-MCP recovery from the CRM source environment
+    consequences:
+      - Recovery точного отказа EDT model gate до записи является общей возможностью плагина для любых проектов, а не CRM-специфичным исключением из миграции.
+      - Отказ create_metadata/modify_metadata проверяется по установленному контракту; номер версии не является условием входа в recovery.
+      - Сохраняются адресная revalidation только установленного владельца, проверка target/guards/diagnostics и максимум три recovery-попытки на одну намеренную операцию.
+      - После трёх одинаковых допустимых отказов возможен один clean точного проекта с реальным user agreement того же scope и один последний повтор после подтверждённого rebuild/readiness.
+      - Timeout, pending write job, mutation markers, другой отказ или неизвестный исход не разрешают повтор writer по этому workflow.
+    review_contract:
+      - Проверять наличие общего recovery в установленном пакете без CRM alias, пути или имени EDT-проекта.
+      - Проверять точные условия входа, сохранение счётчика между ходами, запрет расширения scope и повторного clean.
+      - Перенос инструкции не доказывает live-применимость workaround к другой версии EDT или успешность восстановления.
+  selected-directory-and-instance-profile:
+    status: accepted
+    decided_on: '2026-10-19'
+    decided_by: user
+    scope: project profiles, MCP bindings, settings and runtime selection
+    consequences:
+      - Профиль подгружается из выбранного репозитория; CRM/Kafka не являются фиксированным реестром подключений плагина.
+      - Kafka adapter, unit и conversion могут иметь собственные repo-local профили и EDT URL.
+      - Несколько экземпляров одного CRM-каталога могут использовать разные URL EDT-MCP.
+      - В репозитории хранятся defaults или шаблон; overrides экземпляра могут храниться в Codex или рядом с репозиторием.
+      - Переменная окружения процесса имеет приоритет над сохранённым override и default профиля.
+      - Смена каталога или instance binding инвалидирует зависимые факты и не переключает другие сессии.
+  edt-capability-driven-efficiency:
+    status: accepted
+    decided_on: '2026-10-20'
+    decided_by: user
+    scope: EDT routing, session isolation, skills and MCP relay
+    consequences:
+      - Возможности EDT определяются по живому контракту без привязки ядра к репозиторию или фиксированной версии сервера и без статического каталога инструментов.
+      - Каждой независимо выбранной конфигурации, профилю или каталогу нужен свой запущенный EDT-MCP с назначенным endpoint; сессия клиента не изолирует общее состояние EDT.
+      - Плагин поддерживает параллельные проектные bindings и не переподключает другие каталоги или экземпляры при проверке выбранного подключения.
+      - Максимальная полезность MCP означает выбор подходящей возможности по задаче, компактные ответы и переиспользование evidence, а не вызов всех операций или загрузку всех guides.
+  v8std-capability-driven-efficiency:
+    status: accepted
+    decided_on: '2026-10-20'
+    decided_by: user
+    scope: normative retrieval, test knowledge, shared v8std connections and MCP relay
+    consequences:
+      - Возможности v8std выбираются по живому контракту без привязки к checkout, версии или статическому перечню инструментов.
+      - Один общий read-only v8std может обслуживать разные проекты 1С параллельно; отдельный сервер на каталог не требуется.
+      - Подключения и применимость норм, sourceRef, selections и ledgers принадлежат своему проекту, target, фазе и ревизии.
+      - Компактные ответы, точные sections и API member cards, пакетная расшифровка и переиспользование достаточного текста экономят контекст без потери существенных условий.
+      - Неизвестная редакция корпуса ограничивает reuse текущей задачей и подключением; версия SDK не является редакцией нормативного текста.
+

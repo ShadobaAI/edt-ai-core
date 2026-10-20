@@ -1,0 +1,9 @@
+# Copy as local.yaml when installing directly from the source marketplace.
+active_project: null
+mcp:
+  required:
+    edt:
+      url: ''
+    v8std:
+      url: ''
+

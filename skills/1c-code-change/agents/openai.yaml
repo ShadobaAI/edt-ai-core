@@ -1,0 +1,4 @@
+interface:
+  display_name: "1C Code Change"
+  short_description: "EDT-only 1C changes with focused validation"
+  default_prompt: "Use $1c-code-change to implement this scoped 1C change through EDT-MCP and validate the affected objects."

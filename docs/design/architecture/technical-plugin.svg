@@ -1,0 +1,685 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3160" height="2590" viewBox="0 0 3160 2590" role="img" aria-labelledby="title desc">
+<title id="title">Единая техническая схема плагина 1c-ai-core</title>
+<desc id="desc">Все 105 узлов на одном листе: 11 действующих и 3 новых навыка, два контроля KORA, 16 компонентов ядра, 11 адаптеров, 9 именованных MCP, нормативная policy, знания OpenViking, хранилища, публикация и внешние исполнители.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L8,4 L0,8 Z" fill="#6a7c91"/></marker></defs>
+<rect width="3160" height="2590" fill="#fff"/>
+<g font-family="Arial, sans-serif" fill="#1a2d43">
+<text x="20" y="32" font-size="26" font-weight="600">1c-ai-core — единая техническая схема</text>
+<text x="20" y="60" font-size="17">105 узлов · 11 действующих навыков · 3 новых навыка · 16 компонентов ядра · 9 именованных MCP · 11 адаптеров · нормативная policy · знания OpenViking и KORA</text>
+<rect x="20" y="90" width="650" height="360" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="700" y="90" width="1670" height="360" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="20" y="500" width="2350" height="500" rx="12" fill="#f0f6fd" stroke="#b9c7d6"/>
+<rect x="20" y="1050" width="1110" height="360" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="1180" y="1050" width="1190" height="470" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="20" y="1570" width="2350" height="340" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="2420" y="90" width="720" height="290" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="2420" y="430" width="720" height="360" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="2420" y="840" width="720" height="360" rx="12" fill="#faf7fc" stroke="#b9c7d6"/>
+<rect x="2420" y="1250" width="720" height="300" rx="12" fill="#f3f9f4" stroke="#b9c7d6"/>
+<rect x="2420" y="1600" width="720" height="930" rx="12" fill="#f3f9f4" stroke="#b9c7d6"/>
+<rect x="20" y="1960" width="2350" height="350" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<rect x="20" y="2360" width="2350" height="170" rx="12" fill="#fbfcfe" stroke="#b9c7d6"/>
+<path data-from="H01" data-to="WORKFLOWS" d="M 337.0,165.0 L 685.0,165.0 L 685.0,270.0 L 700.0,270.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="WORKFLOWS" data-to="H02" d="M 700.0,270.0 L 685.0,270.0 L 685.0,165.0 L 654.0,165.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="H04" data-to="C11" d="M 503.5,317.0 L 503.5,475.0 L 903.2,475.0 L 903.2,789.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="H05" data-to="C10" d="M 186.5,434.0 L 186.5,475.0 L 319.8,475.0 L 319.8,789.3" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="H02" data-to="C01" d="M 503.5,200.0 L 503.5,475.0 L 319.8,475.0 L 319.8,540.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="H02" data-to="C05" d="M 503.5,200.0 L 503.5,475.0 L 2070.2,475.0 L 2070.2,664.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C01" data-to="C02" d="M 603.5,575.0 L 619.5,575.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C02" data-to="C03" d="M 1187.0,575.0 L 1203.0,575.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C03" data-to="C04" d="M 1770.5,575.0 L 1786.5,575.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C04" data-to="C05" d="M 2070.2,610.0 L 2070.2,637.3 L 2070.2,637.3 L 2070.2,664.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C05" data-to="C07" d="M 1786.5,699.7 L 1770.5,699.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C07" data-to="C08" d="M 1203.0,699.7 L 1187.0,699.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C08" data-to="C09" d="M 619.5,699.7 L 603.5,699.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C09" data-to="C10" d="M 319.8,734.7 L 319.8,762.0 L 319.8,762.0 L 319.8,789.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C10" data-to="C11" d="M 603.5,824.3 L 619.5,824.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C11" data-to="C12" d="M 1187.0,824.3 L 1203.0,824.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C12" data-to="C13" d="M 1770.5,824.3 L 1786.5,824.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C06" data-to="C08" d="M 319.8,914.0 L 319.8,824.3 L 903.2,824.3 L 903.2,734.7" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="C06" data-to="C09" d="M 319.8,914.0 L 319.8,824.3 L 319.8,824.3 L 319.8,734.7" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="C16" data-to="C06" d="M 2070.2,984.0 L 2070.2,999.0 L 319.8,999.0 L 319.8,984.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="C13" data-to="C15" d="M 2070.2,859.3 L 2070.2,886.7 L 903.2,886.7 L 903.2,914.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="C13" data-to="DOMAIN" d="M 2070.2,859.3 L 2070.2,1025.0 L 575.0,1025.0 L 575.0,1050.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C13" data-to="C14" d="M 2070.2,859.3 L 2070.2,886.7 L 1486.8,886.7 L 1486.8,914.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C14" data-to="C16" d="M 1770.5,949.0 L 1786.5,949.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D01" data-to="A01" d="M 384.7,1125.0 L 1155.0,1125.0 L 1155.0,1125.0 L 1196.0,1125.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D01" data-to="A02" d="M 384.7,1125.0 L 1155.0,1125.0 L 1155.0,1125.0 L 1587.3,1125.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D01" data-to="A03" d="M 384.7,1125.0 L 1155.0,1125.0 L 1155.0,1125.0 L 1978.7,1125.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D02" data-to="A10" d="M 749.3,1125.0 L 1155.0,1125.0 L 1155.0,1469.0 L 1196.0,1469.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D02" data-to="A04" d="M 749.3,1125.0 L 1155.0,1125.0 L 1155.0,1239.7 L 1196.0,1239.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D02" data-to="A01" d="M 749.3,1125.0 L 1155.0,1125.0 L 1155.0,1125.0 L 1196.0,1125.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D03" data-to="A05" d="M 1114.0,1125.0 L 1155.0,1125.0 L 1155.0,1239.7 L 1587.3,1239.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D04" data-to="A01" d="M 384.7,1242.0 L 1155.0,1242.0 L 1155.0,1125.0 L 1196.0,1125.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D05" data-to="A06" d="M 749.3,1242.0 L 1155.0,1242.0 L 1155.0,1239.7 L 1978.7,1239.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D05" data-to="A09" d="M 749.3,1242.0 L 1155.0,1242.0 L 1155.0,1354.3 L 1978.7,1354.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D06" data-to="A01" d="M 1114.0,1242.0 L 1155.0,1242.0 L 1155.0,1125.0 L 1196.0,1125.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D06" data-to="D07" d="M 939.7,1277.0 L 939.7,1300.5 L 210.3,1300.5 L 210.3,1324.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D07" data-to="A07" d="M 384.7,1359.0 L 1155.0,1359.0 L 1155.0,1354.3 L 1196.0,1354.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D07" data-to="A01" d="M 384.7,1359.0 L 1155.0,1359.0 L 1155.0,1125.0 L 1196.0,1125.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C13" data-to="A08" d="M 2070.2,859.3 L 2070.2,1025.0 L 1775.0,1025.0 L 1775.0,1319.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C13" data-to="A09" d="M 2070.2,859.3 L 2070.2,1025.0 L 2166.3,1025.0 L 2166.3,1319.3" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A07" data-to="X07" d="M 1383.7,1389.3 L 1383.7,1740.0 L 1486.8,1740.0 L 1486.8,2112.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A08" data-to="R01" d="M 1775.0,1389.3 L 1775.0,1940.0 L 417.0,1940.0 L 417.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A09" data-to="R01" d="M 2166.3,1389.3 L 2166.3,1940.0 L 417.0,1940.0 L 417.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A10" data-to="S01" d="M 1571.3,1469.0 L 2395.0,1469.0 L 2395.0,505.0 L 2436.0,505.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="X01" data-to="R01" d="M 319.8,2070.0 L 319.8,2335.0 L 417.0,2335.0 L 417.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X01" data-to="R02" d="M 319.8,2070.0 L 319.8,2335.0 L 1195.0,2335.0 L 1195.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X02" data-to="R01" d="M 903.2,2070.0 L 903.2,2335.0 L 417.0,2335.0 L 417.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X03" data-to="R01" d="M 1486.8,2070.0 L 1486.8,2335.0 L 417.0,2335.0 L 417.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X06" data-to="R02" d="M 903.2,2182.0 L 903.2,2335.0 L 1195.0,2335.0 L 1195.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X07" data-to="R02" d="M 1486.8,2182.0 L 1486.8,2335.0 L 1195.0,2335.0 L 1195.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X07" data-to="S04" d="M 1770.5,2147.0 L 2395.0,2147.0 L 2395.0,622.0 L 2788.0,622.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="L01" data-to="X02" d="M 2436.0,165.0 L 2395.0,165.0 L 2395.0,2035.0 L 1187.0,2035.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L01" data-to="X03" d="M 2436.0,165.0 L 2395.0,165.0 L 2395.0,2035.0 L 1770.5,2035.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L02" data-to="L01" d="M 2788.0,165.0 L 2772.0,165.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="L02" data-to="C01" d="M 2788.0,165.0 L 2395.0,165.0 L 2395.0,575.0 L 603.5,575.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L03" data-to="C01" d="M 2436.0,329.0 L 2395.0,329.0 L 2395.0,575.0 L 603.5,575.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L03" data-to="C07" d="M 2436.0,329.0 L 2395.0,329.0 L 2395.0,699.7 L 1770.5,699.7" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L03" data-to="C09" d="M 2436.0,329.0 L 2395.0,329.0 L 2395.0,699.7 L 603.5,699.7" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L03" data-to="H05" d="M 2436.0,329.0 L 1545.0,329.0 L 1545.0,399.0 L 337.0,399.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="KERNEL" data-to="L04" d="M 2370.0,750.0 L 2395.0,750.0 L 2395.0,329.0 L 2788.0,329.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L04" data-to="S05" d="M 2956.0,364.0 L 2956.0,405.0 L 2604.0,405.0 L 2604.0,704.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="C01" data-to="S01" d="M 603.5,575.0 L 2395.0,575.0 L 2395.0,505.0 L 2436.0,505.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="KERNEL" data-to="S02" d="M 2370.0,750.0 L 2395.0,750.0 L 2395.0,505.0 L 2788.0,505.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="C16" data-to="S04" d="M 2354.0,949.0 L 2395.0,949.0 L 2395.0,622.0 L 2788.0,622.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="ADAPTERS" data-to="S03" d="M 2370.0,1285.0 L 2395.0,1285.0 L 2395.0,622.0 L 2436.0,622.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="P01" data-to="P02" d="M 2772.0,1325.0 L 2788.0,1325.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="P02" data-to="P03" d="M 2956.0,1360.0 L 2956.0,1412.0 L 2604.0,1412.0 L 2604.0,1464.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="P03" data-to="X05" d="M 2436.0,1499.0 L 2395.0,1499.0 L 2395.0,2147.0 L 603.5,2147.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="P04" data-to="D03" d="M 2788.0,1499.0 L 1775.0,1499.0 L 1775.0,1125.0 L 1114.0,1125.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="H03" data-to="M01" d="M 186.5,317.0 L 186.5,1010.0 L 417.0,1010.0 L 417.0,1610.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M01" data-to="C01" d="M 417.0,1610.0 L 417.0,1285.0 L 319.8,1285.0 L 319.8,610.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A01" data-to="M02" d="M 1383.7,1160.0 L 1383.7,1545.0 L 1195.0,1545.0 L 1195.0,1610.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M02" data-to="X01" d="M 1195.0,1680.0 L 1195.0,1935.0 L 319.8,1935.0 L 319.8,2000.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A02" data-to="M03" d="M 1775.0,1160.0 L 1775.0,1545.0 L 1973.0,1545.0 L 1973.0,1610.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M03" data-to="X02" d="M 1973.0,1680.0 L 1973.0,1935.0 L 903.2,1935.0 L 903.2,2000.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A03" data-to="M04" d="M 2166.3,1160.0 L 2166.3,1545.0 L 417.0,1545.0 L 417.0,1717.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M04" data-to="X03" d="M 417.0,1787.0 L 417.0,1935.0 L 1486.8,1935.0 L 1486.8,2000.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A04" data-to="M05" d="M 1383.7,1274.7 L 1383.7,1545.0 L 1195.0,1545.0 L 1195.0,1717.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M05" data-to="X04" d="M 1195.0,1787.0 L 1195.0,1935.0 L 2070.2,1935.0 L 2070.2,2000.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A10" data-to="M06" d="M 1383.7,1504.0 L 1383.7,1545.0 L 1973.0,1545.0 L 1973.0,1717.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M06" data-to="N01" d="M 2354.0,1752.0 L 2395.0,1752.0 L 2395.0,915.0 L 2436.0,915.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M06" data-to="C10" d="M 1973.0,1717.0 L 1973.0,1285.0 L 319.8,1285.0 L 319.8,859.3" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="A05" data-to="M07" d="M 1775.0,1274.7 L 1775.0,1545.0 L 417.0,1545.0 L 417.0,1824.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M07" data-to="O01" d="M 798.0,1859.0 L 2395.0,1859.0 L 2395.0,1675.0 L 2436.0,1675.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O01" data-to="X05" d="M 2436.0,1675.0 L 2395.0,1675.0 L 2395.0,2147.0 L 603.5,2147.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A06" data-to="M08" d="M 2166.3,1274.7 L 2166.3,1545.0 L 1195.0,1545.0 L 1195.0,1824.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M08" data-to="X06" d="M 1195.0,1894.0 L 1195.0,1935.0 L 903.2,1935.0 L 903.2,2112.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="D08" data-to="A11" d="M 749.3,1359.0 L 1155.0,1359.0 L 1155.0,1469.0 L 1587.3,1469.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="A11" data-to="M09" d="M 1775.0,1504.0 L 1775.0,1545.0 L 1973.0,1545.0 L 1973.0,1824.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="M09" data-to="X08" d="M 1973.0,1894.0 L 1973.0,1935.0 L 2070.2,1935.0 L 2070.2,2112.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X08" data-to="R03" d="M 2070.2,2182.0 L 2070.2,2335.0 L 1973.0,2335.0 L 1973.0,2400.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="N01" data-to="N03" d="M 2604.0,950.0 L 2604.0,973.5 L 2604.0,973.5 L 2604.0,997.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="N02" data-to="N03" d="M 2956.0,950.0 L 2956.0,973.5 L 2604.0,973.5 L 2604.0,997.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="N03" data-to="A04" d="M 2436.0,1032.0 L 2395.0,1032.0 L 2395.0,1239.7 L 1571.3,1239.7" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="N03" data-to="N04" d="M 2772.0,1032.0 L 2788.0,1032.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="N05" data-to="N04" d="M 2604.0,1114.0 L 2604.0,1090.5 L 2956.0,1090.5 L 2956.0,1067.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="N04" data-to="C16" d="M 2788.0,1032.0 L 2395.0,1032.0 L 2395.0,949.0 L 2354.0,949.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="N05" data-to="S02" d="M 2604.0,1114.0 L 2604.0,815.0 L 2956.0,815.0 L 2956.0,540.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="P01" data-to="O02" d="M 2604.0,1360.0 L 2604.0,1575.0 L 2780.0,1575.0 L 2780.0,1740.5" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="P01" data-to="O04" d="M 2604.0,1360.0 L 2604.0,1575.0 L 2780.0,1575.0 L 2780.0,1941.5" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O02" data-to="O03" d="M 2780.0,1810.5 L 2780.0,1825.8 L 2780.0,1825.8 L 2780.0,1841.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O02" data-to="P02" d="M 2780.0,1740.5 L 2780.0,1575.0 L 2956.0,1575.0 L 2956.0,1360.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O04" data-to="P03" d="M 2780.0,1941.5 L 2780.0,1575.0 L 2604.0,1575.0 L 2604.0,1534.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="P03" data-to="O05" d="M 2604.0,1534.0 L 2604.0,1575.0 L 2780.0,1575.0 L 2780.0,2042.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O05" data-to="P04" d="M 2780.0,2042.0 L 2780.0,1575.0 L 2956.0,1575.0 L 2956.0,1534.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O03" data-to="D03" d="M 2436.0,1876.0 L 1775.0,1876.0 L 1775.0,1125.0 L 1114.0,1125.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="P04" data-to="O07" d="M 2956.0,1534.0 L 2956.0,1575.0 L 2780.0,1575.0 L 2780.0,2243.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O07" data-to="C09" d="M 2436.0,2278.0 L 2395.0,2278.0 L 2395.0,699.7 L 603.5,699.7" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="O06" data-to="O07" d="M 2780.0,2212.5 L 2780.0,2227.8 L 2780.0,2227.8 L 2780.0,2243.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="O05" data-to="O08" d="M 2780.0,2112.0 L 2780.0,2227.8 L 2780.0,2227.8 L 2780.0,2343.5" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O08" data-to="P04" d="M 2780.0,2343.5 L 2780.0,1575.0 L 2956.0,1575.0 L 2956.0,1534.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="O09" data-to="O01" d="M 2780.0,2444.0 L 2780.0,2077.0 L 2780.0,2077.0 L 2780.0,1710.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="O09" data-to="P02" d="M 2780.0,2444.0 L 2780.0,1575.0 L 2956.0,1575.0 L 2956.0,1360.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="L03" data-to="O07" d="M 2604.0,364.0 L 2604.0,990.0 L 2780.0,990.0 L 2780.0,2243.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="X05" data-to="X09" d="M 319.8,2182.0 L 319.8,2203.0 L 319.8,2203.0 L 319.8,2224.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="X05" data-to="X10" d="M 319.8,2182.0 L 319.8,2203.0 L 903.2,2203.0 L 903.2,2224.0" fill="none" stroke="#6a7c91" stroke-width="1.25" opacity="0.8" marker-end="url(#arrow)"/>
+<path data-from="O09" data-to="X09" d="M 2436.0,2479.0 L 2395.0,2479.0 L 2395.0,2259.0 L 603.5,2259.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="W08" data-to="D03" d="M 2155.2,278.0 L 2155.2,750.0 L 939.7,750.0 L 939.7,1090.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<path data-from="W09" data-to="W03" d="M 914.8,286.0 L 914.8,243.0 L 1741.8,243.0 L 1741.8,200.0" fill="none" stroke="#9daec1" stroke-width="1.0" opacity="0.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+<text x="36" y="116" font-size="18" font-weight="600">Хост и входы плагина</text>
+<text x="716" y="116" font-size="18" font-weight="600">Навыки и правила поведения</text>
+<text x="36" y="526" font-size="18" font-weight="600">Компоненты детерминированного ядра</text>
+<text x="36" y="1076" font-size="18" font-weight="600">Предметные сервисы 1С</text>
+<text x="1196" y="1076" font-size="18" font-weight="600">Адаптеры исполнителей</text>
+<text x="36" y="1596" font-size="18" font-weight="600">Именованные интерфейсы MCP</text>
+<text x="2436" y="116" font-size="18" font-weight="600">Среда исполнения и эксплуатация</text>
+<text x="2436" y="456" font-size="18" font-weight="600">Настройки и локальные хранилища</text>
+<text x="2436" y="866" font-size="18" font-weight="600">Нормативная policy</text>
+<text x="2436" y="1276" font-size="18" font-weight="600">Отдельный контур публикации знаний</text>
+<text x="2436" y="1626" font-size="18" font-weight="600">OpenViking и знания KORA</text>
+<text x="36" y="1986" font-size="18" font-weight="600">Внешние сервисы и процессы</text>
+<text x="36" y="2386" font-size="18" font-weight="600">Целевые ресурсы проекта</text>
+<g id="node-H01" data-component="H01"><title>H01 · Хост ИИ: Модель, чат и сессия</title>
+<rect x="36.0" y="130.0" width="301.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="186.5" y="162.0" text-anchor="middle" font-size="16" font-weight="500">H01 · Хост ИИ</text>
+<text x="186.5" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Модель, чат и сессия</text>
+</g>
+<g id="node-H02" data-component="H02"><title>H02 · MCP 1c-workspace: Общий вход плагина и командной строки</title>
+<rect x="353.0" y="130.0" width="301.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="503.5" y="162.0" text-anchor="middle" font-size="16" font-weight="500">H02 · MCP 1c-workspace</text>
+<text x="503.5" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Общий вход плагина и командной строки</text>
+</g>
+<g id="node-H03" data-component="H03"><title>H03 · Настройки рабочего пространства: Выбор проекта и предварительная проверка</title>
+<rect x="36.0" y="247.0" width="301.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="186.5" y="263.0" text-anchor="middle" font-size="16" font-weight="500">H03 · Настройки рабочего</text>
+<text x="186.5" y="279.0" text-anchor="middle" font-size="16" font-weight="500">пространства</text>
+<text x="186.5" y="295.0" text-anchor="middle" font-size="14" font-weight="400">Выбор проекта и предварительная</text>
+<text x="186.5" y="311.0" text-anchor="middle" font-size="14" font-weight="400">проверка</text>
+</g>
+<g id="node-H04" data-component="H04"><title>H04 · Подтверждение действий: Согласие пользователя на область и эффекты</title>
+<rect x="353.0" y="247.0" width="301.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="503.5" y="271.0" text-anchor="middle" font-size="16" font-weight="500">H04 · Подтверждение действий</text>
+<text x="503.5" y="287.0" text-anchor="middle" font-size="14" font-weight="400">Согласие пользователя на область и</text>
+<text x="503.5" y="303.0" text-anchor="middle" font-size="14" font-weight="400">эффекты</text>
+</g>
+<g id="node-H05" data-component="H05"><title>H05 · Защита маршрутов: Песочница и границы доступа к исходникам</title>
+<rect x="36.0" y="364.0" width="301.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="186.5" y="388.0" text-anchor="middle" font-size="16" font-weight="500">H05 · Защита маршрутов</text>
+<text x="186.5" y="404.0" text-anchor="middle" font-size="14" font-weight="400">Песочница и границы доступа к</text>
+<text x="186.5" y="420.0" text-anchor="middle" font-size="14" font-weight="400">исходникам</text>
+</g>
+<g id="node-W01" data-component="W01"><title>W01 · 1c-analysis: Исследование исходников и влияния изменений</title>
+<rect x="716.0" y="130.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="914.8" y="162.0" text-anchor="middle" font-size="16" font-weight="500">W01 · 1c-analysis</text>
+<text x="914.8" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Исследование исходников и влияния изменений</text>
+</g>
+<g id="node-W02" data-component="W02"><title>W02 · 1c-design: Проектирование, варианты и контракты</title>
+<rect x="1129.5" y="130.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1328.2" y="162.0" text-anchor="middle" font-size="16" font-weight="500">W02 · 1c-design</text>
+<text x="1328.2" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Проектирование, варианты и контракты</text>
+</g>
+<g id="node-W03" data-component="W03"><title>W03 · 1c-code-change: Изменение кода и проверка результата</title>
+<rect x="1543.0" y="130.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1741.8" y="162.0" text-anchor="middle" font-size="16" font-weight="500">W03 · 1c-code-change</text>
+<text x="1741.8" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Изменение кода и проверка результата</text>
+</g>
+<g id="node-W04" data-component="W04"><title>W04 · 1c-branch-review: Ревью ветки и изменений без записи</title>
+<rect x="1956.5" y="130.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2155.2" y="162.0" text-anchor="middle" font-size="16" font-weight="500">W04 · 1c-branch-review</text>
+<text x="2155.2" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Ревью ветки и изменений без записи</text>
+</g>
+<g id="node-W05" data-component="W05"><title>W05 · yaxunit-tests: Создание, запуск и отладка тестов</title>
+<rect x="716.0" y="208.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="914.8" y="240.0" text-anchor="middle" font-size="16" font-weight="500">W05 · yaxunit-tests</text>
+<text x="914.8" y="256.0" text-anchor="middle" font-size="14" font-weight="400">Создание, запуск и отладка тестов</text>
+</g>
+<g id="node-W06" data-component="W06"><title>W06 · vanessa-ui-tests: Сценарии, проверки и запуск</title>
+<rect x="1129.5" y="208.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1328.2" y="240.0" text-anchor="middle" font-size="16" font-weight="500">W06 · vanessa-ui-tests</text>
+<text x="1328.2" y="256.0" text-anchor="middle" font-size="14" font-weight="400">Сценарии, проверки и запуск</text>
+</g>
+<g id="node-W07" data-component="W07"><title>W07 · 1c-extension-patch: Создание патча и выпуск CFE</title>
+<rect x="1543.0" y="208.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1741.8" y="240.0" text-anchor="middle" font-size="16" font-weight="500">W07 · 1c-extension-patch</text>
+<text x="1741.8" y="256.0" text-anchor="middle" font-size="14" font-weight="400">Создание патча и выпуск CFE</text>
+</g>
+<g id="node-W08" data-component="W08"><title>W08 · Контроль переиспользования KORA: Выбор готового подходящего механизма</title>
+<rect x="1956.5" y="208.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2155.2" y="240.0" text-anchor="middle" font-size="16" font-weight="500">W08 · Контроль переиспользования KORA</text>
+<text x="2155.2" y="256.0" text-anchor="middle" font-size="14" font-weight="400">Выбор готового подходящего механизма</text>
+</g>
+<g id="node-W09" data-component="W09"><title>W09 · Контроль достаточности KORA: Обоснование добавляемой сложности</title>
+<rect x="716.0" y="286.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="914.8" y="318.0" text-anchor="middle" font-size="16" font-weight="500">W09 · Контроль достаточности KORA</text>
+<text x="914.8" y="334.0" text-anchor="middle" font-size="14" font-weight="400">Обоснование добавляемой сложности</text>
+</g>
+<g id="node-W10" data-component="W10"><title>W10 · edt-ai-core: Настройка, перенос и диагностика окружения</title>
+<rect x="1129.5" y="286.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1328.2" y="318.0" text-anchor="middle" font-size="16" font-weight="500">W10 · edt-ai-core</text>
+<text x="1328.2" y="334.0" text-anchor="middle" font-size="14" font-weight="400">Настройка, перенос и диагностика окружения</text>
+</g>
+<g id="node-W11" data-component="W11"><title>W11 · 1c-routing: Выбор источника и рабочего маршрута</title>
+<rect x="1543.0" y="286.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1741.8" y="318.0" text-anchor="middle" font-size="16" font-weight="500">W11 · 1c-routing</text>
+<text x="1741.8" y="334.0" text-anchor="middle" font-size="14" font-weight="400">Выбор источника и рабочего маршрута</text>
+</g>
+<g id="node-W12" data-component="W12"><title>W12 · 1c-code-index: Поиск, связи и влияние изменений</title>
+<rect x="1956.5" y="286.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2155.2" y="318.0" text-anchor="middle" font-size="16" font-weight="500">W12 · 1c-code-index</text>
+<text x="2155.2" y="334.0" text-anchor="middle" font-size="14" font-weight="400">Поиск, связи и влияние изменений</text>
+</g>
+<g id="node-W13" data-component="W13"><title>W13 · 1c-platform-docs: Справка платформы и применимость API</title>
+<rect x="716.0" y="364.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="914.8" y="396.0" text-anchor="middle" font-size="16" font-weight="500">W13 · 1c-platform-docs</text>
+<text x="914.8" y="412.0" text-anchor="middle" font-size="14" font-weight="400">Справка платформы и применимость API</text>
+</g>
+<g id="node-W14" data-component="W14"><title>W14 · 1c-standards: Нормы, применимость и соответствие</title>
+<rect x="1129.5" y="364.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1328.2" y="396.0" text-anchor="middle" font-size="16" font-weight="500">W14 · 1c-standards</text>
+<text x="1328.2" y="412.0" text-anchor="middle" font-size="14" font-weight="400">Нормы, применимость и соответствие</text>
+</g>
+<g id="node-W15" data-component="W15"><title>W15 · bsl-ls-mcp: Фокусированная диагностика BSL</title>
+<rect x="1543.0" y="364.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1741.8" y="396.0" text-anchor="middle" font-size="16" font-weight="500">W15 · bsl-ls-mcp</text>
+<text x="1741.8" y="412.0" text-anchor="middle" font-size="14" font-weight="400">Фокусированная диагностика BSL</text>
+</g>
+<g id="node-W16" data-component="W16"><title>W16 · task-orchestration: Разделение работы и независимое ревью</title>
+<rect x="1956.5" y="364.0" width="397.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2155.2" y="396.0" text-anchor="middle" font-size="16" font-weight="500">W16 · task-orchestration</text>
+<text x="2155.2" y="412.0" text-anchor="middle" font-size="14" font-weight="400">Разделение работы и независимое ревью</text>
+</g>
+<g id="node-C01" data-component="C01"><title>C01 · Config Compiler: Схемы, слои и версия настроек</title>
+<rect x="36.0" y="540.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="319.8" y="572.0" text-anchor="middle" font-size="16" font-weight="500">C01 · Config Compiler</text>
+<text x="319.8" y="588.0" text-anchor="middle" font-size="14" font-weight="400">Схемы, слои и версия настроек</text>
+</g>
+<g id="node-C02" data-component="C02"><title>C02 · Workspace Registry: Реестр пространств и рабочих копий</title>
+<rect x="619.5" y="540.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="903.2" y="572.0" text-anchor="middle" font-size="16" font-weight="500">C02 · Workspace Registry</text>
+<text x="903.2" y="588.0" text-anchor="middle" font-size="14" font-weight="400">Реестр пространств и рабочих копий</text>
+</g>
+<g id="node-C03" data-component="C03"><title>C03 · Identity and Path Resolver: Идентичность и разрешённые пути</title>
+<rect x="1203.0" y="540.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="1486.8" y="572.0" text-anchor="middle" font-size="16" font-weight="500">C03 · Identity and Path Resolver</text>
+<text x="1486.8" y="588.0" text-anchor="middle" font-size="14" font-weight="400">Идентичность и разрешённые пути</text>
+</g>
+<g id="node-C04" data-component="C04"><title>C04 · Dependency Graph: Зависимости и составы систем</title>
+<rect x="1786.5" y="540.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="2070.2" y="572.0" text-anchor="middle" font-size="16" font-weight="500">C04 · Dependency Graph</text>
+<text x="2070.2" y="588.0" text-anchor="middle" font-size="14" font-weight="400">Зависимости и составы систем</text>
+</g>
+<g id="node-C09" data-component="C09"><title>C09 · Readiness Evaluator: Готовность необходимых возможностей</title>
+<rect x="36.0" y="664.7" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="319.8" y="696.7" text-anchor="middle" font-size="16" font-weight="500">C09 · Readiness Evaluator</text>
+<text x="319.8" y="712.7" text-anchor="middle" font-size="14" font-weight="400">Готовность необходимых возможностей</text>
+</g>
+<g id="node-C08" data-component="C08"><title>C08 · Capability Router: Выбор источника для конкретного вопроса</title>
+<rect x="619.5" y="664.7" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="903.2" y="696.7" text-anchor="middle" font-size="16" font-weight="500">C08 · Capability Router</text>
+<text x="903.2" y="712.7" text-anchor="middle" font-size="14" font-weight="400">Выбор источника для конкретного вопроса</text>
+</g>
+<g id="node-C07" data-component="C07"><title>C07 · Capability Registry: Возможности, контракты и версии адаптеров</title>
+<rect x="1203.0" y="664.7" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="1486.8" y="696.7" text-anchor="middle" font-size="16" font-weight="500">C07 · Capability Registry</text>
+<text x="1486.8" y="712.7" text-anchor="middle" font-size="14" font-weight="400">Возможности, контракты и версии адаптеров</text>
+</g>
+<g id="node-C05" data-component="C05"><title>C05 · Task Scope Manager: Контекст задачи и риск L/M/H</title>
+<rect x="1786.5" y="664.7" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="2070.2" y="696.7" text-anchor="middle" font-size="16" font-weight="500">C05 · Task Scope Manager</text>
+<text x="2070.2" y="712.7" text-anchor="middle" font-size="14" font-weight="400">Контекст задачи и риск L/M/H</text>
+</g>
+<g id="node-C10" data-component="C10"><title>C10 · Action Policy Engine: Эффекты действий и обязательные ограничения</title>
+<rect x="36.0" y="789.3" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="319.8" y="821.3" text-anchor="middle" font-size="16" font-weight="500">C10 · Action Policy Engine</text>
+<text x="319.8" y="837.3" text-anchor="middle" font-size="14" font-weight="400">Эффекты действий и обязательные ограничения</text>
+</g>
+<g id="node-C11" data-component="C11"><title>C11 · Authorization Verifier: Проверка подтверждения пользователя</title>
+<rect x="619.5" y="789.3" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="903.2" y="821.3" text-anchor="middle" font-size="16" font-weight="500">C11 · Authorization Verifier</text>
+<text x="903.2" y="837.3" text-anchor="middle" font-size="14" font-weight="400">Проверка подтверждения пользователя</text>
+</g>
+<g id="node-C12" data-component="C12"><title>C12 · ChangeSet Manager: Связанные изменения нескольких репозиториев</title>
+<rect x="1203.0" y="789.3" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="1486.8" y="821.3" text-anchor="middle" font-size="16" font-weight="500">C12 · ChangeSet Manager</text>
+<text x="1486.8" y="837.3" text-anchor="middle" font-size="14" font-weight="400">Связанные изменения нескольких репозиториев</text>
+</g>
+<g id="node-C13" data-component="C13"><title>C13 · Operation Executor: Намерение, проверки и отправка действия</title>
+<rect x="1786.5" y="789.3" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="2070.2" y="821.3" text-anchor="middle" font-size="16" font-weight="500">C13 · Operation Executor</text>
+<text x="2070.2" y="837.3" text-anchor="middle" font-size="14" font-weight="400">Намерение, проверки и отправка действия</text>
+</g>
+<g id="node-C06" data-component="C06"><title>C06 · Evidence Manager: Факты, версии и условия актуальности</title>
+<rect x="36.0" y="914.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="319.8" y="946.0" text-anchor="middle" font-size="16" font-weight="500">C06 · Evidence Manager</text>
+<text x="319.8" y="962.0" text-anchor="middle" font-size="14" font-weight="400">Факты, версии и условия актуальности</text>
+</g>
+<g id="node-C15" data-component="C15"><title>C15 · Resource Lease Manager: Исключение конфликтующих операций</title>
+<rect x="619.5" y="914.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="903.2" y="946.0" text-anchor="middle" font-size="16" font-weight="500">C15 · Resource Lease Manager</text>
+<text x="903.2" y="962.0" text-anchor="middle" font-size="14" font-weight="400">Исключение конфликтующих операций</text>
+</g>
+<g id="node-C14" data-component="C14"><title>C14 · Job and Reconciliation Manager: Длительные задачи и выяснение результата</title>
+<rect x="1203.0" y="914.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="1486.8" y="946.0" text-anchor="middle" font-size="16" font-weight="500">C14 · Job and Reconciliation Manager</text>
+<text x="1486.8" y="962.0" text-anchor="middle" font-size="14" font-weight="400">Длительные задачи и выяснение результата</text>
+</g>
+<g id="node-C16" data-component="C16"><title>C16 · Result and Artifact Manager: Изменения, отчёты, результаты и артефакты</title>
+<rect x="1786.5" y="914.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#8aa9d0"/>
+<text x="2070.2" y="946.0" text-anchor="middle" font-size="16" font-weight="500">C16 · Result and Artifact Manager</text>
+<text x="2070.2" y="962.0" text-anchor="middle" font-size="14" font-weight="400">Изменения, отчёты, результаты и артефакты</text>
+</g>
+<g id="node-D01" data-component="D01"><title>D01 · Исходники и метаданные: Код BSL, формы и объекты конфигурации</title>
+<rect x="36.0" y="1090.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="210.3" y="1122.0" text-anchor="middle" font-size="16" font-weight="500">D01 · Исходники и метаданные</text>
+<text x="210.3" y="1138.0" text-anchor="middle" font-size="14" font-weight="400">Код BSL, формы и объекты конфигурации</text>
+</g>
+<g id="node-D02" data-component="D02"><title>D02 · Нормативные требования: Выбор норм и проверка соответствия</title>
+<rect x="400.7" y="1090.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="575.0" y="1122.0" text-anchor="middle" font-size="16" font-weight="500">D02 · Нормативные требования</text>
+<text x="575.0" y="1138.0" text-anchor="middle" font-size="14" font-weight="400">Выбор норм и проверка соответствия</text>
+</g>
+<g id="node-D03" data-component="D03"><title>D03 · Знания и возможности: Применимые механизмы и проверенный опыт</title>
+<rect x="765.3" y="1090.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="939.7" y="1122.0" text-anchor="middle" font-size="16" font-weight="500">D03 · Знания и возможности</text>
+<text x="939.7" y="1138.0" text-anchor="middle" font-size="14" font-weight="400">Применимые механизмы и проверенный опыт</text>
+</g>
+<g id="node-D04" data-component="D04"><title>D04 · Сервис YaXUnit: Тесты, регистрация и изоляция данных</title>
+<rect x="36.0" y="1207.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="210.3" y="1239.0" text-anchor="middle" font-size="16" font-weight="500">D04 · Сервис YaXUnit</text>
+<text x="210.3" y="1255.0" text-anchor="middle" font-size="14" font-weight="400">Тесты, регистрация и изоляция данных</text>
+</g>
+<g id="node-D05" data-component="D05"><title>D05 · Сервис Vanessa: Сценарии и проверка интерфейса</title>
+<rect x="400.7" y="1207.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="575.0" y="1239.0" text-anchor="middle" font-size="16" font-weight="500">D05 · Сервис Vanessa</text>
+<text x="575.0" y="1255.0" text-anchor="middle" font-size="14" font-weight="400">Сценарии и проверка интерфейса</text>
+</g>
+<g id="node-D06" data-component="D06"><title>D06 · Патчи-расширения: Механизм исправления и совместимость</title>
+<rect x="765.3" y="1207.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="939.7" y="1239.0" text-anchor="middle" font-size="16" font-weight="500">D06 · Патчи-расширения</text>
+<text x="939.7" y="1255.0" text-anchor="middle" font-size="14" font-weight="400">Механизм исправления и совместимость</text>
+</g>
+<g id="node-D07" data-component="D07"><title>D07 · Состав системы и сборка: Фиксация входов и проверка сборочных копий</title>
+<rect x="36.0" y="1324.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="210.3" y="1356.0" text-anchor="middle" font-size="16" font-weight="500">D07 · Состав системы и сборка</text>
+<text x="210.3" y="1372.0" text-anchor="middle" font-size="14" font-weight="400">Фиксация входов и проверка сборочных копий</text>
+</g>
+<g id="node-D08" data-component="D08"><title>D08 · Служебные сведения ИБ: Необязательно: состояние выбранной ИБ</title>
+<rect x="400.7" y="1324.0" width="348.7" height="70.0" rx="7" fill="#fff" stroke="#bac8d6" stroke-dasharray="5 3"/>
+<text x="575.0" y="1356.0" text-anchor="middle" font-size="16" font-weight="500">D08 · Служебные сведения ИБ</text>
+<text x="575.0" y="1372.0" text-anchor="middle" font-size="14" font-weight="400">Необязательно: состояние выбранной ИБ</text>
+</g>
+<g id="node-A01" data-component="A01"><title>A01 · Адаптер EDT: Текущая модель, запись, диагностика, YaXUnit</title>
+<rect x="1196.0" y="1090.0" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1383.7" y="1122.0" text-anchor="middle" font-size="16" font-weight="500">A01 · Адаптер EDT</text>
+<text x="1383.7" y="1138.0" text-anchor="middle" font-size="14" font-weight="400">Текущая модель, запись, диагностика, YaXUnit</text>
+</g>
+<g id="node-A02" data-component="A02"><title>A02 · Адаптер code-index: Чтение канонического индекса исходников</title>
+<rect x="1587.3" y="1090.0" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1775.0" y="1122.0" text-anchor="middle" font-size="16" font-weight="500">A02 · Адаптер code-index</text>
+<text x="1775.0" y="1138.0" text-anchor="middle" font-size="14" font-weight="400">Чтение канонического индекса исходников</text>
+</g>
+<g id="node-A03" data-component="A03"><title>A03 · Адаптер BSL LS: Сессионный анализатор</title>
+<rect x="1978.7" y="1090.0" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2166.3" y="1122.0" text-anchor="middle" font-size="16" font-weight="500">A03 · Адаптер BSL LS</text>
+<text x="2166.3" y="1138.0" text-anchor="middle" font-size="14" font-weight="400">Сессионный анализатор</text>
+</g>
+<g id="node-A04" data-component="A04"><title>A04 · Адаптер v8std: Нормативные первоисточники</title>
+<rect x="1196.0" y="1204.7" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1383.7" y="1236.7" text-anchor="middle" font-size="16" font-weight="500">A04 · Адаптер v8std</text>
+<text x="1383.7" y="1252.7" text-anchor="middle" font-size="14" font-weight="400">Нормативные первоисточники</text>
+</g>
+<g id="node-A05" data-component="A05"><title>A05 · Чтение OpenViking: Разрешённая область знаний без записи</title>
+<rect x="1587.3" y="1204.7" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1775.0" y="1236.7" text-anchor="middle" font-size="16" font-weight="500">A05 · Чтение OpenViking</text>
+<text x="1775.0" y="1252.7" text-anchor="middle" font-size="14" font-weight="400">Разрешённая область знаний без записи</text>
+</g>
+<g id="node-A06" data-component="A06"><title>A06 · Адаптер Vanessa: Менеджер тестирования и TestClient</title>
+<rect x="1978.7" y="1204.7" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2166.3" y="1236.7" text-anchor="middle" font-size="16" font-weight="500">A06 · Адаптер Vanessa</text>
+<text x="2166.3" y="1252.7" text-anchor="middle" font-size="14" font-weight="400">Менеджер тестирования и TestClient</text>
+</g>
+<g id="node-A07" data-component="A07"><title>A07 · Сборка средствами 1С: Штатная упаковка расширения</title>
+<rect x="1196.0" y="1319.3" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1383.7" y="1351.3" text-anchor="middle" font-size="16" font-weight="500">A07 · Сборка средствами 1С</text>
+<text x="1383.7" y="1367.3" text-anchor="middle" font-size="14" font-weight="400">Штатная упаковка расширения</text>
+</g>
+<g id="node-A08" data-component="A08"><title>A08 · Адаптер Git: Ссылки, состояние и разрешённые операции</title>
+<rect x="1587.3" y="1319.3" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1775.0" y="1351.3" text-anchor="middle" font-size="16" font-weight="500">A08 · Адаптер Git</text>
+<text x="1775.0" y="1367.3" text-anchor="middle" font-size="14" font-weight="400">Ссылки, состояние и разрешённые операции</text>
+</g>
+<g id="node-A09" data-component="A09"><title>A09 · Работа с обычными файлами: Документы, сценарии, настройки, отчёты</title>
+<rect x="1978.7" y="1319.3" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2166.3" y="1351.3" text-anchor="middle" font-size="16" font-weight="500">A09 · Работа с обычными файлами</text>
+<text x="2166.3" y="1367.3" text-anchor="middle" font-size="14" font-weight="400">Документы, сценарии, настройки, отчёты</text>
+</g>
+<g id="node-A10" data-component="A10"><title>A10 · Встроенная policy: Реестр правил и детерминированные проверки</title>
+<rect x="1196.0" y="1434.0" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1383.7" y="1466.0" text-anchor="middle" font-size="16" font-weight="500">A10 · Встроенная policy</text>
+<text x="1383.7" y="1482.0" text-anchor="middle" font-size="14" font-weight="400">Реестр правил и детерминированные проверки</text>
+</g>
+<g id="node-A11" data-component="A11"><title>A11 · Чтение служебных сведений ИБ: Необязательно: узкие методы без записи</title>
+<rect x="1587.3" y="1434.0" width="375.3" height="70.0" rx="7" fill="#fff" stroke="#bac8d6" stroke-dasharray="5 3"/>
+<text x="1775.0" y="1466.0" text-anchor="middle" font-size="16" font-weight="500">A11 · Чтение служебных сведений ИБ</text>
+<text x="1775.0" y="1482.0" text-anchor="middle" font-size="14" font-weight="400">Необязательно: узкие методы без записи</text>
+</g>
+<g id="node-M01" data-component="M01"><title>M01 · MCP 1c-ai-settings: Настройки и сведения о рабочем пространстве</title>
+<rect x="36.0" y="1610.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="417.0" y="1642.0" text-anchor="middle" font-size="16" font-weight="500">M01 · MCP 1c-ai-settings</text>
+<text x="417.0" y="1658.0" text-anchor="middle" font-size="14" font-weight="400">Настройки и сведения о рабочем пространстве</text>
+</g>
+<g id="node-M02" data-component="M02"><title>M02 · MCP edt: Текущая модель, запись и диагностика</title>
+<rect x="814.0" y="1610.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1195.0" y="1642.0" text-anchor="middle" font-size="16" font-weight="500">M02 · MCP edt</text>
+<text x="1195.0" y="1658.0" text-anchor="middle" font-size="14" font-weight="400">Текущая модель, запись и диагностика</text>
+</g>
+<g id="node-M03" data-component="M03"><title>M03 · MCP code-index: Ограниченное чтение индекса исходников</title>
+<rect x="1592.0" y="1610.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1973.0" y="1642.0" text-anchor="middle" font-size="16" font-weight="500">M03 · MCP code-index</text>
+<text x="1973.0" y="1658.0" text-anchor="middle" font-size="14" font-weight="400">Ограниченное чтение индекса исходников</text>
+</g>
+<g id="node-M04" data-component="M04"><title>M04 · MCP bsl-ls: Семантика и диагностика BSL</title>
+<rect x="36.0" y="1717.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="417.0" y="1749.0" text-anchor="middle" font-size="16" font-weight="500">M04 · MCP bsl-ls</text>
+<text x="417.0" y="1765.0" text-anchor="middle" font-size="14" font-weight="400">Семантика и диагностика BSL</text>
+</g>
+<g id="node-M05" data-component="M05"><title>M05 · MCP v8std: Полные нормативные первоисточники</title>
+<rect x="814.0" y="1717.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1195.0" y="1749.0" text-anchor="middle" font-size="16" font-weight="500">M05 · MCP v8std</text>
+<text x="1195.0" y="1765.0" text-anchor="middle" font-size="14" font-weight="400">Полные нормативные первоисточники</text>
+</g>
+<g id="node-M06" data-component="M06"><title>M06 · MCP policy: Выбор требований и проверка соответствия</title>
+<rect x="1592.0" y="1717.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1973.0" y="1749.0" text-anchor="middle" font-size="16" font-weight="500">M06 · MCP policy</text>
+<text x="1973.0" y="1765.0" text-anchor="middle" font-size="14" font-weight="400">Выбор требований и проверка соответствия</text>
+</g>
+<g id="node-M07" data-component="M07"><title>M07 · MCP OpenViking: Поиск опубликованных знаний без записи</title>
+<rect x="36.0" y="1824.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="417.0" y="1856.0" text-anchor="middle" font-size="16" font-weight="500">M07 · MCP OpenViking</text>
+<text x="417.0" y="1872.0" text-anchor="middle" font-size="14" font-weight="400">Поиск опубликованных знаний без записи</text>
+</g>
+<g id="node-M08" data-component="M08"><title>M08 · MCP Vanessa: Управление заданной тестовой сессией</title>
+<rect x="814.0" y="1824.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1195.0" y="1856.0" text-anchor="middle" font-size="16" font-weight="500">M08 · MCP Vanessa</text>
+<text x="1195.0" y="1872.0" text-anchor="middle" font-size="14" font-weight="400">Управление заданной тестовой сессией</text>
+</g>
+<g id="node-M09" data-component="M09"><title>M09 · MCP служебных сведений ИБ: Необязательно: только разрешённые сведения</title>
+<rect x="1592.0" y="1824.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6" stroke-dasharray="5 3"/>
+<text x="1973.0" y="1856.0" text-anchor="middle" font-size="16" font-weight="500">M09 · MCP служебных сведений ИБ</text>
+<text x="1973.0" y="1872.0" text-anchor="middle" font-size="14" font-weight="400">Необязательно: только разрешённые сведения</text>
+</g>
+<g id="node-L01" data-component="L01"><title>L01 · Управление средой исполнения: Установка, запуск, остановка и версии</title>
+<rect x="2436.0" y="130.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="162.0" text-anchor="middle" font-size="16" font-weight="500">L01 · Управление средой исполнения</text>
+<text x="2604.0" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Установка, запуск, остановка и версии</text>
+</g>
+<g id="node-L02" data-component="L02"><title>L02 · Управление выпуском: Подготовка, миграция и откат</title>
+<rect x="2788.0" y="130.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="162.0" text-anchor="middle" font-size="16" font-weight="500">L02 · Управление выпуском</text>
+<text x="2956.0" y="178.0" text-anchor="middle" font-size="14" font-weight="400">Подготовка, миграция и откат</text>
+</g>
+<g id="node-L03" data-component="L03"><title>L03 · Диагностика окружения: Действующие настройки и живые проверки</title>
+<rect x="2436.0" y="294.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="326.0" text-anchor="middle" font-size="16" font-weight="500">L03 · Диагностика окружения</text>
+<text x="2604.0" y="342.0" text-anchor="middle" font-size="14" font-weight="400">Действующие настройки и живые проверки</text>
+</g>
+<g id="node-L04" data-component="L04"><title>L04 · Аудит и журналирование: События и исключение чувствительных данных</title>
+<rect x="2788.0" y="294.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="326.0" text-anchor="middle" font-size="16" font-weight="500">L04 · Аудит и журналирование</text>
+<text x="2956.0" y="342.0" text-anchor="middle" font-size="14" font-weight="400">События и исключение чувствительных данных</text>
+</g>
+<g id="node-S01" data-component="S01"><title>S01 · Хранилище конфигурации: Настройки, схемы, состав и версии поставки</title>
+<rect x="2436.0" y="470.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="502.0" text-anchor="middle" font-size="16" font-weight="500">S01 · Хранилище конфигурации</text>
+<text x="2604.0" y="518.0" text-anchor="middle" font-size="14" font-weight="400">Настройки, схемы, состав и версии поставки</text>
+</g>
+<g id="node-S02" data-component="S02"><title>S02 · Хранилище состояния: SQLite и общая координация операций</title>
+<rect x="2788.0" y="470.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="502.0" text-anchor="middle" font-size="16" font-weight="500">S02 · Хранилище состояния</text>
+<text x="2956.0" y="518.0" text-anchor="middle" font-size="14" font-weight="400">SQLite и общая координация операций</text>
+</g>
+<g id="node-S03" data-component="S03"><title>S03 · Хранилище учётных данных: Секреты и ссылки на учётные записи</title>
+<rect x="2436.0" y="587.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="619.0" text-anchor="middle" font-size="16" font-weight="500">S03 · Хранилище учётных данных</text>
+<text x="2604.0" y="635.0" text-anchor="middle" font-size="14" font-weight="400">Секреты и ссылки на учётные записи</text>
+</g>
+<g id="node-S04" data-component="S04"><title>S04 · Хранилище артефактов: CFE, отчёты тестов и подтверждения проверок</title>
+<rect x="2788.0" y="587.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="619.0" text-anchor="middle" font-size="16" font-weight="500">S04 · Хранилище артефактов</text>
+<text x="2956.0" y="635.0" text-anchor="middle" font-size="14" font-weight="400">CFE, отчёты тестов и подтверждения проверок</text>
+</g>
+<g id="node-S05" data-component="S05"><title>S05 · Хранилище журналов: Ограниченные технические журналы</title>
+<rect x="2436.0" y="704.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="736.0" text-anchor="middle" font-size="16" font-weight="500">S05 · Хранилище журналов</text>
+<text x="2604.0" y="752.0" text-anchor="middle" font-size="14" font-weight="400">Ограниченные технические журналы</text>
+</g>
+<g id="node-N01" data-component="N01"><title>N01 · policy.detector: Определение затронутых механизмов</title>
+<rect x="2436.0" y="880.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="912.0" text-anchor="middle" font-size="16" font-weight="500">N01 · policy.detector</text>
+<text x="2604.0" y="928.0" text-anchor="middle" font-size="14" font-weight="400">Определение затронутых механизмов</text>
+</g>
+<g id="node-N02" data-component="N02"><title>N02 · policy.registry: Реестр применимости и версии правил</title>
+<rect x="2788.0" y="880.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="912.0" text-anchor="middle" font-size="16" font-weight="500">N02 · policy.registry</text>
+<text x="2956.0" y="928.0" text-anchor="middle" font-size="14" font-weight="400">Реестр применимости и версии правил</text>
+</g>
+<g id="node-N03" data-component="N03"><title>N03 · policy.selector: Выбор обязательных и рекомендованных норм</title>
+<rect x="2436.0" y="997.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="1029.0" text-anchor="middle" font-size="16" font-weight="500">N03 · policy.selector</text>
+<text x="2604.0" y="1045.0" text-anchor="middle" font-size="14" font-weight="400">Выбор обязательных и рекомендованных норм</text>
+</g>
+<g id="node-N04" data-component="N04"><title>N04 · policy.compliance: Проверка замысла и фактического результата</title>
+<rect x="2788.0" y="997.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="1029.0" text-anchor="middle" font-size="16" font-weight="500">N04 · policy.compliance</text>
+<text x="2956.0" y="1045.0" text-anchor="middle" font-size="14" font-weight="400">Проверка замысла и фактического результата</text>
+</g>
+<g id="node-N05" data-component="N05"><title>N05 · policy.ledger: Требования, доказательства и отклонения</title>
+<rect x="2436.0" y="1114.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="1146.0" text-anchor="middle" font-size="16" font-weight="500">N05 · policy.ledger</text>
+<text x="2604.0" y="1162.0" text-anchor="middle" font-size="14" font-weight="400">Требования, доказательства и отклонения</text>
+</g>
+<g id="node-P01" data-component="P01"><title>P01 · Git-каталог знаний: Карточки БСП, проектов и опыта</title>
+<rect x="2436.0" y="1290.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="1322.0" text-anchor="middle" font-size="16" font-weight="500">P01 · Git-каталог знаний</text>
+<text x="2604.0" y="1338.0" text-anchor="middle" font-size="14" font-weight="400">Карточки БСП, проектов и опыта</text>
+</g>
+<g id="node-P02" data-component="P02"><title>P02 · Проверка и ревью знаний: Схема, факты и допустимость содержимого</title>
+<rect x="2788.0" y="1290.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="1322.0" text-anchor="middle" font-size="16" font-weight="500">P02 · Проверка и ревью знаний</text>
+<text x="2956.0" y="1338.0" text-anchor="middle" font-size="14" font-weight="400">Схема, факты и допустимость содержимого</text>
+</g>
+<g id="node-P03" data-component="P03"><title>P03 · Публикация знаний: Отдельная учётная запись и синхронизация</title>
+<rect x="2436.0" y="1464.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2604.0" y="1496.0" text-anchor="middle" font-size="16" font-weight="500">P03 · Публикация знаний</text>
+<text x="2604.0" y="1512.0" text-anchor="middle" font-size="14" font-weight="400">Отдельная учётная запись и синхронизация</text>
+</g>
+<g id="node-P04" data-component="P04"><title>P04 · Подтверждения публикаций: Редакция Git и версия индекса</title>
+<rect x="2788.0" y="1464.0" width="336.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2956.0" y="1496.0" text-anchor="middle" font-size="16" font-weight="500">P04 · Подтверждения публикаций</text>
+<text x="2956.0" y="1512.0" text-anchor="middle" font-size="14" font-weight="400">Редакция Git и версия индекса</text>
+</g>
+<g id="node-O01" data-component="O01"><title>O01 · Граница чтения OpenViking: Права сервера или проверенный шлюз</title>
+<rect x="2436.0" y="1640.0" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="1672.0" text-anchor="middle" font-size="16" font-weight="500">O01 · Граница чтения OpenViking</text>
+<text x="2780.0" y="1688.0" text-anchor="middle" font-size="14" font-weight="400">Права сервера или проверенный шлюз</text>
+</g>
+<g id="node-O02" data-component="O02"><title>O02 · Карточки возможностей: БСП, CRM, Kafka, проектные API и опыт</title>
+<rect x="2436.0" y="1740.5" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="1772.5" text-anchor="middle" font-size="16" font-weight="500">O02 · Карточки возможностей</text>
+<text x="2780.0" y="1788.5" text-anchor="middle" font-size="14" font-weight="400">БСП, CRM, Kafka, проектные API и опыт</text>
+</g>
+<g id="node-O03" data-component="O03"><title>O03 · Область применимости знаний: Источники, версии, статусы, совместимость</title>
+<rect x="2436.0" y="1841.0" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="1873.0" text-anchor="middle" font-size="16" font-weight="500">O03 · Область применимости знаний</text>
+<text x="2780.0" y="1889.0" text-anchor="middle" font-size="14" font-weight="400">Источники, версии, статусы, совместимость</text>
+</g>
+<g id="node-O04" data-component="O04"><title>O04 · Состав каталога знаний: Разрешённые идентификаторы, пути и хеши</title>
+<rect x="2436.0" y="1941.5" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="1973.5" text-anchor="middle" font-size="16" font-weight="500">O04 · Состав каталога знаний</text>
+<text x="2780.0" y="1989.5" text-anchor="middle" font-size="14" font-weight="400">Разрешённые идентификаторы, пути и хеши</text>
+</g>
+<g id="node-O05" data-component="O05"><title>O05 · Проверка снимка индекса: Добавления, изменения и удаления карточек</title>
+<rect x="2436.0" y="2042.0" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="2074.0" text-anchor="middle" font-size="16" font-weight="500">O05 · Проверка снимка индекса</text>
+<text x="2780.0" y="2090.0" text-anchor="middle" font-size="14" font-weight="400">Добавления, изменения и удаления карточек</text>
+</g>
+<g id="node-O06" data-component="O06"><title>O06 · Проверка поисковой выдачи: Смысловые запросы и ложные кандидаты</title>
+<rect x="2436.0" y="2142.5" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="2174.5" text-anchor="middle" font-size="16" font-weight="500">O06 · Проверка поисковой выдачи</text>
+<text x="2780.0" y="2190.5" text-anchor="middle" font-size="14" font-weight="400">Смысловые запросы и ложные кандидаты</text>
+</g>
+<g id="node-O07" data-component="O07"><title>O07 · Готовность и остановка KORA: Блокировка зависимого шага без обхода</title>
+<rect x="2436.0" y="2243.0" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="2275.0" text-anchor="middle" font-size="16" font-weight="500">O07 · Готовность и остановка KORA</text>
+<text x="2780.0" y="2291.0" text-anchor="middle" font-size="14" font-weight="400">Блокировка зависимого шага без обхода</text>
+</g>
+<g id="node-O08" data-component="O08"><title>O08 · Восстановление знаний: Откат согласованной пары Git и индекса</title>
+<rect x="2436.0" y="2343.5" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="2375.5" text-anchor="middle" font-size="16" font-weight="500">O08 · Восстановление знаний</text>
+<text x="2780.0" y="2391.5" text-anchor="middle" font-size="14" font-weight="400">Откат согласованной пары Git и индекса</text>
+</g>
+<g id="node-O09" data-component="O09"><title>O09 · Проверка границ и содержимого: Без записи, захвата сессий и утечки данных</title>
+<rect x="2436.0" y="2444.0" width="688.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2780.0" y="2476.0" text-anchor="middle" font-size="16" font-weight="500">O09 · Проверка границ и содержимого</text>
+<text x="2780.0" y="2492.0" text-anchor="middle" font-size="14" font-weight="400">Без записи, захвата сессий и утечки данных</text>
+</g>
+<g id="node-X01" data-component="X01"><title>X01 · Экземпляры EDT: Один или несколько контуров разработки</title>
+<rect x="36.0" y="2000.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="319.8" y="2032.0" text-anchor="middle" font-size="16" font-weight="500">X01 · Экземпляры EDT</text>
+<text x="319.8" y="2048.0" text-anchor="middle" font-size="14" font-weight="400">Один или несколько контуров разработки</text>
+</g>
+<g id="node-X02" data-component="X02"><title>X02 · Фоновые процессы code-index: Индексы канонических рабочих копий</title>
+<rect x="619.5" y="2000.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="903.2" y="2032.0" text-anchor="middle" font-size="16" font-weight="500">X02 · Фоновые процессы code-index</text>
+<text x="903.2" y="2048.0" text-anchor="middle" font-size="14" font-weight="400">Индексы канонических рабочих копий</text>
+</g>
+<g id="node-X03" data-component="X03"><title>X03 · Сессии BSL LS: Процессы анализатора Java</title>
+<rect x="1203.0" y="2000.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1486.8" y="2032.0" text-anchor="middle" font-size="16" font-weight="500">X03 · Сессии BSL LS</text>
+<text x="1486.8" y="2048.0" text-anchor="middle" font-size="14" font-weight="400">Процессы анализатора Java</text>
+</g>
+<g id="node-X04" data-component="X04"><title>X04 · Сервис v8std: Нормативные первоисточники</title>
+<rect x="1786.5" y="2000.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="2070.2" y="2032.0" text-anchor="middle" font-size="16" font-weight="500">X04 · Сервис v8std</text>
+<text x="2070.2" y="2048.0" text-anchor="middle" font-size="14" font-weight="400">Нормативные первоисточники</text>
+</g>
+<g id="node-X05" data-component="X05"><title>X05 · Сервис OpenViking: Поисковый индекс опубликованных знаний</title>
+<rect x="36.0" y="2112.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="319.8" y="2144.0" text-anchor="middle" font-size="16" font-weight="500">X05 · Сервис OpenViking</text>
+<text x="319.8" y="2160.0" text-anchor="middle" font-size="14" font-weight="400">Поисковый индекс опубликованных знаний</text>
+</g>
+<g id="node-X06" data-component="X06"><title>X06 · Среда Vanessa: Менеджер тестирования и TestClient</title>
+<rect x="619.5" y="2112.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="903.2" y="2144.0" text-anchor="middle" font-size="16" font-weight="500">X06 · Среда Vanessa</text>
+<text x="903.2" y="2160.0" text-anchor="middle" font-size="14" font-weight="400">Менеджер тестирования и TestClient</text>
+</g>
+<g id="node-X07" data-component="X07"><title>X07 · Сборщик 1С: Процесс штатного инструмента 1С</title>
+<rect x="1203.0" y="2112.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1486.8" y="2144.0" text-anchor="middle" font-size="16" font-weight="500">X07 · Сборщик 1С</text>
+<text x="1486.8" y="2160.0" text-anchor="middle" font-size="14" font-weight="400">Процесс штатного инструмента 1С</text>
+</g>
+<g id="node-X08" data-component="X08"><title>X08 · Сервис служебных сведений ИБ: Необязательно: проверенные права и выдача</title>
+<rect x="1786.5" y="2112.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6" stroke-dasharray="5 3"/>
+<text x="2070.2" y="2144.0" text-anchor="middle" font-size="16" font-weight="500">X08 · Сервис служебных сведений ИБ</text>
+<text x="2070.2" y="2160.0" text-anchor="middle" font-size="14" font-weight="400">Необязательно: проверенные права и выдача</text>
+</g>
+<g id="node-X09" data-component="X09"><title>X09 · Модели OpenViking: Векторизация текста и языковые модели</title>
+<rect x="36.0" y="2224.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="319.8" y="2256.0" text-anchor="middle" font-size="16" font-weight="500">X09 · Модели OpenViking</text>
+<text x="319.8" y="2272.0" text-anchor="middle" font-size="14" font-weight="400">Векторизация текста и языковые модели</text>
+</g>
+<g id="node-X10" data-component="X10"><title>X10 · Данные OpenViking: Векторный индекс и опубликованные карточки</title>
+<rect x="619.5" y="2224.0" width="567.5" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="903.2" y="2256.0" text-anchor="middle" font-size="16" font-weight="500">X10 · Данные OpenViking</text>
+<text x="903.2" y="2272.0" text-anchor="middle" font-size="14" font-weight="400">Векторный индекс и опубликованные карточки</text>
+</g>
+<g id="node-R01" data-component="R01"><title>R01 · Рабочие копии репозиториев: Продукт, база, тесты и расширения</title>
+<rect x="36.0" y="2400.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="417.0" y="2432.0" text-anchor="middle" font-size="16" font-weight="500">R01 · Рабочие копии репозиториев</text>
+<text x="417.0" y="2448.0" text-anchor="middle" font-size="14" font-weight="400">Продукт, база, тесты и расширения</text>
+</g>
+<g id="node-R02" data-component="R02"><title>R02 · Тестовые и сборочные среды: Изолированные ИБ и тестовые данные</title>
+<rect x="814.0" y="2400.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6"/>
+<text x="1195.0" y="2432.0" text-anchor="middle" font-size="16" font-weight="500">R02 · Тестовые и сборочные среды</text>
+<text x="1195.0" y="2448.0" text-anchor="middle" font-size="14" font-weight="400">Изолированные ИБ и тестовые данные</text>
+</g>
+<g id="node-R03" data-component="R03"><title>R03 · Общая ИБ разработки: Необязательно: только служебные сведения</title>
+<rect x="1592.0" y="2400.0" width="762.0" height="70.0" rx="7" fill="#fff" stroke="#bac8d6" stroke-dasharray="5 3"/>
+<text x="1973.0" y="2432.0" text-anchor="middle" font-size="16" font-weight="500">R03 · Общая ИБ разработки</text>
+<text x="1973.0" y="2448.0" text-anchor="middle" font-size="14" font-weight="400">Необязательно: только служебные сведения</text>
+</g>
+<text x="20" y="2570" font-size="16">Сплошные линии — поток действий; пунктирные — проверки и общие зависимости. Необязательные компоненты отмечены пунктирной рамкой. Новые навыки и модули описывают целевую архитектуру.</text>
+</g>
+</svg>

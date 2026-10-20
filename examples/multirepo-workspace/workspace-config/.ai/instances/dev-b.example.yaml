@@ -1,0 +1,9 @@
+schema: 1c-ai.instance/v1
+workspace_id: demo-product
+instance_id: dev-b
+# Второй экземпляр того же workspace. Остальные bindings наследуются.
+connections:
+  edt-main:
+    url: http://127.0.0.1:19765/mcp
+  edt-tests:
+    url: http://127.0.0.1:19768/mcp

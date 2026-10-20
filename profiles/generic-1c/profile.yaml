@@ -1,0 +1,28 @@
+schema_version: '0.1'
+profile_id: generic-1c
+profile_version: 0.1.0
+project:
+  id: generic-1c
+  adapter: generic-1c
+  purpose: generic-1c project (configure repository mappings before use)
+repositories: []
+roots:
+  source: []
+  protected: []
+authorities:
+  edt_writer: edt
+  code_index: code-index
+  bsl_ls: bsl-ls
+  v8std: v8std
+policy:
+  mode: conservative
+testing:
+  commands: []
+  yaxunit: false
+  vanessa: false
+knowledge:
+  provider: none
+  manifest: null
+compatibility:
+  core: '>=0.1.0 <0.2.0'
+

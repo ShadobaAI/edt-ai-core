@@ -1,0 +1,33 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "1c-ai-core",
+  "version": "0.2.1",
+  "description": "Универсальное ИИ-ядро для разработки проектов 1С.",
+  "author": {
+    "name": "ShadobaAI"
+  },
+  "homepage": "https://github.com/ShadobaAI/edt-ai-core",
+  "repository": "https://github.com/ShadobaAI/edt-ai-core",
+  "keywords": [
+    "1c",
+    "edt",
+    "profiles",
+    "openviking"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "1C AI Core",
+        "shortDescription": "Профильное ядро 1С",
+        "longDescription": "Универсальное ядро для 1С с импортом и экспортом профилей из репозиториев проектов.",
+        "developerName": "ShadobaAI",
+        "category": "Developer tools",
+        "capabilities": [
+          "Interactive"
+        ],
+        "defaultPrompt": "Проверь или импортируй профиль проекта 1С и подготовь безопасную маршрутизацию authorities."
+      },
+      "hooks": "./hooks/hooks.json"
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "shadobaai",
+  "interface": { "displayName": "ShadobaAI" },
+  "plugins": [
+    {
+      "name": "1c-ai-core",
+      "source": { "source": "local", "path": "./plugins/1c-ai-core" },
+      "policy": { "installation": "NOT_AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Developer tools"
+    }
+  ]
+}

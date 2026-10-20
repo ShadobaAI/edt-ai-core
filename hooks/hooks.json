@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${PLUGIN_ROOT}/hooks/guard.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Checking the selected 1C project source boundary"
+          }
+        ]
+      }
+    ]
+  }
+}

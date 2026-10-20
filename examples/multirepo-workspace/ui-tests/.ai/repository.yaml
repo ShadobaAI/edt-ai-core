@@ -1,0 +1,4 @@
+schema: 1c-ai.repository/v1
+workspace_id: demo-product
+repository_id: ui-tests
+workspace_locator: ../../workspace-config/.ai/workspace.yaml

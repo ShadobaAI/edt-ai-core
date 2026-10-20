@@ -1,0 +1,11 @@
+interface:
+  display_name: "BSL LS MCP"
+  short_description: "Focused BSL diagnostics and semantic navigation"
+  default_prompt: "Use $bsl-ls-mcp to run focused read-only BSL diagnostics or semantic navigation for the configured repository."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "bsl-ls"
+      description: "Repository-local BSL Language Server MCP"
+      transport: "stdio"

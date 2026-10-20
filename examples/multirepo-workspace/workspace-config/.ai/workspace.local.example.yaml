@@ -1,0 +1,64 @@
+schema: 1c-ai.workspace-local/v1
+workspace_id: demo-product
+instance_id: dev-a
+# Все относительные пути считаются от каталога workspace-config.
+allowed_checkout_roots: ['..']
+checkouts:
+  base-main: {repository: base, path: ../base}
+  product-main: {repository: product, path: ../product}
+  patch-main: {repository: patch, path: ../patch}
+  unit-main: {repository: unit-tests, path: ../unit-tests}
+  framework-main: {repository: framework, path: ../framework}
+  ui-main: {repository: ui-tests, path: ../ui-tests}
+selected_checkouts:
+  base: base-main
+  product: product-main
+  patch: patch-main
+  unit-tests: unit-main
+  framework: framework-main
+  ui-tests: ui-main
+connections:
+  edt-main:
+    transport: mcp-http
+    url: http://127.0.0.1:18765/mcp
+    url_env: EDT_AI_EDT_MAIN_URL
+  edt-tests:
+    transport: mcp-http
+    url: http://127.0.0.1:18768/mcp
+    url_env: EDT_AI_EDT_TESTS_URL
+  v8std:
+    transport: mcp-http
+    url: http://127.0.0.1:18766/mcp
+    credential_ref: os-secret://demo/v8std-reader
+  knowledge:
+    transport: mcp-http
+    url: https://knowledge.example.invalid/mcp
+    credential_ref: os-secret://demo/knowledge-reader
+  vanessa-ui:
+    transport: mcp-http
+    url: http://127.0.0.1:18767/mcp
+builder_bindings:
+  cfe-builder:
+    kind: native-1c
+    executable: 'C:/Program Files/1cv8/CHOOSE-IN-UI/bin/1cv8.exe'
+    compatibility_source: release-matrix
+    operations: [build_extension]
+environments:
+  unit-local:
+    kind: test
+    assembly: patch-unit
+    infobase_ref: os-secret://demo/unit-infobase
+    data_policy: isolated-fixtures
+  ui-local:
+    kind: test
+    assembly: patch-ui
+    infobase_ref: os-secret://demo/ui-infobase
+    runtime_provider: vanessa
+    manager_ref: os-secret://demo/vanessa-manager
+    test_client_ref: os-secret://demo/vanessa-client
+    data_policy: isolated-fixtures
+  build-local:
+    kind: build
+    assembly: release
+    infobase_ref: os-secret://demo/build-infobase
+    data_policy: disposable
