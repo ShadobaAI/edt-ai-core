@@ -189,7 +189,7 @@ export function profile_state(selected) {
   } catch (error) {
     if (error instanceof ProfileAmbiguous)
       return { status: "ambiguous", path: null, candidates: error.candidates.map(root => profile_target(root)), detail: error.message };
-    return { status: exists(target) ? "invalid" : "missing", path: target, detail: error.message };
+    return { status: exists(target) ? "invalid" : "missing", path: target, detail: error.message, ...(error.code ? { errorCode: error.code } : {}) };
   }
 }
 export function create_profile(selected) {

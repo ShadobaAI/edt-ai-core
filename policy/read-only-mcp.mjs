@@ -7,6 +7,8 @@ import { detectMechanisms } from "./detector.mjs";
 import { PolicySession } from "./session.mjs";
 import { actionPolicy, checkAction, actionRequest } from "./actions.mjs";
 import { ledgerItemSchema, selectionSchema, requirementsResultSchema, complianceResultSchema, additionalRequirementsSchema, nonblank, assessmentsSchema, detectionSchema, policyProtocolVersion, validateSchema } from "./schema.mjs";
+import { create_diagnostic_logger } from "../scripts/diagnostics.mjs";
+const diagnostic = create_diagnostic_logger("policy");
 
 const modulePath = fileURLToPath(import.meta.url);
 const protocols = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -115,6 +117,7 @@ function dispatch(message, registry, session) {
   } else if (message.method === "ping") result = {};
   else if (message.method === "tools/list") result = { tools };
   else if (message.method === "tools/call") {
+    const started = Date.now();
     try {
       const name = message.params?.name, args = message.params?.arguments ?? {};
       let value;
@@ -124,9 +127,11 @@ function dispatch(message, registry, session) {
         value = name === "assess_1c_requirements" ? session.assess(args) : session.validate(args);
         validateSchema(definition.outputSchema, value, "tool result");
       } else value = callTool(name, args, registry);
+      diagnostic.event("request_completed", { tool: name, durationMs: Date.now() - started, status: value?.status });
       result = { content: [{ type: "text", text: JSON.stringify(value) }], isError: false,
         structuredContent: value };
     } catch (error) {
+      diagnostic.event("request_failed", { tool: message.params?.name, durationMs: Date.now() - started, error }, "error");
       result = { content: [{ type: "text", text: error.message }], isError: true };
     }
   } else {
@@ -137,6 +142,7 @@ function dispatch(message, registry, session) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
+  diagnostic.event("session_started", { protocol: policyProtocolVersion, node: process.version });
   try {
     const registry = schemaRegistry, session = new PolicySession(registry);
     const lines = readline.createInterface({ input: process.stdin });

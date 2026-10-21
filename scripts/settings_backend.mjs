@@ -51,6 +51,7 @@ import {
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation } from "./components.mjs";
 import { directory_context, edt_connection } from "./directory_context.mjs";
+import { profile_history, remember_profile, profile_summary } from "./profile_history.mjs";
 
 export const FIELDS = {
   projectRoot: ["active_project"],
@@ -68,7 +69,7 @@ const restore = (file, previous) => {
 };
 export const preparation_scope = (root) =>
   root ? `${root}#${instance_name()}` : null;
-export const session_guidance = "Профиль выбранной папки подхватывается автоматически. Если инструменты не обновились в этом чате, откройте новый чат в той же папке или перезапустите Codex. Подготовка MCP запускается отдельно.";
+export const session_guidance = "Профиль подхватывается автоматически. Если selectedDirectory пуст, передайте известную папку текущего чата в projectRoot инструмента core_runtime_status каждого нужного подключения. Это привязка только его MCP-сессии. Новый чат не исправляет пустые roots. Подготовка MCP запускается отдельно.";
 export function authorize_preparation(request, root) {
   const auth = request.authorization;
   if (
@@ -315,12 +316,19 @@ export class SettingsBackend {
   }
   async main(request) {
     const action = request.action;
-    if (action === "read") {
+    if (action === "probe") {
+      const config = this.effective(this.current()), root = config.active_project;
+      if (!root) throw new ConfigError("Выберите папку проекта.");
+      const { probe_connections } = await import("./setup_probe.mjs");
+      return probe_connections(config, root, project_profile(root));
+    }
+    if (action === "read" || action === "status") {
       const config = this.current(true), profile = profile_state(config.active_project);
       // A broken profile must not prevent opening its repair/import screen.
       const [effective, sources] = ["invalid", "ambiguous"].includes(profile.status)
         ? [config, {}] : this.effective(config, null, null, true);
       const actual = this.values(effective, false);
+      if (request.remember) remember_profile(this.STATE, config.active_project, profile);
       const legacy = config.active_project ? legacy_project_state(this.STATE, config.active_project) : null;
       if (legacy?.status === "owner_unknown" && !exists(instance_file(config, config.active_project, this.STATE))) {
         const file = path.join(legacy.directory, "instances", instance_name() + ".yaml");
@@ -336,6 +344,8 @@ export class SettingsBackend {
         connectionSources: sources,
         preparationScope: preparation_scope(actual.projectRoot),
         legacyState: legacy,
+        profileHistory: profile_history(this.STATE, actual.projectRoot),
+        ...(action === "status" ? { summary: await profile_summary(this.STATE, effective, profile) } : {}),
       };
     }
     if (["create", "load"].includes(action)) {
@@ -354,6 +364,7 @@ export class SettingsBackend {
         if (action === "create") create_profile(root);
         project_profile(root); // Validate before signalling any bound session.
         record_project_owner(this.STATE, root);
+        remember_profile(this.STATE, root, profile_state(root));
         const actual = this.values(config);
         atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
         return { values: actual, profile: profile_state(root), instance: instance_name(),
@@ -654,7 +665,7 @@ if (entrypoint(import.meta.url)) {
     const result = await new SettingsBackend().main(JSON.parse(input));
     console.log(JSON.stringify({ ok: true, result }));
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: error.message, ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
+    console.log(JSON.stringify({ ok: false, error: error.message, ...(error.code ? { errorCode: error.code } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
     process.exitCode = 1;
   }
 }

@@ -28,9 +28,9 @@ export function parse(text) {
       ),
   });
   if (doc.errors.length || doc.warnings.length)
-    throw new ConfigError(
+    throw Object.assign(new ConfigError(
       [...doc.errors, ...doc.warnings].map((error) => error.message).join("; "),
-    );
+    ), { code: "INVALID_DOCUMENT" });
   const value = doc.toJS({ maxAliasCount: 100 });
   if (!object(value)) throw new ConfigError("Expected an object");
   return value;
@@ -185,9 +185,15 @@ export const stable = (value) =>
 export const entrypoint = (url) =>
   process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === url;
 export async function cli(main) {
+  const { create_diagnostic_logger } = await import("./diagnostics.mjs");
+  const diagnostic = create_diagnostic_logger("cli");
+  const executable = path.basename(process.argv[1] || "");
+  diagnostic.event("command_started", { executable });
   try {
     process.exitCode = (await main()) || 0;
+    diagnostic.event("command_completed", { executable, exitCode: process.exitCode });
   } catch (error) {
+    diagnostic.event("command_failed", { executable, error }, "error");
     console.log(JSON.stringify({ status: "error", error: error.message }));
     process.exitCode = 1;
   }

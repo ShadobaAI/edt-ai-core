@@ -52,7 +52,7 @@ test("the directory picker binds the canonical project without writes and discar
     started = path.join(f.base, "started"), released = path.join(f.base, "released"), other = path.join(f.base, "other");
   fs.mkdirSync(path.join(f.root, ".git")); fs.mkdirSync(other);
   for (const directory of ["mcp", "scripts", "assets"]) fs.mkdirSync(path.join(plugin, directory), { recursive: true });
-  for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "scripts/icons.mjs", "scripts/selection.mjs", "scripts/project_paths.mjs", "scripts/casefold.mjs", "scripts/compatibility.mjs", "assets/icon.svg"])
+  for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "scripts/icons.mjs", "scripts/selection.mjs", "scripts/project_paths.mjs", "scripts/casefold.mjs", "scripts/compatibility.mjs", "scripts/diagnostics.mjs", "assets/icon.svg"])
     fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
   fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"),
     `import fs from 'node:fs'; export async function folder_action() { const value=JSON.parse(fs.readFileSync(${JSON.stringify(choice)},'utf8')); if(value.wait) { fs.writeFileSync(${JSON.stringify(started)},''); while(!fs.existsSync(${JSON.stringify(released)})) await new Promise(done=>setTimeout(done,5)); } return value.directory; }`);
@@ -82,7 +82,7 @@ test("the directory picker binds the canonical project without writes and discar
   assert.equal(picked.profile.status, "missing");
   assert.equal(picked.projectSelection.locked, false);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
-  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   fs.writeFileSync(choice, JSON.stringify({ directory: null }));
   assert.equal((await finishedPicker()).result.cancelled, true);
   assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, f.root);
@@ -123,7 +123,7 @@ test("chat profile tools discover the selected profile and preserve instructions
   const created = (await client.call("settings.create", {})).structuredContent;
   assert.equal(created.profile.status, "loaded");
   assert.equal(created.values.edtUrl, "http://localhost:18111/mcp");
-  assert.match(created.sessionGuidance, /новый чат/);
+  assert.match(created.sessionGuidance, /core_runtime_status/);
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), "Existing project rules\n");
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
   const profileFile = path.join(f.root, ".ai/project.yaml"), before = fs.readFileSync(profileFile);
@@ -176,7 +176,7 @@ test("SessionStart discovers profile data without writes and stops at nested Git
   fs.mkdirSync(path.join(sub, ".git"));
   assert.match(run(sub), /"status":"missing"/);
   assert.match(run(sub, f.env), /"status":"loaded"/);
-  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
 });
 
 test("exported JSON settings import into another repository and keep local overrides private", async (t) => {
@@ -239,12 +239,14 @@ test("native settings open their manual App without a chat or selected project",
   assert.ok(read.layout.flatMap(group => group.items).some(item => item.tool === "settings.open"));
   const tools = (await client.request("tools/list")).tools;
   const action = tools.find(tool => tool.name === "settings.open");
+  assert.deepEqual(action._meta["openai/ui"].entrypoints, [{ type: "global" }]);
   assert.deepEqual(action.inputSchema.properties, {});
   const opened = (await client.call(action.name, {})).structuredContent;
   assert.equal(opened.mode, "profile");
   const resource = await client.request("resources/read", { uri: action._meta.ui.resourceUri });
   assert.match(resource.contents[0].text, /id="editSettingsButton"/);
-  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.ok(resource.contents[0]._meta["openai/ui"].availableDisplayModes.includes("fullscreen"));
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
 });
 
 test("manual editing resets removed runtime fields and preserves the unchanged profile bytes", async (t) => {
@@ -652,7 +654,7 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
   fs.mkdirSync(path.join(plugin, "scripts"));
   fs.mkdirSync(path.join(plugin, "assets"));
   fs.copyFileSync(path.join(ROOT,"plugin.json"),path.join(plugin,"plugin.json"));
-  for (const name of ["icons.mjs", "selection.mjs", "project_paths.mjs", "casefold.mjs", "compatibility.mjs"])
+  for (const name of ["icons.mjs", "selection.mjs", "project_paths.mjs", "casefold.mjs", "compatibility.mjs", "diagnostics.mjs", "support_bundle.mjs"])
     fs.copyFileSync(path.join(ROOT, "scripts", name), path.join(plugin, "scripts", name));
   fs.copyFileSync(path.join(ROOT, "scripts/settings_folder.mjs"), path.join(plugin, "scripts/settings_folder.mjs"));
   fs.copyFileSync(path.join(ROOT, "assets/icon.svg"), path.join(plugin, "assets/icon.svg"));
@@ -688,6 +690,9 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     client.call("settings.update", { set: { edtUrl: "x" } }),
     /ещё выполняется/,
   );
+  const report = JSON.parse((await client.call("settings.export_diagnostics", {}))._meta.data.text);
+  assert.equal(report.snapshot.host.operation.id, operation.id);
+  assert.equal(report.snapshot.host.operation.status, "running");
   let completed;
   for (let i = 0; i < 50; i++) {
     completed = (
@@ -697,7 +702,7 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     await sleep(20);
   }
   assert.equal(completed.status, "completed");
-  assert.equal(fs.readFileSync(path.join(f.state, "calls"), "utf8"), "check\n");
+  assert.equal(fs.readFileSync(path.join(f.state, "calls"), "utf8"), "check\nread\n");
   await assert.rejects(
     client.call("settings.update", { set: { edtUrl: "unknown" } }),
     /неизвестен/,

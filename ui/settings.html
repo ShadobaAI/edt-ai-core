@@ -33,7 +33,7 @@ html{scrollbar-gutter:stable}main{display:flow-root}
 </defs></svg>
 <main>
 <header class="header"><svg class="brand" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#202123"/><path d="M15 25l7-5v24M16 44h13M47 23a12 12 0 1 0 0 18" fill="none" stroke="#F7F7F8" stroke-width="4.5" stroke-linecap="round"/><circle cx="49" cy="14" r="5" fill="#5DCAA5"/></svg><div><h1>1C AI Core</h1><div class="muted">Настройки · ShadobaAI</div></div></header>
-<div class="context"><div class="context-head"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><label for="projectRoot">Папка текущего чата</label><span class="badge" id="instance">default</span></div><div class="directory"><input id="projectRoot" type="text" placeholder="Укажите папку проекта" autocomplete="off"><button id="pickDirectoryButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Выбрать папку</button><button id="openDirectoryButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Открыть папку</button></div></div>
+<div class="context"><div class="context-head"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><label for="projectRoot">Папка проекта</label><span class="badge" id="instance">default</span></div><div class="directory"><input id="projectRoot" type="text" placeholder="Укажите папку проекта" autocomplete="off"><button id="pickDirectoryButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Выбрать папку</button><button id="openDirectoryButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Открыть папку</button></div></div>
 <nav class="tabs" role="tablist" aria-label="Настройки проекта">
 <button id="profileTab" role="tab" aria-controls="profilePanel" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Профиль</button>
 <button id="importTab" role="tab" aria-controls="importPanel" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg>Импорт</button>
@@ -48,7 +48,7 @@ html{scrollbar-gutter:stable}main{display:flow-root}
 <details id="legacyState" hidden><summary>Проверьте прежние подключения</summary><p>Старое состояние сохранено. Его владелец не записан, поэтому адреса требуют проверки для этой папки.</p><pre id="legacyConnections"></pre><button id="migrateConnectionsButton">Использовать эти подключения</button></details>
 <label class="field" for="edtUrl">EDT MCP</label><input id="edtUrl" type="text" placeholder="http://localhost:…/mcp" autocomplete="off"><div id="edtSource" class="muted"></div>
 <label class="field" for="v8stdUrl">v8std MCP</label><input id="v8stdUrl" type="text" placeholder="http://localhost:…/mcp" autocomplete="off"><div id="v8stdSource" class="muted"></div>
-<div class="actions"><button id="saveButton" class="primary">Сохранить подключения</button></div></div><details id="sessionHint" hidden><summary>Когда нужен новый чат</summary><p id="sessionHintText"></p></details>
+<div class="actions"><button id="saveButton" class="primary">Сохранить подключения</button><button id="probeButton">Проверить EDT и v8std</button></div><pre id="probeResult" hidden></pre></div><details id="sessionHint" hidden><summary>Подключения текущего чата</summary><p id="sessionHintText"></p></details>
 </section>
 <section id="importPanel" role="tabpanel" aria-labelledby="importTab" hidden>
 <h2>Ручная настройка и импорт</h2><p>Выберите файл или измените JSON/YAML вручную. Перед сохранением обязательна проверка. Подключения экземпляра меняются во вкладке «Профиль».</p>
@@ -77,13 +77,14 @@ html{scrollbar-gutter:stable}main{display:flow-root}
 <div class="actions"><button id="checkButton" class="primary">Подготовить и проверить</button><button id="operationButton" aria-label="Обновить состояние операции"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Состояние</button></div>
 <details><summary>Что проверяется</summary><p>Подготовка может скачать runtime и запустить code-index и BSL LS. Проверяются MCP-протокол, workspace API BSL LS и health индекса. Для EDT и v8std здесь проверяется только наличие URL. Полная готовность проекта проверяется отдельно.</p></details>
 </section>
+<div class="panel"><h2>Поддержка</h2><p>Скачайте файл с недавними логами, версиями, настройками и состоянием плагина для передачи разработчику. В файле остаются пути проектов и адреса серверов; известные секреты скрываются. История чатов и исходники не собираются.</p><p class="muted">Журнал плагина: до 2 МиБ, последние 7 дней. Файл никуда не отправляется автоматически.</p><div class="actions"><button id="diagnosticsButton"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Скачать диагностику</button></div></div>
 <div id="status" class="status" role="status" aria-live="polite">Подключаемся к плагину…</div>
 </main>
 <script>
 "use strict";
 let seq=0,hostOrigin="*",connected=false;
 const waiting=new Map(),$=id=>document.getElementById(id),status=$("status");
-let initialData=null,lastPreview=null,fileText="",editBaseRevision=null,checkTimer=null,activeOperation=null,inputRevision=0,polling=false,currentData=null,lastHeight=0,resizeTimer=null,containerDimensions={},initializing=true,interacted=false,busyActive=false;
+let initialData=null,lastPreview=null,fileText="",editBaseRevision=null,checkTimer=null,activeOperation=null,inputRevision=0,polling=false,currentData=null,lastHeight=0,resizeTimer=null,containerDimensions={},initializing=true,interacted=false,busyActive=false,diagnosticsBusy=false;
 function resize(){
   if(resizeTimer!==null)clearTimeout(resizeTimer);
   resizeTimer=setTimeout(()=>{
@@ -177,6 +178,7 @@ async function refresh(){const current=await tool("settings.read");renderCurrent
 function syncControls(){
   const running=activeOperation?.status==="running";
   for(const control of document.querySelectorAll("button,input,textarea,select"))control.disabled=busyActive||(running&&control.id!=="operationButton"&&!control.id.endsWith("Tab"));
+  $("diagnosticsButton").disabled=!connected||diagnosticsBusy;
   $("saveButton").disabled||=!$("projectRoot").value.trim();$("checkButton").disabled||=!$("projectRoot").value.trim();
 }
 async function busy(label,action){
@@ -247,6 +249,13 @@ $("applyButton").onclick=()=>busy("Импортируем настройки…"
 $("downloadButton").onclick=()=>busy("Готовим файл…",async()=>{
   const exported=await tool("settings.export_data"),url=URL.createObjectURL(new Blob([exported.text],{type:"application/json;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download=exported.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),30000);notice("Файл настроек подготовлен.");
 }).catch(()=>{});
+$("diagnosticsButton").onclick=async()=>{
+  if(diagnosticsBusy||!connected)return;interacted=true;diagnosticsBusy=true;syncControls();notice("Собираем диагностику…");
+  try{
+    const exported=await tool("settings.export_diagnostics"),url=URL.createObjectURL(new Blob([exported.text],{type:exported.mimeType+";charset=utf-8"}));
+    const link=document.createElement("a");link.href=url;link.download=exported.filename;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);notice("Диагностический файл подготовлен. Передайте его разработчику плагина.");
+  }catch(error){notice(error.message,true);}finally{diagnosticsBusy=false;syncControls();resize();}
+};
 async function pollOperation(operationId){
   if(polling)return;polling=true;
   try{
@@ -257,6 +266,11 @@ async function pollOperation(operationId){
     if(operation.action==="updates"){
       const data=operation.result,states={disabled:"отключён",external:"внешний экземпляр",current:"актуален",update_available:"доступно обновление",error:"ошибка проверки",applied:"применён",candidate_downloaded:"кандидат скачан"};
       $("updatesResult").textContent=(data.components||[data]).map(item=>(item.component==="bsl-ls"?"BSL LS":"Индекс кода")+": "+(states[item.state]||item.state)+(item.release?" · "+item.release:"")+(item.active?"\nУстановлен: "+item.active:"")+(item.latest?" · новый: "+item.latest:"")+(item.candidate?"\nКандидат: "+item.candidate:"")+(item.previous?" · для отката: "+item.previous:"")+(item.detail?"\n"+item.detail:"")+(item.reconnect==="open_new_chat"?"\nДля подключения откройте новый чат.":"")).join("\n\n");await refresh();notice("Операция обновления завершена.");return;
+    }
+    if(operation.action==="probe"){
+      const result=operation.result;$("probeResult").hidden=false;
+      $("probeResult").textContent=Object.entries(result.external).map(([name,item])=>name+": "+(!item.configured?"адрес не указан":item.connected?"подключение проверено":"ошибка подключения")+(item.detail?"\n"+item.detail:"")+(item.repositories?"\n"+item.repositories.map(repository=>repository.id+": "+(!repository.matched?"путь или имя не совпадают":repository.ready?"готов":repository.state||"не готов")).join("\n"):"")).join("\n\n");
+      notice("Проверка внешних подключений завершена. Привязка инструментов чата проверяется отдельно.");return;
     }
     if(operation.action!=="check"){
       if(operation.action==="pick_directory"&&operation.result?.cancelled){notice("Выбор папки отменён.");return;}
@@ -287,12 +301,13 @@ async function performCheck(){
   const current=await refresh();if(current.operation?.status==="running"){await pollOperation(current.operation.id);return;}if(!current.preparationScope)throw new Error("Выберите папку проекта.");const operation=await tool("settings.run_check",{authorization:{scope:current.preparationScope,effects:["launch"],evidence:"Пользователь нажал «Подготовить и проверить MCP» в экране настроек."}});activeOperation=operation;await pollOperation(operation.id);
 }
 $("checkButton").onclick=()=>busy("Проверяем подключения…",performCheck).catch(()=>{});$("operationButton").onclick=()=>{interacted=true;return pollOperation().catch(error=>notice(error.message,true));};
+$("probeButton").onclick=()=>busy("Проверяем EDT и v8std…",async()=>{const current=await refresh();if(current.operation?.status==="running"){await pollOperation(current.operation.id);return;}const operation=await tool("settings.probe_connections");await pollOperation(operation.id);}).catch(()=>{});
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(resize).observe(document.querySelector("main"));
 (async()=>{
   try{
-    const host=await rpc("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"1C AI Core Settings",version:"__CORE_VERSION__"},appCapabilities:{availableDisplayModes:["inline"]}});
+    const host=await rpc("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"1C AI Core Settings",version:"__CORE_VERSION__"},appCapabilities:{availableDisplayModes:["inline","fullscreen"]}});
     connected=true;applyStyle(host?.hostContext);notify("ui/notifications/initialized");const current=await refresh();show("profile");
-    notice(current.projectSelection?.detail||(current.profile?.status==="invalid"?"Профиль содержит ошибку. Можно импортировать рабочую копию.":current.profile?.status==="loaded"?"Профиль загружен автоматически для текущей папки.":"Создайте профиль или выберите файл во вкладке «Импорт»."),Boolean(current.projectSelection?.detail)||current.profile?.status==="invalid");
+    notice(current.configurationError?"Не удалось прочитать настройки. Скачайте диагностику для поддержки.":current.projectSelection?.detail||(current.profile?.status==="invalid"?"Профиль содержит ошибку. Можно импортировать рабочую копию.":current.profile?.status==="loaded"?"Профиль загружен автоматически для текущей папки.":"Создайте профиль или выберите файл во вкладке «Импорт»."),Boolean(current.projectSelection?.detail)||current.profile?.status==="invalid");
     initializing=false;
     if(initialData)await openInitial();
     if(initialData?.mode!=="operation"&&current.operation?.status==="running")await pollOperation(current.operation.id);

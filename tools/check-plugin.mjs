@@ -166,9 +166,21 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
         const tools = (await client.request("tools/list")).tools;
         assert.ok(tools.length);
         if (name === "1c-ai-settings") {
+          const app = tools.find(tool => tool.name === "settings.open");
+          assert.deepEqual(app._meta["openai/ui"].entrypoints, [{ type: "global" }]);
+          assert.ok(tools.some(tool => tool.name === "settings.inspect"));
+          assert.ok(tools.some(tool => tool.name === "settings.probe_connections"));
+          assert.deepEqual(tools.find(tool => tool.name === "settings.export_diagnostics")._meta.ui.visibility, ["app"]);
+          const support = await client.call("settings.export_diagnostics", {});
+          assert.equal(support.structuredContent, undefined);
+          assert.equal(JSON.parse(support._meta.data.text).format, "1c-ai-core-diagnostics");
+          const resource = await client.request("resources/read", { uri: app._meta.ui.resourceUri });
+          assert.ok(resource.contents[0]._meta["openai/ui"].availableDisplayModes.includes("fullscreen"));
           const before = (await client.call("settings.read", {}))
             .structuredContent;
           assert.equal(before.values.projectRoot, "");
+          const inspected = (await client.call("settings.inspect", { projectRoot: project })).structuredContent;
+          assert.equal(inspected.profile.status, "loaded");
           const preview = (
             await client.call("settings.preview", {
               text: yaml,

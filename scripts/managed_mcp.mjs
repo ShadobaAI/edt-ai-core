@@ -5,9 +5,12 @@ import { require_preparation } from "./components.mjs";
 import { effective_settings } from "./project_context.mjs";
 import { launch, stop_child } from "./processes.mjs";
 import { once } from "node:events";
+import { create_diagnostic_logger, register_diagnostic_secrets } from "./diagnostics.mjs";
 export async function serve(component, selected, state, config) {
   const [root, data] = project(selected, config, component === "code-index");
   config = effective_settings(config, root, data, null, state);
+  register_diagnostic_secrets(config);
+  const diagnostic = create_diagnostic_logger("managed-" + component, state);
   require_preparation(state, root, component);
   const lease = component === "code-index" ? await acquire_reader(state, root) : null;
   try {
@@ -15,8 +18,10 @@ export async function serve(component, selected, state, config) {
     const child = launch(command[0], command.slice(1), {
       cwd,
       env: env || process.env,
-      stdio: ["pipe", "pipe", "inherit"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    diagnostic.event("process_started", { projectRoot: root, childPid: child.pid, executable: command[0] });
+    child.stderr.on("data", chunk => { diagnostic.event("runtime_stderr", { projectRoot: root, message: String(chunk) }, "warning"); process.stderr.write(chunk); });
     const terminate = () => { void stop_child(child, 0); };
     process.once("SIGTERM", terminate);
     process.once("SIGINT", terminate);
@@ -25,6 +30,7 @@ export async function serve(component, selected, state, config) {
     child.stdout.pipe(process.stdout, { end: false });
     try {
       const [code] = await once(child, "close");
+      diagnostic.event("process_exited", { projectRoot: root, exitCode: code }, code === 0 ? "info" : "error");
       return code ?? 1;
     } finally {
       process.stdin.unpipe(child.stdin);
@@ -57,6 +63,7 @@ if (entrypoint(import.meta.url)) {
   try {
     process.exitCode = await main();
   } catch (error) {
+    create_diagnostic_logger("managed").event("launch_failed", { error }, "error");
     process.stderr.write("1c-ai-core: " + error.message + "\n");
     process.exitCode = 1;
   }

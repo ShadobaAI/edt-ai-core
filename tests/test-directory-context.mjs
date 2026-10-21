@@ -59,7 +59,7 @@ test("nested profile selection works through settings and SessionStart without w
   assert.equal(view.values.projectRoot, child);
   assert.equal(view.profile.path, path.join(child, ".ai/project.yaml"));
   assert.equal(view.directoryContext.directory, f.root);
-  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
   const context = success(node("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
   assert.match(context, /directoryContext/);
@@ -109,7 +109,7 @@ test("discovered ports refresh without writes and never override explicit or dis
   write(prefs(f.base), "mcpServerPort=19802");
   await assert.rejects(backend.main({ action: "apply", text: exported.text, revision: preview.revision }), /измен/i);
   assert.equal((await backend.main({ action: "read" })).values.edtUrl, "http://127.0.0.1:19802/mcp");
-  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   f.profile.connections = { edt: { url: "https://edt.example.test/mcp" } };
   assert.equal(resolved_settings(config, f.root, f.profile)[0].mcp.required.edt.url, f.profile.connections.edt.url);
   dump({ connections: { edt: { url: "" } } }, instance_file(config, f.root));
@@ -143,7 +143,7 @@ test("EDT descriptors enrich the selected directory, without assuming folder nam
   assert.match(hook, /Base & Library/);
   assert.match(hook, /8\.5\.1/);
   assert.deepEqual(fs.readFileSync(path.join(first, ".project")), before);
-  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
 });
 
 test("Git context handles unborn, detached and linked worktrees and ignores inherited Git selection", t => {

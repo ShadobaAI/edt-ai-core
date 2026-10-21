@@ -7,7 +7,7 @@ const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "u
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 function screen(handler, options = {}) {
-  const elements = new Map(), timers = new Map(), calls = [];
+  const elements = new Map(), timers = new Map(), calls = [], downloads = [], blobs = [];
   let nextTimer = 0, message, observedResize;
   class Element {
     constructor(tag = "div") { Object.assign(this, { tag, disabled: false, readOnly: false, hidden: false, value: "", files: [], textContent: "", children: [], events: {} }); }
@@ -16,7 +16,8 @@ function screen(handler, options = {}) {
     setAttribute(key, value) { (this.attributes ||= {})[key] = value; }
     replaceChildren(...children) { this.children = children; }
     append(...children) { this.children.push(...children); }
-    click() {}
+    click() { if (this.tag === "a") downloads.push({ filename: this.download, href: this.href }); }
+    remove() {}
     focus() {}
     getBoundingClientRect() { return { height: options.height?.() ?? 500 }; }
   }
@@ -44,16 +45,52 @@ function screen(handler, options = {}) {
     setTimeout: (fn, ms) => { const id = ++nextTimer; timers.set(id, { fn, ms }); return id; }, clearTimeout: id => timers.delete(id),
     getComputedStyle: () => ({ paddingTop: "20px", paddingBottom: "20px" }),
     ResizeObserver: class { constructor(callback) { observedResize = callback; } observe() {} },
-    Blob, URL: { createObjectURL: () => "blob:fixture", revokeObjectURL() {} } });
+    Blob, URL: { createObjectURL: blob => { blobs.push(blob); return "blob:fixture"; }, revokeObjectURL() {} } });
   vm.runInContext(script, context);
   const flush = () => new Promise(resolve => setImmediate(resolve));
-  return { context, elements, timers, calls, flush, resize: () => observedResize(),
+  return { context, elements, timers, calls, downloads, blobs, flush, resize: () => observedResize(),
     deliver(data) { message({ source: parent, origin: "https://fixture.invalid", data }); },
     async tick(ms = 1000) { const [id, timer] = [...timers].find(([, timer]) => timer.ms === ms) || []; assert.ok(timer); timers.delete(id); timer.fn(); await flush(); } };
 }
 
 const read = { values: { projectRoot: "C:/fixture/project" }, preparationScope: "C:/fixture/project#default",
   schema: { properties: { projectRoot: { readOnly: true } } } };
+
+test("diagnostics download stays available during preparation and creates one support file", async () => {
+  const operation = { id: "pending", action: "check", status: "running" };
+  let release;
+  const ui = screen(async name => {
+    if (name === "settings.read") return { ...read, operation };
+    if (name === "settings.operation") return operation;
+    if (name === "settings.export_diagnostics") return new Promise(resolve => { release = resolve; });
+    throw new Error(name);
+  });
+  await ui.flush();
+  assert.equal(ui.elements.get("checkButton").disabled, true);
+  assert.equal(ui.elements.get("diagnosticsButton").disabled, false);
+  const pending = ui.elements.get("diagnosticsButton").onclick(); await ui.flush();
+  assert.equal(ui.elements.get("diagnosticsButton").disabled, true);
+  await ui.elements.get("diagnosticsButton").onclick();
+  release({ filename: "support.json", mimeType: "application/json", text: '{"format":"1c-ai-core-diagnostics"}' });
+  await pending;
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.export_diagnostics").length, 1);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
+  assert.equal(ui.downloads[0].filename, "support.json");
+  assert.equal(JSON.parse(await ui.blobs[0].text()).format, "1c-ai-core-diagnostics");
+  assert.equal(ui.elements.get("diagnosticsButton").disabled, false);
+  assert.equal(ui.elements.get("checkButton").disabled, true);
+});
+
+test("diagnostics remain accessible when the first settings read fails", async () => {
+  const ui = screen(async name => {
+    if (name === "settings.read") throw new Error("damaged settings");
+    if (name === "settings.export_diagnostics") return { filename: "support.json", mimeType: "application/json", text: "{}" };
+    throw new Error(name);
+  });
+  await ui.flush();
+  await ui.elements.get("diagnosticsButton").onclick();
+  assert.equal(ui.downloads.length, 1);
+});
 
 test("directory context shows EDT and Git facts safely while an ambiguous profile cannot be created", async () => {
   const ui = screen(async name => {
@@ -87,6 +124,21 @@ test("component selection is saved independently and update polling never repeat
   ui.elements.get("updateComponent").value="bsl-ls";await ui.elements.get("applyUpdateButton").onclick();await ui.tick();
   assert.equal(ui.calls.filter(c=>c.params?.name==="settings.updates").length,1);
   assert.match(ui.elements.get("updatesResult").textContent,/BSL LS: применён · v9.0.0/);
+});
+
+test("external connection button polls one read-only probe and displays project readiness", async () => {
+  let probes = 0;
+  const ui = screen(async (name) => {
+    if (name === "settings.read") return read;
+    if (name === "settings.probe_connections") { probes++; return { id: "probe", status: "running" }; }
+    if (name === "settings.operation") return { id: "probe", status: "completed", action: "probe", result: { external: { edt: { configured: true, connected: true, repositories: [{ id: "product", matched: true, ready: false, state: "building" }] }, v8std: { configured: true, connected: true } } } };
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("probeButton").onclick();
+  assert.equal(probes, 1);
+  assert.match(ui.elements.get("probeResult").textContent, /product: building/);
+  assert.match(ui.elements.get("probeResult").textContent, /v8std: подключение проверено/);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });
 
 test("manual settings require a fresh preview after editing and apply the reviewed text", async () => {

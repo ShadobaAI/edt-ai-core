@@ -109,7 +109,7 @@ test("external code-index preparation checks scoped health without installing a 
   const result = await smoke(f.state, config, f.root, f.profile, "code-index", 5);
   assert.equal(result.index_ready, true);
   assert.equal(result.server.name, "external-index");
-  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   unhealthy = true;
   await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), /health failed.*health unavailable/);
 });

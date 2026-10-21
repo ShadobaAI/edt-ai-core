@@ -123,11 +123,16 @@ export async function main(argv) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { create_diagnostic_logger } = await import("../scripts/diagnostics.mjs");
+  const diagnostic = create_diagnostic_logger("vanessa");
+  diagnostic.event("command_started", { action: process.argv[2] });
   try {
     const result = await main(process.argv.slice(2));
+    diagnostic.event("command_completed", { action: process.argv[2], status: result?.status });
     process.stdout.write(JSON.stringify(redact(result), null, 2) + "\n");
     if (["error", "unverified"].includes(result?.status)) process.exitCode = 1;
   } catch (error) {
+    diagnostic.event("command_failed", { action: process.argv[2], code: error.code, message: error.message }, "error");
     // Filesystem failures contain paths; raw process/server responses never become diagnostics.
     const message = error.detail ? error.message : error.code ? `local operation failed (${error.code})` : error.message;
     process.stderr.write(JSON.stringify(redact({ status: "error", message, ...(error.detail ?? {}) })) + "\n"); process.exitCode = 1;

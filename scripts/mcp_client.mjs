@@ -22,6 +22,7 @@ export class McpClient {
     });
     this.process.stderr.on("data", (chunk) => {
       this.stderr = (this.stderr + chunk).slice(-16000);
+      this.options.onStderr?.(chunk);
     });
     this.process.stdin.on("error", () => {});
     this.process.once("error", (error) => this.fail(error));
