@@ -2,28 +2,36 @@
 
 ## Окружение
 
-Для локальных регрессий нужны Python 3.12+ и Node.js; в CI проверяются Node 22
-и 24 на Windows и Linux. Внешние EDT/v8std и Java нужны для соответствующих
+Для локальных регрессий нужны Node.js 22+ и Git; в CI настроены Node 22
+и 24 на Windows, Linux и macOS. Внешние EDT/v8std и Java нужны для соответствующих
 live-проверок; обычные регрессии используют тестовые данные и локальные серверы.
 
-Создайте и активируйте виртуальное окружение, затем установите зависимости.
-Пример для PowerShell:
+Установите зависимости разработчика и создайте автономный bundle:
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+```text
+npm ci --ignore-scripts
+node tools/vendor.mjs
 ```
 
-В Bash на Linux/macOS окружение активируется командой `source .venv/bin/activate`.
-Если активация недоступна, вызывайте интерпретатор из `.venv` напрямую.
+`package-lock.json` фиксирует версии и npm integrity. `vendor.mjs` собирает
+YAML/Ajv/ZIP в ESM bundle, копирует лицензии и проверяет SHA-512 двух готовых
+Windows N-API модулей Koffi по lockfile. Кэш загрузок находится в `.work/`.
+Компилятор, Python, PowerShell и Bash не нужны. `vendor/` генерируется и входит
+в готовый ZIP; `node_modules`, esbuild и инструменты разработчика туда не входят.
 
 ## Проверки
 
 ```sh
-python -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test-bsl-ls-proxy.mjs tests/test-settings-ui.mjs
-node tests/test-vanessa-ui.mjs
+node tools/test.mjs
+```
+
+Усиленный прогон с `PATH`, содержащим только Node (Git используется по явно
+разрешённому абсолютному пути для сборочных фикстур):
+
+```text
+node tools/without-shells.mjs tools/test.mjs
+node tools/without-shells.mjs tools/vendor.mjs
+node tools/without-shells.mjs tools/package-plugin.mjs
 ```
 
 Для небольшой правки запускайте относящиеся к ней тесты. Полная регрессия
@@ -33,14 +41,15 @@ node tests/test-vanessa-ui.mjs
 ## Локальная сборка
 
 ```sh
-bash tools/build-plugin.sh
+node tools/package-plugin.mjs
 # Явная версия для локальной проверки:
-bash tools/build-plugin.sh --version 0.2.1
+node tools/package-plugin.mjs --version 0.2.1
 ```
 
-Сборщику нужны Git и Python 3.10+. В Git Bash можно указать интерпретатор через
-`PYTHON`. Без Bash используйте `python tools/package-plugin.py` с теми же аргументами.
-Локальная сборка не запускает CI и ничего не публикует.
+Сборщику нужны Node.js, Git и заранее созданный `vendor/`.
+`node tools/develop.mjs build` обновляет bundle перед сборкой.
+`bash tools/build-plugin.sh` сохранён по запросу как необязательная обёртка
+dev-контура над этими Node-командами. Локальная сборка ничего не публикует.
 
 В `.build/` появятся:
 
@@ -59,13 +68,21 @@ bash tools/build-plugin.sh --version 0.2.1
 Для распаковки укажите новый, ещё не существующий каталог:
 
 ```sh
-python tools/check-plugin.py .build/marketplace/plugins/1c-ai-core
-python tools/verify-package.py .build '.work/extracted plugin'
+node tools/check-plugin.mjs .build/marketplace/plugins/1c-ai-core
+node tools/verify-package.mjs .build ".work/extracted plugin"
 ```
 
-Состав пакета задаётся в `tools/package-plugin.py`. Изменяя его, сохраняйте
-переносимые команды `python`/`node` и исключайте локальные настройки,
-credentials, зависимости и инструменты разработки. Проектные профили принадлежат
+Проверка пакета запускает entrypoints вне checkout, с Unicode и пробелами в путях,
+`PATH` только с Node и перехватом запрещённых процессов/shell-вызовов. Она проверяет
+импорт/экспорт настроек, CLI профиля, все MCP-входы и guard, без установки npm.
+Сам smoke выполняется в отдельном Node-процессе, чтобы Windows освободила N-API DLL.
+
+Состав пакета задаётся в `scripts/package_layout.mjs` и используется как
+`tools/package-plugin.mjs`, так и локальным `prepare_install.mjs`.
+Изменяя его, сохраняйте
+переносимую команду `node` и исключайте локальные настройки,
+credentials и инструменты разработки; runtime-зависимости поставляются внутри.
+Проектные профили принадлежат
 репозиториям проектов; здесь поставляется только `generic-1c`.
 
 ## CI и публикация
@@ -74,7 +91,8 @@ credentials, зависимости и инструменты разработк
 `MAJOR.MINOR.PATCH` без `v`. Обычный push ветки сборку не запускает.
 Workflow проверяет регрессии, собирает ZIP и хранит их вместе с `SHA256SUMS`
 в Actions artifact `1c-ai-core-plugin` 14 дней. Распакованный пакет проверяется
-на Windows/Linux и Node 22/24.
+в матрице Windows/Linux/macOS и Node 22/24. Все `run`-шаги используют `node {0}`;
+workflow не требует Bash или PowerShell для скриптов плагина.
 
 После успешного завершения всей сборки тега **Publish 1c-ai-core to codex-plugins**
 обновляет `plugins/1c-ai-core` и его запись в каталоге
@@ -97,13 +115,15 @@ PR-сборки не публикуются.
 Версия релиза берётся из запускающего тега. Публикация проверяет репозиторий,
 workflow, ревизию, тег, run ID, чистоту сборки и содержимое архивов.
 Код из артефакта с токеном публикации не исполняется.
+Git-аутентификация передаётся отдельным source/marketplace процессам через
+временные HTTP headers окружения; shell credential helper не устанавливается.
 Повторный выпуск той же сборки ничего не меняет; замена версии и откат запрещены.
 Для повторной попытки запустите workflow публикации вручную с `build_run_id`
 успешной сборки тега.
 
 ## Документация
 
-[Инструкция пользователю](USAGE.md), [архитектура](design/ARCHITECTURE.md),
-[техническая схема](design/TECHNICAL_ARCHITECTURE.md), [план развития](ROADMAP.md).
+[Инструкция пользователю](USAGE.md), [архитектура](https://github.com/ShadobaAI/edt-ai-core/blob/main/docs/design/ARCHITECTURE.md),
+[техническая схема](https://github.com/ShadobaAI/edt-ai-core/blob/main/docs/design/TECHNICAL_ARCHITECTURE.md), [план развития](ROADMAP.md).
 Архитектурные документы включают будущие возможности; фактическая готовность
 отмечена в [журнале проверок](VERIFICATION.md).

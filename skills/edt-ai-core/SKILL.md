@@ -19,8 +19,8 @@ prefixes, aliases, ports or a running EDT.
   bundled libraries and vendor-added prefixed objects. Reuse the shared ownership
   assessment in $1c-code-change; do not import CRM conventions into other projects.
 - Resolve `PLUGIN_ROOT` from this installed package (two levels above this skill).
-  Run Python commands with `<PLUGIN_ROOT>/scripts/...`, not relative to the
-  project cwd. Use `profile.py init|validate|export|import|effective|configure-instance`.
+  Run Node.js commands with `<PLUGIN_ROOT>/scripts/...`, not relative to the
+  project cwd. Use `node <PLUGIN_ROOT>/scripts/profile.mjs init|validate|export|import|effective|configure-instance`.
   Import into an existing profile requires `--merge` or `--replace`; both save a backup.
 - Tracked `connections.edt/v8std.url` are repository defaults. Effective settings
   apply instance/environment overrides; read the plugin README's project/instance
@@ -56,11 +56,11 @@ prefixes, aliases, ports or a running EDT.
   separate MCP readers. Disconnect/root switching must not stop another reader's
   daemon. A running daemon is not proof of fresh, complete operation-specific data;
   use $1c-code-index for efficient discovery and coverage checks.
-  Node 18+, Java 25+ and Python dependencies are prerequisites.
+  Node 22+ is required; Java 25+ is required for BSL LS. JS dependencies are bundled.
 - The bundled read-only `policy` MCP runs through Node without external setup.
   It selects applicable requirements and validates proposal/result ledgers;
   normative text still comes from v8std through $1c-standards.
-- Run `scripts/doctor.py PROJECT --live` for managed MCP probes plus external
+- Run `node <PLUGIN_ROOT>/scripts/doctor.mjs PROJECT --live` for managed MCP probes plus external
   configuration checks. `--managed-only` is for isolated tests; its success does
   not establish development readiness.
   A static profile transfer/validation does not require starting all services.

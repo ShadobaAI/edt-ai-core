@@ -70,9 +70,9 @@ workspace и учитывать наличие общего файла в CWD. �
 Локально пройдены 132 Python-теста, 10 транспортных сценариев прокси и существующие
 Node-проверки Vanessa. После нативных проб JVM с тестовым JAR не осталось.
 
-```powershell
+```text
 node --test tests/test-bsl-ls-proxy.mjs
-.venv/Scripts/python.exe -m unittest discover -s 1c-ai-core/tests -p 'test_*.py'
+node tools/test.mjs
 ```
 
 Нативный приёмочный сценарий не скачивает и не устанавливает компонентов.
@@ -80,8 +80,8 @@ node --test tests/test-bsl-ls-proxy.mjs
 разные workspace-настройки диагностик, явный файл без точки, параллельные сессии
 и сохранение второй сессии после закрытия первой:
 
-```powershell
-.venv/Scripts/python.exe tests/bsl_workspace_smoke.py --jar C:\runtime\bsl-language-server-exec.jar
+```text
+node tests/bsl_workspace_smoke.mjs --jar C:\runtime\bsl-language-server-exec.jar
 ```
 
 На установленном артефакте сценарий подтверждённо останавливается на проверке

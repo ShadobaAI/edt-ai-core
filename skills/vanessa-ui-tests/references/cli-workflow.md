@@ -1,21 +1,21 @@
 # Bundled CLI и editor transition
 
-Для `call --arguments-file` Python разрешает путь от каталога вызова один раз,
+Для `call --arguments-file` Node.js разрешает путь от каталога вызова один раз,
 сохраняет hash bytes в scope и передаёт Node абсолютный путь и ожидаемый hash.
 Node проверяет hash того же прочитанного buffer до dispatch и использует его
 parsed arguments без повторного чтения. Изменение файла требует нового describe
 и проверки согласования; смена cwd не должна менять исполняемый payload.
 
-В plugin root доступен `scripts/vanessa.py`; он проверяет enabled capability,
+В plugin root доступен `scripts/vanessa.mjs`; он проверяет enabled capability,
 schema local runtime, соответствие project/features/results/server binding и
 общую action policy до dispatch. Путь plugin root получай из установленного
 пакета, не ищи toolkit в Kafka checkout.
 
 ```text
-python <PLUGIN_ROOT>/scripts/vanessa.py describe --project-root PROJECT --feature RELATIVE_FEATURE --scenario EXACT_NAME
-python <PLUGIN_ROOT>/scripts/vanessa.py doctor --project-root PROJECT
-python <PLUGIN_ROOT>/scripts/vanessa.py list --project-root PROJECT
-python <PLUGIN_ROOT>/scripts/vanessa.py run --project-root PROJECT --feature RELATIVE_FEATURE --scenario EXACT_NAME --authorization-file APPROVAL_JSON
+node <PLUGIN_ROOT>/scripts/vanessa.mjs describe --project-root PROJECT --feature RELATIVE_FEATURE --scenario EXACT_NAME
+node <PLUGIN_ROOT>/scripts/vanessa.mjs doctor --project-root PROJECT
+node <PLUGIN_ROOT>/scripts/vanessa.mjs list --project-root PROJECT
+node <PLUGIN_ROOT>/scripts/vanessa.mjs run --project-root PROJECT --feature RELATIVE_FEATURE --scenario EXACT_NAME --authorization-file APPROVAL_JSON
 ```
 
 Относительный `--feature` считается от `projectRoot`. Допустимы файлы в

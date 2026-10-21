@@ -1,0 +1,390 @@
+import fs from "node:fs";
+import path from "node:path";
+import assert from "node:assert/strict";
+import test from "node:test";
+import { pathToFileURL } from "node:url";
+import { fixture, environment, node, success, ROOT } from "./helpers.mjs";
+import {
+  load,
+  dump,
+  inside,
+  parse,
+  settings,
+  operation_lock,
+  validate_settings,
+} from "../scripts/common.mjs";
+import { validate, validate_at, project_profile } from "../scripts/profile.mjs";
+import {
+  locate_project,
+  configuration_root,
+  select_root,
+  reconnect_file,
+} from "../scripts/project_paths.mjs";
+import {
+  effective_settings,
+  resolved_settings,
+  instance_file,
+} from "../scripts/project_context.mjs";
+import { reason } from "../scripts/guard.mjs";
+import { casefold } from "../scripts/casefold.mjs";
+
+test("Unicode state-key case folding preserves the former Python contract", () => {
+  assert.equal(casefold("Straße ẞ Σς ﬃ İ"), "strasse ss σσ ffi i\u0307");
+});
+
+test("profile init/export/import/merge/no-clobber/backups preserve the full profile", (t) => {
+  const f = fixture(t),
+    other = path.join(f.base, "destination"),
+    output = path.join(f.base, "export.yaml");
+  fs.mkdirSync(other);
+  success(node("scripts/profile.mjs", ["init", f.root]));
+  f.profile.policy.exceptions = [
+    {
+      id: "format",
+      selectors: ["std444"],
+      repository_ids: ["product"],
+      reason: "format",
+      source: ".ai/PROJECT.md",
+    },
+  ];
+  f.save();
+  success(node("scripts/profile.mjs", ["export", f.root, "--output", output]));
+  success(node("scripts/profile.mjs", ["import", other, "--input", output]));
+  assert.deepEqual(project_profile(other), f.profile);
+  assert.notEqual(
+    node("scripts/profile.mjs", ["import", other, "--input", output]).status,
+    0,
+  );
+  success(
+    node("scripts/profile.mjs", [
+      "import",
+      other,
+      "--input",
+      output,
+      "--merge",
+    ]),
+  );
+  const backups = fs
+    .readdirSync(path.join(other, ".ai"))
+    .filter((file) => file.endsWith(".bak.yaml"));
+  assert.equal(backups.length, 1);
+  assert.deepEqual(load(path.join(other, ".ai", backups[0])), f.profile);
+  assert.notEqual(
+    node("scripts/profile.mjs", ["export", other, "--output", output]).status,
+    0,
+  );
+  success(
+    node("scripts/profile.mjs", [
+      "export",
+      other,
+      "--output",
+      output,
+      "--replace",
+    ]),
+  );
+  assert.ok(fs.existsSync(path.join(f.root, "AGENTS.md")));
+});
+const invalid = {
+  "parent traversal": (data) => (data.repositories[0].path = "../outside"),
+  "absolute drive path": (data) => (data.repositories[0].path = "C:/outside"),
+  "duplicate aliases": (data) =>
+    data.repositories.push({ id: "second", path: ".", alias: "product" }),
+  "duplicate ids": (data) =>
+    data.repositories.push({ id: "product", path: ".", alias: "second" }),
+  "wrong authority": (data) => (data.authorities.edt_writer = "filesystem"),
+  "schema version": (data) => (data.schema_version = "9.0"),
+  "credential field": (data) => (data.policy.api_key = "example"),
+  "string roots": (data) => (data.roots.source = "src"),
+  "typed capabilities": (data) => (data.testing.yaxunit = "false"),
+  "enabled test requires binding": (data) => (data.testing.vanessa = true),
+  "unknown testing field": (data) => (data.testing.unknown = false),
+  "unknown test owner": (data) => {
+    data.testing.yaxunit_config = {
+      repository_id: "missing",
+      runner: "edt",
+      results: "results",
+    };
+  },
+  "unbound test owner": (data) => {
+    data.testing.yaxunit = true;
+    data.testing.yaxunit_config = {
+      repository_id: "product",
+      runner: "edt",
+      results: "results",
+    };
+    data.policy.unbound_edt_repositories = ["product"];
+  },
+  "framework cannot own tests": (data) => {
+    data.testing.yaxunit_config = {
+      repository_id: "product",
+      framework_repository_id: "product",
+      runner: "edt",
+      results: "results",
+    };
+  },
+  "policy groups cannot weaken": (data) =>
+    (data.policy.require_explicit_confirmation = []),
+  "shell source cannot be enabled": (data) =>
+    (data.policy.allow_shell_source_read = true),
+  "overlapping bindings": (data) => {
+    data.policy.edt_repository_ids = ["product"];
+    data.policy.unbound_edt_repositories = ["product"];
+  },
+  "exception scope required": (data) =>
+    (data.policy.exceptions = [
+      {
+        id: "one",
+        selectors: ["std444"],
+        repository_ids: [],
+        reason: "x",
+        source: "x",
+      },
+    ]),
+  "knowledge path contained": (data) =>
+    (data.knowledge.manifest = "../outside"),
+  "test executable portable": (data) =>
+    (data.testing.commands = [
+      { id: "test", repository_id: "product", argv: ["C:/tool"], effects: [] },
+    ]),
+  "test owner known": (data) =>
+    (data.testing.commands = [
+      { id: "test", repository_id: "missing", argv: ["node"], effects: [] },
+    ]),
+  "URL credentials excluded": (data) =>
+    (data.connections = { edt: { url: "http://user:password@localhost/mcp" } }),
+};
+for (const [name, change] of Object.entries(invalid))
+  test("reject " + name + " before CLI import changes any bytes", (t) => {
+    const f = fixture(t);
+    f.save();
+    const target = path.join(f.root, ".ai/project.yaml"),
+      before = fs.readFileSync(target),
+      bad = structuredClone(f.profile);
+    change(bad);
+    assert.throws(() => validate(bad));
+    const input = path.join(f.base, "bad.yaml");
+    dump(bad, input);
+    assert.notEqual(
+      node("scripts/profile.mjs", [
+        "import",
+        f.root,
+        "--input",
+        input,
+        "--replace",
+      ]).status,
+      0,
+    );
+    assert.deepEqual(fs.readFileSync(target), before);
+    assert.equal(
+      fs
+        .readdirSync(path.dirname(target))
+        .filter((name) => name.endsWith(".bak.yaml")).length,
+      0,
+    );
+  });
+test("strict YAML, URL/settings types and generic-only presets", (t) => {
+  const f = fixture(t);
+  assert.throws(() => parse("a: 1\na: 2"));
+  assert.throws(() => parse("[]"));
+  assert.throws(() => parse("purpose: !unsupported value"));
+  assert.throws(() => parse("a: &a [*a, *a, *a]\nb: [*a, *a, *a]".repeat(100)));
+  assert.deepEqual(fs.readdirSync(path.join(ROOT, "profiles")), ["generic-1c"]);
+  for (const preset of ["crm", "kafka"])
+    assert.notEqual(
+      node("scripts/profile.mjs", ["init", f.root, "--profile", preset]).status,
+      0,
+    );
+  for (const url of [
+    "ftp://localhost/mcp",
+    "http://localhost:99999/mcp",
+    "http://localhost:0/mcp",
+    "http://localhost/mcp#x",
+  ]) {
+    const config = settings();
+    config.mcp.required.edt.url = url;
+    assert.throws(() => validate_settings(config));
+  }
+});
+test("profile and paths respect symlinks and nested Git boundaries", (t) => {
+  const f = fixture(t);
+  f.save();
+  const sub = path.join(f.root, "docs");
+  fs.mkdirSync(sub);
+  assert.equal(locate_project(sub), f.root);
+  assert.equal(configuration_root(sub), f.root);
+  fs.mkdirSync(path.join(sub, ".git"));
+  assert.throws(() => locate_project(sub));
+  assert.equal(configuration_root(sub), sub);
+  const outside = path.join(f.base, "outside");
+  fs.mkdirSync(outside);
+  fs.symlinkSync(
+    outside,
+    path.join(f.root, "link"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  assert.throws(() => inside(f.root, "link/new"));
+  assert.throws(() => inside(f.root, "../outside"));
+  const bad = structuredClone(f.profile);
+  bad.repositories.push({ id: "tests", path: "tests", alias: "tests" });
+  bad.testing.vanessa_config = {
+    repository_id: "tests",
+    runtime_profile: "ui.json",
+    features: "src",
+    results: "results",
+    server_name: "vanessa",
+  };
+  assert.throws(() => validate_at(f.root, bad));
+});
+test("connection precedence and scoped instance keys perform no implicit writes", (t) => {
+  const f = fixture(t);
+  environment(t, f.env);
+  f.profile.connections = { edt: { url: "http://localhost:18001/mcp" } };
+  f.save();
+  const config = settings();
+  assert.equal(
+    effective_settings(config, f.root, f.profile).mcp.required.edt.url,
+    f.profile.connections.edt.url,
+  );
+  dump(
+    { connections: { edt: { url: "http://localhost:18002/mcp" } } },
+    path.join(f.root, ".ai/project.local.yaml"),
+  );
+  dump(
+    { connections: { edt: { url: "http://localhost:18003/mcp" } } },
+    path.join(f.root, ".ai/instances/first.local.yaml"),
+  );
+  const first = instance_file(config, f.root);
+  dump({ connections: { edt: { url: "http://localhost:18004/mcp" } } }, first);
+  assert.equal(
+    effective_settings(config, f.root, f.profile).mcp.required.edt.url,
+    "http://localhost:18004/mcp",
+  );
+  const explicit = path.join(f.base, "connections.yaml");
+  dump(
+    { connections: { edt: { url: "http://localhost:18005/mcp" } } },
+    explicit,
+  );
+  process.env.EDT_AI_CONNECTIONS_FILE = explicit;
+  assert.equal(
+    resolved_settings(config, f.root, f.profile)[1].edt,
+    "connections_file",
+  );
+  process.env.EDT_AI_EDT_URL = "http://localhost:18006/mcp";
+  assert.equal(
+    effective_settings(config, f.root, f.profile).mcp.required.edt.url,
+    process.env.EDT_AI_EDT_URL,
+  );
+  process.env.EDT_AI_INSTANCE = "second";
+  assert.notEqual(instance_file(config, f.root), first);
+  assert.notEqual(
+    reconnect_file(f.state, f.root),
+    reconnect_file(f.state, f.base),
+  );
+  delete process.env.EDT_AI_EDT_URL;
+  process.env.EDT_AI_CONNECTIONS_FILE = path.join(f.base, "missing");
+  assert.throws(
+    () => effective_settings(config, f.root, f.profile),
+    /existing override/,
+  );
+});
+test("legacy EDT URL never crosses project ownership; custom env and host roots remain local", (t) => {
+  const f = fixture(t);
+  environment(t, f.env);
+  f.save();
+  const config = settings();
+  config.active_project = f.base;
+  config.mcp.required.edt.url = "http://localhost:18009/mcp";
+  config.mcp.required.v8std.url = "http://localhost:18010/mcp";
+  const effective = effective_settings(config, f.root, f.profile);
+  assert.equal(effective.mcp.required.edt.url, "");
+  assert.equal(effective.mcp.required.v8std.url, config.mcp.required.v8std.url);
+  f.profile.connections = {
+    edt: { url: "http://localhost/mcp", url_env: "CUSTOM_EDT" },
+  };
+  process.env.CUSTOM_EDT = "http://localhost:18011/mcp";
+  assert.equal(
+    effective_settings(config, f.root, f.profile).mcp.required.edt.url,
+    process.env.CUSTOM_EDT,
+  );
+  assert.equal(
+    select_root([{ uri: pathToFileURL(f.root).href }], f.base),
+    f.root,
+  );
+  assert.throws(
+    () =>
+      select_root(
+        [
+          { uri: pathToFileURL(f.root).href },
+          { uri: pathToFileURL(f.state).href },
+        ],
+        f.base,
+      ),
+    /ambiguous/,
+  );
+  assert.throws(() => select_root([{ uri: "https://localhost/" }], f.root));
+});
+test("operation lock excludes concurrent writers without deleting their lock", async (t) => {
+  const f = fixture(t);
+  await operation_lock(f.state, async () => {
+    await assert.rejects(
+      operation_lock(f.state, () => {}),
+      /Another runtime operation/,
+    );
+    assert.ok(fs.existsSync(path.join(f.state, "operation.lock")));
+  });
+  assert.ok(!fs.existsSync(path.join(f.state, "operation.lock")));
+});
+test("guard rejects reads, writes, patches, traversal, broad discovery, shell and aliases", (t) => {
+  const f = fixture(t);
+  f.save();
+  for (const [tool_name, tool_input] of [
+    ["Read", { path: "src/Module.bsl" }],
+    ["Write", { path: "src/New.bsl" }],
+    ["Read", { path: "docs/../src/Module.bsl" }],
+    [
+      "apply_patch",
+      { patch: "*** Update File: docs/a.md\n*** Move to: src/a.bsl" },
+    ],
+    [
+      "apply_patch",
+      { patch: "*** Update File: src/a.bsl\n*** Move to: docs/a.md" },
+    ],
+    ["Glob", {}],
+    ["exec_command", { cmd: "node -v", workdir: "." }],
+    ["exec", { code: "tools.exec_command(...)" }],
+    ["mcp__code_index.search", { repo: "foreign" }],
+  ])
+    assert.ok(reason({ cwd: f.root, tool_name, tool_input }), tool_name);
+  for (const [tool_name, tool_input] of [
+    ["Read", { path: "docs/a.md" }],
+    ["mcp__edt.read", { path: "src/a.bsl" }],
+    ["mcp__code_index.search", { repo: "product" }],
+    ["exec_command", { cmd: "node -v", workdir: "docs" }],
+  ])
+    assert.equal(
+      reason({ cwd: f.root, tool_name, tool_input }),
+      null,
+      tool_name,
+    );
+  const result = node("hooks/guard.mjs", [], {
+    input: JSON.stringify({
+      cwd: f.root,
+      tool_name: "Read",
+      tool_input: { path: "src/a.bsl" },
+    }),
+  });
+  assert.equal(success(result).hookSpecificOutput.permissionDecision, "deny");
+  fs.writeFileSync(path.join(f.root, ".ai/project.yaml"), "invalid");
+  assert.equal(
+    success(
+      node("hooks/guard.mjs", [], {
+        input: JSON.stringify({
+          cwd: f.root,
+          tool_name: "Read",
+          tool_input: { path: "docs/a.md" },
+        }),
+      }),
+    ).hookSpecificOutput.permissionDecision,
+    "deny",
+  );
+});

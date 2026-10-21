@@ -1,3 +1,72 @@
+# Миграция на Node.js — 21 октября 2026
+
+Плагин, CLI, MCP-реле, guard, настройки, тесты, сборка и публикация переведены
+на Node.js 22+. Python-файлы и requirements.txt удалены. Единственное сохранённое
+Bash-исключение — необязательная dev-обёртка `tools/build-plugin.sh`, отсутствующая
+в установочном пакете. Исходное рабочее дерево перед миграцией было чистым;
+изменения миграции оставлены незакоммиченными.
+
+YAML/Ajv/fflate с транзитивными зависимостями включены в ESM bundle. Готовые
+Windows N-API модули Koffi для x64/arm64 включены вместе с MIT notices и проверены
+по SHA-512 из lockfile; пользователь не запускает npm или компилятор. Windows
+процессы проверяются через kernel32 по executable и времени создания; старые CIM
+timestamps поддерживаются. Деревья процессов сессии ограничены Job Objects,
+на POSIX — группами процессов. Общий daemon на Windows запускается через
+CreateProcessW с явным breakaway и наследует только три stdio handle;
+ограничение родительского Job, запрещающее breakaway, даёт понятную ошибку.
+Unicode 15.0 full case folding сохраняет прежние ключи каталогов/экземпляров.
+
+Подтверждено локально на Windows x64, Node.js 24.20.0:
+
+- **159/159 Node-тестов**, включая прежние BSL proxy/settings UI/Vanessa fixtures,
+  прошли с Node-only PATH и запретом вызовов Python, PowerShell, Bash и shell.
+  Git в сборочных фикстурах разрешён только по явному пути.
+- Bundle и ZIP собраны тем же Node-only harness. Проверены воспроизводимость,
+  SHA256SUMS, безопасная распаковка, совпадение двух ZIP, состав без локального
+  состояния/инструментов разработчика, native settings import/export, все шесть
+  MCP-входов, CLI профиля и guard вне checkout, с пробелами и Unicode в пути.
+- Реальные loopback HTTP/stdio тесты покрывают negotiation, пагинацию, динамические
+  каталоги, изоляцию проектов и экземпляров, отмену/отключение и отсутствие
+  повторного writer при неизвестном исходе. Проверены rollback настроек,
+  устаревшие preview, чужие roots/daemon и завершение собственного дерева процессов.
+- Публикация проверена на отдельных локальных Git-репозиториях: пустой магазин,
+  защита версии/тега/ревизии, сохранение чужих plugins и ограниченный повтор при
+  конкурирующем push. Реальной публикации не было. Git credential shell helper
+  заменён per-command HTTP аутентификацией с разделением source/marketplace token.
+- `npm audit` после обновления зависимостей: **0 уязвимостей** на дату проверки.
+
+Live-проверки готового пакета выполнялись только на синтетических исходниках:
+
+- **code-index 1.14.1**: автоматически выбран Windows x64 ZIP; размер и SHA-256
+  проверены до установки, MCP handshake и свежесть индекса подтверждены,
+  функция `Сложить` найдена. Два reader через реальные lazy MCP входы пакета
+  используют один daemon; после закрытия первого второй продолжает поиск,
+  после закрытия обоих daemon остаётся доступным. Тестовый daemon затем
+  явно остановлен через проверку ownership.
+- **BSL LS 1.0.7 / Java 25.0.2**: JAR скачан с проверкой размера/SHA-256,
+  сервер запущен и каталог инструментов получен. Gate корректно отклонил JAR:
+  отсутствуют `register_workspace_folder`, `list_workspace_folders`,
+  `unregister_workspace_folder` и analyzer с обязательным `workspaceFolder`.
+  Live-приёмка native multi-workspace и диагностик этим артефактом не подтверждена.
+- Linux x64/macOS arm64 assets и неподдерживаемые пары ОС/архитектуры проверены
+  фикстурами, включая tar.gz/ZIP и повреждения. Нативного запуска на этих ОС
+  локально не было. CI-матрица Windows/Linux/macOS × Node 22/24 настроена;
+  удалённый workflow в этой задаче не запускался.
+- EDT, v8std, YaXUnit и настоящий менеджер/клиент Vanessa не проходили live-приёмку.
+  Рабочие проекты, внешние MCP и их настройки не изменялись.
+
+Соответствие старых групп регрессий новым: profiles/profile_contract/project_context/
+guard → `test-profiles.mjs`; native_settings/settings_transactions/operations/
+preparation_scope/check_scope → `test-settings.mjs`; remote_mcp/lazy_surface/
+protocol_boundary → `test-remote.mjs`; index_surface → `test-managed-surface.mjs`;
+runtime/configuration → `test-runtime.mjs`;
+policy/workflow_phases → `test-policy.mjs`; packaging → `test-packaging.mjs`;
+vanessa_binding → `test-vanessa-binding.mjs`. Существующие Node fixtures сохранены.
+Группы объединены; количество тестов не является доказательством live-паритета.
+
+Воспроизведение: [DEVELOPMENT.md](DEVELOPMENT.md). Ниже сохранён исторический журнал;
+упоминания Python и прежних команд в нём относятся к состоянию до этой миграции.
+
 # Структура репозитория — 20 октября 2026
 
 Корень репозитория теперь является корнем одного плагина. Runtime, навыки,

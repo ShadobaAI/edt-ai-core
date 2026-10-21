@@ -1,7 +1,7 @@
 # Работа с репозиторием
 
 Здесь разрабатывается один универсальный плагин `1c-ai-core` для Codex.
-Корень репозитория является корнем плагина. Это код плагина на Python/Node.js,
+Корень репозитория является корнем плагина. Это код плагина на Node.js,
 а не конфигурация 1С; для обычных правок и локальных регрессий EDT не требуется.
 
 ## Где искать
@@ -31,25 +31,30 @@ endpoints, credentials и instance bindings в исходники и устан�
 ## Проверки
 
 Запускайте проверки, относящиеся к изменению. Команды выполняются из корня
-с установленными `requirements.txt` в виртуальном окружении:
+с Node.js 22+ и установленными зависимостями разработчика:
 
 ```sh
-python -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test-bsl-ls-proxy.mjs tests/test-settings-ui.mjs
-node tests/test-vanessa-ui.mjs
+npm ci --ignore-scripts
+node tools/vendor.mjs
+node tools/test.mjs
 ```
 
 После изменения упаковки соберите и проверьте пакет:
 
 ```sh
-bash tools/build-plugin.sh
-python tools/check-plugin.py .build/marketplace/plugins/1c-ai-core
+node tools/package-plugin.mjs
+node tools/check-plugin.mjs .build/marketplace/plugins/1c-ai-core
 ```
 
 При изменении путей или состава поставки обновляйте сборщик, CI, тесты и ссылки
 документации. Исключайте локальное состояние и инструменты разработки из ZIP.
 Локальные тесты не доказывают live-приёмку EDT, v8std или внешних runtime.
 Разделяйте подтверждённый результат и ограничения проверки.
+
+Python, PowerShell и Bash не являются зависимостями плагина, тестов или CI.
+`tools/build-plugin.sh` — сохранённое исключение: необязательная dev-обёртка
+над Node-сборщиком, без публикации. JS-зависимости и готовые Windows Node-модули
+включаются в ZIP; пользователь не запускает npm install.
 
 Код, навыки и документация распространяются под MPL 2.0 (`LICENSE`).
 Сохраняйте сведения об авторстве и лицензиях заимствованных компонентов.

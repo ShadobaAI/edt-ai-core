@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 .build/
 node_modules/
+/vendor/
 .pytest_cache/
 .DS_Store
 Thumbs.db

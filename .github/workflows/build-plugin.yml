@@ -13,6 +13,10 @@ concurrency:
   group: build-plugin-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+defaults:
+  run:
+    shell: node {0}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,24 +31,12 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - name: Resolve package version from Git tag
-        id: version
-        run: |
-          version="$(python tools/release_policy.py)"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - run: python -m pip install -r requirements.txt
-      - run: python -m pip check
-      - run: python -m unittest discover -s tests -p 'test_*.py'
-      - run: node --test tests/test-bsl-ls-proxy.mjs tests/test-settings-ui.mjs
-      - run: node tests/test-vanessa-ui.mjs
-      - name: Package plugin with resolved version
-        env:
-          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
-        run: bash tools/build-plugin.sh --version "$PACKAGE_VERSION"
-      - run: python tools/check-plugin.py .build/marketplace/plugins/1c-ai-core
+      - name: Install developer dependencies and bundle runtime libraries
+        run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'install'], {stdio:'inherit'})
+      - name: Node regressions
+        run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'test'], {stdio:'inherit'})
+      - name: Build and verify package
+        run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'build'], {stdio:'inherit'})
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: 1c-ai-core-plugin
@@ -55,10 +47,6 @@ jobs:
             .build/SHA256SUMS
           if-no-files-found: error
           retention-days: 14
-      - name: Build summary
-        run: |
-          echo 'Plugin ZIP, local marketplace ZIP and SHA256SUMS are in 1c-ai-core-plugin.' >> "$GITHUB_STEP_SUMMARY"
-          echo 'Package verified. Successful stable tag builds publish to ShadobaAI/codex-plugins after all smoke jobs pass; PR builds never publish.' >> "$GITHUB_STEP_SUMMARY"
 
   smoke:
     needs: build
@@ -66,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         node: ['22', '24']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
@@ -78,19 +66,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-      - run: python -m pip install -r requirements.txt
+      - name: Install developer test dependencies
+        run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'install'], {stdio:'inherit'})
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: 1c-ai-core-plugin
           path: .build/download
-      - name: Verify checksums and extract into a path with spaces
-        run: python tools/verify-package.py .build/download "${{ runner.temp }}/1c core smoke"
-      - name: Check extracted plugin outside the checkout
-        run: python tools/check-plugin.py "${{ runner.temp }}/1c core smoke/plugins/1c-ai-core"
-      - name: Runtime regression on each supported platform
-        run: python -m unittest discover -s tests -p 'test_*.py'
-      - run: node --test tests/test-bsl-ls-proxy.mjs tests/test-settings-ui.mjs
-      - run: node tests/test-vanessa-ui.mjs
+      - name: Verify archives and extracted plugin with Node-only PATH
+        run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'smoke'], {stdio:'inherit'})
+      - name: Runtime regressions
+        run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'test'], {stdio:'inherit'})

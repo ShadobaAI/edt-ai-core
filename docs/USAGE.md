@@ -8,7 +8,7 @@
 конкретного проекта хранятся в его репозитории или вне каталога плагина.
 После импорта запускается подготовка и проверка MCP. Для доступа к инструментам
 откройте эту папку проекта в Codex: ручной выбор папки в настройках относится
-только к текущей сессии настроек. Python-зависимости подготавливаются внутри плагина.
+только к текущей сессии настроек. Все JS-зависимости включены в готовый пакет; npm install у пользователя не требуется.
 
 В настройках также доступны «Экспорт настроек», «Подготовить и проверить MCP»
 и «Состояние операции». Интерфейс использует structured settings и MCP App.
@@ -102,16 +102,18 @@ selection не дают успешного compliance. Сам policy не чит
 
 ## Запуск
 
-Нужны Windows x64, Python 3.12+, Node.js 18+ и Java 25+. Настройки Java/Node
+Нужны Node.js 22+ и Java 25+ для BSL LS. Code-index поддерживает Windows x64, Linux x64 и macOS arm64. Настройки Java/Node
 можно переопределить; пути к code-index и BSL LS пользователь не задаёт.
 
 Из корня репозитория:
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe scripts/profile.py init C:\path\to\project --profile generic-1c
+```text
+node scripts/profile.mjs init C:\path\to\project --profile generic-1c
 ```
+
+В установленном плагине используйте абсолютный путь к соответствующему `.mjs`
+от каталога плагина. JS-зависимости уже включены в поставку. Подготовка исходного
+checkout для разработки описана в [DEVELOPMENT.md](DEVELOPMENT.md).
 
 Проект должен уже существовать. Init создаёт `.ai/project.yaml`,
 `.ai/PROJECT.md` и отсутствующий `AGENTS.md`. Существующие инструкции не заменяются.
@@ -191,17 +193,17 @@ ignore patterns для local overrides. `EDT_AI_INSTANCE` задаёт имя э
 `EDT_AI_PROJECT_ROOT` явно закрепляет каталог для CLI или отдельной сессии.
 Если явно заданный `EDT_AI_CONNECTIONS_FILE` отсутствует, подключение блокируется.
 
-```powershell
+```text
 $env:EDT_AI_INSTANCE = 'crm-second'
 $env:EDT_AI_EDT_URL = 'http://127.0.0.1:18765/mcp'
-python scripts/profile.py effective C:\project
+node scripts/profile.mjs effective C:\project
 ```
 
 Переменные передаются процессу Codex при его запуске. Для сохранённого значения
 экземпляра вместо переменной используйте настройки плагина или:
 
-```powershell
-python scripts/profile.py configure-instance C:\project --instance second --edt-url http://127.0.0.1:18765/mcp
+```text
+node scripts/profile.mjs configure-instance C:\project --instance second --edt-url http://127.0.0.1:18765/mcp
 ```
 
 `effective` показывает применяемый профиль и путь instance override; чтение
@@ -227,7 +229,7 @@ BSL LS использует `register_workspace_folder`, `list_workspace_folders
 
 Установочная сборка пишет `settings.json`; существующий `settings.yaml`
 подхватывается при подготовке, если JSON ещё нет. Settings MCP и CLI используют
-общий Python reader для JSON/YAML. Выбранный подкаталог нормализуется до ближайшего
+общий Node.js reader для JSON/YAML. Выбранный подкаталог нормализуется до ближайшего
 корня профиля одинаково для чтения, импорта и экспорта, с сохранением Git-границ.
 
 ## Импорт и экспорт
@@ -240,15 +242,15 @@ overrides и process environment в файл не подставляются; п
 Native settings не меняет сохранённый CLI `active_project`: выбранная папка
 принадлежит сессии. Регистрации BSL LS в экспорт не входят.
 
-```powershell
-python scripts/profile.py export C:\project --output profile.yaml
-python scripts/profile.py import C:\other-project --input profile.yaml
-python scripts/profile.py import C:\other-project --input profile.yaml --merge
-python scripts/profile.py import C:\other-project --input profile.yaml --replace
-python scripts/profile.py validate profile.yaml
+```text
+node scripts/profile.mjs export C:\project --output profile.yaml
+node scripts/profile.mjs import C:\other-project --input profile.yaml
+node scripts/profile.mjs import C:\other-project --input profile.yaml --merge
+node scripts/profile.mjs import C:\other-project --input profile.yaml --replace
+node scripts/profile.mjs validate profile.yaml
 ```
 
-Используйте Python из подготовленного venv. Команды возвращают JSON и ненулевой
+Используйте Node.js 22+. Команды возвращают JSON и ненулевой
 код при ошибке. Проверяются JSON Schema, типы, версия, неизвестные поля,
 повторяющиеся YAML-ключи, относительные пути, уникальность IDs/aliases и связи
 между capabilities и репозиториями. Import и settings preview/apply дополнительно
@@ -296,7 +298,7 @@ testing:
 
 Общие согласования хранятся в [policy/default.json](../policy/default.json).
 Проект не может отключить обязательные группы или разрешить shell-доступ к
-protected source. Effective policy видна через `scripts/action_policy.py PROJECT`,
+protected source. Effective policy видна через `scripts/action_policy.mjs PROJECT`,
 doctor, settings connection check и MCP `get_action_policy`/`check_action`.
 Все навыки используют один [контракт согласований](../skills/1c-routing/references/action-policy.md).
 Фактическое указание пользователя переиспользуется для того же scope/effects;
@@ -318,10 +320,10 @@ JSON соответствует [отдельной схеме](../schemas/vanes
 экспортируются внутри переносимого профиля. Привязки project/features/results и
 имя сервера должны точно совпадать с portable binding.
 
-```powershell
-python scripts/vanessa.py describe --project-root C:\project --feature tests/features/example.feature --scenario 'Exact scenario'
-python scripts/vanessa.py doctor --project-root C:\project
-python scripts/vanessa.py run --project-root C:\project --feature tests/features/example.feature --scenario 'Exact scenario' --authorization-file actual-agreement.json
+```text
+node scripts/vanessa.mjs describe --project-root C:\project --feature tests/features/example.feature --scenario 'Exact scenario'
+node scripts/vanessa.mjs doctor --project-root C:\project
+node scripts/vanessa.mjs run --project-root C:\project --feature tests/features/example.feature --scenario 'Exact scenario' --authorization-file actual-agreement.json
 ```
 
 `describe` только показывает точные `scope` и `effects`. Формат authorization
@@ -344,13 +346,13 @@ EDT используется по возможностям текущего се
 а внешняя AI-помощь не расходует лимит автоматически. Покрытие workflow не
 означает live-приёмку всех возможностей установленного EDT.
 
-```powershell
-python scripts/runtime.py install all
-python scripts/runtime.py smoke all --project-root C:\project
-python scripts/runtime.py start code-index --project-root C:\project
-python scripts/runtime.py start bsl-ls --project-root C:\project
-python scripts/runtime.py stop code-index --project-root C:\project
-python scripts/runtime.py status --project-root C:\project
+```text
+node scripts/runtime.mjs install all
+node scripts/runtime.mjs smoke all --project-root C:\project
+node scripts/runtime.mjs start code-index --project-root C:\project
+node scripts/runtime.mjs start bsl-ls --project-root C:\project
+node scripts/runtime.mjs stop code-index --project-root C:\project
+node scripts/runtime.mjs status --project-root C:\project
 ```
 
 Install необязателен: MCP entrypoints сами устанавливают отсутствующий runtime.
@@ -398,22 +400,22 @@ live-приёмка полноты корпуса. Обычные вызовы �
 payload сервера и не запускают повторный tools/list. Timeout чтения v8std —
 60 секунд; переподключение не повторяет автоматически прерванный запрос.
 Для подключения managed, bundled policy и внешних MCP к host с нужным
-Python/проектом сформируйте конфигурацию:
+Node.js/проектом сформируйте конфигурацию:
 
-```powershell
-python scripts/runtime.py config --project-root C:\project --output mcp.local.json
+```text
+node scripts/runtime.mjs config --project-root C:\project --output mcp.local.json
 ```
 
-Конфигурация использует текущий Python, абсолютные пути и реальные URL из
+Конфигурация использует текущий Node.js, абсолютные пути и реальные URL из
 настроек. Генерация файла не устанавливает плагин и не меняет конфигурацию Codex.
 Авторизация и native installer остаются отдельным этапом.
 
 ## Doctor
 
-```powershell
-python scripts/doctor.py C:\project
-python scripts/doctor.py C:\project --live
-python scripts/doctor.py C:\project --live --managed-only
+```text
+node scripts/doctor.mjs C:\project
+node scripts/doctor.mjs C:\project --live
+node scripts/doctor.mjs C:\project --live --managed-only
 ```
 
 Static doctor проверяет конфигурацию и локальные hashes. Live проверяет bundled
@@ -430,11 +432,11 @@ policy через MCP и запускает initialize/tools/list для managed
 
 ## Проверки
 
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_*.py -v
+```text
+node tools/test.mjs
 node tests/test-vanessa-ui.mjs
-.\.venv\Scripts\python.exe tests/prepare_live.py .work/demo-project
-.\.venv\Scripts\python.exe tests/live_smoke.py --project-root .work/demo-project --state-dir .work/state --output .work/live-result.json
+node tests/prepare_live.mjs .work/demo-project
+node tests/live_smoke.mjs --project-root .work/demo-project --state-dir .work/state --output .work/live-result.json
 ```
 
 Live smoke использует реальные host entrypoints: скачивание при отсутствии

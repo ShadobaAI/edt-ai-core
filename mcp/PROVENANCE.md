@@ -47,7 +47,7 @@ registry. Local tests establish protocol and applicability/ledger behavior;
 they do not establish v8std corpus availability or normative truth of evidence.
 
 The two action tools use the core-owned `policy/default.json`, shared with the
-Python profile/doctor/settings checks. They validate explicit scope/effects and
+Node.js profile/doctor/settings checks. They validate explicit scope/effects and
 caller evidence of actual user agreement. This evidence is not a signed grant,
 user authentication, host approval override or permission for another target.
 
@@ -84,14 +84,14 @@ authorized single-clean escalation without CRM bindings. The source records a
 live observation on 2026-09-30 with EDT-MCP 2.17.1; this transfer does not establish
 recovery on the current external EDT or a different installed contract.
 
-`hooks/guard.mjs` and `scripts/guard.py` are the core's profile-driven adaptation
+`hooks/guard.mjs` and `scripts/guard.mjs` are the core's profile-driven adaptation
 of the source-environment routing guard: protected-source boundaries and allowed
 index aliases come from the selected repository. The manifest registers a
 PreToolUse hook using the [documented plugin extension](https://developers.openai.com/plugins/build/plugins).
 Local invocation verifies decisions, not host trust, actual event delivery or
 complete isolation of arbitrary programs. These remain explicit host boundaries.
 
-`project_paths.py`, `project_context.py` and the lazy/settings entrypoints implement
+`project_paths.mjs`, `project_context.mjs` and the lazy/settings entrypoints implement
 the user's accepted directory/instance decision in `skills/catalog.yaml`.
 Tracked defaults, local and Codex instance overrides, and process environment
 are separate inputs to one effective binding. `settings/defaults.json` is the
@@ -99,9 +99,26 @@ single bundled defaults source; no parallel YAML copy is maintained.
 
 The shared EDT progressive-disclosure and update-audit workflow from both
 source routing skills is maintained in `skills/1c-routing/references/toolsets.md`.
-Native settings use the Python JSON/YAML loader instead of a second Node overlay
+Native settings use the shared Node.js JSON/YAML loader instead of a second overlay
 parser. BSL LS configurations are session-local native workspace folders.
 Prepared install copies carry `hooks/runtime.local.json` because host
 hooks do not inherit MCP entry env; this generated file belongs only to the
 installed copy and contains runtime paths, not credentials.
 
+
+
+## Node migration (2026-10-21)
+
+Profile/settings/runtime/MCP relay and release tooling are implemented in Node.js.
+Vanessa manager identity uses Windows kernel32 calls through the bundled MIT Koffi
+N-API addon. Process ownership is enforced with per-session Job Objects on Windows
+and process groups on POSIX; shared index daemons keep their separate ownership.
+The Windows daemon uses explicit CREATE_BREAKAWAY_FROM_JOB with an inherited-handle
+allowlist; ordinary descendants remain in the reader Job. An ancestor Job that
+forbids breakaway produces an error rather than silently changing process lifetime.
+The YAML/Ajv/fflate bundle and all dependency notices are shipped in vendor/.
+Code-index platform assets are selected from the upstream release: Windows x64,
+Linux x64 and macOS arm64. Other targets fail before download.
+Sources: [code-index releases](https://github.com/Regsorm/code-index-mcp/releases),
+[Koffi](https://github.com/Koromix/koffi),
+[Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).

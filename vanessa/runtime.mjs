@@ -2,7 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { windows_process_identity, same_creation } from "../scripts/windows_process.mjs";
 import { randomUUID } from "node:crypto";
 import { digest, fail, readJson, startArguments, platformCommandLine, checkFiles, interactiveParameters } from "./profile.mjs";
 
@@ -65,22 +67,12 @@ export function checkClaims(profile) {
     if (owner.profile !== profile.identity && (owner.clientKeyVersion !== 2 || owner.client === clientKey(profile))) fail("TestClient belongs to another active profile manager or its legacy client claim is unverified");
   }
 }
-const psQuote = value => "'" + value.replaceAll("'", "''") + "'";
-function powershell(code, timeout = 10000) {
-  const result = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(code, "utf16le").toString("base64")], {
-    encoding: "utf8", windowsHide: true, timeout, maxBuffer: 16384,
-  });
-  if (result.error || result.status !== 0) fail("Windows process operation failed; launch outcome may be indeterminate");
-  return result.stdout.trim();
-}
 export function managerAlive(profile, owner) {
   if (!owner?.pid) return false;
   if (process.platform !== "win32") fail("manager process identity verification currently requires Windows");
-  const output = powershell(`$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${Number(owner.pid)}'; if($p){$p | Select-Object ExecutablePath,CreationDate | ConvertTo-Json -Compress}`);
-  if (!output) return false;
-  let state;
-  try { state = JSON.parse(output); } catch { fail("unverifiable manager process identity"); }
-  if (state.ExecutablePath?.toLowerCase() !== profile.platform.toLowerCase() || state.CreationDate !== owner.created) fail("manager PID was reused or process identity changed");
+  const state = windows_process_identity(owner.pid);
+  if (!state) return false;
+  if (state.executable.toLowerCase() !== profile.platform.toLowerCase() || !same_creation(state, owner.created)) fail("manager PID was reused or process identity changed");
   return true;
 }
 export const portAvailable = profile => new Promise((resolve, reject) => {
@@ -119,21 +111,26 @@ export async function start(profile) {
     fs.mkdirSync(profile.results, { recursive: true });
     const ownerFile = path.join(registryDir(), `${endpointKey(profile)}.owner.json`);
     fs.writeFileSync(ownerFile, JSON.stringify(claim));
-    // Start-Process joins ArgumentList. Preserve the platform's doubled quote contract.
+    // Preserve the platform's doubled quote contract in the raw Windows command line.
     const commandLine = platformCommandLine(startArguments(profile, process.env, { startupLog }));
     // The user-visible interactive test manager needs its normal application window.
-    // Only this short-lived PowerShell helper is hidden via windowsHide.
-    let result;
+    let launched;
     try {
-      result = powershell(`$p=Start-Process -FilePath ${psQuote(profile.platform)} -ArgumentList ${psQuote(commandLine)} -WorkingDirectory ${psQuote(profile.projectRoot)} -WindowStyle Normal -PassThru; $s=Get-CimInstance Win32_Process -Filter ('ProcessId='+$p.Id); if(-not $s){throw 'manager exited'}; @{pid=$p.Id;created=$s.CreationDate}|ConvertTo-Json -Compress`);
+      const child = spawn(profile.platform, [commandLine], {
+        cwd: profile.projectRoot, windowsHide: false, windowsVerbatimArguments: true,
+        argv0: '"' + profile.platform + '"', detached: true, stdio: "ignore", shell: false,
+      });
+      await once(child, "spawn");
+      child.unref();
+      const identity = windows_process_identity(child.pid);
+      if (!identity || identity.executable.toLowerCase() !== profile.platform.toLowerCase()) throw new Error("manager launch identity is indeterminate");
+      launched = { pid: child.pid, created: identity.created };
     } catch (error) {
       error.code = "manager_launch_indeterminate";
       error.detail = { classification: "manager_start", outcome: "indeterminate", startupLog,
         nextAction: "Inspect this launch log and authoritative process state before another start; previous logs are preserved." };
       throw error;
     }
-    let launched;
-    try { launched = JSON.parse(result); } catch { fail("manager launch outcome is indeterminate; verify state before retry"); }
     if (!Number.isInteger(launched.pid) || !launched.created) fail("manager launch identity is indeterminate");
     const state = { ...claim, ...launched, status: "running" };
     fs.writeFileSync(ownerFile, JSON.stringify(state)); fs.writeFileSync(stateFile, JSON.stringify(state));

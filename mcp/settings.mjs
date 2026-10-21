@@ -62,7 +62,7 @@ function values(c) {
   };
 }
 async function readValues() {
-  // Python owns JSON/YAML loading, profile resolution and instance precedence.
+  // The Node backend owns JSON/YAML loading, profile resolution and precedence.
   // The unconfigured screen remains dependency-free and does not create state.
   if (selectedRoot || fs.existsSync(configPath)) return backend("read", {});
   const defaults = JSON.parse(fs.readFileSync(path.join(root, "settings", "defaults.json"), "utf8"));
@@ -125,8 +125,8 @@ const tools = [
 
 function backend(action, args, context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.EDT_AI_PYTHON || "python",
-      [path.join(root, "scripts", "bootstrap.py"), "--backend"], {
+    const child = spawn(process.execPath,
+      [path.join(root, "scripts", "settings_backend.mjs")], {
         cwd: root, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, EDT_AI_STATE_DIR: state, EDT_AI_SETTINGS: configPath,
           EDT_AI_PROJECT_ROOT: context.selectedDirectory || "", EDT_AI_SETTINGS_ROOT_LOCKED: context.rootLocked === false ? "0" : "1" },

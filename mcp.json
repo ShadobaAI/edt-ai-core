@@ -4,7 +4,9 @@
     "policy": {
       "type": "stdio",
       "command": "node",
-      "args": ["${PLUGIN_ROOT}/policy/read-only-mcp.mjs"]
+      "args": [
+        "${PLUGIN_ROOT}/policy/read-only-mcp.mjs"
+      ]
     },
     "1c-ai-settings": {
       "type": "stdio",
@@ -15,36 +17,36 @@
     },
     "code-index": {
       "type": "stdio",
-      "command": "python",
+      "command": "node",
       "args": [
-        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "code-index"
       ]
     },
     "bsl-ls": {
       "type": "stdio",
-      "command": "python",
+      "command": "node",
       "args": [
-        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "bsl-ls"
       ]
     },
     "edt": {
       "type": "stdio",
-      "command": "python",
+      "command": "node",
       "args": [
-        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "edt"
       ]
     },
     "v8std": {
       "type": "stdio",
-      "command": "python",
+      "command": "node",
       "args": [
-        "${PLUGIN_ROOT}/scripts/lazy_mcp.py",
+        "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "v8std"
       ]

@@ -1,10 +1,13 @@
 version: 0.1.0
-description: Descriptive runtime contract; scripts/runtime.py implements release selection.
-platform: windows-x64
+description: Descriptive runtime contract; scripts/runtime.mjs implements release selection.
+platform: auto
 managed:
   code-index:
     repository: Regsorm/code-index-mcp
-    artifact: bsl-indexer-windows-x64.zip
+    artifacts:
+      win32-x64: bsl-indexer-windows-x64.zip
+      linux-x64: bsl-indexer-linux-x64.tar.gz
+      darwin-arm64: bsl-indexer-macos-arm64.tar.gz
     integrity: github_asset_sha256_and_size
     mode: project_daemon_and_read_only_stdio_client
   bsl-ls:
@@ -14,7 +17,7 @@ managed:
     mode: client_owned_stdio
     prerequisites:
       java: 25+
-      node: 18+
+      node: 22+
 user_started:
   - edt
   - v8std
@@ -23,13 +26,14 @@ bundled:
     entrypoint: policy/read-only-mcp.mjs
     protocol_version: 2.1.0
     prerequisites:
-      node: 18+
+      node: 22+
   vanessa-cli:
-    entrypoint: scripts/vanessa.py
+    entrypoint: scripts/vanessa.mjs
     mode: profile_bound_explicit_action
     external_runtime: user_provided
     wire_contract: Vanessa_Single_1.2.043.45_MCP_1.31
     prerequisites:
-      node: 18+
-      python: 3.12+
+      node: 22+
+    manager_platform: windows
+    process_identity: bundled_koffi_windows_api
 

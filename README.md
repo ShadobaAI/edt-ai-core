@@ -10,7 +10,9 @@
 
 ## Пользователю
 
-Для работы нужны Windows x64, Python 3.12+, Node.js 18+ и Java 25+.
+Для работы нужен Node.js 22+. Для BSL LS дополнительно нужна Java 25+.
+Code-index автоматически выбирается для Windows x64, Linux x64 или macOS arm64.
+Остальные платформы получают понятную ошибку до загрузки code-index.
 EDT-MCP и v8std должны быть запущены отдельно; их адреса задаются в настройках
 проекта. Code-index и BSL LS плагин скачивает и подготавливает сам.
 
@@ -27,17 +29,18 @@ EDT-MCP и v8std должны быть запущены отдельно; их �
 и команды CLI описаны в [руководстве пользователя](docs/USAGE.md).
 Профили конкретных проектов хранятся в их собственных репозиториях.
 
-Пока идёт разработка, установочный архив можно собрать локально:
+JS-зависимости уже включены в архив: пользователю не нужны `npm install`,
+Python, PowerShell или Bash. Запуск менеджера Vanessa поддерживается на Windows;
+его идентичность проверяется через Windows API и включённый Node-модуль Koffi.
+
+Пока идёт разработка, установочный архив можно собрать локально после `npm ci`:
 
 ```sh
-bash tools/build-plugin.sh
+node tools/vendor.mjs
+node tools/package-plugin.mjs
 ```
 
-В PowerShell без Bash:
-
-```powershell
-python tools/package-plugin.py
-```
+`bash tools/build-plugin.sh` сохранён как необязательная обёртка для dev-контура.
 
 Архивы появятся в `.build/`. Для установки на этой же машине подключите
 готовый каталог `.build/marketplace`. Локальная сборка ничего не публикует.
@@ -55,19 +58,20 @@ python tools/package-plugin.py
 | `tools/`, `packaging/`, `.github/` | Сборка и выпуск |
 | `docs/`, `examples/` | Документация и примеры |
 
-Установите Python-зависимости в виртуальное окружение и выполните проверки:
+Установите зависимости разработчика и выполните проверки:
 
 ```sh
-python -m pip install -r requirements.txt
-python -m unittest discover -s tests -p 'test_*.py'
-node --test tests/test-bsl-ls-proxy.mjs tests/test-settings-ui.mjs
-node tests/test-vanessa-ui.mjs
+npm ci --ignore-scripts
+node tools/vendor.mjs
+node tools/test.mjs
+node tools/package-plugin.mjs
+node tools/check-plugin.mjs .build/marketplace/plugins/1c-ai-core
 ```
 
 Настройка окружения, проверка ZIP и выпуск через CI — в
 [инструкции разработчика](docs/DEVELOPMENT.md).
 Устройство и планируемые возможности описаны в
-[архитектуре](docs/design/ARCHITECTURE.md).
+[архитектуре в репозитории](https://github.com/ShadobaAI/edt-ai-core/blob/main/docs/design/ARCHITECTURE.md).
 
 ## Лицензия
 
