@@ -16,7 +16,7 @@ managed:
     integrity: github_asset_sha256_and_size
     mode: client_owned_stdio
     prerequisites:
-      java: 25+
+      java: required_by_selected_jar
       node: 22+
 user_started:
   - edt
@@ -31,7 +31,7 @@ bundled:
     entrypoint: scripts/vanessa.mjs
     mode: profile_bound_explicit_action
     external_runtime: user_provided
-    wire_contract: Vanessa_Single_1.2.043.45_MCP_1.31
+    wire_contract: vanessa-single-text-v1
     prerequisites:
       node: 22+
     manager_platform: windows

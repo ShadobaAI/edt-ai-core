@@ -294,7 +294,9 @@ try {
   assert.deepEqual(parseProfiles(wire.profiles), [{ name: "ExistingClient", infobase: { type: "server", server: "localhost", database: "ui-demo" }, additionalParameters: '/N"FixtureUser"', connected: false, pid: 0, computerName: "localhost" }]);
   assert.equal(parseInfobase('Srvr="localhost";Ref="one";Ref="two";'), null);
   assert.equal(parseInfobase('File="C:\\Demo";Srvr="localhost";Ref="one";'), null);
-  assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("1.31", "9.99"))), null);
+  assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("1.31", "9.99"))).mcpVersion, "9.99");
+  assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("1.2.043.45", "3.0.0-future"))).runtimeVersion, "3.0.0-future");
+  assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("Строка соединения с информационной базой", "Неизвестное поле"))), null);
   assert.equal(parseState(wire.response(wire.state.content[0].text.replace("Выполнение сценариев: нет", "Выполнение сценариев: неизвестно"))), null);
   assert.equal(parseEditor(wire.response(wire.editor.content[0].text.replace("## Ошибки в редакторе", "## Unknown"))), null);
   assert.equal(parseProfiles(wire.response(wire.profiles.content[0].text.replace("Найдено профилей: 1", "Найдено профилей: 2"))), null);

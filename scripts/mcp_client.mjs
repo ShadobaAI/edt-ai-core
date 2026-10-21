@@ -1,9 +1,11 @@
-import readline from "node:readline";
+import { read_lines, DEFAULT_MAX_BYTES } from "./mcp_codec.mjs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { launch, stop_child } from "./processes.mjs";
+import { core_version } from "./compatibility.mjs";
 export class McpClient {
-  constructor(command, cwd, env = process.env, timeout = 60) {
+  constructor(command, cwd, env = process.env, timeout = 60, options = {}) {
+    this.options = options;
     this.timeout = timeout * 1000;
     this.root = path.resolve(cwd);
     this.roots = [
@@ -26,47 +28,43 @@ export class McpClient {
     this.process.once("close", () =>
       this.fail(new Error("MCP exited: " + this.stderr.slice(-4000))),
     );
-    readline
-      .createInterface({ input: this.process.stdout, crlfDelay: Infinity })
-      .on("line", (line) => {
-        let message;
-        try {
-          message = JSON.parse(line);
-        } catch {
-          return;
-        }
+    read_lines(this.process.stdout, (message) => {
         if (message.method === "notifications/tools/list_changed")
           this.tools_revision++;
         if (message.method && Object.hasOwn(message, "id")) {
-          this.send(
-            message.method === "roots/list"
-              ? { id: message.id, result: { roots: this.roots } }
-              : {
-                  id: message.id,
-                  error: { code: -32601, message: "Not supported" },
-                },
-          );
+          void (async () => {
+            try {
+              const result = message.method === "roots/list" ? { roots: this.roots }
+                : this.options.onRequest ? await this.options.onRequest(message)
+                  : await Promise.reject(Object.assign(new Error("Not supported"), { code: -32601 }));
+              this.send({ id: message.id, result });
+            } catch (error) { this.send({ id: message.id, error: { code: error.code || -32603, message: error.message } }); }
+          })().catch(error => this.fail(error));
         } else if (this.pending.has(message.id)) {
           const done = this.pending.get(message.id);
           this.pending.delete(message.id);
           done(message);
-        }
-      });
+        } else if (message.method) this.options.onNotification?.(message);
+      }, (error) => { this.fail(error); void stop_child(this.process, 0); }, options.maxBytes || DEFAULT_MAX_BYTES);
   }
   fail(error) {
+    if (this.error) return;
     this.error = error;
     for (const done of this.pending.values())
       done({ error: { message: error.message } });
     this.pending.clear();
+    this.options.onClose?.(error);
   }
   send(message) {
+    if (this.error) throw this.error;
     this.process.stdin.write(
       JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n",
     );
   }
-  request(method, params = {}) {
+  request(method, params = {}, options = {}) {
     if (this.error) return Promise.reject(this.error);
     const id = ++this.sequence;
+    options.onId?.(id);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -84,7 +82,8 @@ export class McpClient {
           reject(error);
         } else resolve(message.result);
       });
-      this.send({ id, method, params });
+      try { this.send({ id, method, params }); }
+      catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
   }
   notify(method, params = {}) {
@@ -92,9 +91,9 @@ export class McpClient {
   }
   async initialize() {
     const result = await this.request("initialize", {
-      protocolVersion: "2024-11-05",
-      capabilities: { roots: { listChanged: false } },
-      clientInfo: { name: "1c-ai-core-doctor", version: "0.1.0" },
+      protocolVersion: "2025-11-25",
+      capabilities: { ...this.options.capabilities, roots: { listChanged: false } },
+      clientInfo: { name: "1c-ai-core", version: core_version },
     });
     this.initialization = result;
     this.notify("notifications/initialized");
@@ -107,6 +106,7 @@ export class McpClient {
     return result;
   }
   async close() {
+    this.fail(new Error("MCP connection closed; pending operation outcome unknown"));
     await stop_child(this.process);
   }
 }

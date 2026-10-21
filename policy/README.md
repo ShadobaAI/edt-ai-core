@@ -11,6 +11,17 @@ Policy не читает проектные файлы, не вызывает ED
 
 ## Факты и применимость
 
+Для обычной задачи доступны дополнительные session-инструменты:
+`assess_1c_requirements` объединяет detection и selection, возвращая полный
+selection и ссылки `selectionRef`/`detectionRef`. `validate_compliance_ref`
+принимает эти ссылки, явный current/phase и компактные строки
+`[selector,status,evidence,reason?]`. Backend восстанавливает полный запрос и
+выполняет тот же `validateCompliance`; проверка sourceRef, target, mechanisms,
+покрытия, фаз и mandatory не ослабляется. Ссылки действуют только в создавшей их
+MCP-сессии, не являются разрешениями и могут истечь после 64 сохранённых записей.
+При смене sourceRef нужен новый detection; новое evidence и отдельный result
+ledger обязательны. Исходные инструменты полного протокола сохраняются.
+
 `detect_1c_mechanisms` сохраняет название ради стабильного маршрута навыков,
 но фактически проверяет и нормализует assessments вызывающего агента.
 `sourceText` исключён из API: регулярные выражения не устанавливают тип receiver,

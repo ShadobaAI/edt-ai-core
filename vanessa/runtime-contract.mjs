@@ -42,7 +42,7 @@ export function parseEnvironment(result) {
   const mcpVersion = scalar(text, "Версия MCP");
   const managerInfobase = parseInfobase(scalar(text, "Строка соединения с информационной базой"));
   const vanessaExt = yesNo(scalar(text, "Включено использование внешней компоненты VanessaExt"));
-  if (runtimeVersion !== "1.2.043.45" || mcpVersion !== "1.31" || !managerInfobase || vanessaExt === null) return null;
+  if (!runtimeVersion?.trim() || !mcpVersion?.trim() || !managerInfobase || vanessaExt === null) return null;
   return { runtimeVersion, mcpVersion, platformVersion: scalar(text, "Платформа") ?? null, managerInfobase, vanessaExt };
 }
 export function parseState(result) {
@@ -183,6 +183,6 @@ export function parseProcesses(result) {
   if (rows.length !== Number(count[3]) || new Set(rows.map(row => row[1])).size !== rows.length) return null;
   return { filter, matchedCount: Number(count[1]), processes: rows.map(row => ({ pid: Number(row[1]), startedAt: row[2], launch: parseClientLaunch(row[3]) })) };
 }
-export const runtimeContract = Object.freeze({ version: "vanessa-single-1.2.043.45-mcp-1.31", environment: parseEnvironment,
+export const runtimeContract = Object.freeze({ version: "vanessa-single-text-v1", environment: parseEnvironment,
   state: parseState, profiles: parseProfiles, editor: parseEditor, extensions: parseExtensions, processes: parseProcesses,
   syntax: parseSyntax, selection: parseSelection, editorContent });

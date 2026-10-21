@@ -20,6 +20,21 @@ async function check_worker(selected) {
   assert.equal(manifest.skills, "./skills/");
   assert.equal(manifest.mcpServers, "./mcp.json");
   assert.equal(manifest.hooks, "./hooks/hooks.json");
+  for (const extension of [manifest, universal.extensions["com.openai"]]) {
+    assert.equal(extension.requires_local_executor, true);
+    assert.equal(extension.onboardingSkill, "./skills/edt-ai-core/SKILL.md");
+    assert.ok(fs.existsSync(path.join(root, extension.onboardingSkill)));
+  }
+  for (const listing of [manifest.interface, universal.extensions["com.openai"].interface]) {
+    assert.equal(listing.developerName, "ShadobaAI");
+    for (const key of ["composerIcon", "logo"]) {
+      assert.equal(listing[key], "./assets/icon.svg");
+      assert.match(fs.readFileSync(path.join(root, listing[key]), "utf8"), /viewBox="0 0 64 64"/);
+    }
+  }
+  assert.equal(universal.author.name, "ShadobaAI");
+  const hooks = json("hooks/hooks.json");
+  assert.match(hooks.hooks.SessionStart[0].hooks[0].command, /session-start\.mjs/);
   assert.match(
     fs.readFileSync(path.join(root, "LICENSE"), "utf8"),
     /^Mozilla Public License Version 2.0/,

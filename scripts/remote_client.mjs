@@ -1,4 +1,6 @@
 import { object } from "./common.mjs";
+import { json_message, response_json, DEFAULT_MAX_BYTES } from "./mcp_codec.mjs";
+import { core_version } from "./compatibility.mjs";
 export class RemoteRpcError extends Error {
   constructor(error) {
     super(error?.message || "MCP RPC error");
@@ -61,7 +63,9 @@ export class RemoteMcp {
     "2025-03-26",
     "2024-11-05",
   ];
-  constructor(url, timeout = 30) {
+  constructor(url, timeout = 30, options = {}) {
+    this.options = options;
+    this.maxBytes = options.maxBytes || DEFAULT_MAX_BYTES;
     this.url = url;
     this.timeout = timeout * 1000;
     this.session = null;
@@ -81,15 +85,22 @@ export class RemoteMcp {
       );
     return message.result;
   }
+  credential_headers() {
+    return Object.fromEntries(Object.entries(this.options.headers_env || {}).map(([name, variable]) => {
+      if (!process.env[variable]) throw new Error("Missing connection credential environment variable: " + variable);
+      return [name, process.env[variable]];
+    }));
+  }
   async send(payload, expect_reply = true) {
     const modern = this.protocol === RemoteMcp.MODERN_PROTOCOL;
     const headers = {
+      ...this.credential_headers(),
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       "MCP-Protocol-Version": this.protocol,
     };
     let wire = payload;
-    if (modern) {
+    if (modern && payload.method) {
       const params = {
         ...payload.params,
         _meta: {
@@ -97,9 +108,9 @@ export class RemoteMcp {
           "io.modelcontextprotocol/protocolVersion": this.protocol,
           "io.modelcontextprotocol/clientInfo": {
             name: "1c-ai-core",
-            version: "0.2.1",
+            version: core_version,
           },
-          "io.modelcontextprotocol/clientCapabilities": {},
+          "io.modelcontextprotocol/clientCapabilities": this.options.capabilities || {},
         },
       };
       wire = { ...payload, params };
@@ -112,10 +123,10 @@ export class RemoteMcp {
         if (typeof name === "string" && name)
           headers["Mcp-Name"] = header_value(name);
       }
-      if (payload.method === "tools/call")
-        for (const [location, name, kind] of this.tool_headers.get(
-          params.name,
-        ) || []) {
+      if (payload.method === "tools/call") {
+        const fields = this.tool_headers.get(params.name);
+        if (fields instanceof Error) throw new Error(`Incompatible native HTTP contract for ${params.name}: ${fields.message}`);
+        for (const [location, name, kind] of fields || []) {
           let value = params.arguments || {};
           for (const key of location)
             value = object(value) ? value[key] : undefined;
@@ -129,6 +140,7 @@ export class RemoteMcp {
             );
           headers["Mcp-Param-" + name] = header_value(value);
         }
+      }
     }
     if (this.session && !modern) headers["Mcp-Session-Id"] = this.session;
     if (payload.method === "initialize") delete headers["MCP-Protocol-Version"];
@@ -142,7 +154,7 @@ export class RemoteMcp {
     if (!response.ok) {
       let rpc;
       try {
-        const body = await response.json();
+        const body = await response_json(response, this.maxBytes);
         if (object(body.error)) rpc = body.error;
       } catch {}
       if (response.status === 404 && this.session && rpc?.code !== -32601)
@@ -160,7 +172,7 @@ export class RemoteMcp {
     if ([202, 204].includes(response.status))
       throw new Error("MCP request received no result; outcome unknown");
     if (!response.headers.get("Content-Type")?.includes("text/event-stream")) {
-      const message = await response.json();
+      const message = await response_json(response, this.maxBytes);
       if (message.id !== payload.id)
         throw new Error("MCP response ID mismatch; outcome unknown");
       return this.result(message);
@@ -174,7 +186,7 @@ export class RemoteMcp {
       while (true) {
         const { value, done } = await reader.read();
         bytes += value?.length || 0;
-        if (bytes > 32 * 1024 * 1024)
+        if (bytes > this.maxBytes)
           throw new Error("MCP output budget exceeded; outcome unknown");
         buffer += decoder.decode(value, { stream: !done });
         let index;
@@ -183,16 +195,19 @@ export class RemoteMcp {
           buffer = buffer.slice(index + 1);
           if (line.startsWith("data:")) event.push(line.slice(5).trimStart());
           else if (!line && event.length) {
-            const message = JSON.parse(event.join("\n"));
+            const message = json_message(event.join("\n"), this.maxBytes);
             event = [];
             if (message.method === "notifications/tools/list_changed")
               this.tools_revision++;
             if (message.id === payload.id && !message.method)
               return this.result(message);
-            if (message.method && Object.hasOwn(message, "id"))
-              throw new Error(
-                "This MCP endpoint requires unsupported client callbacks; outcome unknown",
-              );
+            if (message.method && Object.hasOwn(message, "id")) {
+              if (!this.options.onRequest) throw new Error("This MCP endpoint requires unsupported client callbacks; outcome unknown");
+              let reply;
+              try { reply = { result: await this.options.onRequest(message) }; }
+              catch (error) { reply = { error: { code: error.code || -32603, message: error.message } }; }
+              await this.send({ jsonrpc: "2.0", id: message.id, ...reply }, false);
+            } else if (message.method) this.options.onNotification?.(message);
           }
         }
         if (done) break;
@@ -202,10 +217,12 @@ export class RemoteMcp {
       await reader.cancel().catch(() => {});
     }
   }
-  async request(method, params = {}) {
+  async request(method, params = {}, options = {}) {
+    const id = ++this.sequence;
+    options.onId?.(id);
     let result = await this.send({
       jsonrpc: "2.0",
-      id: ++this.sequence,
+      id,
       method,
       params,
     });
@@ -215,21 +232,16 @@ export class RemoteMcp {
       Array.isArray(result.tools)
     ) {
       if (!params.cursor) this.tool_headers.clear();
-      const visible = [];
       for (const tool of result.tools) {
         try {
           this.tool_headers.set(
             tool.name,
             tool_header_fields(tool.inputSchema || {}),
           );
-          visible.push(tool);
         } catch (error) {
-          process.stderr.write(
-            `Excluded MCP tool ${tool.name}: ${error.message}\n`,
-          );
+          this.tool_headers.set(tool.name, error);
         }
       }
-      result = { ...result, tools: visible };
     }
     return result;
   }
@@ -268,8 +280,8 @@ export class RemoteMcp {
     try {
       const result = await this.request("initialize", {
         protocolVersion: this.protocol,
-        clientInfo: { name: "1c-ai-core", version: "0.2.1" },
-        capabilities: {},
+        clientInfo: { name: "1c-ai-core", version: core_version },
+        capabilities: this.options.capabilities || {},
       });
       if (!RemoteMcp.LEGACY_PROTOCOLS.includes(result.protocolVersion))
         throw new Error(
@@ -294,6 +306,7 @@ export class RemoteMcp {
       const response = await fetch(this.url, {
         method: "DELETE",
         headers: {
+          ...this.credential_headers(),
           "Mcp-Session-Id": session,
           "MCP-Protocol-Version": this.protocol,
         },

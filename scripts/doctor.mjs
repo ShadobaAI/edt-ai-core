@@ -13,6 +13,7 @@ import { artifact, project, smoke } from "./runtime.mjs";
 import { effective_settings } from "./project_context.mjs";
 import { effective_policy } from "./action_policy.mjs";
 import { smoke as policySmoke } from "./policy_runtime.mjs";
+import { managed_components, component_enabled } from "./components.mjs";
 export async function inspect(
   selected,
   config,
@@ -67,7 +68,7 @@ export async function inspect(
     } catch (error) {
       report.errors.push("policy: " + error.message);
     }
-    for (const component of ["code-index", "bsl-ls"]) {
+    for (const component of managed_components.filter(id => component_enabled(config, id))) {
       try {
         const probe = await smoke(state, config, root, data, component);
         report.managed.push(probe);
@@ -81,9 +82,10 @@ export async function inspect(
     }
     report.status = "managed_mcp_ready";
   } else
-    for (const component of ["code-index", "bsl-ls"])
+    for (const component of managed_components)
       report.managed.push({
         component,
+        enabled: component_enabled(config, component),
         installed_and_hash_verified: !!artifact(state, component),
         live: "not_checked",
       });

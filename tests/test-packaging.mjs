@@ -95,6 +95,10 @@ test("stable version ordering, untagged initial checkout and release-tag overrid
     '{"name":"1c-ai-core","version":"0.2.1"}',
   );
   assert.equal(resolve_version(f.root), "0.2.1");
+  run(["git", "init", f.root]);
+  run(["git", "-C", f.root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "version fixture"]);
+  run(["git", "-C", f.root, "tag", "0.1.0"]);
+  assert.equal(resolve_version(f.root), "0.2.1");
   process.env.GITHUB_ACTIONS = "true";
   process.env.GITHUB_REF_TYPE = "tag";
   process.env.GITHUB_REF_NAME = "1.2.3";
@@ -330,7 +334,7 @@ test("prepared local marketplace preserves legacy YAML and runs with Node alone"
   );
   f.clients.push(client);
   await client.initialize();
-  assert.equal((await client.request("tools/list")).tools.length, 6);
+  assert.equal((await client.request("tools/list")).tools.length, 8);
 });
 test("owned process tree termination leaves unrelated processes alive", async (t) => {
   const f = fixture(t),

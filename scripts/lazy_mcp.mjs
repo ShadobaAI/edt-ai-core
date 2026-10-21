@@ -1,19 +1,18 @@
-// Connection-owned project binding. Host requests and idle refresh share one queue.
+// Connection-owned binding. Control messages never wait for a running tool.
 import fs from "node:fs";
 import path from "node:path";
-import readline from "node:readline";
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { ROOT, ConfigError, settings, stable, argumentsOf } from "./common.mjs";
 import {
   state_root,
-  resolve,
   exists,
   reconnect_file,
   instance_name,
-  select_root,
   sha256,
+  locate_project,
 } from "./project_paths.mjs";
-import { context_revision, effective_settings } from "./project_context.mjs";
+import { effective_settings } from "./project_context.mjs";
 import { project_profile } from "./profile.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
@@ -23,9 +22,14 @@ import {
   RemoteRpcError,
 } from "./remote_client.mjs";
 import { validate_bsl_tools } from "./runtime.mjs";
+import { component_icons } from "./icons.mjs";
+import { launch_selection, roots_selection } from "./selection.mjs";
+import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation } from "./components.mjs";
+import { read_lines } from "./mcp_codec.mjs";
+import { core_version } from "./compatibility.mjs";
 
 const component = argumentsOf(undefined, [], ["component"]).component;
-if (!["edt", "v8std", "code-index", "bsl-ls"].includes(component))
+if (!Object.hasOwn(COMPONENTS, component))
   throw new ConfigError("Invalid --component");
 const state = state_root(),
   configuration =
@@ -36,10 +40,11 @@ let client = null,
   tools = [],
   toolsRevision = null,
   toolsDirty = false,
-  bindingContext = null;
-let selected = process.env.EDT_AI_PROJECT_ROOT
-    ? resolve(process.env.EDT_AI_PROJECT_ROOT)
-    : null,
+  bindingContext = null,
+  connectingClient = null;
+let boundAliases = new Set();
+let selection = launch_selection();
+let selected = selection.directory,
   selectionError = null,
   rootsPending = null,
   rootsCounter = 0,
@@ -49,32 +54,41 @@ const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const emit = (message) =>
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
 async function disconnect() {
+  generation++;
   const previous = client;
+  const connecting = connectingClient;
+  const hadTools = tools.length > 0;
+  connectingClient = null;
   client = null;
   tools = [];
   toolsRevision = null;
   toolsDirty = false;
   bindingContext = null;
+  boundAliases.clear();
+  if (hadTools && !closed) emit({ method: "notifications/tools/list_changed" });
   if (previous) await previous.close();
+  if (connecting && connecting !== previous) await connecting.close();
 }
 async function requestRoots() {
+  selected = null;
+  selectionError = "Ожидается выбранный каталог проекта.";
+  const id = "core-roots-" + ++rootsCounter;
+  rootsPending = id;
   await disconnect();
   currentRevision = null;
-  rootsPending = "core-roots-" + ++rootsCounter;
-  emit({ id: rootsPending, method: "roots/list", params: {} });
+  if (rootsPending === id) emit({ id, method: "roots/list", params: {} });
 }
 function configContext() {
   const config = settings(configuration);
   if (selectionError) throw new ConfigError(selectionError);
-  let directory = selected || process.cwd();
-  if (!selected && resolve(directory) === ROOT && config.active_project)
-    directory = config.active_project;
-  const [root, profileRevision] = context_revision(directory),
+  const directory = selected;
+  if (!directory) throw new ConfigError("Выберите каталог проекта с .ai/project.yaml.");
+  const root = locate_project(directory),
     data = project_profile(root);
   return [
     root,
     effective_settings(config, root, data, null, state),
-    profileRevision,
+    data,
   ];
 }
 async function refreshTools() {
@@ -91,34 +105,58 @@ async function refreshNotifiedTools() {
   if (client && (toolsDirty || client.tools_revision !== toolsRevision))
     await refreshTools();
 }
-async function ensureBinding(refreshSurface = true, retryFailed = true) {
+let bindingPromise = null, generation = 0, hostCapabilities = {}, callbackSequence = 0;
+const callbacks = new Map(), requests = new Map();
+const requestKey = id => typeof id + ":" + id;
+function callback(message) {
+  const id = "core-callback-" + ++callbackSequence;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { callbacks.delete(id); reject(new Error("Host callback timed out")); }, 60000);
+    callbacks.set(id, reply => { clearTimeout(timer); reply.error ? reject(Object.assign(new Error(reply.error.message), { code: reply.error.code })) : resolve(reply.result); });
+    emit({ ...message, id });
+  });
+}
+async function ensureBinding(refreshSurface = true, retryFailed = true, connect = true) {
+  const next = (bindingPromise || Promise.resolve()).catch(() => {}).then(() => bind(refreshSurface, retryFailed, connect));
+  bindingPromise = next;
+  try { await next; } finally { if (bindingPromise === next) bindingPromise = null; }
+}
+async function bind(refreshSurface, retryFailed, connect) {
   if (rootsPending) return;
   let revision = null;
   try {
-    const [root, config, profileRevision] = configContext(),
+    const [root, config, profile] = configContext(),
       token = reconnect_file(state, root);
-    revision = stable([
-      config,
-      root,
-      profileRevision,
-      exists(token) ? fs.readFileSync(token, "utf8") : "",
-    ]);
+    const options = component_settings(config, component);
+    const reconnect = exists(token) ? JSON.parse(fs.readFileSync(token, "utf8")) : {};
+    revision = binding_fingerprint(config, component, root, profile, reconnect[component] || reconnect.id || "");
     if (revision === failedRevision && !retryFailed) return;
-    if (client && revision === currentRevision) {
+    if (client && !client.error && revision === currentRevision) {
       if (refreshSurface) await refreshNotifiedTools();
       return;
     }
     await disconnect();
+    if (!component_enabled(config, component)) throw new ConfigError("Компонент отключён в настройках.");
+    if (!connect) { if (revision !== failedRevision) lastError = "Компонент не подключён. Откройте его инструменты после подготовки MCP."; return; }
     currentRevision = revision;
+    const epoch = generation;
+    const transportOptions = { capabilities: { ...hostCapabilities, roots: { listChanged: false } },
+      onRequest: message => message.method === "roots/list" ? { roots: [{ uri: pathToFileURL(root).href, name: path.basename(root) }] } : callback(message),
+      maxBytes: options.max_response_bytes,
+      onNotification: message => {
+        if (message.method === "notifications/tools/list_changed") toolsDirty = true;
+        else if (client && !closed) emit(message);
+      } };
     let candidate, url;
-    if (["edt", "v8std"].includes(component)) {
-      url = config.mcp.required[component].url;
+    if (COMPONENTS[component].kind === "remote" || options.mode === "external") {
+      url = options.url;
       if (!url)
         throw new ConfigError(
           `Укажите connections.${component}.url в профиле проекта.`,
         );
-      candidate = new RemoteMcp(url, component === "v8std" ? 60 : 30);
-    } else
+      candidate = new RemoteMcp(url, options.timeout_seconds || (component === "v8std" ? 60 : 30), { ...transportOptions, headers_env: options.headers_env });
+    } else {
+      require_preparation(state, root, component);
       candidate = new McpClient(
         [
           process.execPath,
@@ -134,23 +172,28 @@ async function ensureBinding(refreshSurface = true, retryFailed = true) {
           EDT_AI_PROJECT_ROOT: root,
         },
         180,
+        transportOptions,
       );
+    }
     try {
+      connectingClient = candidate;
       await candidate.initialize();
       toolsRevision = candidate.tools_revision;
       tools = (await all_pages(candidate, "tools/list", "tools")).tools;
       if (component === "bsl-ls") validate_bsl_tools(tools);
       toolsDirty = false;
+      if (epoch !== generation || closed) throw new ConfigError("Project binding changed while connecting");
     } catch (error) {
       await candidate.close();
       currentRevision = null;
       throw error;
     }
     client = candidate;
+    boundAliases = new Set(profile.repositories.map(repo => repo.alias));
+    connectingClient = null;
     failedRevision = null;
     lastError = "";
-    if (component === "v8std")
-      bindingContext = {
+    bindingContext = {
         projectRoot: root,
         instance: instance_name(),
         endpoint: url,
@@ -167,6 +210,7 @@ async function ensureBinding(refreshSurface = true, retryFailed = true) {
 }
 const statusTool = () => ({
   name: "core_runtime_status",
+  icons: component_icons(component),
   title: "Состояние " + component,
   description:
     component === "v8std"
@@ -183,20 +227,27 @@ async function dispatch(message) {
     rootsPending = null;
     if (!process.env.EDT_AI_PROJECT_ROOT) {
       try {
-        if (message.error)
-          throw new ConfigError("Host could not supply the selected directory");
-        selected = select_root(message.result?.roots || [], process.cwd());
+        selection = roots_selection(message);
+        selected = selection.directory;
         selectionError = null;
       } catch (error) {
         selected = null;
         selectionError = error.message;
       }
     }
+    emit({ method: "notifications/tools/list_changed" });
     return;
   }
   if (!Object.hasOwn(message, "id")) {
     if (method === "notifications/initialized") initialized = true;
-    else if (
+    else if (method === "notifications/cancelled") {
+      const pending = requests.get(requestKey(message.params?.requestId));
+      if (pending) {
+        pending.cancelled = true;
+        if (pending.client && pending.upstreamId !== undefined)
+          await pending.client.notify(method, { ...message.params, requestId: pending.upstreamId });
+      }
+    } else if (
       method === "notifications/roots/list_changed" &&
       !process.env.EDT_AI_PROJECT_ROOT
     )
@@ -242,35 +293,36 @@ async function dispatch(message) {
           protocolVersion: PROTOCOLS.includes(proposed)
             ? proposed
             : PROTOCOLS[0],
-          serverInfo: { name: "1c-ai-" + component, version: "0.1.1" },
+          serverInfo: { name: "1c-ai-" + component, version: core_version, icons: component_icons(component) },
           capabilities: {
             tools: { listChanged: true },
             resources: {},
             prompts: {},
           },
         };
-      if (component === "v8std")
-        result.instructions =
-          "For a new v8std binding, read core_runtime_status once for the selected project/instance and negotiated server instructions/capabilities. Select operations from their live schemas; reuse discovery until binding, contract or relevant evidence changes. A shared corpus does not share project assessments.";
+      hostCapabilities = message.params?.capabilities || {};
+      result.instructions = "For each new binding read core_runtime_status once for the selected project/instance and the native server instructions/capabilities. Reuse that contract until the binding changes. Native tools and results retain their full schemas. Managed services require initial preparation in settings; profile inspection does not start them.";
       if (component === "bsl-ls")
-        result.instructions =
+        result.instructions +=
           "Use the assigned EDT-MCP to discover configuration project names and paths. Register the exact configuration directory with register_workspace_folder, then use file paths or the returned workspaceFolder URI to select its context. Several folders may remain registered; no active configuration is shared. Only directories inside the selected project binding are accepted.";
       emit({ id, result });
-      if (message.params?.capabilities?.roots != null && selected === null)
+      if (message.params?.capabilities?.roots != null && !process.env.EDT_AI_PROJECT_ROOT)
         await requestRoots();
       return;
     }
     let result;
     const params = message.params || {};
+    const pending = { cancelled: false };
+    requests.set(requestKey(id), pending);
     if (method === "ping") result = {};
     else {
       const previous = client;
-      await ensureBinding(method !== "tools/list");
+      await ensureBinding(method !== "tools/list", true, COMPONENTS[component].kind === "remote" || !(method === "tools/call" && params.name === "core_runtime_status"));
+      if (pending.cancelled) throw new ConfigError("Request cancelled before dispatch; not executed");
       if (method === "tools/list") {
         if (client && client === previous) await refreshTools();
         let visible = tools;
         if (
-          component === "v8std" &&
           !tools.some((tool) => tool.name === "core_runtime_status")
         )
           visible = [statusTool(), ...tools];
@@ -280,16 +332,18 @@ async function dispatch(message) {
         params.name === "core_runtime_status"
       ) {
         const status = {
-          ready: !!client,
+          ready: !!client && !client.error,
+          state: client?.error ? "error" : client ? "connected" : "disconnected",
           component,
           detail: lastError,
           selectedDirectory: selected,
+          selectionSource: selection.source,
         };
-        if (component === "v8std") {
+        {
           status.binding = bindingContext;
           if (client)
             status.serverContract = Object.fromEntries(
-              ["instructions", "capabilities"]
+              ["instructions", "capabilities", "serverInfo", "protocolVersion"]
                 .filter((key) => key in client.initialization)
                 .map((key) => [key, client.initialization[key]]),
             );
@@ -299,9 +353,7 @@ async function dispatch(message) {
             {
               type: "text",
               text:
-                component === "v8std"
-                  ? JSON.stringify(status)
-                  : lastError || "Готов",
+                JSON.stringify(status),
             },
           ],
           structuredContent: status,
@@ -313,15 +365,23 @@ async function dispatch(message) {
             "prompts/list": "prompts",
           },
           key = keys[method];
-        if (key && !params.cursor) {
+        if (component === "code-index" && method === "tools/call" && Object.hasOwn(params.arguments || {}, "repo")) {
+          if (!boundAliases.has(params.arguments.repo))
+            throw new ConfigError("code-index alias is outside the selected project profile");
+        }
+        pending.client = client;
+        if (key) {
           try {
-            result = await all_pages(client, method, key);
+            result = await client.request(method, params, { onId: value => { pending.upstreamId = value; } });
           } catch (error) {
-            if (!(error instanceof RemoteRpcError) || error.code !== -32601)
+            if (error.code !== -32601)
               throw error;
             result = { [key]: [] };
           }
-        } else result = await client.request(method, params);
+        } else {
+          pending.client = client;
+          result = await client.request(method, params, { onId: value => { pending.upstreamId = value; } });
+        }
       } else
         throw new ConfigError(
           rootsPending ? "Ожидается каталог проекта." : lastError,
@@ -330,7 +390,6 @@ async function dispatch(message) {
     emit({ id, result });
     if (method === "tools/call" && client && params.name === "enable_toolset") {
       toolsDirty = true;
-      emit({ method: "notifications/tools/list_changed" });
     }
   } catch (error) {
     if (error instanceof RemoteSessionExpired) {
@@ -339,6 +398,8 @@ async function dispatch(message) {
       lastError = error.message;
     }
     emit({ id, error: { code: -32000, message: error.message } });
+  } finally {
+    requests.delete(requestKey(id));
   }
 }
 let queue = Promise.resolve(),
@@ -349,41 +410,34 @@ const enqueue = (action) => {
     process.stderr.write(error.message + "\n");
   });
 };
-const input = readline.createInterface({
-  input: process.stdin,
-  crlfDelay: Infinity,
-});
-input.on("line", (line) => {
-  let message;
-  try {
-    message = JSON.parse(line);
-  } catch {
-    return;
-  }
-  enqueue(() => dispatch(message));
-});
+read_lines(process.stdin, message => {
+  if (!message.method && callbacks.has(message.id)) { callbacks.get(message.id)(message); callbacks.delete(message.id); return; }
+  void dispatch(message).catch(error => process.stderr.write(error.message + "\n"));
+}, error => { process.stderr.write(error.message + "\n"); shutdown(); });
 const timer = setInterval(() => {
   if (initialized && !closed && !idleQueued) {
     idleQueued = true;
     enqueue(async () => {
       try {
-        if (!closed) await ensureBinding(true, false);
+        if (!closed && client && !requests.size) await ensureBinding(true, false, false);
       } finally {
         idleQueued = false;
       }
     });
   }
 }, 500);
-input.once("close", () => {
+process.stdin.once("end", () => {
   closed = true;
   clearInterval(timer);
-  enqueue(disconnect);
+  void disconnect();
 });
 const shutdown = () => {
   closed = true;
   clearInterval(timer);
-  input.close();
-  enqueue(disconnect);
+  process.stdin.pause();
+  for (const done of callbacks.values()) done({ error: { message: "Host disconnected" } });
+  callbacks.clear();
+  void disconnect();
 };
 process.once("SIGTERM", shutdown);
 process.once("SIGINT", shutdown);

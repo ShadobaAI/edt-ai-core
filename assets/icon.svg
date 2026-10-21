@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="1C AI Core icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B2454"/>
+      <stop offset="100%" stop-color="#123E8A"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FF5A5A"/>
+      <stop offset="100%" stop-color="#FF2E43"/>
+    </linearGradient>
+    <linearGradient id="bot" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F7FBFF"/>
+      <stop offset="100%" stop-color="#BFD9FF"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#102A5F"/>
+      <stop offset="100%" stop-color="#081633"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#00122A" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#bg)" filter="url(#shadow)"/>
+
+  <!-- 1C mark -->
+  <g fill="url(#accent)">
+    <rect x="12" y="12" width="5" height="17" rx="1.4"/>
+    <rect x="9" y="15" width="8" height="4.2" rx="1.2"/>
+    <path d="M28.5 12c-6.7 0-12 5.1-12 11.4c0 6.3 5.3 11.4 12 11.4h11.7c1 0 1.8-.8 1.8-1.8s-.8-1.8-1.8-1.8H28.5c-4.6 0-8.2-3.5-8.2-7.8s3.7-7.8 8.2-7.8c4.4 0 7.9 3.1 8.2 7.2h-5.6c-1 0-1.8.8-1.8 1.8s.8 1.8 1.8 1.8h9.3v-1.7C40.4 17.5 35.1 12 28.5 12z"/>
+  </g>
+
+  <!-- code panel -->
+  <g>
+    <rect x="10" y="32" width="28" height="17" rx="3.5" fill="#17366F" opacity="0.96" stroke="#3C71C7" stroke-width="0.8"/>
+    <circle cx="14" cy="36" r="1.1" fill="#FF5F57"/>
+    <circle cx="17.2" cy="36" r="1.1" fill="#FEBC2E"/>
+    <circle cx="20.4" cy="36" r="1.1" fill="#28C840"/>
+    <rect x="15" y="40" width="9" height="1.7" rx="0.85" fill="#3DA6FF"/>
+    <rect x="15" y="43.2" width="13" height="1.7" rx="0.85" fill="#7D8FAF"/>
+    <rect x="15" y="46.4" width="8" height="1.7" rx="0.85" fill="#3DA6FF"/>
+  </g>
+
+  <!-- robot -->
+  <g>
+    <circle cx="48.2" cy="24" r="3.2" fill="#71D5FF" opacity="0.95"/>
+    <rect x="46.9" y="26.2" width="2.3" height="4.9" rx="1.1" fill="#79C8FF"/>
+    <rect x="33" y="27.5" width="21" height="20" rx="9.5" fill="url(#bot)"/>
+    <rect x="36" y="31.2" width="15" height="9.7" rx="4.8" fill="url(#screen)"/>
+    <rect x="39.2" y="34.3" width="2.2" height="3.7" rx="1.1" fill="#4AB8FF"/>
+    <rect x="45.6" y="34.3" width="2.2" height="3.7" rx="1.1" fill="#4AB8FF"/>
+  </g>
+</svg>

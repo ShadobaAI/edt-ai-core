@@ -3,6 +3,7 @@ import path from "node:path";
 import { resolve } from "./project_paths.mjs";
 
 export const DIRECTORIES = {
+  assets: [".svg"],
   hooks: [".json", ".mjs"],
   knowledge: [".yaml"],
   mcp: [".mjs", ".md"],

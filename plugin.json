@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "1c-ai-core",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Универсальное ИИ-ядро для разработки проектов 1С.",
   "author": {
     "name": "ShadobaAI"
@@ -16,16 +16,21 @@
   ],
   "extensions": {
     "com.openai": {
+      "requires_local_executor": true,
+      "onboardingSkill": "./skills/edt-ai-core/SKILL.md",
       "interface": {
         "displayName": "1C AI Core",
         "shortDescription": "Профильное ядро 1С",
         "longDescription": "Универсальное ядро для 1С с импортом и экспортом профилей из репозиториев проектов.",
         "developerName": "ShadobaAI",
+        "brandColor": "#202123",
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg",
         "category": "Developer tools",
         "capabilities": [
           "Interactive"
         ],
-        "defaultPrompt": "Проверь или импортируй профиль проекта 1С и подготовь безопасную маршрутизацию authorities."
+        "defaultPrompt": "Помоги настроить 1C AI Core пошагово: проверь текущий проект, задай только необходимые вопросы, подбери и проверь настройки."
       },
       "hooks": "./hooks/hooks.json"
     }

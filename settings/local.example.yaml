@@ -6,4 +6,17 @@ mcp:
       url: ''
     v8std:
       url: ''
+  managed:
+    code-index:
+      enabled: true
+      mode: auto
+      version: latest
+    bsl-ls:
+      enabled: false
+      mode: auto
+      version: latest
+# For external mode set mode: external and url. Advanced connection fields:
+# headers_env: { Authorization: MY_MCP_AUTH_HEADER } (the complete header value)
+# timeout_seconds: 60
+# max_response_bytes: 33554432
 

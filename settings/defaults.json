@@ -16,14 +16,16 @@
     "managed": {
       "code-index": {
         "mode": "auto",
-        "version": "latest"
+        "version": "latest",
+        "enabled": true
       },
       "bsl-ls": {
         "mode": "auto",
         "version": "latest",
         "java": "java",
         "node": "node",
-        "configuration": null
+        "configuration": null,
+        "enabled": false
       }
     },
     "optional": {

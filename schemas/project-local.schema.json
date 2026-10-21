@@ -9,9 +9,7 @@
         "edt": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "url"
-          ],
+          "required": [],
           "properties": {
             "url": {
               "type": "string",
@@ -20,15 +18,34 @@
             "url_env": {
               "type": "string",
               "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 1024
+            },
+            "headers_env": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
             }
           }
         },
         "v8std": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "url"
-          ],
+          "required": [],
           "properties": {
             "url": {
               "type": "string",
@@ -37,10 +54,136 @@
             "url_env": {
               "type": "string",
               "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 1024
+            },
+            "headers_env": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
             }
           }
         }
       }
+    },
+    "components": {
+      "type": "object",
+      "properties": {
+        "code-index": {
+          "type": "object",
+          "required": [],
+          "properties": {
+            "mode": {
+              "enum": [
+                "auto",
+                "external"
+              ]
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 1024
+            },
+            "headers_env": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^(?:https?://[^\\s]+)?$"
+            }
+          },
+          "additionalProperties": false
+        },
+        "bsl-ls": {
+          "type": "object",
+          "required": [],
+          "properties": {
+            "mode": {
+              "enum": [
+                "auto",
+                "external"
+              ]
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$"
+            },
+            "java": {
+              "type": "string",
+              "minLength": 1
+            },
+            "node": {
+              "type": "string",
+              "minLength": 1
+            },
+            "configuration": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "timeout_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 1024
+            },
+            "headers_env": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+              },
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            },
+            "url": {
+              "type": "string",
+              "pattern": "^(?:https?://[^\\s]+)?$"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "minProperties": 1,

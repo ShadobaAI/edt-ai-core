@@ -93,8 +93,10 @@ export function build(
     settings: configPath,
   });
   const hooks = load(path.join(plugin, "hooks/hooks.json"));
-  hooks.hooks.PreToolUse[0].hooks[0].command =
-    '"' + node + '" "${PLUGIN_ROOT}/hooks/guard.mjs"';
+  for (const groups of Object.values(hooks.hooks))
+    for (const group of groups)
+      for (const handler of group.hooks)
+        handler.command = handler.command.replace(/^node /, '"' + node + '" ');
   save_json(path.join(plugin, "hooks/hooks.json"), hooks);
   const mcp = load(path.join(plugin, "mcp.json"));
   for (const entry of Object.values(mcp.mcpServers)) {

@@ -3,7 +3,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { fixture, environment, session, ROOT } from "./helpers.mjs";
+import { fixture, environment, session, node, success, ROOT } from "./helpers.mjs";
 import { dump, load, settings, sleep } from "../scripts/common.mjs";
 import {
   SettingsBackend,
@@ -12,8 +12,189 @@ import {
 } from "../scripts/settings_backend.mjs";
 import { instance_file } from "../scripts/project_context.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
+import { reconnect_file } from "../scripts/project_paths.mjs";
 
-test("native settings metadata, legacy handshake and modern refusal work before configuration", async (t) => {
+test("settings use the chat launch directory before a profile exists without host roots", async (t) => {
+  const f = fixture(t), sub = path.join(f.root, "src");
+  fs.mkdirSync(path.join(f.root, ".git"));
+  // A saved selection from a different chat must not override the launch cwd.
+  dump({ active_project: f.base }, f.env.EDT_AI_SETTINGS);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], sub, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
+  f.clients.push(client);
+  await client.request("initialize", { protocolVersion: "2025-11-25", capabilities: {} });
+  const profile = (await client.call("settings.profile", {})).structuredContent;
+  assert.equal(profile.values.projectRoot, f.root);
+  assert.equal(profile.profile.status, "missing");
+  const view = (await client.call("settings.read", {})).structuredContent;
+  assert.equal(view.schema.properties.projectRoot.readOnly, true);
+  assert.equal(view.preparationScope, f.root + "#first");
+  assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
+  await assert.rejects(client.call("settings.pick_directory", {}), /закреплён/);
+  assert.equal((await client.call("settings.create", {})).structuredContent.profile.status, "loaded");
+});
+
+test("unsupported roots fall back to cwd but the plugin install directory is never a chat project", async (t) => {
+  const f = fixture(t);
+  for (const directory of [f.root, ROOT]) {
+    const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], directory, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
+    f.clients.push(client);
+    const send = client.send.bind(client);
+    client.send = message => send(message.result?.roots ? { id: message.id, error: { code: -32601, message: "Not supported" } } : message);
+    await client.initialize();
+    const view = (await client.call("settings.read", {})).structuredContent;
+    assert.equal(view.values.projectRoot, directory === ROOT ? "" : f.root);
+    assert.equal(view.projectSelection.status, directory === ROOT ? "unselected" : "selected");
+  }
+});
+
+test("the directory picker binds the canonical project without writes and discards a choice after host roots change", async (t) => {
+  const f = fixture(t), plugin = path.join(f.base, "plugin"), choice = path.join(f.base, "choice.json"),
+    started = path.join(f.base, "started"), released = path.join(f.base, "released"), other = path.join(f.base, "other");
+  fs.mkdirSync(path.join(f.root, ".git")); fs.mkdirSync(other);
+  for (const directory of ["mcp", "scripts", "assets"]) fs.mkdirSync(path.join(plugin, directory), { recursive: true });
+  for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "scripts/icons.mjs", "scripts/selection.mjs", "scripts/project_paths.mjs", "scripts/casefold.mjs", "scripts/compatibility.mjs", "assets/icon.svg"])
+    fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
+  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"),
+    `import fs from 'node:fs'; export async function folder_action() { const value=JSON.parse(fs.readFileSync(${JSON.stringify(choice)},'utf8')); if(value.wait) { fs.writeFileSync(${JSON.stringify(started)},''); while(!fs.existsSync(${JSON.stringify(released)})) await new Promise(done=>setTimeout(done,5)); } return value.directory; }`);
+  fs.writeFileSync(path.join(plugin, "scripts/settings_backend.mjs"),
+    `import { SettingsBackend } from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/settings_backend.mjs")).href)}; let input=''; for await (const chunk of process.stdin) input+=chunk; try { console.log(JSON.stringify({ok:true,result:await new SettingsBackend().main(JSON.parse(input))})); } catch(error) { console.log(JSON.stringify({ok:false,error:error.message})); process.exitCode=1; }`);
+  const client = new McpClient([process.execPath, path.join(plugin, "mcp/settings.mjs")], plugin, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
+  f.clients.push(client); client.roots = []; await client.initialize();
+  async function finishedPicker() {
+    const started = (await client.call("settings.pick_directory", {})).structuredContent;
+    assert.equal(started.status, "running");
+    return finishOperation(started.id);
+  }
+  async function finishOperation(id) {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const job = (await client.call("settings.operation", { operationId: id })).structuredContent;
+      if (job.status !== "running") return job;
+      await sleep(5);
+    }
+    assert.fail("directory operation did not finish");
+  }
+  fs.writeFileSync(choice, JSON.stringify({ directory: path.join(f.root, "src") }));
+  const selection = await finishedPicker();
+  assert.equal(selection.status, "completed");
+  const picked = (await client.call("settings.read", {})).structuredContent;
+  assert.equal(picked.values.projectRoot, f.root);
+  assert.equal(picked.profile.status, "missing");
+  assert.equal(picked.projectSelection.locked, false);
+  assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
+  assert.deepEqual(fs.readdirSync(f.state), []);
+  fs.writeFileSync(choice, JSON.stringify({ directory: null }));
+  assert.equal((await finishedPicker()).result.cancelled, true);
+  assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, f.root);
+  fs.writeFileSync(choice, JSON.stringify({ directory: f.root, wait: true }));
+  const pending = (await client.call("settings.pick_directory", {})).structuredContent;
+  assert.equal(pending.status, "running");
+  const deadline = Date.now() + 2000;
+  while (!fs.existsSync(started) && Date.now() < deadline) await sleep(5);
+  assert.ok(fs.existsSync(started));
+  const progress = (await client.call("settings.operation", {})).structuredContent;
+  assert.equal(progress.id, pending.id);
+  assert.equal(progress.action, "pick_directory");
+  assert.equal(progress.status, "running");
+  assert.equal((await client.call("settings.read", {})).structuredContent.operation.id, pending.id);
+  await assert.rejects(client.call("settings.update", { set: { projectRoot: other } }), /завершения выбора/);
+  await assert.rejects(client.call("settings.run_check", { authorization: { scope: f.root + "#first", effects: ["launch"], evidence: "fixture" } }), /завершения выбора/);
+  client.roots = [{ uri: pathToFileURL(other).href }]; client.notify("notifications/roots/list_changed");
+  assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, other);
+  fs.writeFileSync(released, "");
+  const discarded = await finishOperation(pending.id);
+  assert.equal(discarded.status, "failed");
+  assert.match(discarded.error, /изменилась во время выбора/);
+  assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, other);
+});
+
+test("chat profile tools discover the selected profile and preserve instructions/instance overrides", async (t) => {
+  const f = fixture(t), client = await session(t, "mcp/settings.mjs", [], f);
+  const catalogue = (await client.request("tools/list")).tools;
+  for (const name of ["settings.profile", "settings.create", "settings.load", "settings.import", "settings.export", "settings.read", "settings.update", "settings.preview", "settings.apply", "settings.export_data", "settings.run_check", "settings.operation"]) {
+    assert.ok(catalogue.find(tool => tool.name === name)._meta.ui.visibility.includes("model"));
+  }
+  const initial = await client.call("settings.read", {});
+  assert.deepEqual(JSON.parse(initial.content[0].text), initial.structuredContent);
+  assert.equal((await client.call("settings.profile", {})).structuredContent.profile.status, "missing");
+  assert.ok(!fs.existsSync(path.join(f.root, ".ai")));
+  fs.writeFileSync(path.join(f.root, "AGENTS.md"), "Existing project rules\n");
+  await client.call("settings.update", { set: { edtUrl: "http://localhost:18111/mcp" } });
+  const created = (await client.call("settings.create", {})).structuredContent;
+  assert.equal(created.profile.status, "loaded");
+  assert.equal(created.values.edtUrl, "http://localhost:18111/mcp");
+  assert.match(created.sessionGuidance, /новый чат/);
+  assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), "Existing project rules\n");
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+  const profileFile = path.join(f.root, ".ai/project.yaml"), before = fs.readFileSync(profileFile);
+  await assert.rejects(client.call("settings.create", {}), /already exists/);
+  assert.deepEqual(fs.readFileSync(profileFile), before);
+  const token = path.join(f.state, "projects");
+  assert.ok(fs.existsSync(token));
+  const loaded = (await client.call("settings.load", {})).structuredContent;
+  assert.equal(loaded.reload, "requested");
+  assert.equal(loaded.readiness, "not_checked");
+  assert.deepEqual(fs.readFileSync(profileFile), before);
+  const other = path.join(f.base, "other"); fs.mkdirSync(other);
+  for (const name of ["settings.load", "settings.create"])
+    await assert.rejects(client.call(name, { projectRoot: other }), /текущим чатом/);
+  assert.ok(!fs.existsSync(path.join(other, ".ai")));
+});
+
+test("existing and invalid profiles are visible without importing or starting services", async (t) => {
+  const f = fixture(t); f.save();
+  const before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const profile = (await client.call("settings.profile", {})).structuredContent;
+  assert.equal(profile.profile.status, "loaded");
+  assert.equal(profile.values.projectRoot, f.root);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+  fs.writeFileSync(path.join(f.root, ".ai/project.yaml"), "invalid");
+  assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "invalid");
+  await assert.rejects(client.call("settings.load", {}));
+  assert.equal(fs.readFileSync(path.join(f.root, ".ai/project.yaml"), "utf8"), "invalid");
+});
+
+test("profile reload signals only the selected instance", async (t) => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const first = reconnect_file(f.state, f.root);
+  const second = path.join(path.dirname(first), "second.reconnect.json");
+  fs.mkdirSync(path.dirname(second), { recursive: true });fs.writeFileSync(second, '{"id":"unchanged"}');
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  await client.call("settings.load", {});
+  assert.ok(JSON.parse(fs.readFileSync(first, "utf8")).id);
+  assert.equal(fs.readFileSync(second, "utf8"), '{"id":"unchanged"}');
+});
+
+test("SessionStart discovers profile data without writes and stops at nested Git boundaries", (t) => {
+  const f = fixture(t); f.save();
+  const sub = path.join(f.root, "docs");fs.mkdirSync(sub);
+  const run = (cwd, env = { ...f.env, EDT_AI_PROJECT_ROOT: "" }) => success(node("hooks/session-start.mjs", [], { env, input: JSON.stringify({ cwd, source: "startup" }) })).hookSpecificOutput.additionalContext;
+  assert.match(run(sub), /"status":"loaded"/);
+  assert.ok(!fs.existsSync(f.env.EDT_AI_SETTINGS));
+  fs.mkdirSync(path.join(sub, ".git"));
+  assert.match(run(sub), /"status":"missing"/);
+  assert.match(run(sub, f.env), /"status":"loaded"/);
+  assert.deepEqual(fs.readdirSync(f.state), []);
+});
+
+test("exported JSON settings import into another repository and keep local overrides private", async (t) => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  await backend.main({ action: "update", set: { edtUrl: "http://localhost:18112/mcp" } });
+  const exported = await backend.main({ action: "export" });
+  const other = path.join(f.base, "destination");fs.mkdirSync(other);fs.mkdirSync(path.join(other, "src"));
+  process.env.EDT_AI_PROJECT_ROOT = other;
+  const request = { text: exported.text }, preview = await backend.main({ action: "preview", ...request });
+  assert.equal(preview.projectRoot, other);
+  assert.ok(!preview.connectionUrls.edt);
+  await backend.main({ action: "apply", ...request, revision: preview.revision });
+  assert.deepEqual(load(path.join(other, ".ai/project.yaml")), f.profile);
+  assert.equal((await backend.main({ action: "read" })).values.edtUrl, "");
+});
+
+test("native settings discovery negotiates legacy sessions and refuses stateless calls before configuration", async (t) => {
   const f = fixture(t),
     client = await session(t, "mcp/settings.mjs", [], f);
   const read = (await client.call("settings.read", {})).structuredContent;
@@ -22,10 +203,13 @@ test("native settings metadata, legacy handshake and modern refusal work before 
   assert.equal(read.schema.properties.projectRoot.readOnly, true);
   const discovery = await client.request("server/discover");
   assert.ok(discovery.capabilities.extensions["openai/settings"]);
-  await assert.rejects(
-    client.request("server/discover", {
+  const modernProbe = await client.request("server/discover", {
       _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
-    }),
+    });
+  assert.equal(modernProbe.resultType, "complete");
+  assert.ok(modernProbe.supportedVersions.includes("2025-11-25"));
+  await assert.rejects(
+    client.request("tools/list", { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } }),
     /initialize handshake/,
   );
   for (const component of ["edt", "v8std", "code-index", "bsl-ls"]) {
@@ -42,6 +226,99 @@ test("native settings metadata, legacy handshake and modern refusal work before 
   }
   assert.ok(!fs.existsSync(path.join(f.state, "settings.json")));
 });
+test("native settings open their manual App without a chat or selected project", async (t) => {
+  const f = fixture(t);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
+  f.clients.push(client);
+  const discovery = await client.request("server/discover", { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } });
+  assert.equal(discovery.resultType, "complete");
+  await client.request("initialize", { protocolVersion: discovery.supportedVersions[0], capabilities: {} });
+  const capability = discovery.capabilities.extensions["openai/settings"];
+  const read = (await client.call(capability.readTool, {})).structuredContent;
+  assert.equal(read.values.projectRoot, "");
+  assert.ok(read.layout.flatMap(group => group.items).some(item => item.tool === "settings.open"));
+  const tools = (await client.request("tools/list")).tools;
+  const action = tools.find(tool => tool.name === "settings.open");
+  assert.deepEqual(action.inputSchema.properties, {});
+  const opened = (await client.call(action.name, {})).structuredContent;
+  assert.equal(opened.mode, "profile");
+  const resource = await client.request("resources/read", { uri: action._meta.ui.resourceUri });
+  assert.match(resource.contents[0].text, /id="editSettingsButton"/);
+  assert.deepEqual(fs.readdirSync(f.state), []);
+});
+
+test("manual editing resets removed runtime fields and preserves the unchanged profile bytes", async (t) => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const profilePath = path.join(f.root, ".ai/project.yaml");
+  fs.writeFileSync(profilePath, "# Keep project explanation\n" + fs.readFileSync(profilePath, "utf8"));
+  dump({ mcp: { managed: { "bsl-ls": { java: "old-java", node: "old-node", configuration: "old.json" } } } }, f.env.EDT_AI_SETTINGS);
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  await client.call("settings.update", { set: { edtUrl: "http://localhost:18120/mcp" } });
+  const overridePath = instance_file(settings(), f.root), override = fs.readFileSync(overridePath);
+  const before = fs.readFileSync(profilePath), stat = fs.statSync(profilePath);
+  const edit = (await client.call("settings.edit", {})).structuredContent, data = JSON.parse(edit.text);
+  for (const field of ["java", "node", "configuration"]) delete data.settings.mcp.managed["bsl-ls"][field];
+  const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
+  const preview = (await client.call("settings.preview", request)).structuredContent;
+  assert.equal(preview.replacesProfile, false);
+  assert.deepEqual(preview.sharedRuntimeChanges["bsl-ls"], { mode: "auto", version: "latest", java: "java", node: "node", configuration: null, enabled: false });
+  const result = (await client.call("settings.apply", { ...request, revision: preview.revision })).structuredContent;
+  assert.equal(result.backup, null);
+  assert.deepEqual(fs.readFileSync(profilePath), before);
+  assert.equal(fs.statSync(profilePath).mtimeMs, stat.mtimeMs);
+  assert.deepEqual(fs.readFileSync(overridePath), override);
+  assert.equal(fs.readdirSync(path.dirname(profilePath)).filter(name => name.endsWith(".bak.yaml")).length, 0);
+  const stored = load(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"];
+  assert.equal(stored.java, "java"); assert.equal(stored.node, "node"); assert.equal(stored.configuration, null);
+});
+
+test("manual profile changes still require replacement and preserve a backup", async (t) => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  const edit = await backend.main({ action: "edit" }), data = JSON.parse(edit.text);
+  data.profile.project.purpose = "Updated purpose";
+  const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
+  const preview = await backend.main({ ...request, action: "preview" });
+  assert.equal(preview.replacesProfile, true);
+  await assert.rejects(backend.main({ ...request, action: "apply", revision: preview.revision }), /замену/);
+  const result = await backend.main({ ...request, action: "apply", revision: preview.revision, replace: true });
+  assert.ok(result.backup);
+  assert.deepEqual(load(result.backup), f.profile);
+  assert.equal(load(path.join(f.root, ".ai/project.yaml")).project.purpose, "Updated purpose");
+});
+
+test("an incompatible legacy profile can be repaired in the editor without bypassing preview validation",async t=>{
+  const f=fixture(t);environment(t,f.env);f.profile.compatibility.core=">=0.1.0 <0.2.0";f.save();
+  const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
+  assert.equal((await backend.main({action:"read"})).profile.status,"invalid");
+  const edit=await backend.main({action:"edit"}),document=JSON.parse(edit.text);
+  const args={mode:"edit",baseRevision:edit.baseRevision,text:edit.text};
+  await assert.rejects(backend.main({action:"preview",...args}),/Profile requires core/);
+  document.profile.compatibility.core=">=0.1.0";args.text=JSON.stringify(document);
+  const preview=await backend.main({action:"preview",...args});assert.equal(preview.replacesProfile,true);
+  await backend.main({action:"apply",...args,revision:preview.revision,replace:true});
+  assert.equal((await backend.main({action:"read"})).profile.status,"loaded");
+});
+
+for (const changed of ["shared settings", "profile", "instance", "preview mode"])
+  test("manual edit rejects stale or changed " + changed + " before writes", async (t) => {
+    const f = fixture(t); environment(t, f.env); f.save();
+    const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+    const edit = await backend.main({ action: "edit" }), data = JSON.parse(edit.text);
+    data.settings.mcp.managed["bsl-ls"].version = "0.99.0";
+    const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
+    const preview = await backend.main({ ...request, action: "preview" });
+    if (changed === "shared settings") dump({ mcp: { managed: { "bsl-ls": { java: "new-java" } } } }, f.env.EDT_AI_SETTINGS);
+    if (changed === "profile") fs.appendFileSync(path.join(f.root, ".ai/project.yaml"), "\n# Concurrent edit\n");
+    if (changed === "instance") await backend.main({ action: "update", set: { edtUrl: "http://localhost:18121/mcp" } });
+    const before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
+    if (changed === "preview mode") { delete request.mode; delete request.baseRevision; }
+    else await assert.rejects(backend.main({ ...request, action: "preview" }), /после загрузки/);
+    await assert.rejects(backend.main({ ...request, action: "apply", revision: preview.revision, replace: true }), /после загрузки|предпросмотра/);
+    assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
+    assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version, "latest");
+  });
+
 test("UI import/export, replacement backup and portable roundtrip preserve profile defaults", async (t) => {
   const f = fixture(t),
     client = await session(t, "mcp/settings.mjs", [], f);
@@ -373,6 +650,12 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     plugin = path.join(f.base, "plugin");
   fs.mkdirSync(path.join(plugin, "mcp"), { recursive: true });
   fs.mkdirSync(path.join(plugin, "scripts"));
+  fs.mkdirSync(path.join(plugin, "assets"));
+  fs.copyFileSync(path.join(ROOT,"plugin.json"),path.join(plugin,"plugin.json"));
+  for (const name of ["icons.mjs", "selection.mjs", "project_paths.mjs", "casefold.mjs", "compatibility.mjs"])
+    fs.copyFileSync(path.join(ROOT, "scripts", name), path.join(plugin, "scripts", name));
+  fs.copyFileSync(path.join(ROOT, "scripts/settings_folder.mjs"), path.join(plugin, "scripts/settings_folder.mjs"));
+  fs.copyFileSync(path.join(ROOT, "assets/icon.svg"), path.join(plugin, "assets/icon.svg"));
   for (const name of ["settings.mjs", "settings-operations.mjs"])
     fs.copyFileSync(
       path.join(ROOT, "mcp", name),

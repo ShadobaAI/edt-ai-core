@@ -1,8 +1,10 @@
 import path from "node:path";
 import readline from "node:readline";
+import { component_icons } from "../scripts/icons.mjs";
 import { fileURLToPath } from "node:url";
 import { loadRegistry, select, validateCompliance } from "./selector.mjs";
 import { detectMechanisms } from "./detector.mjs";
+import { PolicySession } from "./session.mjs";
 import { actionPolicy, checkAction, actionRequest } from "./actions.mjs";
 import { ledgerItemSchema, selectionSchema, requirementsResultSchema, complianceResultSchema, additionalRequirementsSchema, nonblank, assessmentsSchema, detectionSchema, policyProtocolVersion, validateSchema } from "./schema.mjs";
 
@@ -60,6 +62,18 @@ const tools = [
       }, required: ["target", "sourceRef", "artifact", "operation", "mechanisms"], additionalProperties: false },
     }, required: ["phase", "selection", "ledger", "current"], additionalProperties: false } },
 ];
+const selectInput = tools.find(tool => tool.name === "select_1c_requirements").inputSchema;
+const { detection, ...assessmentInput } = selectInput.properties;
+const complianceCurrent = tools.find(tool => tool.name === "validate_compliance").inputSchema.properties.current;
+const { detection: currentDetection, ...referenceCurrent } = complianceCurrent.properties;
+tools.push({ name: "assess_1c_requirements", description: "Normalize assessments and select requirements in one call. Returns the full selection plus session references, retaining every assessment for later consistency checks. Does not inspect source or prove normative truth. Prefer this path to avoid retransmitting detection and selection.", annotations: readOnly,
+  inputSchema: { type: "object", properties: { ...assessmentInput, assessments: assessmentsSchema, sourceRef: nonblank }, required: ["target", "artifact", "operation", "mechanisms", "sourceRef", "assessments"], additionalProperties: false },
+  outputSchema: { type: "object", properties: { selection: requirementsResultSchema, selectionRef: nonblank, detectionRef: nonblank }, required: ["selection"], additionalProperties: false } });
+tools.push({ name: "validate_compliance_ref", description: "Apply the complete compliance check using session references and compact rows [selector,status,evidence,reason?]. Explicit current scope, sourceRef and phase remain mandatory. For a changed source obtain new detection evidence; stale, other-session or altered contexts are rejected. References authorize nothing.", annotations: readOnly,
+  inputSchema: { type: "object", properties: { phase: { enum: ["proposal", "result"] }, selectionRef: nonblank,
+    current: { ...complianceCurrent, properties: { ...referenceCurrent, detectionRef: nonblank } },
+    rows: { type: "array", items: { type: "array", minItems: 3, maxItems: 4, prefixItems: [nonblank, { enum: ["passed", "failed", "unverified", "deviated"] }, nonblank, nonblank] } },
+  }, required: ["phase", "selectionRef", "current", "rows"], additionalProperties: false }, outputSchema: complianceResultSchema });
 
 export function visibleTools() { return tools; }
 
@@ -86,7 +100,7 @@ export function callTool(name, args, registry = loadRegistry()) {
 
 function send(message) { process.stdout.write(`${JSON.stringify(message)}\n`); }
 
-function dispatch(message, registry) {
+function dispatch(message, registry, session) {
   if (!message || message.jsonrpc !== "2.0" || !message.method || message.id === undefined) return;
   const requested = message.params?._meta?.["io.modelcontextprotocol/protocolVersion"];
   if (message.method === "server/discover" || (requested && !protocols.includes(requested))) {
@@ -97,12 +111,19 @@ function dispatch(message, registry) {
   let result;
   if (message.method === "initialize") {
     result = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0], capabilities: { tools: {} },
-      serverInfo: { name: "1c-ai-policy-readonly", version: policyProtocolVersion } };
+      serverInfo: { name: "1c-ai-policy-readonly", version: policyProtocolVersion, icons: component_icons("policy") } };
   } else if (message.method === "ping") result = {};
   else if (message.method === "tools/list") result = { tools };
   else if (message.method === "tools/call") {
     try {
-      const value = callTool(message.params?.name, message.params?.arguments ?? {}, registry);
+      const name = message.params?.name, args = message.params?.arguments ?? {};
+      let value;
+      if (["assess_1c_requirements", "validate_compliance_ref"].includes(name)) {
+        const definition = tools.find(tool => tool.name === name);
+        validateSchema(definition.inputSchema, args);
+        value = name === "assess_1c_requirements" ? session.assess(args) : session.validate(args);
+        validateSchema(definition.outputSchema, value, "tool result");
+      } else value = callTool(name, args, registry);
       result = { content: [{ type: "text", text: JSON.stringify(value) }], isError: false,
         structuredContent: value };
     } catch (error) {
@@ -117,10 +138,10 @@ function dispatch(message, registry) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
   try {
-    const registry = schemaRegistry;
+    const registry = schemaRegistry, session = new PolicySession(registry);
     const lines = readline.createInterface({ input: process.stdin });
     lines.on("line", (line) => {
-      try { dispatch(JSON.parse(line), registry); }
+      try { dispatch(JSON.parse(line), registry, session); }
       catch (error) { process.stderr.write(`policy-mcp: ${error.message}\n`); }
     });
   } catch (error) {

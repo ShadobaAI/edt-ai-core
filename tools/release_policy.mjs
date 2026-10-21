@@ -51,8 +51,7 @@ export function resolve_version(root, version) {
     const tags = (result.stdout || "")
       .split(/\r?\n/)
       .filter((tag) => new RegExp("^" + VERSION_PATTERN + "$").test(tag));
-    version =
-      tags.sort(compare_version).at(-1) || read_source_manifest(root).version;
+    version = [...tags, read_source_manifest(root).version].sort(compare_version).at(-1);
   }
   version_key(version);
   return version;

@@ -11,6 +11,12 @@ export const ROOT = path.resolve(
 );
 export class ConfigError extends Error {}
 export class ProfileNotFound extends ConfigError {}
+export class ProfileAmbiguous extends ConfigError {
+  constructor(candidates) {
+    super("Multiple .ai/project.yaml profiles below the selected directory; select a specific project: " + candidates.join(", "));
+    this.candidates = candidates;
+  }
+}
 export const exists = (file) => fs.existsSync(file);
 export const is_file = (file) => {
   try {
@@ -48,6 +54,37 @@ export function contained(root, target) {
 }
 export const sha256 = (value) =>
   createHash("sha256").update(value).digest("hex");
+// realpath preserves filesystem identity without linguistic transformations
+// (Straße and STRASSE are different directories even on Windows).
+export const path_identity = (file) => resolve(file).replace(/^\\\\\?\\UNC\\/, "\\\\").replace(/^\\\\\?\\/, "");
+export function legacy_project_state(state, root) {
+  const identity = path_identity(root), legacy = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
+  if (!exists(legacy)) return null;
+  let owner;
+  try { owner = JSON.parse(fs.readFileSync(path.join(legacy, "code-index/owner.json"), "utf8")); } catch {}
+  return { directory: legacy, status: !owner?.project_root ? "owner_unknown" : path_identity(owner.project_root) === identity ? "verified" : "other_project" };
+}
+export function project_directory(state, root) {
+  const identity = path_identity(root),
+    home = path.join(state, "projects", sha256(identity).slice(0, 32)),
+    legacy = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
+  if (!exists(home) && exists(legacy)) {
+    // Keep a verified live daemon at its original home. Another project whose
+    // former folded key collided receives its new namespace, never this one.
+    if (legacy_project_state(state, root)?.status === "verified") return legacy;
+  }
+  const ownerFile = path.join(home, "project-owner.json");
+  if (is_file(ownerFile) && JSON.parse(fs.readFileSync(ownerFile, "utf8")).root !== identity)
+    throw new ConfigError("Project state ownership mismatch: " + home);
+  return home;
+}
+export function record_project_owner(state, root) {
+  const home = project_directory(state, root), file = path.join(home, "project-owner.json");
+  fs.mkdirSync(home, { recursive: true });
+  try { fs.writeFileSync(file, JSON.stringify({ root: path_identity(root) }), { flag: "wx", mode: 0o600 }); }
+  catch (error) { if (error.code !== "EEXIST") throw error; }
+  if (JSON.parse(fs.readFileSync(file, "utf8")).root !== path_identity(root)) throw new ConfigError("Project state ownership mismatch: " + home);
+}
 export function instance_name() {
   const name = process.env.EDT_AI_INSTANCE || "default";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name))
@@ -57,8 +94,7 @@ export function instance_name() {
 export function instance_directory(state, root) {
   return path.join(
     state,
-    "projects",
-    sha256(casefold(resolve(root))).slice(0, 16),
+    path.relative(state, project_directory(state, root)),
     "instances",
   );
 }
@@ -68,30 +104,56 @@ export function reconnect_file(state, root) {
     instance_name() + ".reconnect.json",
   );
 }
-export function locate_project(selected) {
+// Inspect directory entries only; never follow junctions or scan generated state.
+export function* project_directories(root, prune = () => false) {
+  const ignored = new Set([".git", ".metadata", ".ai", ".settings", "node_modules", "vendor", ".work", ".build"]);
+  const pending = [resolve(root)];
+  let visited = 0;
+  while (pending.length) {
+    if (++visited > 20000)
+      throw new ConfigError("Project discovery exceeded 20000 directories; select a more specific project folder");
+    const directory = pending.pop();
+    yield directory;
+    if (prune(directory)) continue;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => b.name.localeCompare(a.name))) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || ignored.has(entry.name)) continue;
+      const child = resolve(path.join(directory, entry.name));
+      if (contained(root, child)) pending.push(child);
+    }
+  }
+}
+function has_profile(directory) {
+  const file = path.join(directory, ".ai/project.yaml");
+  if (!is_file(file)) return false;
+  if (!contained(directory, resolve(file)))
+    throw new ConfigError("Project profile must remain inside its repository");
+  return true;
+}
+export function locate_project(selected, { recursive = true } = {}) {
   const directory = resolve(selected);
   if (!is_dir(directory))
     throw new ConfigError("Selected project directory does not exist");
   for (let candidate = directory; ; candidate = path.dirname(candidate)) {
-    const profile = path.join(candidate, ".ai/project.yaml");
-    if (is_file(profile)) {
-      if (!contained(candidate, resolve(profile)))
-        throw new ConfigError(
-          "Project profile must remain inside its repository",
-        );
-      return candidate;
-    }
+    if (has_profile(candidate)) return candidate;
     if (
       exists(path.join(candidate, ".git")) ||
       path.dirname(candidate) === candidate
     )
       break;
   }
-  throw new ProfileNotFound("No .ai/project.yaml in the selected repository");
+  const matches = [];
+  for (const candidate of recursive ? project_directories(directory, has_profile) : []) {
+    if (!has_profile(candidate)) continue;
+    matches.push(candidate);
+    if (matches.length > 1)
+      throw new ProfileAmbiguous(matches);
+  }
+  if (matches.length) return matches[0];
+  throw new ProfileNotFound("No .ai/project.yaml in or below the selected repository");
 }
-export function configuration_root(selected) {
+export function configuration_root(selected, options) {
   try {
-    return locate_project(selected);
+    return locate_project(selected, options);
   } catch (error) {
     if (!(error instanceof ProfileNotFound)) throw error;
   }

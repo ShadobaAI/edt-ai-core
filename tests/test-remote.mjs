@@ -5,7 +5,8 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { fixture, session } from "./helpers.mjs";
-import { dump, sleep } from "../scripts/common.mjs";
+import { dump, sleep, settings } from "../scripts/common.mjs";
+import { smoke } from "../scripts/runtime.mjs";
 import { reconnect_file } from "../scripts/project_paths.mjs";
 import {
   RemoteMcp,
@@ -63,6 +64,88 @@ async function endpoint(t, handler) {
   });
   return { calls, url: "http://127.0.0.1:" + server.address().port + "/mcp" };
 }
+
+test("workspace port changes rebind only the selected EDT relay", async t => {
+  const first = fixture(t), other = fixture(t);
+  const serve = id => endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "edt-fixture", version: "1" }, capabilities: { tools: {} } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: [{ name: "ping", inputSchema: { type: "object" } }] });
+    return reply({ content: [], structuredContent: { endpoint: id } });
+  });
+  const a = await serve("a"), b = await serve("b"),
+    preferences = path.join(first.base, ".metadata/.plugins/org.eclipse.core.runtime/.settings/com.ditrix.edt.mcp.server.prefs");
+  fs.mkdirSync(path.dirname(preferences), { recursive: true });
+  const port = url => fs.writeFileSync(preferences, "mcpServerPort=" + new URL(url).port);
+  port(a.url); first.save();
+  other.profile.connections = { edt: { url: a.url } }; other.save();
+  const c1 = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], first),
+    c2 = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], other);
+  for (const client of [c1, c2]) {
+    assert.equal((await client.call("ping", {})).structuredContent.endpoint, "a");
+  }
+  const before = (await c2.call("core_runtime_status", {})).structuredContent;
+  port(b.url);
+  assert.equal((await c1.call("ping", {})).structuredContent.endpoint, "b");
+  assert.equal((await c2.call("ping", {})).structuredContent.endpoint, "a");
+  assert.equal((await c2.call("core_runtime_status", {})).structuredContent.binding.connectionId, before.binding.connectionId);
+});
+
+test("external code-index preparation checks scoped health without installing a managed runtime", async t => {
+  const f = fixture(t), config = settings();
+  let unhealthy = false;
+  const e = await endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "external-index", version: "fixture" }, capabilities: { tools: {} } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: [{ name: "health", inputSchema: { type: "object" } }] });
+    assert.equal(message.method, "tools/call");
+    assert.equal(message.params.name, "health");
+    if (unhealthy) return reply({ isError: true, content: [{ type: "text", text: "health unavailable" }] });
+    return reply({ content: [{ type: "text", text: JSON.stringify({ mcp: { status: "ok" }, daemon: { status: "online" }, repos: [{ repo: "product", root_path: f.root, path_status: { status: "ready" }, data_version: { stale: false } }] }) }] });
+  });
+  Object.assign(config.mcp.managed["code-index"], { mode: "external", url: e.url });
+  const result = await smoke(f.state, config, f.root, f.profile, "code-index", 5);
+  assert.equal(result.index_ready, true);
+  assert.equal(result.server.name, "external-index");
+  assert.deepEqual(fs.readdirSync(f.state), []);
+  unhealthy = true;
+  await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), /health failed.*health unavailable/);
+});
+test("environment credential references apply to authenticated calls and session cleanup",async t=>{
+  const previous=process.env.CORE_TEST_AUTH_HEADER;process.env.CORE_TEST_AUTH_HEADER="Bearer fixture";
+  t.after(()=>{if(previous===undefined)delete process.env.CORE_TEST_AUTH_HEADER;else process.env.CORE_TEST_AUTH_HEADER=previous;});
+  const e=await endpoint(t,({req,res,message,reply,error})=>{
+    assert.equal(req.headers.authorization,"Bearer fixture");
+    if(req.method==="DELETE")return res.writeHead(204).end();
+    if(message.method==="server/discover")return error(-32601);
+    if(message.method==="initialize")return reply({protocolVersion:"2024-11-05",capabilities:{}},200,{"Mcp-Session-Id":"authenticated"});
+    if(message.method.startsWith("notifications/"))return res.writeHead(202).end();return reply({tools:[]});
+  });
+  const c=new RemoteMcp(e.url,5,{headers_env:{Authorization:"CORE_TEST_AUTH_HEADER"}});
+  await c.initialize();await c.request("tools/list");await c.close();
+  assert.equal(e.calls.at(-1).method,"DELETE");assert.equal(e.calls.at(-1).headers.authorization,"Bearer fixture");
+});
+for(const type of ["application/json","text/event-stream"])test("configured memory budget covers HTTP "+type,async t=>{
+  const e=await endpoint(t,({res,message})=>{const text=JSON.stringify({jsonrpc:"2.0",id:message.id,result:{content:[{type:"text",text:"x".repeat(2048)}]}});res.writeHead(200,{"Content-Type":type}).end(type==="application/json"?text:"data: "+text+"\n\n");});
+  const c=new RemoteMcp(e.url,5,{maxBytes:1024});await assert.rejects(c.request("tools/call",{name:"large"}),/budget exceeded/);
+});
+test("remote relay cancellation uses the upstream HTTP id before the response finishes",async t=>{
+  const f=fixture(t);let cancelled=null;
+  const e=await endpoint(t,({res,message,reply,error})=>{
+    if(message.method==="server/discover")return error(-32601);
+    if(message.method==="initialize")return reply({protocolVersion:"2024-11-05",capabilities:{tools:{}}});
+    if(message.method==="notifications/cancelled"){cancelled=message.params.requestId;return res.writeHead(202).end();}
+    if(message.method.startsWith("notifications/"))return res.writeHead(202).end();
+    if(message.method==="tools/list")return reply({tools:[{name:"slow",inputSchema:{type:"object"}}]});
+    setTimeout(()=>reply({content:[],structuredContent:{upstreamId:message.id,cancelled}}),350);
+  });
+  f.profile.connections={edt:{url:e.url}};f.save();const c=await session(t,"scripts/lazy_mcp.mjs",["--component","edt"],f);
+  await c.request("tools/list");const work=c.request("tools/call",{name:"slow"}),hostId=c.sequence;
+  await sleep(70);c.notify("notifications/cancelled",{requestId:hostId});
+  const result=(await work).structuredContent;assert.equal(result.cancelled,result.upstreamId);
+});
 test("legacy negotiation omits initialize version header; sessions reuse and DELETE remain isolated", async (t) => {
   let counter = 0;
   const deleted = [];
@@ -155,7 +238,7 @@ for (const annotation of [
   { type: "array", "x-mcp-header": "Items" },
 ])
   test(
-    "invalid live HTTP header annotation is excluded: " + annotation.type,
+    "invalid native HTTP contract stays discoverable with a specific call error: " + annotation.type,
     async (t) => {
       const e = await endpoint(t, ({ message, reply }) =>
         reply(
@@ -179,8 +262,9 @@ for (const annotation of [
       await client.initialize();
       assert.deepEqual(
         (await client.request("tools/list")).tools.map((tool) => tool.name),
-        ["good"],
+        ["bad", "good"],
       );
+      await assert.rejects(client.request("tools/call",{name:"bad",arguments:{}}),/Incompatible native HTTP contract/);
       await client.close();
     },
   );
@@ -234,8 +318,9 @@ test("SSE notifications invalidate tools without losing the complete tool result
     res
       .writeHead(200, { "Content-Type": "text/event-stream" })
       .end(
-        'data: {"method":"notifications/tools/list_changed"}\n\ndata: ' +
+        'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\ndata: ' +
           JSON.stringify({
+            jsonrpc: "2.0",
             id: message.id,
             result: { content: [], isError: false },
           }) +

@@ -86,9 +86,9 @@ async function policy(t) {
     ledger,
   };
 }
-test("canonical policy connection and synthetic readiness probe expose six read-only tools", async (t) => {
+test("canonical policy connection exposes full and compact read-only workflows", async (t) => {
   const p = await policy(t);
-  assert.equal(Object.keys(p.tools).length, 6);
+  assert.equal(Object.keys(p.tools).length, 8);
   assert.ok(
     Object.values(p.tools).every((tool) => tool.annotations.readOnlyHint),
   );
@@ -96,6 +96,23 @@ test("canonical policy connection and synthetic readiness probe expose six read-
     (await smoke(settings())).evidence,
     "synthetic_protocol_checks_only",
   );
+});
+
+test("session references reduce retransmission while retaining all compliance and phase checks", async t => {
+  const p = await policy(t), sourceRef = "EDT:proposal:hash-a";
+  const assessments = Object.fromEntries(p.tools.detect_1c_mechanisms.inputSchema.properties.assessments.propertyNames.enum.map(name => [name,{status:"absent",evidence:"synthetic scoped transition inspected"}]));
+  const compact = await p.call("assess_1c_requirements",{target:p.target,artifact:"bsl",operation:"change",mechanisms:[],sourceRef,assessments});
+  const args={phase:"proposal",selectionRef:compact.selectionRef,current:{target:p.target,artifact:"bsl",operation:"change",sourceRef,mechanisms:[],detectionRef:compact.detectionRef},rows:[...compact.selection.mandatory,...compact.selection.recommended].map(selector=>[selector,"unverified","Synthetic fixture, no normative truth established"])};
+  assert.equal((await p.call("validate_compliance_ref",args)).status,"blocked");
+  await p.rejected("validate_compliance_ref",{...args,current:{...args.current,sourceRef:"EDT:result:hash-b"}},/sourceRef differs/);
+  await p.rejected("validate_compliance_ref",{...args,current:{...args.current,target:"another/project"}},/target differs/);
+  await p.rejected("validate_compliance_ref",{...args,rows:[]},/coverage/);
+  const other=await policy(t);await other.rejected("validate_compliance_ref",args,/another session/);
+  const detection=await p.call("detect_1c_mechanisms",{sourceRef,assessments});
+  const full={phase:args.phase,selection:compact.selection,current:{...args.current,detection},ledger:args.rows.map(([selector,status,evidence])=>({selector,status,evidence,selection_digest:compact.selection.digest,target:p.target,source_ref:sourceRef}))};
+  delete full.current.detectionRef;
+  assert.ok(Buffer.byteLength(JSON.stringify(args)) < Buffer.byteLength(JSON.stringify(full)) / 2);
+  assert.deepEqual(await p.call("validate_compliance_ref",args),await p.call("validate_compliance",full));
 });
 test("action agreement reuses only exact scope and nonblank evidence", async (t) => {
   const p = await policy(t),

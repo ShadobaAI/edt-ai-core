@@ -109,7 +109,7 @@ export function settings(file) {
 }
 export function validate_settings(config) {
   check_schema(config, "plugin-settings.schema.json");
-  for (const [name, entry] of Object.entries(config.mcp.required))
+  for (const [name, entry] of Object.entries({ ...config.mcp.required, ...config.mcp.managed }))
     if (entry.url) validate_url(entry.url, name);
   if (config.mcp.optional.openviking?.url)
     validate_url(config.mcp.optional.openviking.url, "OpenViking");

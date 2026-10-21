@@ -3,82 +3,120 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Настройки 1C AI Core</title>
+<title>1C AI Core · Настройки</title>
 <style>
-:root{color-scheme:light dark;font:14px/1.5 system-ui,sans-serif;color:var(--color-text-primary,#202124);background:var(--color-background-primary,#fff)}
-*{box-sizing:border-box}body{margin:0;padding:24px;min-width:280px}main{max-width:700px;margin:auto}h1{font-size:22px;margin:0 0 6px}p{margin:0 0 20px;color:var(--color-text-secondary,#667085)}
-.tabs{display:flex;gap:8px;border-bottom:1px solid #8892a333;margin:24px 0;padding-bottom:12px}button{font:inherit;border:1px solid #8892a366;border-radius:9px;padding:9px 16px;background:var(--color-background-secondary,#f4f5f7);color:inherit;cursor:pointer}button.primary{background:#157753;color:#fff;border-color:#157753}button:disabled{opacity:.5;cursor:default}.tabs button[aria-selected=true]{background:#15775318;border-color:#157753;color:var(--color-text-primary,#175c44)}
-label{display:block;font-weight:550;margin:16px 0 7px}input[type=text]{width:100%;padding:11px 12px;border:1px solid #8892a366;border-radius:9px;background:transparent;color:inherit;font:inherit}input[type=file]{width:100%;padding:16px;border:1px dashed #8892a388;border-radius:10px}input[type=checkbox]{margin-right:8px}.panel{padding:18px;border:1px solid #8892a333;border-radius:12px;margin:16px 0}.row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:8px 0}.muted{font-size:13px;color:var(--color-text-secondary,#667085)}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}.status{padding:13px;border-radius:9px;margin:16px 0;background:#15775312;white-space:pre-wrap}.status.error{background:#d92d2012;color:#b42318}.good{color:#157753}.warning{color:#b56a00}[hidden]{display:none!important}ul{padding-left:20px;margin:10px 0;overflow-wrap:anywhere}#previewRoot{overflow-wrap:anywhere}@media(prefers-color-scheme:dark){:root{background:var(--color-background-primary,#1c1d20);color:var(--color-text-primary,#f1f1f2)}p,.muted{color:var(--color-text-secondary,#a8adb7)}button{background:var(--color-background-secondary,#2b2e33)}.tabs button[aria-selected=true]{color:#a6e1c8}.good{color:#7fd3ad}.status.error{color:#ffa99e}.warning{color:#e9bc6b}}@media(max-width:440px){body{padding:16px}.tabs{flex-wrap:wrap}.row{align-items:flex-start}}
+html{scrollbar-gutter:stable}main{display:flow-root}
+:root{color-scheme:light dark;font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--color-text-primary,#242424);background:var(--color-background-primary,#fff);--surface:var(--color-background-secondary,#f6f6f6);--muted:var(--color-text-secondary,#737373);--line:var(--color-border-primary,#e6e6e6);--accent:#242424;--on-accent:#fff;--good:#247454;--warn:#956313}
+*{box-sizing:border-box}body{margin:0;padding:20px}main{max-width:680px;margin:auto;min-width:0}button,input{font:inherit}button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 12px;border:1px solid var(--line);border-radius:9px;background:transparent;color:inherit;cursor:pointer;transition:background .15s}button:hover{background:var(--surface)}button.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}button:disabled{opacity:.45;cursor:default}:focus-visible{outline:2px solid var(--color-text-primary,#333);outline-offset:3px}svg.icon{width:17px;height:17px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}.symbols{position:absolute;width:0;height:0;overflow:hidden}.header{display:flex;align-items:center;gap:11px;margin-bottom:18px}.brand{width:38px;height:38px;flex:none}h1{font-size:18px;line-height:1.3;letter-spacing:-.4px;margin:0;font-weight:650}h2{font-size:14px;margin:0;font-weight:600}p{margin:6px 0 0;color:var(--muted)}.muted{font-size:12px;color:var(--muted)}.context{padding:12px 14px;background:var(--surface);border-radius:11px}.context-head{display:flex;align-items:center;gap:7px;margin-bottom:5px}.context-head label{margin:0;font-weight:550}.badge{margin-left:auto;font-size:11px;border-radius:5px;padding:2px 7px;background:var(--color-background-primary,#fff);color:var(--muted);white-space:nowrap}input[type=text]{display:block;width:100%;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--color-background-primary,#fff);color:inherit}input[readonly]{color:var(--muted);background:transparent;border-color:transparent;padding:1px 0;text-overflow:ellipsis}.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;padding:4px;margin:16px 0;background:var(--surface);border-radius:10px}.tabs button{border:0;min-height:33px;padding:6px 3px;font-size:12px;border-radius:7px}.tabs button[aria-selected=true]{background:var(--color-background-primary,#fff);box-shadow:0 1px 4px #0000000d;font-weight:600}.panel{border:1px solid var(--line);border-radius:11px;padding:14px;margin-top:12px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0}.row>*{min-width:0}.row>span:last-child{text-align:right;overflow-wrap:anywhere}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}label.field{display:block;font-size:12px;font-weight:550;margin:12px 0 6px}.good{color:var(--good)}.warning{color:var(--warn)}.upload{display:flex;align-items:center;gap:12px;padding:18px 14px;border:1px dashed var(--line);border-radius:11px;cursor:pointer;margin:12px 0 0}.upload:hover{background:var(--surface)}.upload .icon{width:24px;height:24px;color:var(--muted)}.upload strong{font-weight:550}.upload small{display:block;color:var(--muted)}input[type=file]{position:absolute;width:1px;height:1px;opacity:0}.upload:focus-within{outline:2px solid currentColor;outline-offset:2px}.status{padding:10px 12px;border-radius:9px;margin-top:16px;background:var(--surface);font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}.status.error{color:var(--color-text-danger,#a23d32);background:var(--color-background-danger,#fdf0ee)}.path{overflow-wrap:anywhere;font-size:12px;color:var(--muted)}details{margin-top:10px;color:var(--muted);font-size:12px}summary{cursor:pointer;list-style-position:inside}details p{margin-top:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.5 ui-monospace,monospace;margin:8px 0 0}ul{margin:8px 0;padding-left:18px;overflow-wrap:anywhere}.service{padding:9px 0;border-bottom:1px solid var(--line)}.service:last-child{border:0;padding-bottom:0}.service:first-child{padding-top:0}.service .row{margin:0}.service-name{display:flex;align-items:center;gap:8px;font-weight:550}.notice{margin-top:12px;font-size:12px;color:var(--muted)}.check-scope{margin-bottom:12px}.replace{display:flex;gap:8px;align-items:flex-start;font-size:12px;margin-top:12px}.replace input{accent-color:var(--accent);margin-top:3px}[hidden]{display:none!important}
+@media(prefers-color-scheme:dark){:root{--surface:var(--color-background-secondary,#262626);--muted:var(--color-text-secondary,#a1a1a1);--line:var(--color-border-primary,#3c3c3c);--accent:#ececec;--on-accent:#202020;--good:#83c7a5;--warn:#dfb670;background:var(--color-background-primary,#202020);color:var(--color-text-primary,#ededed)}.badge,.tabs button[aria-selected=true],input[type=text]{background:var(--color-background-primary,#202020)}input[readonly]{background:transparent}.status.error{color:var(--color-text-danger,#efafa5);background:var(--color-background-danger,#382724)}}
+:root[data-theme=dark]{--surface:var(--color-background-secondary,#262626);--muted:var(--color-text-secondary,#a1a1a1);--line:var(--color-border-primary,#3c3c3c);--accent:#ececec;--on-accent:#202020;--good:#83c7a5;--warn:#dfb670;background:var(--color-background-primary,#202020);color:var(--color-text-primary,#ededed)}:root[data-theme=dark] .badge,:root[data-theme=dark] .tabs button[aria-selected=true],:root[data-theme=dark] input[type=text]{background:var(--color-background-primary,#202020)}:root[data-theme=dark] input[readonly]{background:transparent}:root[data-theme=dark] .status.error{color:var(--color-text-danger,#efafa5);background:var(--color-background-danger,#382724)}
+:root[data-theme=light]{--surface:var(--color-background-secondary,#f6f6f6);--muted:var(--color-text-secondary,#737373);--line:var(--color-border-primary,#e6e6e6);--accent:#242424;--on-accent:#fff;--good:#247454;--warn:#956313;background:var(--color-background-primary,#fff);color:var(--color-text-primary,#242424)}:root[data-theme=light] .badge,:root[data-theme=light] .tabs button[aria-selected=true],:root[data-theme=light] input[type=text]{background:var(--color-background-primary,#fff)}:root[data-theme=light] input[readonly]{background:transparent}:root[data-theme=light] .status.error{color:var(--color-text-danger,#a23d32);background:var(--color-background-danger,#fdf0ee)}
+@media(max-width:380px){body{padding:14px}.tabs button{gap:4px;font-size:11px}.tabs .icon{width:14px}.row{align-items:flex-start}.actions button{flex-grow:1}}
+@media(prefers-reduced-motion:reduce){button{transition:none}}
+.service-summary{list-style:none;cursor:pointer}.service-summary::-webkit-details-marker{display:none}.service-summary::after{content:"›";color:var(--muted);margin-left:2px}.service-summary>span:last-of-type{margin-left:auto}.service[open]>.service-summary::after{transform:rotate(90deg)}details.service{margin-top:0;color:inherit;font-size:13px}.service pre{color:var(--muted)}
+.directory{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.directory input{flex:1 1 220px}.directory button{flex:none;font-size:12px}
 </style>
+<style>textarea{display:block;width:100%;min-height:240px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--color-background-primary,#fff);color:inherit;font:12px/1.5 ui-monospace,monospace;resize:vertical}</style>
 </head>
 <body>
+<svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V5h6l2 2h10v12H3z"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="M12 3v13m-5-5 5 5 5-5M4 17v4h16v-4"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 10a8 8 0 1 0-2 8M20 3v7h-7"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-index" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5zm-9 9 9 5 9-5M3 16l9 5 9-5"/></symbol>
+<symbol id="i-code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6M14 3l-4 18"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6zm-4 9 3 3 5-6"/></symbol>
+<symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5v16M3 3c4-1 7 0 9 2 2-2 5-3 9-2v16c-4-1-7 0-9 2-2-2-5-3-9-2z"/></symbol>
+</defs></svg>
 <main>
-<h1>Настройки 1C AI Core</h1>
-<p>Перенесите настройки из файла и проверьте подключения проекта.</p>
-<nav class="tabs" aria-label="Раздел">
-<button id="importTab" role="tab" aria-selected="true">Импорт</button>
-<button id="exportTab" role="tab" aria-selected="false">Экспорт</button>
-<button id="checkTab" role="tab" aria-selected="false">Подготовка MCP</button>
+<header class="header"><svg class="brand" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#202123"/><path d="M15 25l7-5v24M16 44h13M47 23a12 12 0 1 0 0 18" fill="none" stroke="#F7F7F8" stroke-width="4.5" stroke-linecap="round"/><circle cx="49" cy="14" r="5" fill="#5DCAA5"/></svg><div><h1>1C AI Core</h1><div class="muted">Настройки · ShadobaAI</div></div></header>
+<div class="context"><div class="context-head"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg><label for="projectRoot">Папка текущего чата</label><span class="badge" id="instance">default</span></div><div class="directory"><input id="projectRoot" type="text" placeholder="Укажите папку проекта" autocomplete="off"><button id="pickDirectoryButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Выбрать папку</button><button id="openDirectoryButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Открыть папку</button></div></div>
+<nav class="tabs" role="tablist" aria-label="Настройки проекта">
+<button id="profileTab" role="tab" aria-controls="profilePanel" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Профиль</button>
+<button id="importTab" role="tab" aria-controls="importPanel" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg>Импорт</button>
+<button id="exportTab" role="tab" aria-controls="exportPanel" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Экспорт</button>
+<button id="checkTab" role="tab" aria-controls="checkPanel" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-grid"/></svg>Сервисы</button>
 </nav>
-<section id="importPanel">
-<label for="file">Файл настроек</label>
-<input id="file" type="file" accept=".json,.yaml,.yml">
-<div class="muted">Экспорт 1C AI Core или профиль проекта. До 2 МиБ.</div>
-<label for="projectRoot">Папка проекта на этом компьютере</label>
-<input id="projectRoot" type="text" placeholder="C:\EDT\projects\my-project" autocomplete="off">
-<div class="actions"><button id="previewButton">Проверить файл</button></div>
-<div class="panel" id="preview" hidden>
-<div class="row"><strong>Профиль</strong><span id="previewProfile"></span></div>
-<div id="previewRoot" class="muted"></div>
-<ul id="repositories"></ul>
-<div id="importEffects" class="muted"></div>
-<div class="row"><span>EDT</span><span id="edtStatus"></span></div>
-<div class="row"><span>v8std</span><span id="v8Status"></span></div>
-<label id="replaceLabel" hidden><input id="replace" type="checkbox">Заменить существующий профиль с резервной копией</label>
-<div class="actions"><button id="applyButton" class="primary">Импортировать</button></div>
-</div>
+<section id="profilePanel" role="tabpanel" aria-labelledby="profileTab">
+<div class="row"><h2 id="profileTitle">Профиль проекта</h2><span id="profileState" class="muted">Проверяем…</span></div><p id="profileDescription">Структура проекта и правила работы.</p><details id="profileError" hidden><summary>Ошибка в профиле</summary><pre id="profileErrorText"></pre></details>
+<details id="directoryInfo" hidden><summary>О выбранном каталоге</summary><pre id="directoryInfoText"></pre></details>
+<div class="actions"><button id="loadButton"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Загрузить профиль</button><button id="createButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>Создать профиль</button></div>
+<div class="panel"><h2>Подключения этого экземпляра</h2>
+<details id="legacyState" hidden><summary>Проверьте прежние подключения</summary><p>Старое состояние сохранено. Его владелец не записан, поэтому адреса требуют проверки для этой папки.</p><pre id="legacyConnections"></pre><button id="migrateConnectionsButton">Использовать эти подключения</button></details>
+<label class="field" for="edtUrl">EDT MCP</label><input id="edtUrl" type="text" placeholder="http://localhost:…/mcp" autocomplete="off"><div id="edtSource" class="muted"></div>
+<label class="field" for="v8stdUrl">v8std MCP</label><input id="v8stdUrl" type="text" placeholder="http://localhost:…/mcp" autocomplete="off"><div id="v8stdSource" class="muted"></div>
+<div class="actions"><button id="saveButton" class="primary">Сохранить подключения</button></div></div><details id="sessionHint" hidden><summary>Когда нужен новый чат</summary><p id="sessionHintText"></p></details>
 </section>
-<section id="exportPanel" hidden>
-<div class="panel"><strong>Общие настройки и шаблон проекта</strong><p style="margin:8px 0 0">Файл содержит общие настройки runtime и сохранённый шаблон проекта. Выбор папки и overrides текущего экземпляра остаются локальными. При импорте выберите папку назначения.</p></div>
-<div class="actions"><button id="downloadButton" class="primary">Скачать настройки</button></div>
+<section id="importPanel" role="tabpanel" aria-labelledby="importTab" hidden>
+<h2>Ручная настройка и импорт</h2><p>Выберите файл или измените JSON/YAML вручную. Перед сохранением обязательна проверка. Подключения экземпляра меняются во вкладке «Профиль».</p>
+<details><summary>Расширенные настройки</summary><p>Загрузите текущие настройки перед редактированием. Удалённые параметры runtime сбросятся к значениям по умолчанию. Неизменённый профиль останется прежним. Изменения runtime действуют для всех проектов; подключения экземпляра меняются отдельно.</p><div class="actions"><button id="editSettingsButton">Загрузить текущие настройки</button></div><label class="field" for="settingsText">JSON или YAML</label><textarea id="settingsText" spellcheck="false" aria-label="Редактор настроек JSON или YAML"></textarea></details>
+<label class="upload" for="file"><svg class="icon" aria-hidden="true"><use href="#i-up"/></svg><span><strong id="fileName">Выбрать файл</strong><small>JSON или YAML · до 2 МиБ</small></span><input id="file" type="file" accept=".json,.yaml,.yml"></label>
+<div class="actions"><button id="previewButton">Проверить изменения</button></div>
+<div class="panel" id="preview" hidden><div class="row"><strong>Профиль</strong><span id="previewProfile"></span></div><div id="previewRoot" class="path"></div><ul id="repositories"></ul><div id="importEffects" class="muted"></div>
+<div class="row"><span>EDT</span><span id="edtStatus" class="muted"></span></div><div class="row"><span>v8std</span><span id="v8Status" class="muted"></span></div>
+<label class="replace" id="replaceLabel" hidden><input id="replace" type="checkbox"><span>Заменить существующий профиль. Резервная копия сохранится рядом.</span></label><div class="actions"><button id="applyButton" class="primary">Импортировать</button></div></div>
 </section>
-<section id="checkPanel" hidden>
-<p>Подготовка может скачать runtime и запустить code-index/BSL LS. Проверяются MCP-протокол, workspace API BSL LS и health индекса. Соответствие EDT-проекту и поведение кода здесь не проверяются.</p>
-<div id="connections" class="panel" hidden></div>
-<div class="actions"><button id="checkButton" class="primary">Подготовить и проверить MCP</button><button id="operationButton">Состояние операции</button></div>
+<section id="exportPanel" role="tabpanel" aria-labelledby="exportTab" hidden>
+<h2>Перенос настроек</h2><p>Скачайте файл для другого компьютера или проекта.</p>
+<div class="panel"><div class="row"><span>Профиль и подключения по умолчанию</span><span id="exportProfile" class="muted"></span></div><div class="row"><span>Общие параметры runtime</span><span class="muted">Включены</span></div><p class="muted">Папка проекта и локальные подключения экземпляра остаются на этом компьютере.</p></div>
+<div class="actions"><button id="downloadButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Скачать настройки</button></div>
 </section>
-<div id="status" class="status" role="status">Подключаемся к плагину…</div>
+<section id="checkPanel" role="tabpanel" aria-labelledby="checkTab" hidden>
+<div class="panel"><h2>Компоненты этой папки</h2>
+<label class="replace"><input id="codeIndexEnabled" type="checkbox">Индекс кода</label>
+<label class="replace"><input id="bslLsEnabled" type="checkbox">BSL LS — дополнительный анализатор</label>
+<p>Отключённые компоненты не устанавливаются и не запускаются. Подключение внешнего экземпляра и параметры транспорта доступны в расширенном редакторе.</p>
+<div class="actions"><button id="saveComponentsButton">Сохранить выбор</button></div></div>
+<div class="panel"><h2>Обновления</h2><p>Проверка новых выпусков не перезапускает сервисы. Скачанный кандидат применяется после проверки его API. Текущие операции индекса должны завершиться.</p>
+<div class="actions"><button id="updatesButton">Проверить обновления</button><label for="updateComponent">Компонент</label><select id="updateComponent"><option value="code-index">Индекс кода</option><option value="bsl-ls">BSL LS</option></select></div>
+<pre id="updatesResult"></pre><div class="actions"><button id="downloadUpdateButton">Скачать кандидат</button><button id="applyUpdateButton">Проверить и применить</button><button id="rollbackUpdateButton">Откатить</button></div></div>
+<h2>Сервисы проекта</h2><p>Подготовьте runtime и проверьте доступность MCP.</p><div id="connections" class="panel" hidden></div>
+<div class="actions"><button id="checkButton" class="primary">Подготовить и проверить</button><button id="operationButton" aria-label="Обновить состояние операции"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Состояние</button></div>
+<details><summary>Что проверяется</summary><p>Подготовка может скачать runtime и запустить code-index и BSL LS. Проверяются MCP-протокол, workspace API BSL LS и health индекса. Для EDT и v8std здесь проверяется только наличие URL. Полная готовность проекта проверяется отдельно.</p></details>
+</section>
+<div id="status" class="status" role="status" aria-live="polite">Подключаемся к плагину…</div>
 </main>
 <script>
 "use strict";
-let seq=0, hostOrigin="*", connected=false;
-const waiting=new Map(), status=document.getElementById("status");
-const $=id=>document.getElementById(id);
+let seq=0,hostOrigin="*",connected=false;
+const waiting=new Map(),$=id=>document.getElementById(id),status=$("status");
+let initialData=null,lastPreview=null,fileText="",editBaseRevision=null,checkTimer=null,activeOperation=null,inputRevision=0,polling=false,currentData=null,lastHeight=0,resizeTimer=null,containerDimensions={},initializing=true,interacted=false,busyActive=false;
+function resize(){
+  if(resizeTimer!==null)clearTimeout(resizeTimer);
+  resizeTimer=setTimeout(()=>{
+    resizeTimer=null;if(!connected||Number.isFinite(containerDimensions.height))return;
+    const padding=getComputedStyle(document.body),content=document.querySelector("main").getBoundingClientRect().height+parseFloat(padding.paddingTop)+parseFloat(padding.paddingBottom);
+    const height=Math.ceil(Number.isFinite(containerDimensions.maxHeight)?Math.min(content,containerDimensions.maxHeight):content);
+    if(Math.abs(height-lastHeight)>1){lastHeight=height;notify("ui/notifications/size-changed",{height});}
+  },50);
+}
 function notice(text,error=false){status.textContent=text;status.classList.toggle("error",error);}
 function rpc(method,params={}){
-  if(window.parent===window) return Promise.reject(new Error("Откройте этот экран из настроек плагина в Codex."));
+  if(window.parent===window)return Promise.reject(new Error("Откройте настройки 1C AI Core в Codex."));
   return new Promise((resolve,reject)=>{
-    const id=++seq;
-    const timer=setTimeout(()=>{waiting.delete(id);const error=new Error("Ответ не получен. Операция могла продолжиться. Проверьте её состояние перед повтором.");error.outcomeUnknown=true;reject(error);},240000);
-    waiting.set(id,{resolve,reject,timer});
-    window.parent.postMessage({jsonrpc:"2.0",id,method,params},hostOrigin);
+    const id=++seq,timer=setTimeout(()=>{waiting.delete(id);const error=new Error("Ответ не получен. Операция могла продолжиться. Проверьте её состояние перед повтором.");error.outcomeUnknown=true;reject(error);},240000);
+    waiting.set(id,{resolve,reject,timer});window.parent.postMessage({jsonrpc:"2.0",id,method,params},hostOrigin);
   });
 }
 function notify(method,params={}){window.parent.postMessage({jsonrpc:"2.0",method,params},hostOrigin);}
 window.addEventListener("message",event=>{
-  if(event.source!==window.parent)return;
+  if(event.source!==window.parent||(hostOrigin!=="*"&&event.origin!==hostOrigin))return;
   const msg=event.data;if(!msg||msg.jsonrpc!=="2.0")return;
   if(msg.id&&waiting.has(msg.id)){
     if(hostOrigin==="*"&&event.origin!=="null")hostOrigin=event.origin;
     const item=waiting.get(msg.id);waiting.delete(msg.id);clearTimeout(item.timer);
     msg.error?item.reject(new Error(msg.error.message)):item.resolve(msg.result);
-  }else if(msg.method==="ui/notifications/tool-result"){
-    initial(msg.params);
-  }else if(msg.method==="ui/notifications/host-context-changed"){applyStyle(msg.params);}
+  }else if(msg.method==="ui/notifications/tool-result")initial(msg.params);
+  else if(msg.method==="ui/notifications/host-context-changed")applyStyle(msg.params);
 });
 function applyStyle(context){
-  const vars=context?.styles?.variables||{};
-  for(const[key,value]of Object.entries(vars))if(typeof value==="string")document.documentElement.style.setProperty(key,value);
+  for(const[key,value]of Object.entries(context?.styles?.variables||{}))if(typeof value==="string")document.documentElement.style.setProperty(key,value);
+  if(["light","dark"].includes(context?.theme)){document.documentElement.style.colorScheme=context.theme;document.documentElement.setAttribute("data-theme",context.theme);}
+  if(context?.containerDimensions){const wasFixed=Number.isFinite(containerDimensions.height);containerDimensions=context.containerDimensions;if(wasFixed&&!Number.isFinite(containerDimensions.height))lastHeight=0;}
+  resize();
 }
 async function tool(name,args={}){
   if(!connected)throw new Error("Подключение к плагину ещё не установлено.");
@@ -86,133 +124,180 @@ async function tool(name,args={}){
   if(response.isError)throw new Error(response.content?.find(x=>x.type==="text")?.text||"Не удалось выполнить действие.");
   return response._meta?.data||response.structuredContent||{};
 }
+const modes=["profile","import","export","check"];
 function show(mode){
-  for(const key of ["import","export","check"]){$(key+"Panel").hidden=key!==mode;$(key+"Tab").setAttribute("aria-selected",String(key===mode));}
-  notify("ui/notifications/size-changed",{height:document.documentElement.scrollHeight});
+  if(!modes.includes(mode))mode="profile";
+  for(const key of modes){$(key+"Panel").hidden=key!==mode;$(key+"Tab").setAttribute("aria-selected",String(key===mode));$(key+"Tab").tabIndex=key===mode?0:-1;}
+  resize();
 }
-let initialData=null, lastPreview=null, fileText="", checkTimer=null, activeOperation=null, inputRevision=0, polling=false;
 function initial(result){
-  initialData=result?.structuredContent||result;
-  if(initialData?.values?.projectRoot)$("projectRoot").value=initialData.values.projectRoot;
-  if(connected&&initialData?.mode)show(initialData.mode==="operation"?"check":initialData.mode);
-  if(connected&&initialData?.mode==="operation")pollOperation(initialData.id).catch(error=>notice(error.message,true));
+  const data=result?.structuredContent||result;
+  // Entry results select the initial view once. App-originated tool results
+  // may also be echoed by the host and must never navigate or restart polling.
+  if(!data?.mode||initialData||interacted)return;initialData=data;
+  if(connected&&!initializing)openInitial().catch(error=>notice(error.message,true));
+}
+async function openInitial(){show(initialData.mode==="operation"?"check":initialData.mode);if(initialData.mode==="operation")await pollOperation(initialData.id);}
+function renderCurrent(current){
+  $("legacyState").hidden=current.legacyState?.status!=="owner_unknown"||!Object.keys(current.legacyState?.connections||{}).length;
+  $("legacyConnections").textContent=Object.entries(current.legacyState?.connections||{}).map(([name,item])=>name+": "+(item.url||"отключён")).join("\n");
+  for(const field of ["codeIndexEnabled","bslLsEnabled"])$(field).checked=Boolean(current.values?.[field]);
+  currentData=current;$("projectRoot").value=current.values?.projectRoot||"";$("projectRoot").readOnly=Boolean(current.schema?.properties?.projectRoot?.readOnly);$("instance").textContent=current.instance||"default";
+  $("pickDirectoryButton").hidden=$("projectRoot").readOnly||current.folderActions?.supported===false;$("openDirectoryButton").hidden=!current.values?.projectRoot||current.folderActions?.supported===false;
+  const profile=current.profile||{status:"missing"},loaded=profile.status==="loaded";
+  $("profileTitle").textContent=loaded?(profile.projectId||profile.profileId):"Профиль проекта";
+  $("profileState").textContent=loaded?"Загружен":profile.status==="ambiguous"?"Найдено несколько профилей":profile.status==="invalid"?"Ошибка профиля":profile.status==="unselected"?"Выберите папку":"Не создан";$("profileState").className=loaded?"good":"muted";
+  $("profileDescription").textContent=loaded?"Профиль найден в .ai/project.yaml. Репозиториев: "+(profile.repositories?.length||0)+".":profile.status==="ambiguous"?"Выберите папку конкретного проекта.":profile.status==="invalid"?"Исправьте профиль или импортируйте рабочую копию.":"Создайте профиль для этой папки или импортируйте готовый файл.";
+  $("profileError").hidden=!["invalid","ambiguous"].includes(profile.status);$("profileErrorText").textContent=profile.detail||"";
+  const context=current.directoryContext,info=[];
+  if(context){
+    info.push("Каталог: "+context.directory);if(profile.path)info.push("Профиль: "+profile.path);
+    for(const project of context.edt?.projects||[])info.push("EDT: "+project.name+" · платформа "+(project.runtimeVersion||"не определена"),"Исходники: "+project.source);
+    const connection=context.edt?.connection;
+    if(connection?.workspace)info.push("Workspace EDT: "+connection.workspace);
+    if(connection?.url)info.push("EDT MCP: "+connection.url+" · подключение не проверено");
+    else if(connection?.status==="missing_preferences")info.push("Настройки EDT MCP не найдены. Проверьте установку или запуск.");
+    else if(connection?.status==="invalid_port")info.push("В настройках EDT MCP указан некорректный порт.");
+    const git=context.git;
+    if(git?.status==="detected")info.push("Git: "+git.root,"Ветка: "+(git.branch||(git.detached?"detached HEAD":"не определена")),"Коммит: "+(git.commit||"ещё нет"));
+    else if(git?.status==="unavailable")info.push(git.reason==="git_not_found"?"Git не найден.":git.reason==="ownership_check"?"Git: проверка владельца репозитория не пройдена.":"Не удалось прочитать сведения Git.");
+  }
+  $("directoryInfo").hidden=!context;$("directoryInfoText").textContent=info.join("\n");
+  $("createButton").hidden=profile.status!=="missing";$("loadButton").hidden=!loaded;$("exportProfile").textContent=loaded?profile.profileId:"Без профиля";
+  $("sessionHintText").textContent=current.sessionGuidance||"";$("sessionHint").hidden=!current.sessionGuidance;
+  for(const key of ["edt","v8std"]){
+    const field=key+"Url",source=current.connectionSources?.[key]||"unconfigured";
+    $(field).value=current.values?.[field]||"";$(field).readOnly=Boolean(current.schema?.properties?.[field]?.readOnly);
+    $(key+"Source").textContent=source.startsWith("environment:")?"Из окружения: "+source.slice(12):source==="connections_file"?"Из файла подключений":source==="profile"?"Из профиля проекта":source==="edt_workspace"?"Из настроек EDT":source==="unconfigured"?"Адрес не указан":"Локальное подключение · "+source;
+  }
+  if(current.operation)activeOperation=current.operation;
+  syncControls();
+}
+async function refresh(){const current=await tool("settings.read");renderCurrent(current);return current;}
+function syncControls(){
+  const running=activeOperation?.status==="running";
+  for(const control of document.querySelectorAll("button,input,textarea,select"))control.disabled=busyActive||(running&&control.id!=="operationButton"&&!control.id.endsWith("Tab"));
+  $("saveButton").disabled||=!$("projectRoot").value.trim();$("checkButton").disabled||=!$("projectRoot").value.trim();
 }
 async function busy(label,action){
-  const controls=[...document.querySelectorAll("button,input")], disabled=controls.map(control=>control.disabled);
-  controls.forEach(control=>control.disabled=true);notice(label);
+  if(busyActive)return;interacted=true;busyActive=true;syncControls();notice(label);
   try{return await action();}catch(error){notice(error.message,true);throw error;}
-  finally{controls.forEach((control,index)=>control.disabled=disabled[index]);$("checkButton").disabled=activeOperation?.status==="running";}
+  finally{busyActive=false;syncControls();resize();}
 }
 function invalidate(){inputRevision++;lastPreview=null;$("preview").hidden=true;}
-$("projectRoot").addEventListener("input",invalidate);
-$("file").addEventListener("change",invalidate);
-$("importTab").onclick=()=>show("import");$("exportTab").onclick=()=>show("export");$("checkTab").onclick=()=>show("check");
-$("previewButton").onclick=()=>busy("Проверяем настройки…",async()=>{
-  const file=$("file").files[0];if(!file)throw new Error("Выберите файл настроек.");
-  const revision=inputRevision;
-  if(file.size>2*1024*1024)throw new Error("Файл превышает 2 МиБ.");
-  fileText=await file.text();
-  const args={text:fileText};
-  if($("projectRoot").value.trim())args.projectRoot=$("projectRoot").value.trim();
-  const preview=await tool("settings.preview",args);
-  if(revision!==inputRevision)throw new Error("Файл или папка изменились во время проверки. Проверьте их заново.");
-  lastPreview=preview;
-  $("projectRoot").value=lastPreview.projectRoot;
-  $("previewProfile").textContent=lastPreview.profileId||"Настройки плагина";
-  $("previewRoot").textContent=lastPreview.projectRoot||"Папка проекта не выбрана";
-  $("repositories").replaceChildren(...lastPreview.repositories.map(repo=>{
-    const item=document.createElement("li");item.textContent=repo.id+" · "+repo.path;return item;}));
-  $("edtStatus").textContent=lastPreview.connectionUrls?.edt||"Адрес не указан";
-  $("v8Status").textContent=lastPreview.connectionUrls?.v8std||"Адрес не указан";
-  $("importEffects").textContent=(lastPreview.writesInstanceConnections?"URL из settings-файла сохранятся для текущего экземпляра. ":"")+
-    (Object.keys(lastPreview.sharedRuntimeChanges||{}).length?"Изменятся общие параметры runtime (включая программы запуска): "+JSON.stringify(lastPreview.sharedRuntimeChanges):"");
-  $("replaceLabel").hidden=!lastPreview.replacesProfile;$("replace").checked=false;$("preview").hidden=false;
-  notice("Файл проверен. Проверьте папку проекта перед импортом.");
+$("projectRoot").addEventListener("input",()=>{interacted=true;invalidate();syncControls();});
+$("pickDirectoryButton").onclick=()=>busy("Выберите папку в открывшемся окне…",async()=>{
+  const operation=await tool("settings.pick_directory",{projectRoot:$("projectRoot").value.trim()});
+  activeOperation=operation;await pollOperation(operation.id);
 }).catch(()=>{});
-$("applyButton").onclick=()=>busy("Сохраняем настройки…",async()=>{
-  if(!lastPreview)throw new Error("Сначала проверьте файл.");
-  if(lastPreview.replacesProfile&&!$("replace").checked)throw new Error("Подтвердите замену существующего профиля.");
-  await tool("settings.apply",{text:fileText,projectRoot:$("projectRoot").value.trim(),revision:lastPreview.revision,replace:$("replace").checked});
-  invalidate();notice("Настройки импортированы. Нажмите «Подготовить и проверить MCP» для запуска сервисов. Для работы выберите эту папку проекта в Codex.");show("check");
+$("openDirectoryButton").onclick=()=>busy("Открываем папку…",async()=>{await tool("settings.open_directory");notice("Папка открыта в Проводнике.");}).catch(()=>{});
+$("file").addEventListener("change",()=>{invalidate();$("fileName").textContent=$("file").files[0]?.name||"Выбрать файл";});
+for(const key of modes){
+  $(key+"Tab").onclick=()=>{interacted=true;show(key);};
+  $(key+"Tab").addEventListener("keydown",event=>{
+    let index=modes.indexOf(key);if(event.key==="ArrowRight")index=(index+1)%modes.length;else if(event.key==="ArrowLeft")index=(index+modes.length-1)%modes.length;else if(event.key==="Home")index=0;else if(event.key==="End")index=modes.length-1;else return;
+    event.preventDefault();interacted=true;show(modes[index]);$(modes[index]+"Tab").focus();
+  });
+}
+for(const[action,button]of [["create","createButton"],["load","loadButton"]])$(button).onclick=()=>busy(action==="create"?"Создаём профиль…":"Загружаем профиль…",async()=>{
+  const result=await tool("settings."+action,{projectRoot:$("projectRoot").value.trim()});await refresh();notice((action==="create"?"Профиль создан. Настройте репозитории в .ai/project.yaml. ":"Профиль загружен. ")+(result.sessionGuidance||""));
 }).catch(()=>{});
-$("downloadButton").onclick=()=>busy("Готовим файл настроек…",async()=>{
-  const exported=await tool("settings.export_data");
-  const url=URL.createObjectURL(new Blob([exported.text],{type:"application/json;charset=utf-8"}));
-  const link=document.createElement("a");link.href=url;link.download=exported.filename;link.click();
-  setTimeout(()=>URL.revokeObjectURL(url),30000);notice("Файл настроек подготовлен.");
+$("saveButton").onclick=()=>busy("Сохраняем подключения…",async()=>{
+  const set={};if(!$("projectRoot").readOnly)set.projectRoot=$("projectRoot").value.trim();
+  for(const key of ["edtUrl","v8stdUrl"])if(!$(key).readOnly&&$(key).value.trim()!==currentData?.values?.[key])set[key]=$(key).value.trim();
+  if(!Object.keys(set).length){notice("Изменений нет.");return;}
+  await tool("settings.update",{set});await refresh();notice("Подключения сохранены для этой папки и экземпляра.");
+}).catch(()=>{});
+$("saveComponentsButton").onclick=()=>busy("Сохраняем компоненты…",async()=>{
+  await tool("settings.update",{set:{codeIndexEnabled:$("codeIndexEnabled").checked,bslLsEnabled:$("bslLsEnabled").checked}});await refresh();notice("Выбор сохранён. Новые компоненты подготовьте по кнопке ниже.");
+}).catch(()=>{});
+$("migrateConnectionsButton").onclick=()=>busy("Переносим проверенные подключения…",async()=>{
+  const set={};for(const [name,item] of Object.entries(currentData?.legacyState?.connections||{})){const field=name+"Url";if(!$(field).readOnly)set[field]=item.url;}
+  if(!Object.keys(set).length)throw new Error("Подключения задаются источником с более высоким приоритетом.");
+  await tool("settings.update",{set});await refresh();notice("Подключения сохранены для выбранной папки. Старое состояние сохранено.");
+}).catch(()=>{});
+async function performUpdate(operation){
+  const current=await refresh();if(!current.preparationScope)throw new Error("Выберите папку проекта.");
+  const authorization={scope:current.preparationScope,effects:["launch"],evidence:"Пользователь выбрал действие обновления «"+operation+"» в настройках."};
+  const job=await tool("settings.updates",{operation,component:$("updateComponent").value,...(operation==="check"?{}:{authorization})});activeOperation=job;await pollOperation(job.id);
+}
+for(const [button,operation]of [["updatesButton","check"],["downloadUpdateButton","download"],["applyUpdateButton","apply"],["rollbackUpdateButton","rollback"]])$(button).onclick=()=>busy("Выполняем действие обновления…",()=>performUpdate(operation)).catch(()=>{});
+$("previewButton").onclick=()=>busy("Проверяем файл…",async()=>{
+  const file=$("file").files[0],manual=$("settingsText").value.trim();if(!manual&&!file)throw new Error("Выберите файл настроек или введите JSON/YAML.");const revision=inputRevision;if((manual?new Blob([manual]):file).size>2*1024*1024)throw new Error("Файл превышает 2 МиБ.");
+  if(editBaseRevision&&!manual)throw new Error("Документ редактора пуст. Загрузите текущие настройки заново.");
+  fileText=manual||await file.text();const args={text:fileText,...(editBaseRevision?{mode:"edit",baseRevision:editBaseRevision}:{})};if($("projectRoot").value.trim())args.projectRoot=$("projectRoot").value.trim();const preview=await tool("settings.preview",args);
+  if(revision!==inputRevision)throw new Error("Файл или папка изменились во время проверки. Проверьте их заново.");lastPreview=preview;$("projectRoot").value=preview.projectRoot;
+  $("previewProfile").textContent=preview.profileId||"Настройки плагина";$("previewRoot").textContent=preview.projectRoot||"Папка проекта не выбрана";
+  $("repositories").replaceChildren(...preview.repositories.map(repo=>{const item=document.createElement("li");item.textContent=repo.id+" · "+repo.path;return item;}));
+  $("edtStatus").textContent=preview.connectionUrls?.edt||"Адрес не указан";$("v8Status").textContent=preview.connectionUrls?.v8std||"Адрес не указан";
+  $("importEffects").textContent=(preview.writesInstanceConnections?"Подключения из файла сохранятся для текущего экземпляра. ":"")+(Object.keys(preview.sharedRuntimeChanges||{}).length?"Изменятся общие параметры runtime, включая программы запуска: "+JSON.stringify(preview.sharedRuntimeChanges):"")+(Object.keys(preview.sharedOptionalChanges||{}).length?" Изменятся общие дополнительные параметры: "+JSON.stringify(preview.sharedOptionalChanges):"");
+  $("replaceLabel").hidden=!preview.replacesProfile;$("replace").checked=false;$("preview").hidden=false;notice("Файл проверен. Проверьте папку и изменения перед импортом.");
+}).catch(()=>{});
+$("settingsText").addEventListener("input",()=>{interacted=true;invalidate();});
+$("file").addEventListener("change",()=>{$("settingsText").value="";editBaseRevision=null;invalidate();});
+$("editSettingsButton").onclick=()=>busy("Читаем настройки…",async()=>{
+  const exported=await tool("settings.edit");$("settingsText").value=exported.text;editBaseRevision=exported.baseRevision;invalidate();notice("Измените параметры и нажмите «Проверить изменения». Удалённые параметры runtime сбросятся к значениям по умолчанию.");
+}).catch(()=>{});
+$("applyButton").onclick=()=>busy("Импортируем настройки…",async()=>{
+  if(!lastPreview)throw new Error("Сначала проверьте файл.");if(lastPreview.replacesProfile&&!$("replace").checked)throw new Error("Подтвердите замену существующего профиля.");
+  const applied=await tool("settings.apply",{text:fileText,projectRoot:$("projectRoot").value.trim(),revision:lastPreview.revision,replace:$("replace").checked,...(editBaseRevision?{mode:"edit",baseRevision:editBaseRevision}:{})});
+  if(editBaseRevision){$("settingsText").value="";editBaseRevision=null;$("file").value="";}
+  invalidate();await refresh();show("check");notice("Настройки сохранены. Подготовка сервисов доступна по кнопке. "+(applied.sessionGuidance||"Для работы выберите эту папку в Codex. Если инструменты не обновились, откройте новый чат или перезапустите Codex."));
+}).catch(()=>{});
+$("downloadButton").onclick=()=>busy("Готовим файл…",async()=>{
+  const exported=await tool("settings.export_data"),url=URL.createObjectURL(new Blob([exported.text],{type:"application/json;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download=exported.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),30000);notice("Файл настроек подготовлен.");
 }).catch(()=>{});
 async function pollOperation(operationId){
-  if(polling)return;
-  polling=true;
+  if(polling)return;polling=true;
   try{
-  if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}
-  const operation=await tool("settings.operation",operationId?{operationId}:{});
-  activeOperation=operation;
-  if(operation.status==="running"){
-    $("checkButton").disabled=true;
-    notice("Выполняется "+operation.action+" · "+(operation.projectRoot||"без папки")+" · экземпляр "+operation.instance+". Ожидаем результат; повтор не запускается.");
-    checkTimer=setTimeout(()=>pollOperation(operation.id).catch(error=>notice(error.message,true)),1000);
-    return;
-  }
-  $("checkButton").disabled=false;
-  if(operation.status==="idle"){notice("В этой MCP-сессии нет операций.");return;}
-  if(operation.status!=="completed"){notice(operation.error+(operation.status==="outcome_unknown"?" Проверьте фактические настройки и runtime перед повтором.":""),true);return;}
-  if(operation.action!=="check"){notice("Операция "+operation.action+" завершена. Обновите настройки, чтобы проверить результат.");return;}
-  renderCheck(operation.result,operation);
-  }finally{polling=false;}
+    if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}const operation=await tool("settings.operation",operationId?{operationId}:{});activeOperation=operation;
+    if(operation.status==="running"){notice(operation.action==="pick_directory"?"Открыт системный выбор папки. Выберите папку или нажмите «Отмена» в этом окне. После закрытия выбор обновится автоматически.":"Операция выполняется · "+(operation.projectRoot||"без папки")+" · "+operation.instance+". Ожидаем результат.");checkTimer=setTimeout(()=>pollOperation(operation.id).catch(error=>notice(error.message,true)),1000);return;}
+    if(operation.status==="idle"){notice("В этом сеансе ещё нет операций.");return;}
+    if(operation.status!=="completed"){notice(operation.error+(operation.status==="outcome_unknown"?" Проверьте фактические настройки и runtime перед повтором.":""),true);return;}
+    if(operation.action==="updates"){
+      const data=operation.result,states={disabled:"отключён",external:"внешний экземпляр",current:"актуален",update_available:"доступно обновление",error:"ошибка проверки",applied:"применён",candidate_downloaded:"кандидат скачан"};
+      $("updatesResult").textContent=(data.components||[data]).map(item=>(item.component==="bsl-ls"?"BSL LS":"Индекс кода")+": "+(states[item.state]||item.state)+(item.release?" · "+item.release:"")+(item.active?"\nУстановлен: "+item.active:"")+(item.latest?" · новый: "+item.latest:"")+(item.candidate?"\nКандидат: "+item.candidate:"")+(item.previous?" · для отката: "+item.previous:"")+(item.detail?"\n"+item.detail:"")+(item.reconnect==="open_new_chat"?"\nДля подключения откройте новый чат.":"")).join("\n\n");await refresh();notice("Операция обновления завершена.");return;
+    }
+    if(operation.action!=="check"){
+      if(operation.action==="pick_directory"&&operation.result?.cancelled){notice("Выбор папки отменён.");return;}
+      if(operation.action==="pick_directory"||operation.action==="apply")invalidate();
+      await refresh();
+      const text={load:"Профиль загружен.",create:"Профиль создан.",update:"Подключения сохранены.",apply:"Настройки импортированы.",pick_directory:"Папка выбрана."}[operation.action]||"Операция завершена.";
+      notice(text+" "+(operation.result?.sessionGuidance||currentData?.sessionGuidance||""));return;
+    }renderCheck(operation.result,operation);
+  }finally{polling=false;syncControls();resize();}
 }
+function icon(id){const svg=document.createElementNS("http://www.w3.org/2000/svg","svg"),use=document.createElementNS("http://www.w3.org/2000/svg","use");svg.setAttribute("class","icon");svg.setAttribute("aria-hidden","true");use.setAttribute("href","#i-"+id);svg.append(use);return svg;}
 function renderCheck(result,operation){
   const box=$("connections");box.replaceChildren();
-  const scope=document.createElement("div");scope.className="muted";scope.textContent=operation.projectRoot+" · экземпляр "+operation.instance;box.append(scope);
+  if(operation.projectRoot!==currentData?.values?.projectRoot||operation.instance!==currentData?.instance){const scope=document.createElement("div");scope.className="path check-scope";scope.textContent=(operation.projectRoot||"")+" · "+operation.instance;box.append(scope);}
   for(const item of result.managed){
-    const line=document.createElement("div");line.className="row";
-    const name=document.createElement("span");name.textContent=item.name;
-    const value=document.createElement("span");value.className=item.ready?"good":"warning";value.textContent=item.ready?(item.name==="code-index"?"Индекс актуален по health":item.name==="bsl-ls"?"MCP и workspace API доступны":"Протокол проверен на тестовых данных"):item.state==="indexing"?"Индексируется…":item.state==="preparing"?"Подготовка…":"Проверка не пройдена";
-    line.append(name,value);box.append(line);
-    if(!item.ready){const detail=document.createElement("div");detail.className="muted";detail.textContent=item.detail;box.append(detail);}
+    const service=document.createElement("details");service.className="service";const line=document.createElement("summary");line.className="row service-summary";
+    const name=document.createElement("span");name.className="service-name";name.append(icon(item.name==="code-index"?"index":item.name==="policy"?"shield":"code"));const title=document.createElement("span");title.textContent=item.name;name.append(title);
+    const value=document.createElement("span");value.className=item.state==="disabled"?"muted":item.ready?"good":"warning";value.textContent=item.state==="disabled"?"Отключён":item.ready?(item.name==="code-index"?"Индекс актуален":item.name==="bsl-ls"?"API доступен":"Протокол проверен"):item.state==="indexing"?"Индексируется…":item.state==="preparing"?"Подготовка…":"Требует внимания";
+    line.append(name,value);service.append(line);const text=document.createElement("pre");
+    text.textContent=item.detail||(item.name==="code-index"?(item.ready?"Свежесть индекса подтверждена по health.":"Дождитесь завершения подготовки индекса и обновите проверку."):item.name==="bsl-ls"?"MCP и workspace API доступны. Конфигурации пока не зарегистрированы.":"Протокол проверен на тестовых данных. Исходники и нормы не проверялись.");service.append(text);box.append(service);
   }
   for(const[name,item]of Object.entries(result.external)){
-    const line=document.createElement("div");line.className="row";line.textContent=name+": "+(item.configured?"Адрес указан; live-проверка не выполнена":"Укажите адрес в настройках плагина");box.append(line);
+    const service=document.createElement("div");service.className="service";const line=document.createElement("div");line.className="row";const title=document.createElement("span");title.className="service-name";title.append(icon(name==="v8std"?"book":"code"));const label=document.createElement("span");label.textContent=name;title.append(label);const value=document.createElement("span");value.className="muted";value.textContent=item.configured?"URL указан · без live-проверки":"Укажите URL";line.append(title,value);service.append(line);box.append(service);
   }
-  const indexing=result.managed.some(x=>x.state==="indexing"||x.state==="preparing");
-  box.hidden=false;notice(result.managed.every(x=>x.ready)?"Указанные MCP-проверки пройдены. Нормативное соответствие и полная готовность проекта не проверялись.":indexing?"Подготовка или индексация ещё не завершена. Обновите проверку позже кнопкой; автоматического переподключения нет.":"Часть MCP-проверок не пройдена. Подробности выше.",!indexing&&!result.managed.every(x=>x.ready));
+  const indexing=result.managed.some(x=>x.state==="indexing"||x.state==="preparing");box.hidden=false;notice(result.managed.every(x=>x.ready)?"MCP-проверки пройдены. Полная готовность проекта проверяется отдельно.":indexing?"Подготовка ещё не завершена. Обновите проверку позже; автоматического переподключения нет.":"Часть сервисов требует внимания. Откройте подробности проверки.",!indexing&&!result.managed.every(x=>x.ready));
 }
 async function performCheck(){
-  // Re-read the backend's canonical scope: imports and host root changes can
-  // invalidate the values that were shown when this screen first opened.
-  const current=await tool("settings.read");
-  if(!current.preparationScope)throw new Error("Выберите папку проекта.");
-  const operation=await tool("settings.run_check",{authorization:{
-    scope:current.preparationScope,
-    effects:["launch"],
-    evidence:"Пользователь нажал «Подготовить и проверить MCP» в экране настроек."
-  }});
-  activeOperation=operation;
-  await pollOperation(operation.id);
+  const current=await refresh();if(current.operation?.status==="running"){await pollOperation(current.operation.id);return;}if(!current.preparationScope)throw new Error("Выберите папку проекта.");const operation=await tool("settings.run_check",{authorization:{scope:current.preparationScope,effects:["launch"],evidence:"Пользователь нажал «Подготовить и проверить MCP» в экране настроек."}});activeOperation=operation;await pollOperation(operation.id);
 }
-$("checkButton").onclick=()=>busy("Проверяем подключения…",performCheck).catch(()=>{});
-$("operationButton").onclick=()=>pollOperation(activeOperation?.id).catch(error=>notice(error.message,true));
+$("checkButton").onclick=()=>busy("Проверяем подключения…",performCheck).catch(()=>{});$("operationButton").onclick=()=>{interacted=true;return pollOperation().catch(error=>notice(error.message,true));};
+if(typeof ResizeObserver!=="undefined")new ResizeObserver(resize).observe(document.querySelector("main"));
 (async()=>{
   try{
-    const host=await rpc("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"1C AI Core Settings",version:"0.1.1"},
-      appCapabilities:{availableDisplayModes:["inline"]}});
-    const desktop=/desktop/i.test(host?.hostInfo?.name||"")||host?.hostContext?.platform==="desktop";
-    const actual=(host?.hostInfo?.version||"").split(".").map(Number),minimum=[26,928,20710];
-    if(desktop&&actual.length>=3&&actual.every(Number.isFinite)){
-      const first=minimum.findIndex((value,index)=>actual[index]!==value);
-      if(first>=0&&actual[first]<minimum[first])throw new Error("Обновите приложение до версии 26.928.20710 или новее, чтобы использовать настройки плагина.");
-    }
-    connected=true;applyStyle(host?.hostContext);
-    notify("ui/notifications/initialized");
-    const current=await tool("settings.read");
-    if(current.values?.projectRoot)$("projectRoot").value=current.values.projectRoot;
-    $("projectRoot").readOnly=Boolean(current.schema?.properties?.projectRoot?.readOnly);
-    if(initialData?.mode)show(initialData.mode==="operation"?"check":initialData.mode);
-    notice(current.projectSelection?.detail||"Выберите файл настроек для импорта.",Boolean(current.projectSelection?.detail));
-    if(initialData?.mode==="operation")await pollOperation(initialData.id);
-  }catch(error){notice(error.message,true);}
+    const host=await rpc("ui/initialize",{protocolVersion:"2026-01-26",appInfo:{name:"1C AI Core Settings",version:"__CORE_VERSION__"},appCapabilities:{availableDisplayModes:["inline"]}});
+    connected=true;applyStyle(host?.hostContext);notify("ui/notifications/initialized");const current=await refresh();show("profile");
+    notice(current.projectSelection?.detail||(current.profile?.status==="invalid"?"Профиль содержит ошибку. Можно импортировать рабочую копию.":current.profile?.status==="loaded"?"Профиль загружен автоматически для текущей папки.":"Создайте профиль или выберите файл во вкладке «Импорт»."),Boolean(current.projectSelection?.detail)||current.profile?.status==="invalid");
+    initializing=false;
+    if(initialData)await openInitial();
+    if(initialData?.mode!=="operation"&&current.operation?.status==="running")await pollOperation(current.operation.id);
+  }catch(error){notice(error.message,true);resize();}
 })();
 </script>
 </body>
 </html>
-

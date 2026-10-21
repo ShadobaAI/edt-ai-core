@@ -21,7 +21,6 @@ export async function smoke(config) {
       "check_action",
     ];
     if (
-      tools.length !== required.length ||
       required.some((name) => !tools.some((tool) => tool.name === name)) ||
       tools.some((tool) => !tool.annotations?.readOnlyHint)
     )

@@ -24,11 +24,14 @@ import {
   project_profile,
   validate,
   validate_at,
+  create_profile,
+  profile_state,
 } from "./profile.mjs";
 import { effective_policy } from "./action_policy.mjs";
 import {
   configuration_root,
   ProfileNotFound,
+  ProfileAmbiguous,
   reconnect_file,
   instance_name,
   resolve,
@@ -36,6 +39,8 @@ import {
   is_dir,
   sha256,
   locate_project,
+  legacy_project_state,
+  record_project_owner,
 } from "./project_paths.mjs";
 import {
   legacy_edt_matches,
@@ -44,11 +49,15 @@ import {
   instance_file,
   instance_files,
 } from "./project_context.mjs";
+import { managed_components, component_enabled, grant_preparation } from "./components.mjs";
+import { directory_context, edt_connection } from "./directory_context.mjs";
 
 export const FIELDS = {
   projectRoot: ["active_project"],
   edtUrl: ["mcp", "required", "edt", "url"],
   v8stdUrl: ["mcp", "required", "v8std", "url"],
+  codeIndexEnabled: ["mcp", "managed", "code-index", "enabled"],
+  bslLsEnabled: ["mcp", "managed", "bsl-ls", "enabled"],
   openvikingEnabled: ["mcp", "optional", "openviking", "enabled"],
   openvikingUrl: ["mcp", "optional", "openviking", "url"],
 };
@@ -59,6 +68,7 @@ const restore = (file, previous) => {
 };
 export const preparation_scope = (root) =>
   root ? `${root}#${instance_name()}` : null;
+export const session_guidance = "Профиль выбранной папки подхватывается автоматически. Если инструменты не обновились в этом чате, откройте новый чат в той же папке или перезапустите Codex. Подготовка MCP запускается отдельно.";
 export function authorize_preparation(request, root) {
   const auth = request.authorization;
   if (
@@ -88,11 +98,18 @@ export class SettingsBackend {
         "Settings backend requires state and settings paths",
       );
   }
-  current() {
+  current(allowAmbiguous = false) {
     const config = settings(this.CONFIG);
     config.state_dir = this.STATE;
+    const normalize = directory => {
+      try { return configuration_root(directory); }
+      catch (error) {
+        if (allowAmbiguous && error instanceof ProfileAmbiguous) return resolve(directory);
+        throw error;
+      }
+    };
     if (process.env.EDT_AI_PROJECT_ROOT) {
-      const selected = configuration_root(process.env.EDT_AI_PROJECT_ROOT);
+      const selected = normalize(process.env.EDT_AI_PROJECT_ROOT);
       if (!config.active_project || !legacy_edt_matches(config, selected))
         config.mcp.required.edt.url = "";
       config.active_project = selected;
@@ -100,7 +117,7 @@ export class SettingsBackend {
       config.active_project = null;
       config.mcp.required.edt.url = "";
     } else if (config.active_project && is_dir(config.active_project))
-      config.active_project = configuration_root(config.active_project);
+      config.active_project = normalize(config.active_project);
     return config;
   }
   effective(config, override = null, profile = null, with_sources = false) {
@@ -125,8 +142,8 @@ export class SettingsBackend {
     }
     return with_sources ? [config, sources] : config;
   }
-  values(config) {
-    config = this.effective(config);
+  values(config, applyEffective = true) {
+    if (applyEffective) config = this.effective(config);
     return Object.fromEntries(
       Object.entries(FIELDS).map(([name, parts]) => {
         let item = config;
@@ -144,11 +161,17 @@ export class SettingsBackend {
     return config;
   }
   store_shared_settings(config) {
-    const saved = deep_merge(settings(this.CONFIG), {
-      state_dir: this.STATE,
-      mcp: { managed: config.mcp.managed, optional: config.mcp.optional },
-    });
+    const saved = settings(this.CONFIG);
+    saved.state_dir = this.STATE;
+    // Persist the resolved sections exactly: merging into the old values would
+    // resurrect overrides removed by the manual editor.
+    saved.mcp.managed = structuredClone(config.mcp.managed);
+    saved.mcp.optional = structuredClone(config.mcp.optional);
     atomic_write(this.CONFIG, JSON.stringify(saved, null, 2) + "\n");
+  }
+  edit_revision() {
+    const config = this.current();
+    return this.revision(config, config.active_project ? profile_target(config.active_project) : null);
   }
   revision(config, target = null, payload = "") {
     const chunks = [
@@ -164,6 +187,8 @@ export class SettingsBackend {
     if (config.active_project)
       for (const file of instance_files(config, config.active_project))
         chunks.push(Buffer.from(file), bytes(file) || Buffer.alloc(0));
+    if (config.active_project)
+      chunks.push(Buffer.from(stable(edt_connection(config.active_project))));
     return sha256(Buffer.concat(chunks));
   }
   lockedRoot() {
@@ -176,6 +201,13 @@ export class SettingsBackend {
     if (typeof text !== "string" || Buffer.byteLength(text) > 2 * 1024 * 1024)
       throw new ConfigError("Допустим файл настроек размером до 2 МиБ.");
     const data = parse(text);
+    const editing = request.mode === "edit";
+    if (request.mode !== undefined && !["import", "edit"].includes(request.mode))
+      throw new ConfigError("Неизвестный режим сохранения настроек.");
+    if (editing && request.baseRevision !== this.edit_revision())
+      throw new ConfigError("Настройки изменились после загрузки в редактор. Загрузите их заново.");
+    if (!editing && request.baseRevision !== undefined)
+      throw new ConfigError("Ревизия редактора применима только в режиме edit.");
     let config = this.current(),
       imported = null;
     const previous = config.active_project,
@@ -196,6 +228,20 @@ export class SettingsBackend {
         )
       )
         throw new ConfigError("Недопустимые поля настроек.");
+      if (editing) {
+        if (Object.keys(changes).some(key => key !== "mcp") || !object(changes.mcp) ||
+            Object.keys(changes.mcp).some(key => !["managed", "optional"].includes(key)) ||
+            !object(changes.mcp.managed) || !object(changes.mcp.optional) ||
+            !Object.hasOwn(data, "profile"))
+          throw new ConfigError("Редактор принимает профиль и полные разделы managed/optional. Подключения экземпляра изменяются отдельно.");
+        if (request.projectRoot !== undefined &&
+            (!request.projectRoot || configuration_root(request.projectRoot) !== config.active_project))
+          throw new ConfigError("Редактор относится к другой папке. Загрузите настройки заново.");
+        const defaults = load(new URL("../settings/defaults.json", import.meta.url));
+        config.mcp.managed = deep_merge(defaults.mcp.managed, changes.mcp.managed);
+        config.mcp.optional = deep_merge(defaults.mcp.optional, changes.mcp.optional);
+        this.checked(config);
+      }
       check_schema(deep_merge(config, changes), "plugin-settings.schema.json");
       for (const [name, entry] of Object.entries(changes.mcp?.required || {}))
         if (Object.hasOwn(entry, "url")) {
@@ -204,8 +250,8 @@ export class SettingsBackend {
           if (value) connections[name] = { url: validate_url(value, name) };
         }
       imported = data.profile == null ? null : structuredClone(data.profile);
-      config = deep_merge(config, changes);
-    } else if (Object.hasOwn(data, "schema_version")) imported = data;
+      if (!editing) config = deep_merge(config, changes);
+    } else if (!editing && Object.hasOwn(data, "schema_version")) imported = data;
     else
       throw new ConfigError(
         "Это не экспорт настроек 1C AI Core и не профиль проекта.",
@@ -248,6 +294,11 @@ export class SettingsBackend {
             "В выбранной папке отсутствует репозиторий: " + repo.path,
           );
       effective_settings(config, root, imported);
+      // The editor loads the complete document; unrelated runtime edits must
+      // preserve profile comments, formatting and modification time.
+      if (editing && exists(target) && stable(load(target)) === stable(imported)) target = null;
+    } else if (editing && root && exists(profile_target(root))) {
+      throw new ConfigError("Удаление существующего профиля через редактор не поддерживается.");
     }
     if (Object.keys(connections).length) {
       if (!root)
@@ -265,15 +316,49 @@ export class SettingsBackend {
   async main(request) {
     const action = request.action;
     if (action === "read") {
-      const config = this.current(),
-        [, sources] = this.effective(config, null, null, true),
-        actual = this.values(config);
+      const config = this.current(true), profile = profile_state(config.active_project);
+      // A broken profile must not prevent opening its repair/import screen.
+      const [effective, sources] = ["invalid", "ambiguous"].includes(profile.status)
+        ? [config, {}] : this.effective(config, null, null, true);
+      const actual = this.values(effective, false);
+      const legacy = config.active_project ? legacy_project_state(this.STATE, config.active_project) : null;
+      if (legacy?.status === "owner_unknown" && !exists(instance_file(config, config.active_project, this.STATE))) {
+        const file = path.join(legacy.directory, "instances", instance_name() + ".yaml");
+        try { const data = load(file); check_schema(data, "project-local.schema.json"); legacy.connections = data.connections || {}; }
+        catch { legacy.connections = {}; }
+      }
       return {
         values: actual,
+        profile,
+        directoryContext: directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project),
+        sessionGuidance: session_guidance,
         instance: instance_name(),
         connectionSources: sources,
         preparationScope: preparation_scope(actual.projectRoot),
+        legacyState: legacy,
       };
+    }
+    if (["create", "load"].includes(action)) {
+      return operation_lock(this.STATE, () => {
+        const config = this.current(), selected = this.lockedRoot();
+        if (request.projectRoot !== undefined) {
+          const proposed = request.projectRoot ? configuration_root(request.projectRoot) : null;
+          if (selected && proposed !== configuration_root(selected))
+            throw new ConfigError("Каталог задаётся текущим чатом. Выберите другой проект в Codex.");
+          if (config.active_project !== proposed) config.mcp.required.edt.url = "";
+          config.active_project = proposed;
+        }
+        this.checked(config);
+        if (!config.active_project) throw new ConfigError("Выберите папку проекта в Codex.");
+        const root = configuration_root(config.active_project);
+        if (action === "create") create_profile(root);
+        project_profile(root); // Validate before signalling any bound session.
+        record_project_owner(this.STATE, root);
+        const actual = this.values(config);
+        atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
+        return { values: actual, profile: profile_state(root), instance: instance_name(),
+          sessionGuidance: session_guidance, reload: "requested", readiness: "not_checked" };
+      });
     }
     if (action === "update") {
       const changes = request.set || {};
@@ -285,7 +370,7 @@ export class SettingsBackend {
         throw new ConfigError("Некорректное изменение настроек.");
       for (const [key, value] of Object.entries(changes))
         if (
-          typeof value !== (key === "openvikingEnabled" ? "boolean" : "string")
+          typeof value !== (key.endsWith("Enabled") ? "boolean" : "string")
         )
           throw new ConfigError("Некорректный тип настройки: " + key);
       const selected = this.lockedRoot();
@@ -326,6 +411,12 @@ export class SettingsBackend {
             ] = { url: value ? validate_url(value) : "" };
             continue;
           }
+          if (["codeIndexEnabled", "bslLsEnabled"].includes(key)) {
+            if (!config.active_project) throw new ConfigError("Выберите папку проекта.");
+            root = configuration_root(config.active_project);
+            (instanceChanges.components ||= {})[key === "codeIndexEnabled" ? "code-index" : "bsl-ls"] = { enabled: value };
+            continue;
+          }
           globalChanged = true;
           let target = config;
           const parts = FIELDS[key];
@@ -335,7 +426,7 @@ export class SettingsBackend {
         this.checked(config);
         let file = null,
           overrides;
-        if (instanceChanges.connections) {
+        if (instanceChanges.connections || instanceChanges.components) {
           file = instance_file(config, root);
           overrides = exists(file) ? load(file) : { connections: {} };
           check_schema(overrides, "project-local.schema.json");
@@ -353,7 +444,7 @@ export class SettingsBackend {
         const previousOverride = bytes(file),
           previousConfig = bytes(this.CONFIG);
         try {
-          if (file) dump(overrides, file);
+          if (file) { record_project_owner(this.STATE, root); dump(overrides, file); }
           if (globalChanged) this.store_shared_settings(config);
         } catch (error) {
           if (file) restore(file, previousOverride);
@@ -365,6 +456,7 @@ export class SettingsBackend {
       return { values: this.values(config) };
     }
     if (["preview", "apply"].includes(action)) {
+      const payload = stable({ text: request.text, mode: request.mode || "import", baseRevision: request.baseRevision || null });
       let [config, profile, target, overrides] = this.parse_import(request);
       let applied = this.effective(config, overrides, profile);
       const shared = settings(this.CONFIG);
@@ -389,13 +481,14 @@ export class SettingsBackend {
             ([name, item]) => stable(item) !== stable(shared.mcp.managed[name]),
           ),
         ),
-        revision: this.revision(applied, target, request.text),
+        sharedOptionalChanges: stable(config.mcp.optional) === stable(shared.mcp.optional) ? {} : config.mcp.optional,
+        revision: this.revision(applied, target, payload),
       };
       if (action === "preview") return summary;
       const saved = await operation_lock(this.STATE, () => {
         [config, profile, target, overrides] = this.parse_import(request);
         applied = this.effective(config, overrides, profile);
-        if (request.revision !== this.revision(applied, target, request.text))
+        if (request.revision !== this.revision(applied, target, payload))
           throw new ConfigError(
             "Настройки изменились после предпросмотра. Проверьте файл заново.",
           );
@@ -411,7 +504,7 @@ export class SettingsBackend {
           saved = target && exists(target) ? backup(target) : null;
         try {
           if (target) dump(profile, target, exists(target));
-          if (overridePath) dump(overrides, overridePath);
+          if (overridePath) { record_project_owner(this.STATE, config.active_project); dump(overrides, overridePath); }
           this.store_shared_settings(config);
         } catch (error) {
           if (overridePath) restore(overridePath, previousOverride);
@@ -426,17 +519,25 @@ export class SettingsBackend {
         summary,
         backup: saved,
         values: this.values(config),
+        profile: profile_state(config.active_project),
+        sessionGuidance: session_guidance,
       };
     }
-    if (action === "export") {
+    if (action === "export" || action === "edit") {
+      const baseRevision = action === "edit" ? this.edit_revision() : null;
       const config = this.current();
       let profile = null;
       if (config.active_project) {
         const file = path.join(config.active_project, ".ai/project.yaml");
         if (exists(file))
-          profile = validate_at(config.active_project, load(file));
+          // Repairing a parsed old/incompatible profile must be possible in the
+          // editor. Preview/apply still validate the complete candidate.
+          profile = action === "edit" ? load(file) : validate_at(config.active_project, load(file));
       }
+      if (action === "edit" && baseRevision !== this.edit_revision())
+        throw new ConfigError("Настройки изменились во время загрузки. Загрузите их заново.");
       return {
+        ...(action === "edit" ? { baseRevision } : {}),
         filename: "1c-ai-core-settings.json",
         text: JSON.stringify(
           {
@@ -455,14 +556,29 @@ export class SettingsBackend {
         ),
       };
     }
+    if (action === "updates") {
+      const runtime = await import("./runtime.mjs"), config = this.effective(this.current());
+      const component = request.component;
+      if (request.operation === "check") return { components: await Promise.all(managed_components.map(async id => {
+        try { return await runtime.check_updates(this.STATE, config, id); }
+        catch (error) { return { component: id, state: "error", detail: error.message }; }
+      })), projectRoot: config.active_project };
+      const [root, data] = runtime.project(config.active_project, config, component === "code-index");
+      authorize_preparation(request, root);
+      if (!managed_components.includes(component)) throw new ConfigError("Выберите компонент.");
+      if (["apply", "rollback"].includes(request.operation)) grant_preparation(this.STATE, root, [component]);
+      return { ...await runtime.update_component(this.STATE, config, root, data, component, request.operation), projectRoot: root };
+    }
     if (action === "check") {
       const runtime = await import("./runtime.mjs"),
         policy = await import("./policy_runtime.mjs");
       const config = this.effective(this.current()),
-        [root, data] = runtime.project(config.active_project, config);
+        [root, data] = runtime.project(config.active_project, config, component_enabled(config, "code-index"));
       authorize_preparation(request, root);
+      grant_preparation(this.STATE, root, managed_components.filter(component => component_enabled(config, component)));
       const managed = [];
-      for (const component of ["code-index", "bsl-ls"]) {
+      for (const component of managed_components) {
+        if (!component_enabled(config, component)) { managed.push({ name: component, ready: true, state: "disabled", detail: "Компонент отключён; установка и запуск пропущены." }); continue; }
         try {
           const item = await runtime.smoke(
               this.STATE,
@@ -538,7 +654,7 @@ if (entrypoint(import.meta.url)) {
     const result = await new SettingsBackend().main(JSON.parse(input));
     console.log(JSON.stringify({ ok: true, result }));
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: error.message }));
+    console.log(JSON.stringify({ ok: false, error: error.message, ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
     process.exitCode = 1;
   }
 }

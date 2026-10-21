@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   ROOT,
   ConfigError,
@@ -22,6 +23,11 @@ import {
   resolve,
   sha256,
   locate_project,
+  path_identity,
+  project_directory,
+  reconnect_file,
+  record_project_owner,
+  configuration_root,
 } from "./project_paths.mjs";
 import { project_profile } from "./profile.mjs";
 import { effective_settings } from "./project_context.mjs";
@@ -29,13 +35,12 @@ import { launch, alive, which, run_sync } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
-import { casefold } from "./casefold.mjs";
+import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation } from "./components.mjs";
+import { RemoteMcp } from "./remote_client.mjs";
+import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
 
-export const SPECS = {
-  "code-index": "Regsorm/code-index-mcp",
-  "bsl-ls": "1c-syntax/bsl-language-server",
-};
+export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPONENTS[id].repository]));
 export function platform_build(
   platform = process.platform,
   arch = process.arch,
@@ -59,18 +64,19 @@ export const save_json = (file, value) =>
 export const sha = (file) => sha256(fs.readFileSync(file));
 export async function fetch_json(url, timeout = 30000) {
   const response = await fetch(url, {
-    headers: { "User-Agent": "1c-ai-core/0.2.1" },
+    headers: { "User-Agent": "1c-ai-core/" + core_version },
     signal: AbortSignal.timeout(timeout),
     redirect: "error",
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
   return response.json();
 }
-export function artifact(state, component) {
-  const entry = read_json(path.join(state, "runtime-lock.json"), {})[component];
-  if (!entry) return null;
+export function artifact(state, component, slot = "active") {
+  const active = read_json(path.join(state, "runtime-lock.json"), {})[component];
+  const entry = slot === "active" ? active : active?.[slot];
+  if (!entry || !entry.release) return null;
   if (
-    !/^v?\d+\.\d+\.\d+$/.test(entry.release || "") ||
+    !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(entry.release || "") ||
     !/^[0-9a-f]{64}$/.test(entry.sha256 || "")
   )
     throw new ConfigError("Invalid runtime-lock entry");
@@ -100,6 +106,7 @@ export async function ensure_installed(
   component,
   refresh = false,
   io = { fetch_json, fetch },
+  options = {},
 ) {
   if (!Object.hasOwn(SPECS, component))
     throw new ConfigError("Unknown runtime component");
@@ -119,14 +126,14 @@ export async function ensure_installed(
   )
     return existing;
   const releaseURL =
-    requested === "latest" ? "latest" : "tags/v" + requested.replace(/^v/, "");
+    requested === "latest" ? "latest" : "tags/" + (/^\d+\.\d+\.\d+/.test(requested) ? "v" + requested : requested);
   const release = await io.fetch_json(
     `https://api.github.com/repos/${SPECS[component]}/releases/${releaseURL}`,
   );
-  if (release.draft || release.prerelease)
+  if (release.draft || (release.prerelease && requested === "latest"))
     throw new ConfigError("Only stable releases are supported");
   const version = release.tag_name;
-  if (!/^v?\d+\.\d+\.\d+$/.test(version || ""))
+  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(version || ""))
     throw new ConfigError("Unsupported release tag: " + version);
   if (existing && current.release === version && !refresh) return existing;
   const candidates = release.assets.filter((asset) =>
@@ -161,7 +168,7 @@ export async function ensure_installed(
     `Installing ${component} ${version}: ${asset.size} bytes\n`,
   );
   const response = await io.fetch(url.href, {
-    headers: { "User-Agent": "1c-ai-core/0.2.1" },
+    headers: { "User-Agent": "1c-ai-core/" + core_version },
     signal: AbortSignal.timeout(60000),
   });
   if (!response.ok) throw new Error("Runtime download HTTP " + response.status);
@@ -200,7 +207,7 @@ export async function ensure_installed(
   if (component === "code-index" && process.platform !== "win32")
     fs.chmodSync(target, 0o755);
   const lock = read_json(path.join(state, "runtime-lock.json"), {});
-  lock[component] = {
+  const entry = {
     release: version,
     path: path.relative(resolve(state), resolve(target)),
     sha256: contentSHA,
@@ -211,10 +218,12 @@ export async function ensure_installed(
       ? { platform: process.platform + "-" + process.arch }
       : {}),
   };
+  if (options.stage || existing) lock[component] = { ...lock[component], candidate: entry };
+  else lock[component] = { ...entry, ...(lock[component]?.path ? { previous: active_entry(lock[component]) } : {}) };
   save_json(path.join(state, "runtime-lock.json"), lock);
   return resolve(target);
 }
-export function project(selected, config) {
+export function project(selected, config, requireRepositories = true) {
   selected ||= process.env.EDT_AI_PROJECT_ROOT || config.active_project;
   if (!selected)
     throw new ConfigError(
@@ -222,7 +231,7 @@ export function project(selected, config) {
     );
   const root = locate_project(selected),
     data = project_profile(root);
-  if (!data.repositories.length)
+  if (requireRepositories && !data.repositories.length)
     throw new ConfigError(
       "Configure explicit repositories (id, relative path, alias) in the project profile",
     );
@@ -233,24 +242,125 @@ export function project(selected, config) {
       );
   return [root, data];
 }
-export function path_key(file) {
-  let value = resolve(file);
-  if (process.platform === "win32") {
-    value = value
-      .replace(/^\\\\\?\\UNC\\/, "\\\\")
-      .replace(/^\\\\\?\\/, "")
-      .toLowerCase();
-  }
-  return value;
-}
+export const path_key = path_identity;
 export const project_home = (state, root) =>
-  path.join(state, "projects", sha256(casefold(path_key(root))).slice(0, 16));
+  project_directory(state, root);
 export const installed_runtime = (state, config, component, refresh = false) =>
   operation_lock(
     state,
-    () => ensure_installed(state, config, component, refresh),
+    () => {
+      const current = artifact(state, component), requested = component_settings(config, component).version;
+      const release = read_json(path.join(state, "runtime-lock.json"), {})[component]?.release;
+      if (current && (refresh || (requested !== "latest" && requested.replace(/^v/, "") !== release?.replace(/^v/, ""))))
+        throw new ConfigError("A verified runtime is already active; use settings.updates to download, validate and apply the requested candidate.");
+      return ensure_installed(state, config, component, refresh);
+    },
     120,
   );
+const active_entry = ({ candidate, previous, ...entry } = {}) => entry;
+const runtimeOwner = randomUUID();
+const uncertain_update = message => Object.assign(new ConfigError(message), { outcomeUnknown: true });
+function owned_executable(state, owner) {
+  if (!owner.executable || !is_file(owner.executable)) return false;
+  const target = resolve(owner.executable), base = resolve(path.join(state, "runtime/code-index"));
+  if (!target.startsWith(base + path.sep)) return false;
+  // The process's own immutable artifact is checked, not today's active release.
+  const digest = path.basename(path.dirname(target));
+  if (/^[0-9a-f]{64}$/.test(digest)) return digest === sha(target);
+  return ["active", "previous", "candidate"].some(slot => artifact(state, "code-index", slot) === target);
+}
+export async function check_updates(state, config, component, io = { fetch_json }) {
+  const options = component_settings(config, component);
+  if (!component_enabled(config, component) || options.mode === "external")
+    return { component, state: !component_enabled(config, component) ? "disabled" : "external" };
+  const release = await io.fetch_json(`https://api.github.com/repos/${SPECS[component]}/releases/latest`);
+  if (release.draft || release.prerelease || typeof release.tag_name !== "string") throw new ConfigError("Invalid stable release response");
+  const current = read_json(path.join(state, "runtime-lock.json"), {})[component] || {};
+  return { component, state: current.release === release.tag_name ? "current" : "update_available", active: current.release || null,
+    latest: release.tag_name, requested: options.version, candidate: current.candidate?.release || null, previous: current.previous?.release || null };
+}
+export function signal_component(state, root, component, allInstances = false) {
+  const selected = reconnect_file(state, root), files = new Set([selected]);
+  if (allInstances && exists(path.dirname(selected)))
+    for (const name of fs.readdirSync(path.dirname(selected))) {
+      const match = /^([A-Za-z0-9][A-Za-z0-9._-]{0,63})\.(?:preparation|reconnect)\.json$/.exec(name);
+      if (match) files.add(path.join(path.dirname(selected), match[1] + ".reconnect.json"));
+    }
+  for (const file of files) {
+    const record = read_json(file, {});
+    save_json(file, { ...record, [component]: Date.now() + ":" + Math.random() });
+  }
+}
+export function active_readers(state, root) {
+  const directory = path.join(project_home(state, root), "code-index/readers");
+  return exists(directory) ? fs.readdirSync(directory).filter(file => file.endsWith(".json")).map(file => read_json(path.join(directory, file), {})).filter(reader => reader.root === resolve(root) && alive(reader.pid)) : [];
+}
+function check_maintenance(home) {
+  const record = read_json(path.join(home, "maintenance.json"));
+  if (record && (record.pid !== process.pid || record.ownerId !== runtimeOwner)) throw new ConfigError("Component update is in progress or was interrupted; inspect settings.operation before connecting readers");
+}
+export async function acquire_reader(state, root) {
+  record_project_owner(state, root);
+  const home = path.join(project_home(state, root), "code-index");
+  return operation_lock(home, () => {
+    check_maintenance(home);
+    const file = path.join(home, "readers", process.pid + "-" + randomUUID() + ".json");
+    save_json(file, { pid: process.pid, root: resolve(root) });
+    return file;
+  });
+}
+export async function update_component(state, config, root, data, component, action, io = {}) {
+  if (!managed_components.includes(component)) throw new ConfigError("Unknown managed component");
+  if (!component_enabled(config, component) || component_settings(config, component).mode === "external") throw new ConfigError("Enable managed mode before updating " + component);
+  const lockfile = path.join(state, "runtime-lock.json");
+  return operation_lock(state, async () => {
+    if (action === "download") {
+      const file = await ensure_installed(state, config, component, true, io.fetch_json ? io : { fetch_json, fetch }, { stage: true });
+      return { component, state: "candidate_downloaded", path: file };
+    }
+    if (!["apply", "rollback"].includes(action)) throw new ConfigError("Unknown update action");
+    const before = read_json(lockfile, {}), entry = before[component] || {}, slot = action === "rollback" ? "previous" : "candidate";
+    const candidate = artifact(state, component, slot);
+    if (!candidate) throw new ConfigError("No verified " + slot + " artifact; download a candidate first");
+    const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
+    if (component === "code-index") await operation_lock(home, () => {
+      const old = read_json(maintenance);
+      if (old && old.pid !== process.pid && alive(old.pid)) throw new ConfigError("Another component update is still running");
+      save_json(maintenance, { pid: process.pid, root: resolve(root), ownerId: runtimeOwner });
+    });
+    let leaveMaintenance = false;
+    try {
+    signal_component(state, root, component, true);
+    if (component === "code-index") {
+      for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
+      if (active_readers(state, root).length) throw new ConfigError("Code-index has active readers. Finish current operations or close their chats, then apply the downloaded candidate.");
+      try { await (io.stop || stop_daemon)(state, root); }
+      catch (error) { leaveMaintenance = true; throw uncertain_update("Daemon stop not confirmed; inspect its actual state before retrying: " + error.message); }
+    }
+    try {
+      const checked = await (io.smoke || smoke)(state, config, root, data, component, 90, false, candidate);
+      const lock = read_json(lockfile, {});
+      lock[component] = { ...entry[slot], ...(entry.release ? { previous: active_entry(entry) } : {}) };
+      save_json(lockfile, lock);
+      let reconnect = "requested";
+      try { signal_component(state, root, component, true); }
+      catch { reconnect = "open_new_chat"; }
+      return { component, state: "applied", release: entry[slot].release, protocol: checked.status, indexReady: checked.index_ready ?? null, reconnect };
+    } catch (error) {
+      if (component === "code-index") {
+        try { await (io.stop || stop_daemon)(state, root); }
+        catch (stopError) { leaveMaintenance = true; throw uncertain_update("Candidate failed: " + error.message + "; candidate stop unconfirmed: " + stopError.message); }
+        const old = artifact(state, component);
+        if (old) try { await (io.restart || ensure_daemon)(state, root, data, old); }
+        catch (restartError) { leaveMaintenance = true; throw uncertain_update("Candidate failed; restoration needs attention: " + restartError.message); }
+      }
+      throw new ConfigError("Candidate rejected; active artifact retained: " + error.message);
+    }
+    } finally {
+      if (component === "code-index" && !leaveMaintenance && read_json(maintenance)?.pid === process.pid) fs.rmSync(maintenance, { force: true });
+    }
+  }, 180);
+}
 export function index_config(home, root, data, health = null) {
   let text = "[daemon]\nhttp_port = 0\nmax_concurrent_initial = 1\n";
   for (const repo of data.repositories)
@@ -386,10 +496,11 @@ export async function start_daemon(
   }
 }
 export async function ensure_daemon(state, root, data, exe, io) {
+  record_project_owner(state, root);
   const home = path.join(project_home(state, root), "code-index");
   return operation_lock(
     home,
-    () => start_daemon(home, root, data, exe, io),
+    () => { check_maintenance(home); return start_daemon(home, root, data, exe, io); },
     45,
   );
 }
@@ -408,8 +519,8 @@ export function java_command(config) {
   const match = /version "(\d+)/.exec(
     (version.stderr || "") + (version.stdout || ""),
   );
-  if (version.error || version.status !== 0 || !match || Number(match[1]) < 25)
-    throw new ConfigError("BSL LS requires Java 25 or newer");
+  if (version.error || version.status !== 0 || !match)
+    throw new ConfigError("Java could not start; configure mcp.managed.bsl-ls.java. The selected JAR determines Java compatibility; inspect its startup error if it needs a newer JVM.");
   return java;
 }
 export async function launch_command(
@@ -419,10 +530,15 @@ export async function launch_command(
   root,
   data,
   refresh = false,
+  selected_artifact = null,
 ) {
+  if (!component_enabled(config, component)) throw new ConfigError("Component is disabled: " + component);
   if (component === "code-index") {
-    const exe = await installed_runtime(state, config, component, refresh),
-      home = await ensure_daemon(state, root, data, exe);
+    if (!data.repositories.length) throw new ConfigError("Configure explicit repositories (id, relative path, alias) in the project profile");
+    let exe = selected_artifact || await installed_runtime(state, config, component, refresh);
+    const oldHome = path.join(project_home(state, root), "code-index"), owner = read_json(path.join(oldHome, "owner.json"), {});
+    if (!selected_artifact && await daemon_health(oldHome) && owned_executable(state, owner)) exe = owner.executable;
+    const home = await ensure_daemon(state, root, data, exe);
     return [
       [exe, "serve", "--config", path.join(home, "daemon.toml")],
       home,
@@ -444,7 +560,7 @@ export async function launch_command(
       throw new ConfigError("Configured BSL LS configuration does not exist");
   }
   const java = java_command(config),
-    exe = await installed_runtime(state, config, component, refresh);
+    exe = selected_artifact || await installed_runtime(state, config, component, refresh);
   return [
     [
       node,
@@ -536,16 +652,28 @@ export async function smoke(
   component,
   timeout = 90,
   refresh = false,
+  selected_artifact = null,
 ) {
-  const [command, cwd, env] = await launch_command(
+  const options = component_settings(config, component);
+  if (!component_enabled(config, component)) return { component, status: "disabled" };
+  const lease = component === "code-index" && options.mode !== "external" && !selected_artifact ? await acquire_reader(state, root) : null;
+  let client;
+  try {
+  if (options.mode === "external") {
+    if (!options.url) throw new ConfigError("Configure an external endpoint for " + component);
+    client = new RemoteMcp(options.url, options.timeout_seconds || timeout, { headers_env: options.headers_env, maxBytes: options.max_response_bytes });
+  } else {
+    const [command, cwd, env] = await launch_command(
       state,
       config,
       component,
       root,
       data,
       refresh,
-    ),
-    client = new McpClient(command, cwd, env, timeout);
+      selected_artifact,
+    );
+    client = new McpClient(command, cwd, env, options.timeout_seconds || timeout, { maxBytes: options.max_response_bytes });
+  }
   try {
     const server = await client.initialize(),
       tools = (await all_pages(client, "tools/list", "tools")).tools;
@@ -559,7 +687,8 @@ export async function smoke(
       tools: tools.map((tool) => tool.name),
     };
     if (component === "code-index") {
-      const health = await client.call("health", {});
+      const health = await client.request("tools/call", { name: "health", arguments: {} });
+      if (health.isError) throw new ConfigError("code-index health failed: " + JSON.stringify(health).slice(0, 4000));
       result.index_ready = index_readiness(
         JSON.parse(health.content.find((part) => part.type === "text").text),
         root,
@@ -572,8 +701,11 @@ export async function smoke(
   } finally {
     await client.close();
   }
+  } finally {
+    if (lease) fs.rmSync(lease, { force: true });
+  }
 }
-export async function stop_daemon(state, root) {
+export async function stop_daemon(state, root, io = { stop: run_sync }) {
   const home = path.join(project_home(state, root), "code-index");
   await operation_lock(
     home,
@@ -594,10 +726,10 @@ export async function stop_daemon(state, root) {
         health.pid !== owner.pid ||
         !owner.project_root ||
         path_key(owner.project_root) !== path_key(root) ||
-        owner.executable !== artifact(state, "code-index")
+        !owned_executable(state, owner)
       )
         throw new ConfigError("Daemon ownership mismatch; refusing to stop it");
-      run_sync(owner.executable, ["daemon", "stop"], {
+      await io.stop(owner.executable, ["daemon", "stop"], {
         cwd: home,
         env: { ...process.env, CODE_INDEX_HOME: home },
         timeout: 20000,
@@ -633,7 +765,9 @@ export async function main() {
     result = await operation_lock(state, async () => {
       const result = {};
       for (const c of components)
-        result[c] = await ensure_installed(state, config, c, a.refresh);
+        result[c] = !component_enabled(config, c) ? { status: "disabled" }
+          : component_settings(config, c).mode === "external" ? { status: "external" }
+            : await ensure_installed(state, config, c, a.refresh);
       return result;
     });
   else if (action === "status") {
@@ -647,22 +781,25 @@ export async function main() {
       result.daemon = await daemon_health(
         path.join(project_home(state, a.project_root), "code-index"),
       );
+  } else if (action === "stop") {
+    if (component === "bsl-ls") throw new ConfigError("BSL LS is owned by its stdio client and stops on disconnect");
+    const selected = a.project_root || process.env.EDT_AI_PROJECT_ROOT || config.active_project;
+    if (!selected) throw new ConfigError("Select the project root whose daemon should stop");
+    const root = configuration_root(selected);
+    await stop_daemon(state, root);
+    result = { status: "stopped", project_root: root };
   } else {
-    const [root, data] = project(a.project_root, config),
+    const [root, data] = project(a.project_root, config, false),
       effective = effective_settings(config, root, data, null, state);
     if (action === "smoke") {
       result = [];
       for (const c of components)
         result.push(await smoke(state, effective, root, data, c));
-    } else if (action === "stop") {
-      if (component === "bsl-ls")
-        throw new ConfigError(
-          "BSL LS is owned by its stdio client and stops on disconnect",
-        );
-      await stop_daemon(state, root);
-      result = { status: "stopped", project_root: root };
     } else if (action === "start") {
       if (component === "all") throw new ConfigError("Select a component");
+      if (!component_enabled(effective, component)) throw new ConfigError("Component is disabled: " + component);
+      if (component_settings(effective, component).mode === "external") throw new ConfigError("External components are user-started; use smoke to check their endpoint");
+      grant_preparation(state, root, [component]);
       if (component === "bsl-ls")
         return (await import("./managed_mcp.mjs")).serve(
           component,
@@ -670,6 +807,7 @@ export async function main() {
           state,
           effective,
         );
+      project(root, effective); // code-index startup requires explicit mappings.
       const exe = await installed_runtime(state, effective, component),
         home = await ensure_daemon(state, root, data, exe);
       result = { status: "running", daemon: await daemon_health(home) };
@@ -678,26 +816,19 @@ export async function main() {
       const servers = {
         policy: (await import("./policy_runtime.mjs")).binding(effective),
       };
-      for (const c of Object.keys(SPECS))
+      for (const c of Object.keys(COMPONENTS).filter(id => component_enabled(effective, id)))
         servers[c] = {
           type: "stdio",
           command: process.execPath,
           args: [
-            path.join(ROOT, "scripts/managed_mcp.mjs"),
+            path.join(ROOT, "scripts/lazy_mcp.mjs"),
             "--component",
             c,
-            "--project-root",
-            root,
-            "--state-dir",
-            state,
-            ...(a.settings ? ["--settings", resolve(a.settings)] : []),
           ],
+          cwd: root,
+          env: { EDT_AI_PROJECT_ROOT: root, EDT_AI_STATE_DIR: state,
+            EDT_AI_SETTINGS: resolve(a.settings || process.env.EDT_AI_SETTINGS || path.join(ROOT, "settings/local.yaml")) },
         };
-      for (const [c, item] of Object.entries(effective.mcp.required)) {
-        if (!item.url)
-          throw new ConfigError("Configure user-started MCP URL: " + c);
-        servers[c] = { type: "streamable-http", url: item.url };
-      }
       save_json(a.output, {
         $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
         mcpServers: servers,

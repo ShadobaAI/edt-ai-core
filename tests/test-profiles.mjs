@@ -297,6 +297,8 @@ test("legacy EDT URL never crosses project ownership; custom env and host roots 
   config.mcp.required.v8std.url = "http://localhost:18010/mcp";
   const effective = effective_settings(config, f.root, f.profile);
   assert.equal(effective.mcp.required.edt.url, "");
+  config.active_project = null;
+  assert.equal(effective_settings(config, f.root, f.profile).mcp.required.edt.url, "");
   assert.equal(effective.mcp.required.v8std.url, config.mcp.required.v8std.url);
   f.profile.connections = {
     edt: { url: "http://localhost/mcp", url_env: "CUSTOM_EDT" },

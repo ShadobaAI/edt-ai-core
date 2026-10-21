@@ -82,6 +82,8 @@ test("verified downloads are immutable and corrupt artifacts are never installed
     ioFor(zip({ "META-INF/MANIFEST.MF": Buffer.from("new") })),
   );
   assert.notEqual(first, second);
+  assert.equal(artifact(f.state, "bsl-ls"), first);
+  assert.equal(artifact(f.state, "bsl-ls", "candidate"), second);
   assert.equal(sha(first), firstHash);
   const unchanged = await ensure_installed(
     f.state,
@@ -92,7 +94,8 @@ test("verified downloads are immutable and corrupt artifacts are never installed
   );
   assert.equal(unchanged, second);
   fs.writeFileSync(second, "corrupt");
-  assert.equal(artifact(f.state, "bsl-ls"), null);
+  assert.equal(artifact(f.state, "bsl-ls", "candidate"), null);
+  assert.equal(artifact(f.state, "bsl-ls"), first);
 });
 for (const kind of [
   "digest",
@@ -340,4 +343,16 @@ test("doctor separates configuration from live acceptance and does not make Open
     ).status,
     "configured",
   );
+});
+
+test("CLI installation and exported bindings respect disabled components without network access", t => {
+  const f=fixture(t);f.save();
+  save_json(f.env.EDT_AI_SETTINGS,{mcp:{managed:{"code-index":{enabled:false},"bsl-ls":{enabled:false}}}});
+  const installed=success(node("scripts/runtime.mjs",["install"],{env:f.env}));
+  assert.equal(installed["code-index"].status,"disabled");assert.equal(installed["bsl-ls"].status,"disabled");
+  const output=path.join(f.base,"mcp.json");success(node("scripts/runtime.mjs",["config","--output",output],{env:f.env}));
+  const bindings=read_json(output).mcpServers;
+  assert.equal(bindings["code-index"],undefined);assert.equal(bindings["bsl-ls"],undefined);
+  assert.ok(bindings.edt.args[0].endsWith("lazy_mcp.mjs"));assert.equal(bindings.edt.env.EDT_AI_PROJECT_ROOT,f.root);
+  assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });

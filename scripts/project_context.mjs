@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { casefold } from "./casefold.mjs";
+import { edt_connection } from "./directory_context.mjs";
 import {
   check_schema,
   deep_merge,
@@ -20,6 +20,7 @@ import {
   is_file,
   is_dir,
   ConfigError,
+  path_identity,
 } from "./project_paths.mjs";
 export { locate_project };
 export function local_overrides(root) {
@@ -31,9 +32,9 @@ export function local_overrides(root) {
 }
 export function legacy_edt_matches(config, root) {
   let owner = config.active_project;
-  if (!owner) return true;
+  if (!owner) return false;
   owner = resolve(owner);
-  if (is_dir(owner)) owner = configuration_root(owner);
+  if (is_dir(owner)) owner = configuration_root(owner, { recursive: false });
   return owner === resolve(root);
 }
 export const instance_file = (config, root, state) =>
@@ -69,8 +70,8 @@ export function resolved_settings(
   );
   const local = local_overrides(root);
   overrides = deep_merge(overrides, local);
-  for (const name of Object.keys(local.connections || {}))
-    sources[name] = "project_local";
+  for (const [name, entry] of Object.entries(local.connections || {}))
+    if (Object.hasOwn(entry, "url")) sources[name] = "project_local";
   const stateOverride = instance_file(config, root, state);
   for (const file of instance_files(config, root, state)) {
     let extra;
@@ -88,20 +89,29 @@ export function resolved_settings(
               file === resolve(process.env.EDT_AI_CONNECTIONS_FILE)
             ? "connections_file"
             : "repository_instance";
-      for (const name of Object.keys(extra.connections || {}))
-        sources[name] = source;
+      for (const [name, entry] of Object.entries(extra.connections || {}))
+        if (Object.hasOwn(entry, "url")) sources[name] = source;
     }
   }
   const connections = overrides.connections,
     overlay = {};
   if (!legacy_edt_matches(config, root)) overlay.edt = { url: "" };
   for (const [name, entry] of Object.entries(connections))
-    overlay[name] = { url: entry.url };
+    overlay[name] = { ...overlay[name], ...entry };
+  // Explicit URL fields (including an empty local override) always win.
+  if (!Object.hasOwn(connections.edt || {}, "url") &&
+      !(legacy_edt_matches(config, root) && config.mcp.required.edt.url)) {
+    const detected = edt_connection(root);
+    if (detected.url) {
+      overlay.edt = { ...overlay.edt, url: detected.url };
+      sources.edt = "edt_workspace";
+    }
+  }
   for (const name of ["edt", "v8std"]) {
     const variable =
       connections[name]?.url_env || `EDT_AI_${name.toUpperCase()}_URL`;
     if (Object.hasOwn(process.env, variable)) {
-      overlay[name] = { url: process.env[variable] };
+      overlay[name] = { ...overlay[name], url: process.env[variable] };
       sources[name] = "environment:" + variable;
     } else
       sources[name] ||=
@@ -115,7 +125,7 @@ export function resolved_settings(
   return [
     deep_merge(config, {
       active_project: resolve(root),
-      mcp: { required: overlay },
+      mcp: { required: overlay, managed: overrides.components || {} },
     }),
     sources,
   ];
@@ -123,7 +133,7 @@ export function resolved_settings(
 export const effective_settings = (...args) => resolved_settings(...args)[0];
 export function context_revision(selected) {
   const root = locate_project(selected),
-    digest = createHash("sha256").update(casefold(root));
+    digest = createHash("sha256").update(path_identity(root));
   for (const name of ["project.yaml", "project.local.yaml"]) {
     const file = inside(root, ".ai/" + name);
     digest.update(exists(file) ? fs.readFileSync(file) : "");

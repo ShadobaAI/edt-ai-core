@@ -38,9 +38,10 @@ syntax, независимой selection/content проверки, запуск�
 исполненного содержимого хешу файла. Автоматический receipt остаётся unverified
 до проверки настоящего test outcome.
 
-Bundled wire adapter проверен на Vanessa Single 1.2.043.45 / MCP 1.31; другие
-версии не считаются совместимыми по одному tools/list. Native workflow допускает
-другую версию по её документированному контракту. Не отключай version gate CLI.
+Bundled wire adapter исходно проверен на Vanessa Single 1.2.043.45 / MCP 1.31.
+Версии сохраняются как provenance. Совместимость определяется актуальными tools,
+schemas и распознанными полями ответов; одного tools/list недостаточно. Изменённый
+или неполный ответ остаётся unverified независимо от номера release.
 
 Если manager в tree mode, используй `run ... --editor-transition` с открытым
 stdin. Под тем же lock/session ожидается максимум 60 секунд:

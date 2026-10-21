@@ -1,14 +1,111 @@
 ---
 name: edt-ai-core
-description: Initialize, transfer, or diagnose a 1C project profile and its managed MCP runtimes.
+description: Guide users through 1C AI Core setup in chat, configure connections, initialize or transfer project profiles, and diagnose managed MCP runtimes.
 ---
 
 # 1C AI Core
 
+## Guided setup in chat (primary interface)
+
+For a setup request or plugin onboarding, lead the user through setup in chat.
+Do not require opening a form, editing YAML, or knowing technical parameters.
+Use the same settings tools as the manual interface; never edit the plugin cache.
+
+Before step 1, discover the installed plugin's settings tools using the host's
+tool search when available (names can be namespaced). A loaded skill is not
+evidence that its local MCP tools are connected. If settings.read is absent,
+do not infer a missing project folder, ask for endpoints, or run project setup
+in a temporary/cloud working directory. Inspect available host/executor evidence:
+this plugin needs local execution with its bundled stdio MCP servers. Explain
+whether the current chat lacks local execution or the local settings server is
+unavailable; if evidence is insufficient, ask which execution environment is
+selected instead of asserting the cause. In a cloud chat, guide the user to
+local execution in the desktop app. In a local chat, check the plugin's enabled
+settings MCP and its startup error where accessible. Recommend a new chat only
+after a concrete environment/connection correction, never as a repeated cure.
+Resume setup after settings.read becomes callable. Do not claim the form can
+open when its backing MCP tools are unavailable.
+
+1. Call `settings.read` to inspect the selected directory, instance, profile,
+   effective connection values and sources, read-only fields and active operation.
+   Reuse `directoryContext` for local EDT project names, source paths, platform
+   Runtime-Version, workspace port and Git root/branch/commit. These are setup
+   facts, not live EDT readiness or authority to replace repository mappings.
+   If an operation is running, poll `settings.operation` rather than repeat it.
+   If selection is missing or ambiguous, ask the user to select their project
+   folder in Codex. Never borrow another chat's root or assume the plugin source
+   repository is their 1C project.
+2. Reuse established intent and existing valid settings. Ask one understandable
+   question at a time only for a missing decision/fact, explaining a recommended
+   choice. Start with the desired work when it is unknown. Do not ask the user to
+   fill a technical questionnaire or invent URLs, ports, paths or mappings.
+3. For initial setup, create a missing generic profile with `settings.create`
+   under the setup request. Never replace an existing profile to repair it.
+   For supplied profile/settings content use `settings.preview`, explain the
+   target and actual changes (including shared runtime changes), then use
+   `settings.apply` with that exact text and revision. Replacement needs the
+   user's explicit agreement; stale previews must be regenerated and reviewed.
+   `settings.import` only opens the optional manual form; it is not chat import.
+4. Obtain external EDT/v8std addresses from the user's environment or answers;
+   reuse a detected EDT workspace URL before asking for its port. Explicit URLs
+   and empty local overrides win over detection. Missing prefs do not imply a
+   default endpoint; existing prefs without mcpServerPort use 8765.
+   Save only changed supported fields through `settings.update`. Respect
+   environment/connections-file precedence and read-only fields. For advanced
+   managed runtime configuration use settings.edit → settings.preview →
+   settings.apply with mode=edit and the returned baseRevision in both calls.
+   This is a complete document edit: omitted runtime fields reset to defaults;
+   an unchanged profile is not rewritten. A stale baseRevision requires loading
+   a fresh document and reconciling the intended changes. Portable file imports
+   keep merge semantics without mode=edit. Explain shared changes before saving. Discover
+   repository mappings from the assigned EDT after connection, verify them with
+   the user where ambiguous, and use the supported profile configuration route
+   below; a generic template alone is not configured for development.
+5. Read settings again after saving and compare effective values and sources to
+   the requested result. Explain a higher-priority override instead of reporting
+   success for an ineffective change. Correct only the source within user scope.
+6. Preparation can download and launch managed services. Use `settings.run_check`
+   only with actual user authorization for those effects and the current
+   `preparationScope` from read. An existing explicit request to prepare/start
+   suffices; otherwise ask this one specific question. Poll `settings.operation`
+   with the returned ID; timeout/unknown outcome never authorizes a retry.
+7. Report separately: saved profile/connections, managed protocol checks, and
+   external EDT/v8std live readiness. Check external readiness through their
+   assigned tools when requested; URL presence is not a successful connection.
+   Explain any remaining action in plain language and relay sessionGuidance.
+
+## Manual interface
+
+On a request for manual/advanced settings in chat, call `settings.open` to open the
+MCP App. It offers profile creation/loading, instance connections, editable
+JSON/YAML import with preview, export and service checks. Chat remains usable
+without rendering the form. A second, chat-independent entrypoint is declared
+through openai/settings: the native plugin settings layout contains the
+settings.open App action, titled “Открыть настройки”. The host renders it in the
+plugin details page and opens the App in a modal. If the section is absent,
+diagnose discovery/settings MCP availability rather than treating chat as the
+only supported entrypoint. Actual host rendering needs live verification. Both interfaces use
+the same backend and scope. Skill enablement belongs to Codex configuration,
+not project settings; do not present a project switch as disabling a skill.
+
+## Project and runtime contract
+
 Resolve the nearest repository's `.ai/project.yaml` from the selected directory;
-stop at another Git repository boundary. Read its `AGENTS.md` and `.ai/PROJECT.md`.
+stop at another Git repository boundary. If none exists above, the plugin searches
+`**/.ai/project.yaml` below the selected folder. A unique match keeps its own
+profile root; multiple matches require selecting a specific subfolder. Read the
+resolved profile root's `AGENTS.md` and `.ai/PROJECT.md`.
 For initial setup with no profile, use the explicitly selected project directory
 and existing project instructions; missing generated `.ai` files are expected.
+Use `settings.profile` to inspect the current chat's profile and effective scope.
+On a user request, `settings.create` creates a missing generic profile without
+overwriting instructions; `settings.import` opens file import and `settings.load`
+validates/reloads the existing profile. These operations do not prepare runtimes.
+Existing profiles are discovered automatically at session start and by MCP roots.
+After create/load/import, relay `sessionGuidance`: if Codex has not refreshed its
+tools, ask the user to open a new chat in the same directory or restart Codex.
+Never create a chat or change global selection automatically. A generic template
+still needs repository mappings and connection configuration before project work.
 Apply the shared [action policy](../1c-routing/references/action-policy.md);
 defaults are loaded from the bundled policy and cannot be weakened by a profile.
 All projects share the profile contract; CRM/Kafka presets do not imply paths,
@@ -48,15 +145,24 @@ prefixes, aliases, ports or a running EDT.
   server release or a static operation catalogue.
 - Platform documentation uses the assigned EDT through `$1c-platform-docs`.
   No additional documentation MCP is part of installation or readiness.
-- code-index and BSL LS are mandatory managed services. The stdio entrypoints
-  install missing verified artifacts and start the scoped service automatically.
+- code-index and BSL LS can be disabled independently or connected in external
+  mode. BSL LS is off by default; enable it for focused analyzer work.
+  The first settings.run_check authorizes ongoing managed starts for the selected
+  project/instance. Profile inspection/create/load/import never provisions services.
+  After that preparation, stdio entrypoints install missing verified artifacts
+  and start the scoped service on demand.
   BSL LS is per client session and stops on disconnect; code-index has a
   daemon per canonical profile root with all explicitly mapped configurations.
   Different roots start independently; same-root sessions share indexing and use
   separate MCP readers. Disconnect/root switching must not stop another reader's
   daemon. A running daemon is not proof of fresh, complete operation-specific data;
   use $1c-code-index for efficient discovery and coverage checks.
-  Node 22+ is required; Java 25+ is required for BSL LS. JS dependencies are bundled.
+  Node 22+ is required. The selected BSL JAR determines Java requirements; a JVM
+  startup error identifies incompatibility without a hardcoded Java release gate.
+  JS dependencies are bundled. Use settings.updates or the Services screen to
+  check stable releases, download a candidate, validate/apply, or roll back.
+  No third-party release is a capability allowlist. Preserve full native schemas;
+  read core_runtime_status once per new binding for native instructions.
 - The bundled read-only `policy` MCP runs through Node without external setup.
   It selects applicable requirements and validates proposal/result ledgers;
   normative text still comes from v8std through $1c-standards.

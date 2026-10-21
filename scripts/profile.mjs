@@ -25,10 +25,13 @@ import {
   is_dir,
   locate_project,
   configuration_root,
+  ProfileAmbiguous,
 } from "./project_paths.mjs";
 import { effective_policy } from "./action_policy.mjs";
+import { core_version, satisfies_core } from "./compatibility.mjs";
 export function validate(data) {
   check_schema(data, "project-profile.schema.json");
+  if (!satisfies_core(data.compatibility.core)) throw new ConfigError(`Profile requires core ${data.compatibility.core}; running ${core_version}. Review the profile contract before changing compatibility.core.`);
   for (const [name, entry] of Object.entries(data.connections || {}))
     validate_url(entry.url, name);
   const repos = new Map(data.repositories.map((repo) => [repo.id, repo]));
@@ -113,7 +116,7 @@ export function validate(data) {
           throw new ConfigError(
             "Credentials do not belong in portable profiles: " + key,
           );
-        walk(child);
+        if (key !== "headers_env") walk(child); // Schema only allows environment variable references here.
       }
   }
   walk(data);
@@ -173,6 +176,41 @@ export function backup(target) {
   );
   atomic_write(file, fs.readFileSync(target), false);
   return file;
+}
+export function profile_state(selected) {
+  if (!selected) return { status: "unselected", path: null };
+  let target = profile_target(selected);
+  try {
+    const root = configuration_root(selected);
+    target = profile_target(root);
+    const data = project_profile(root);
+    return { status: "loaded", path: target, profileId: data.profile_id,
+      projectId: data.project.id, repositories: data.repositories.map(({ id, path, alias }) => ({ id, path, alias })) };
+  } catch (error) {
+    if (error instanceof ProfileAmbiguous)
+      return { status: "ambiguous", path: null, candidates: error.candidates.map(root => profile_target(root)), detail: error.message };
+    return { status: exists(target) ? "invalid" : "missing", path: target, detail: error.message };
+  }
+}
+export function create_profile(selected) {
+  const root = configuration_root(selected), target = profile_target(root);
+  if (!is_dir(root)) throw new ConfigError("Project directory does not exist");
+  if (exists(target)) throw new ConfigError("Profile already exists: " + target);
+  const data = load(path.join(ROOT, "profiles/generic-1c/profile.yaml"));
+  data.project.id = path.basename(root).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "project";
+  validate_at(root, data);
+  // Resolve every supporting path before the first write (including junctions).
+  for (const name of [".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.md"]) inside(root, name);
+  dump(data, target, false);
+  for (const [name, text] of Object.entries({
+    ".ai/PROJECT.md": "# Project\n\nDescribe purpose, architecture and sources of truth.\n",
+    ".ai/.gitignore": "project.local.yaml\ninstances/*.local.yaml\n",
+    "AGENTS.md": "# 1C project\n\nUse 1c-ai-core. Read .ai/project.yaml and .ai/PROJECT.md.\nUse $1c-routing and its shared action-policy reference before project operations.\nApply the shared policy and reuse actual user authorizations only for their approved scope.\nUse assigned authorities for protected sources.\n",
+  })) {
+    const file = inside(root, name);
+    if (!exists(file)) atomic_write(file, text, false);
+  }
+  return { status: "created", path: target, profile_id: data.profile_id };
 }
 export async function main() {
   const a = argumentsOf(
@@ -251,28 +289,7 @@ export async function main() {
   if (command === "init") {
     if (a.profile && a.profile !== "generic-1c")
       throw new ConfigError("Unknown profile");
-    if (exists(target))
-      throw new ConfigError("Profile already exists: " + target);
-    const data = load(path.join(ROOT, "profiles/generic-1c/profile.yaml"));
-    data.project.id =
-      path
-        .basename(root)
-        .toLowerCase()
-        .replace(/[^a-z0-9-]/g, "-")
-        .replace(/^-+|-+$/g, "") || "project";
-    validate(data);
-    dump(data, target, false);
-    for (const [name, text] of Object.entries({
-      ".ai/PROJECT.md":
-        "# Project\n\nDescribe purpose, architecture and sources of truth.\n",
-      ".ai/.gitignore": "project.local.yaml\ninstances/*.local.yaml\n",
-      "AGENTS.md":
-        "# 1C project\n\nUse 1c-ai-core. Read .ai/project.yaml and .ai/PROJECT.md.\nUse $1c-routing and its shared action-policy reference before project operations.\nApply the shared policy and reuse actual user authorizations only for their approved scope.\nUse assigned authorities for protected sources.\n",
-    })) {
-      const file = path.join(root, name);
-      if (!exists(file)) atomic_write(file, text, false);
-    }
-    result = { status: "created", path: target, profile_id: "generic-1c" };
+    result = create_profile(root);
   } else if (command === "export") {
     if (!a.output) throw new ConfigError("export requires --output");
     const output = resolve(a.output);
