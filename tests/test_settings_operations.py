@@ -49,6 +49,11 @@ class SettingsOperations(unittest.TestCase):
         self.tmp.cleanup()
 
     def call(self, name, **args):
+        if name == "settings.run_check" and not args:
+            args = {"authorization": {
+                "scope": f"{self.base}#default", "effects": ["launch"],
+                "evidence": "fixture user authorization",
+            }}
         return self.client.call(name, args)["structuredContent"]
 
     def wait_operation(self, operation_id):
@@ -74,6 +79,12 @@ class SettingsOperations(unittest.TestCase):
         self.assertEqual((self.state / "calls").read_text().splitlines(), ["check"])
         again = self.call("settings.operation", operationId=operation["id"])
         self.assertEqual(again, completed)
+
+    def test_preparation_rejects_missing_or_empty_authorization_before_the_backend(self):
+        for args in ({}, {"authorization": {"scope": str(self.base), "effects": [], "evidence": " "}}):
+            with self.subTest(args=args), self.assertRaises(RuntimeError):
+                self.client.call("settings.run_check", args)
+        self.assertFalse((self.state / "calls").exists())
 
     def test_update_waits_for_actual_completion_and_never_kills_the_supervisor(self):
         result = self.call("settings.update", set={"edtUrl": "http://127.0.0.1:19852/mcp"})

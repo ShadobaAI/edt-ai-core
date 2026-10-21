@@ -177,6 +177,16 @@ class Policy(unittest.TestCase):
         self.assertEqual(self.call("validate_compliance", phase="result", selection=selection,
                                    ledger=ledger, current=current)["status"], "ledger_valid")
 
+    def test_reason_is_restricted_to_deviations(self):
+        selection, current = self.selection()
+        ledger = self.ledger(selection)
+        ledger[0]["reason"] = "explanation attached to a passing row"
+        arguments = {"phase": "proposal", "selection": selection, "ledger": ledger, "current": current}
+        schema = self.tools["validate_compliance"]["inputSchema"]
+        self.assertFalse(Draft202012Validator(schema).is_valid(arguments))
+        result = self.client.request("tools/call", {"name": "validate_compliance", "arguments": arguments})
+        self.assertTrue(result["isError"])
+
     def test_changed_mechanisms_stale_registry_or_tampered_selection_fail(self):
         selection, current = self.selection(["method_contract"])
         changed = {**current, "mechanisms": []}

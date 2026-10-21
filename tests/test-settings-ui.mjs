@@ -40,7 +40,8 @@ function screen(handler) {
     async tick() { const [id, timer] = [...timers].find(([, timer]) => timer.ms === 1000) || []; assert.ok(timer); timers.delete(id); timer.fn(); await flush(); } };
 }
 
-const read = { values: { projectRoot: "C:/fixture/project" }, schema: { properties: { projectRoot: { readOnly: true } } } };
+const read = { values: { projectRoot: "C:/fixture/project" }, preparationScope: "C:/fixture/project#default",
+  schema: { properties: { projectRoot: { readOnly: true } } } };
 
 test("a locked project remains locked and preparation polling does not restart it", async () => {
   let polls = 0;
@@ -59,7 +60,12 @@ test("a locked project remains locked and preparation polling does not restart i
   assert.equal(ui.elements.get("checkButton").disabled, true);
   await ui.tick();
   assert.equal(ui.elements.get("checkButton").disabled, false);
-  assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 1);
+  const preparations = ui.calls.filter(call => call.params?.name === "settings.run_check");
+  assert.equal(preparations.length, 1);
+  assert.equal(JSON.stringify(preparations[0].params.arguments.authorization), JSON.stringify({
+    scope: "C:/fixture/project#default", effects: ["launch"],
+    evidence: "Пользователь нажал «Подготовить и проверить MCP» в экране настроек."
+  }));
   assert.equal([...ui.timers.values()].filter(timer => timer.ms === 1000 || timer.ms === 5000).length, 0);
   assert.match(ui.elements.get("status").textContent, /автоматического переподключения нет/);
   const lines = ui.elements.get("connections").children.flatMap(child => child.children).map(child => child.textContent).join(" ");
@@ -98,4 +104,33 @@ test("a late operation notification opens and refreshes its result", async () =>
   assert.equal(ui.elements.get("checkPanel").hidden, false);
   assert.match(ui.elements.get("status").textContent, /update завершена/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.operation").length, 1);
+});
+
+test("preparation uses the current backend scope after a host directory change", async () => {
+  let reads = 0;
+  const ui = screen(async name => {
+    if (name === "settings.read") return ++reads === 1 ? read : { ...read, preparationScope: "C:/other#second" };
+    if (name === "settings.run_check") return { id: "new", status: "running" };
+    if (name === "settings.operation") return { id: "new", status: "running" };
+    throw new Error(name);
+  });
+  await ui.flush();
+  await ui.elements.get("checkButton").onclick();
+  const preparation = ui.calls.find(call => call.params?.name === "settings.run_check");
+  assert.equal(preparation.params.arguments.authorization.scope, "C:/other#second");
+});
+
+test("importing a profile does not assert a separate launch authorization", async () => {
+  const ui = screen(async name => {
+    if (name === "settings.read") return read;
+    if (name === "settings.preview") return { projectRoot: "C:/fixture/project", repositories: [], revision: "one" };
+    if (name === "settings.apply") return { values: read.values };
+    throw new Error(name);
+  });
+  await ui.flush();
+  ui.elements.get("file").files = [{ size: 20, text: async () => "profile" }];
+  await ui.elements.get("previewButton").onclick();
+  await ui.elements.get("applyButton").onclick();
+  assert.equal(ui.elements.get("checkPanel").hidden, false);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });

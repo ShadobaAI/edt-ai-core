@@ -2,12 +2,15 @@
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import hashlib
+import io
 import os
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from common import ConfigError, operation_lock, settings
@@ -44,7 +47,7 @@ class Runtime(unittest.TestCase):
         self.assertIsNone(artifact(self.state, "code-index"))
 
     def test_unverified_download_cannot_replace_lock(self):
-        prior = {"bsl-ls": {"release": "v1.0.0", "sha256": "prior"}}
+        prior = {"bsl-ls": {"release": "v1.0.0", "sha256": "0" * 64}}
         save_json(self.state / "runtime-lock.json", prior)
         release = {"tag_name": "v1.0.7", "assets": [{"name": "bsl-language-server-1.0.7-exec.jar",
                                                   "digest": None}]}
@@ -53,6 +56,47 @@ class Runtime(unittest.TestCase):
                 ensure_installed(self.state, self.config, "bsl-ls")
         import json
         self.assertEqual(json.loads((self.state / "runtime-lock.json").read_text()), prior)
+
+    def test_refresh_of_the_same_release_keeps_existing_process_artifacts_immutable(self):
+        def jar(text):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as archive:
+                archive.writestr("fixture.txt", text)
+            return buffer.getvalue()
+        old, new = jar("old runtime"), jar("replacement runtime")
+        prior = self.state / "runtime/bsl-ls/v1.2.3/bsl-language-server-exec.jar"
+        prior.parent.mkdir(parents=True)
+        prior.write_bytes(old)
+        save_json(self.state / "runtime-lock.json", {"bsl-ls": {
+            "release": "v1.2.3", "path": str(prior.relative_to(self.state)), "sha256": sha(prior)}})
+        release = {"tag_name": "v1.2.3", "assets": [{
+            "name": "bsl-language-server-1.2.3-exec.jar", "size": len(new),
+            "digest": "sha256:" + hashlib.sha256(new).hexdigest(), "browser_download_url": "https://fixture.invalid/runtime.jar"}]}
+        unchanged = copy.deepcopy(release)
+        unchanged["assets"][0].update(size=len(old), digest="sha256:" + hashlib.sha256(old).hexdigest())
+        with prior.open("rb"), patch("runtime.fetch_json", return_value=unchanged), \
+             patch("runtime.urllib.request.urlopen", return_value=io.BytesIO(old)):
+            self.assertEqual(ensure_installed(self.state, self.config, "bsl-ls", refresh=True), prior.resolve())
+        with prior.open("rb"), patch("runtime.fetch_json", return_value=release), \
+             patch("runtime.urllib.request.urlopen", side_effect=lambda *a, **kw: io.BytesIO(new)) as download:
+            target = ensure_installed(self.state, self.config, "bsl-ls", refresh=True)
+            self.assertNotEqual(target, prior)
+            self.assertEqual(prior.read_bytes(), old)
+            self.assertEqual(target.read_bytes(), new)
+            self.assertEqual(artifact(self.state, "bsl-ls"), target)
+            modified = target.stat().st_mtime_ns
+            with target.open("rb"):
+                self.assertEqual(ensure_installed(self.state, self.config, "bsl-ls", refresh=True), target)
+            self.assertEqual(target.stat().st_mtime_ns, modified)
+            self.assertEqual(download.call_count, 2)
+
+    def test_runtime_lock_cannot_redirect_an_artifact_outside_its_component(self):
+        foreign = self.state / "foreign.jar"
+        foreign.write_bytes(b"foreign")
+        save_json(self.state / "runtime-lock.json", {"bsl-ls": {
+            "release": "v1.2.3", "path": "foreign.jar", "sha256": sha(foreign)}})
+        with self.assertRaises(ConfigError):
+            artifact(self.state, "bsl-ls")
 
     def test_mapping_change_while_daemon_running_is_rejected(self):
         root = self.state / "project"
@@ -94,14 +138,25 @@ class Runtime(unittest.TestCase):
 
     def test_bsl_contract_requires_native_registration_and_workspace_scoping(self):
         tools = [{"name": name} for name in ("register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder")]
+        tools[-1]["inputSchema"] = {"properties": {"workspaceFolder": {"type": "string"}}, "required": ["workspaceFolder"]}
         for name in ("type_info", "global_member_info", "global_member_search"):
             tools.append({"name": name, "inputSchema": {"properties": {"workspaceFolder": {"type": "string"}}, "required": ["workspaceFolder"]}})
         validate_bsl_tools(tools)
         with self.assertRaisesRegex(ConfigError, "native multi-workspace API"):
             validate_bsl_tools(tools[1:])
-        tools[-1]["inputSchema"]["required"] = []
-        with self.assertRaisesRegex(ConfigError, "global_member_search.workspaceFolder"):
+        for tool in tools[3:]:
+            tool["inputSchema"]["required"] = []
+        with self.assertRaisesRegex(ConfigError, "workspaceFolder-aware analyzer tool"):
             validate_bsl_tools(tools)
+
+    def test_bsl_gate_accepts_a_new_analyzer_name_but_not_a_lifecycle_only_catalogue(self):
+        tools = [{"name": name} for name in ("register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder")]
+        schema = {"properties": {"workspaceFolder": {"type": "string"}}, "required": ["workspaceFolder"]}
+        tools[-1]["inputSchema"] = schema
+        with self.assertRaises(ConfigError):
+            validate_bsl_tools(tools)
+        tools.append({"name": "future_analyzer", "inputSchema": schema})
+        validate_bsl_tools(tools)
 
     def test_readiness_needs_exact_paths_and_positive_freshness(self):
         root = self.state / "project"; root.mkdir()

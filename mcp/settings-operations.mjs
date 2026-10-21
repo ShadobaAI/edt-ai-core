@@ -21,6 +21,7 @@ export class SettingsOperations {
     job.finished = Promise.resolve().then(() => this.run(action, args, context)).then(
       result => {
         if (result?.values && Object.hasOwn(result.values, "projectRoot")) job.projectRoot = result.values.projectRoot || null;
+        else if (typeof result?.projectRoot === "string") job.projectRoot = result.projectRoot;
         job.status = "completed"; job.result = result;
       },
       error => {

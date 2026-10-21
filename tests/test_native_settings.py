@@ -395,6 +395,7 @@ class NativeSettings(unittest.TestCase):
             client.call("settings.update", {"set": {"edtUrl": "http://127.0.0.1:19841/mcp"}})
             read = client.call("settings.read", {})["structuredContent"]
             self.assertEqual(Path(read["values"]["projectRoot"]), self.project)
+            self.assertEqual(read["preparationScope"], f"{self.project}#first")
             request = {"text": json.dumps(self.profile)}
             preview = client.call("settings.preview", request)["structuredContent"]
             client.call("settings.apply", {**request, "revision": preview["revision"]})

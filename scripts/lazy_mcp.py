@@ -9,7 +9,6 @@ from pathlib import Path
 import queue
 import sys
 import threading
-import time
 import uuid
 
 sys.stdin.reconfigure(encoding="utf-8")
@@ -28,6 +27,7 @@ configuration = Path(os.environ.get("EDT_AI_SETTINGS", state / "settings.json"))
 messages = queue.Queue()
 client = None
 current_revision = None
+failed_revision = None
 tools = []
 tools_revision = None
 tools_dirty = False
@@ -38,7 +38,7 @@ roots_pending = None
 roots_counter = 0
 initialized = False
 last_error = "Выберите каталог проекта с .ai/project.yaml."
-retry_busy_at = 0
+PROTOCOLS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 
 def emit(message):
@@ -92,8 +92,8 @@ def config_context():
     return root, effective_settings(config, root, data, state=state), profile_revision
 
 
-def ensure_binding(refresh_surface=True):
-    global client, tools, tools_revision, tools_dirty, current_revision, last_error, retry_busy_at, binding_context
+def ensure_binding(refresh_surface=True, retry_failed=True):
+    global client, tools, tools_revision, tools_dirty, current_revision, failed_revision, last_error, binding_context
     if roots_pending:
         return
     revision = None
@@ -117,7 +117,12 @@ def ensure_binding(refresh_surface=True):
             token = reconnect_file(state, root)
             revision = ("prepared-relay", str(root), configuration.read_bytes() if configuration.exists() else b"",
                         token.read_bytes() if token.exists() else b"")
-            if current_revision == revision:
+            if revision == failed_revision and not retry_failed:
+                return
+            # A revision is reusable only after a candidate has been fully
+            # initialized.  Failed startup must remain retryable when the
+            # endpoint/JAR becomes available without a config change.
+            if client is not None and current_revision == revision:
                 if refresh_surface:
                     refresh_notified_tools()
                 return
@@ -134,20 +139,23 @@ def ensure_binding(refresh_surface=True):
                 tools_dirty = False
             except Exception:
                 candidate.close()
+                current_revision = None
                 raise
-            client, current_revision, last_error = candidate, revision, ""
+            client, current_revision, failed_revision, last_error = candidate, revision, None, ""
             emit({"method": "notifications/tools/list_changed"})
             return
         root, config, profile_revision = config_context()
         token = reconnect_file(state, root)
         revision = (json.dumps(config, sort_keys=True), str(root), profile_revision,
                     token.read_bytes() if token.exists() else b"")
-        if revision == current_revision and not (retry_busy_at and time.monotonic() >= retry_busy_at):
+        if revision == failed_revision and not retry_failed:
+            return
+        if client is not None and revision == current_revision:
             if refresh_surface:
                 refresh_notified_tools()
             return
         disconnect()
-        current_revision, retry_busy_at = revision, 0
+        current_revision = revision
         if component in ("edt", "v8std"):
             url = config["mcp"]["required"][component]["url"]
             if not url:
@@ -168,8 +176,9 @@ def ensure_binding(refresh_surface=True):
             tools_dirty = False
         except Exception:
             candidate.close()
+            current_revision = None
             raise
-        client, last_error = candidate, ""
+        client, failed_revision, last_error = candidate, None, ""
         if component == "v8std":
             binding_context = {"projectRoot": str(root), "instance": instance_name(), "endpoint": url,
                                "connectionId": uuid.uuid4().hex,
@@ -177,11 +186,10 @@ def ensure_binding(refresh_surface=True):
         emit({"method": "notifications/tools/list_changed"})
     except Exception as error:
         disconnect()
+        failed_revision = revision
         if revision is None:
             current_revision = None
         last_error = str(error)
-        if "Another runtime operation" in last_error:
-            retry_busy_at = time.monotonic() + 2
 
 
 def refresh_tools():
@@ -216,7 +224,10 @@ try:
             message = messages.get(timeout=.5)
         except queue.Empty:
             if initialized:
-                ensure_binding()
+                # A changed binding/reconnect token can be discovered while
+                # idle. A failed, unchanged startup is retried only by a host
+                # request, never by a loop that relaunches children every 0.5 s.
+                ensure_binding(retry_failed=False)
             continue
         if message is None:
             break
@@ -248,8 +259,16 @@ try:
                     current_revision = None
             continue
         try:
+            requested = message.get("params", {}).get("_meta", {}).get("io.modelcontextprotocol/protocolVersion")
+            if method == "server/discover" or (requested and requested not in PROTOCOLS):
+                # This relay owns a project binding and child process per
+                # connection. Do not advertise stateless, per-request routing.
+                emit({"id": request_id, "error": {"code": -32601,
+                      "message": "Session-scoped relay requires the initialize handshake."}})
+                continue
             if method == "initialize":
-                result = {"protocolVersion": message.get("params", {}).get("protocolVersion", "2024-11-05"),
+                proposed = message.get("params", {}).get("protocolVersion")
+                result = {"protocolVersion": proposed if proposed in PROTOCOLS else PROTOCOLS[0],
                           "serverInfo": {"name": "1c-ai-" + component, "version": "0.1.1"},
                           "capabilities": {"tools": {"listChanged": True}, "resources": {}, "prompts": {}}}
                 if component == "v8std":

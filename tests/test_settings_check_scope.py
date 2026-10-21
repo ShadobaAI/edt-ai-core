@@ -29,7 +29,9 @@ class SettingsCheckScope(unittest.TestCase):
                 spec.loader.exec_module(backend)
                 fixture = {"server": {"version": "fixture"}, "index_ready": True}
                 with patch("runtime.smoke", return_value=fixture), patch("policy_runtime.smoke", return_value=fixture):
-                    result = backend.main({"action": "check"})
+                    scope = backend.main({"action": "read"})["preparationScope"]
+                    result = backend.main({"action": "check", "authorization": {
+                        "scope": scope, "effects": ["launch"], "evidence": "explicit fixture launch request"}})
                 token = reconnect_file(state, root)
                 self.assertTrue(json.loads(token.read_text())["id"])
                 self.assertEqual(result["fullReadiness"], "not_verified")

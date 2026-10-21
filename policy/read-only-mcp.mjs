@@ -7,6 +7,7 @@ import { actionPolicy, checkAction, actionRequest } from "./actions.mjs";
 import { ledgerItemSchema, selectionSchema, requirementsResultSchema, complianceResultSchema, additionalRequirementsSchema, nonblank, assessmentsSchema, detectionSchema, policyProtocolVersion, validateSchema } from "./schema.mjs";
 
 const modulePath = fileURLToPath(import.meta.url);
+const protocols = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const mechanismInput = {
   mechanisms: { type: "array", items: nonblank },
@@ -87,9 +88,15 @@ function send(message) { process.stdout.write(`${JSON.stringify(message)}\n`); }
 
 function dispatch(message, registry) {
   if (!message || message.jsonrpc !== "2.0" || !message.method || message.id === undefined) return;
+  const requested = message.params?._meta?.["io.modelcontextprotocol/protocolVersion"];
+  if (message.method === "server/discover" || (requested && !protocols.includes(requested))) {
+    send({ jsonrpc: "2.0", id: message.id, error: { code: -32601,
+      message: "Use the initialize handshake for this entrypoint." } });
+    return;
+  }
   let result;
   if (message.method === "initialize") {
-    result = { protocolVersion: message.params?.protocolVersion ?? "2024-11-05", capabilities: { tools: {} },
+    result = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0], capabilities: { tools: {} },
       serverInfo: { name: "1c-ai-policy-readonly", version: policyProtocolVersion } };
   } else if (message.method === "ping") result = {};
   else if (message.method === "tools/list") result = { tools };

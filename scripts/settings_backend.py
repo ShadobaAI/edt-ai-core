@@ -14,7 +14,7 @@ import yaml
 from common import ConfigError, UniqueLoader, atomic_write, check_schema, deep_merge, dump, inside, load, operation_lock, settings, validate_settings, validate_url
 from profile import backup, profile_target, project_profile, validate, validate_at
 from action_policy import effective_policy
-from project_paths import configuration_root, ProfileNotFound, reconnect_file
+from project_paths import configuration_root, ProfileNotFound, reconnect_file, instance_name
 
 STATE = Path(os.environ["EDT_AI_STATE_DIR"])
 CONFIG = Path(os.environ["EDT_AI_SETTINGS"])
@@ -25,6 +25,25 @@ FIELDS = {
     "openvikingEnabled": ("mcp", "optional", "openviking", "enabled"),
     "openvikingUrl": ("mcp", "optional", "openviking", "url"),
 }
+
+
+def preparation_scope(root):
+    return f"{root}#{instance_name()}" if root else None
+
+
+def authorize_preparation(request, root):
+    # Resolve once in the backend that performs the operation. The assertion
+    # comes from the caller; it does not authenticate a user or replace host
+    # approvals. Validate it before downloads, launches, or reconnect writes.
+    authorization = request.get("authorization")
+    if (not isinstance(authorization, dict)
+            or set(authorization) != {"scope", "effects", "evidence"}
+            or authorization.get("effects") != ["launch"]
+            or not isinstance(authorization.get("evidence"), str)
+            or not authorization["evidence"].strip()):
+        raise ConfigError("Подготовка MCP требует разрешения запуска сервисов.")
+    if authorization.get("scope") != preparation_scope(root):
+        raise ConfigError("Разрешение подготовки относится к другой папке или экземпляру.")
 
 
 def current():
@@ -181,10 +200,11 @@ def parse_import(request):
 def main(request):
     action = request["action"]
     if action == "read":
-        from project_context import instance_name
         config = current()
         _, sources = effective(config, with_sources=True)
-        return {"values": values(config), "instance": instance_name(), "connectionSources": sources}
+        actual = values(config)
+        return {"values": actual, "instance": instance_name(), "connectionSources": sources,
+                "preparationScope": preparation_scope(actual["projectRoot"])}
     if action == "update":
         changes = request.get("set", {})
         if not isinstance(changes, dict) or not changes or set(changes) - set(FIELDS):
@@ -330,10 +350,12 @@ def main(request):
         from policy_runtime import smoke as policy_smoke
         config = effective(current())
         root, data = project(config.get("active_project"), config)
+        authorize_preparation(request, root)
+        refresh = request.get("refresh") is True
         managed = []
         for component in ("code-index", "bsl-ls"):
             try:
-                item = smoke(STATE, config, root, data, component)
+                item = smoke(STATE, config, root, data, component, refresh=refresh)
                 index_ready = item.get("index_ready", True)
                 managed.append({"name": component, "ready": index_ready,
                                 "state": "ready" if index_ready else "indexing",
@@ -352,7 +374,7 @@ def main(request):
                             "detail": str(exc)})
         import uuid
         atomic_write(reconnect_file(STATE, root), json.dumps({"id": uuid.uuid4().hex}))
-        return {"managed": managed,
+        return {"managed": managed, "projectRoot": str(root), "instance": instance_name(),
                 "actionPolicy": effective_policy(data["policy"]),
                 "external": {name: {"configured": bool(item["url"]), "liveVerified": False}
                              for name, item in config["mcp"]["required"].items()},

@@ -51,9 +51,17 @@ def artifact(state, component):
     entry = lock.get(component)
     if not entry:
         return None
-    if not isinstance(entry, dict) or not re.fullmatch(r"v?\d+\.\d+\.\d+", str(entry.get("release", ""))):
+    if (not isinstance(entry, dict)
+            or not re.fullmatch(r"v?\d+\.\d+\.\d+", str(entry.get("release", "")))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(entry.get("sha256", "")))):
         raise ConfigError("Invalid runtime-lock entry")
-    target = state / "runtime" / component / entry["release"] / SPECS[component][2]
+    version_home = state / "runtime" / component / entry["release"]
+    executable = SPECS[component][2]
+    legacy = version_home / executable
+    target = inside(state, entry["path"]) if "path" in entry else legacy
+    allowed = (legacy.resolve(), (version_home / str(entry.get("sha256", "")) / executable).resolve())
+    if target.resolve() not in allowed:
+        raise ConfigError("Invalid runtime-lock artifact path")
     if not target.is_file() or sha(target) != entry["sha256"]:
         return None
     return target
@@ -75,7 +83,7 @@ def ensure_installed(state, config, component, refresh=False):
     version = release["tag_name"]
     if not re.fullmatch(r"v?\d+\.\d+\.\d+", version):
         raise ConfigError(f"Unsupported release tag: {version}")
-    if existing and current.get("release") == version:
+    if existing and current.get("release") == version and not refresh:
         return existing
     candidates = [a for a in release["assets"] if re.fullmatch(pattern, a["name"])]
     if len(candidates) != 1:
@@ -84,7 +92,6 @@ def ensure_installed(state, config, component, refresh=False):
     digest = asset.get("digest") or ""
     if not re.fullmatch("sha256:[0-9a-f]{64}", digest):
         raise ConfigError(f"Release {version} does not publish an SHA-256 asset digest")
-    target = state / "runtime" / component / version / executable
     print(f"Installing {component} {version}: {asset['size']} bytes", file=__import__("sys").stderr, flush=True)
     state.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="download-", dir=state) as tmp:
@@ -107,15 +114,23 @@ def ensure_installed(state, config, component, refresh=False):
             shutil.copy2(download, staged)
             if not zipfile.is_zipfile(staged):
                 raise ConfigError("BSL LS artifact is not a JAR")
+        content_sha = sha(staged)
+        # Shared artifacts are immutable. A refresh must not overwrite a binary
+        # or JAR held by another project's process (or a Windows executable).
+        # Keep an unchanged legacy path as well: daemon ownership includes its
+        # executable path, so moving identical bytes would force a restart.
+        target = (existing if existing and current.get("release") == version and sha(existing) == content_sha
+                  else state / "runtime" / component / version / content_sha / executable)
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(staged, target)
-    entry = {"release": version, "path": str(target.relative_to(state)),
+        if not target.is_file() or sha(target) != content_sha:
+            os.replace(staged, target)
+    entry = {"release": version, "path": str(target.resolve().relative_to(state.resolve())),
              "sha256": sha(target), "asset_sha256": digest[7:],
              "source": asset["browser_download_url"], "bytes": asset["size"]}
     lock = read_json(state / "runtime-lock.json", {})
     lock[component] = entry
     save_json(state / "runtime-lock.json", lock)
-    return target
+    return target.resolve()
 
 
 def project(root, config):
@@ -148,10 +163,10 @@ def path_key(path):
     return os.path.normcase(value)
 
 
-def installed_runtime(state, config, component):
+def installed_runtime(state, config, component, refresh=False):
     # Artifact metadata is shared; project startup must not hold this lock.
     with operation_lock(state, timeout=120):
-        return ensure_installed(state, config, component)
+        return ensure_installed(state, config, component, refresh=refresh)
 
 
 def index_config(home, root, data):
@@ -246,9 +261,9 @@ def java_command(config):
     return resolved
 
 
-def launch_command(state, config, component, root, data):
+def launch_command(state, config, component, root, data, refresh=False):
     if component == "code-index":
-        exe = installed_runtime(state, config, component)
+        exe = installed_runtime(state, config, component, refresh=refresh)
         home = ensure_daemon(state, root, data, exe)
         return [str(exe), "serve", "--config", str(home / "daemon.toml")], home, {**os.environ, "CODE_INDEX_HOME": str(home)}
     root = Path(root).resolve()
@@ -262,7 +277,7 @@ def launch_command(state, config, component, root, data):
         if not Path(configuration).is_file():
             raise ConfigError("Configured BSL LS configuration does not exist")
     java = java_command(config)
-    exe = installed_runtime(state, config, component)
+    exe = installed_runtime(state, config, component, refresh=refresh)
     command = [node, str(ROOT / "mcp" / "bsl-ls-proxy.mjs"), "--project-root", str(root),
                "--java", java, "--jar", str(exe)]
     if configuration:
@@ -275,19 +290,26 @@ def validate_bsl_tools(tools):
     by_name = {tool["name"]: tool for tool in tools}
     required = {"register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder"}
     missing = sorted(required - by_name.keys())
-    for name in ("type_info", "global_member_info", "global_member_search"):
-        schema = by_name.get(name, {}).get("inputSchema", {})
-        if "workspaceFolder" not in schema.get("properties", {}) or "workspaceFolder" not in schema.get("required", []):
-            missing.append(name + ".workspaceFolder")
+    workspace_aware = []
+    for tool in tools:
+        if tool.get("name") in required:
+            continue
+        schema = tool.get("inputSchema", {})
+        properties = schema.get("properties", {})
+        if (properties.get("workspaceFolder", {}).get("type") == "string"
+                and "workspaceFolder" in schema.get("required", [])):
+            workspace_aware.append(tool.get("name", "<unnamed>"))
+    if not workspace_aware:
+        missing.append("workspaceFolder-aware analyzer tool")
     if missing:
         raise ConfigError("BSL LS lacks the native multi-workspace API: " + ", ".join(missing)
                           + ". Use a BSL LS artifact exposing workspace registration and workspaceFolder parameters.")
 
 
-def smoke(state, config, root, data, component, timeout=90):
+def smoke(state, config, root, data, component, timeout=90, refresh=False):
     from mcp_client import McpClient
     from mcp_pages import all_pages
-    command, cwd, env = launch_command(state, config, component, root, data)
+    command, cwd, env = launch_command(state, config, component, root, data, refresh=refresh)
     with McpClient(command, cwd, env, timeout) as client:
         server = client.initialize()
         tools = all_pages(client, "tools/list", "tools")["tools"]

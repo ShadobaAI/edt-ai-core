@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import threading
 import unittest
 from unittest.mock import patch
@@ -20,16 +21,29 @@ class LazySurface(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name).resolve()
         owner = self
-        self.enabled, self.calls = {}, []
+        self.enabled, self.calls, self.fail_initialize, self.modern_routes = {}, [], set(), set()
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args): pass
             def do_POST(self):
                 msg = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 owner.calls.append((self.path, msg))
                 method, params = msg["method"], msg.get("params", {})
+                if method == "initialize" and self.path in owner.fail_initialize:
+                    self.send_response(503); self.end_headers(); return
                 def tool(name): return {"name": name, "inputSchema": {"type": "object", "properties": {}}}
                 if method == "notifications/initialized":
                     self.send_response(202); self.end_headers(); return
+                if method == "server/discover":
+                    response = {"jsonrpc": "2.0", "id": msg["id"]}
+                    if self.path in owner.modern_routes:
+                        response["result"] = {"resultType": "complete", "supportedVersions": ["2026-07-28"],
+                                              "capabilities": {"tools": {}}, "instructions": "modern corpus"}
+                    else:
+                        response["error"] = {"code": -32601, "message": "legacy"}
+                    payload = json.dumps(response).encode()
+                    self.send_response(200); self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload))); self.end_headers()
+                    self.wfile.write(payload); return
                 if method == "initialize": result = {"protocolVersion": "2024-11-05", "serverInfo": {"name": "fixture", "version": "1"}, "instructions": "Read corpus " + self.path, "capabilities": {"tools": {"listChanged": True}}}
                 elif method == "tools/list":
                     names = [self.path[1:] + "_later"] if params.get("cursor") else ["enable", self.path[1:] + "_first"]
@@ -46,10 +60,12 @@ class LazySurface(unittest.TestCase):
                 elif method in ("prompts/list", "resources/templates/list"):
                     payload = json.dumps({"jsonrpc": "2.0", "id": msg["id"],
                                           "error": {"code": -32601, "message": "Method not found"}}).encode()
-                    self.send_response(200); self.send_header("Content-Type", "application/json")
+                    self.send_response(404 if self.path in owner.modern_routes else 200); self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(payload))); self.end_headers()
                     self.wfile.write(payload); return
                 else: raise ValueError(method)
+                if self.path in owner.modern_routes:
+                    result["resultType"] = "complete"
                 payload = json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result}).encode()
                 self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -165,6 +181,16 @@ class LazySurface(unittest.TestCase):
         file.write_bytes(before)
         self.assertIn("adapter_first", self.names(client))
 
+    def test_failed_initial_bind_is_retryable_without_a_config_change(self):
+        self.fail_initialize.add("/flaky")
+        client = self.connect(self.a, {"EDT_AI_EDT_URL": self.url("flaky"), "EDT_AI_PROJECT_ROOT": str(self.a)})
+        self.assertEqual([tool["name"] for tool in client.request("tools/list")["tools"]], ["core_runtime_status"])
+        attempts = len([msg for route, msg in self.calls if route == "/flaky" and msg["method"] == "initialize"])
+        time.sleep(1.1)
+        self.assertEqual(len([msg for route, msg in self.calls if route == "/flaky" and msg["method"] == "initialize"]), attempts)
+        self.fail_initialize.remove("/flaky")
+        self.assertIn("flaky_first", self.names(client))
+
     def test_dependency_free_entrypoint_relays_through_prepared_python(self):
         client = self.connect(self.a, {"EDT_AI_PYTHON": sys.executable}, without_site=True)
         self.assertIn("adapter_later", self.names(client))
@@ -183,6 +209,18 @@ class LazySurface(unittest.TestCase):
         self.assertEqual(client.call("core_runtime_status", {})["structuredContent"], first)
         self.assertEqual(len([m for _, m in self.calls if m["method"] == "tools/list"]), before)
         self.assertFalse(any(m.get("params", {}).get("name") == "core_runtime_status" for _, m in self.calls))
+
+    def test_legacy_project_relay_can_use_a_modern_external_corpus(self):
+        self.modern_routes.add("/adapter")
+        client = self.connect(self.a, component="v8std")
+        self.assertIn("adapter_first", self.names(client))
+        self.assertEqual(client.request("prompts/list"), {"prompts": []})
+        status = client.call("core_runtime_status", {})["structuredContent"]
+        self.assertEqual(status["serverContract"]["instructions"], "modern corpus")
+        self.assertEqual(status["binding"]["projectRoot"], str(self.a))
+        result = client.call("adapter_first", {"context": "selected project"})["structuredContent"]
+        self.assertEqual(result["context"], "selected project")
+        self.assertFalse(any(msg["method"] == "initialize" for route, msg in self.calls if route == "/adapter"))
 
     def test_v8std_parallel_projects_can_share_endpoint_without_sharing_results(self):
         self.profile(self.b, "adapter")

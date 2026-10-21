@@ -33,6 +33,7 @@ export const ledgerItemSchema = {
   required: ["selector", "selection_digest", "target", "source_ref", "status", "evidence"],
   if: { properties: { status: { const: "deviated" } }, required: ["status"] },
   then: { required: ["reason"] },
+  else: { properties: { reason: false } },
 };
 
 export const selectionSchema = { type: "object", additionalProperties: false,
@@ -87,6 +88,8 @@ export const complianceResultSchema = { type: "object", additionalProperties: fa
   }, required: ["status", "phase", "digest", "target", "sourceRef", "counts", "unresolved", "evidenceLimit"] };
 
 export function validateSchema(schema, value, at = "arguments", root = schema) {
+  if (schema === true) return;
+  if (schema === false) throw new Error(`${at}: property is not allowed`);
   if (schema.$ref) {
     const resolved = schema.$ref.slice(2).split("/").reduce((node, key) => node[key], root);
     return validateSchema(resolved, value, at, root);
@@ -123,7 +126,7 @@ export function validateSchema(schema, value, at = "arguments", root = schema) {
     for (const [key, item] of Object.entries(value)) {
       if (schema.propertyNames) validateSchema(schema.propertyNames, key, `${at} property name`, root);
       if (schema.additionalProperties === false && !Object.hasOwn(schema.properties ?? {}, key)) fail(`unknown property ${key}`);
-      if (schema.properties?.[key]) validateSchema(schema.properties[key], item, `${at}.${key}`, root);
+      if (Object.hasOwn(schema.properties ?? {}, key)) validateSchema(schema.properties[key], item, `${at}.${key}`, root);
       else if (schema.additionalProperties && typeof schema.additionalProperties === "object")
         validateSchema(schema.additionalProperties, item, `${at}.${key}`, root);
     }
@@ -132,5 +135,6 @@ export function validateSchema(schema, value, at = "arguments", root = schema) {
     let matches = true;
     try { validateSchema(schema.if, value, at, root); } catch { matches = false; }
     if (matches && schema.then) validateSchema(schema.then, value, at, root);
+    if (!matches && schema.else) validateSchema(schema.else, value, at, root);
   }
 }

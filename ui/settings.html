@@ -133,7 +133,7 @@ $("applyButton").onclick=()=>busy("Сохраняем настройки…",asy
   if(!lastPreview)throw new Error("Сначала проверьте файл.");
   if(lastPreview.replacesProfile&&!$("replace").checked)throw new Error("Подтвердите замену существующего профиля.");
   await tool("settings.apply",{text:fileText,projectRoot:$("projectRoot").value.trim(),revision:lastPreview.revision,replace:$("replace").checked});
-  invalidate();notice("Настройки импортированы. Для работы выберите эту папку проекта в Codex. Подготавливаем MCP…");show("check");await performCheck();
+  invalidate();notice("Настройки импортированы. Нажмите «Подготовить и проверить MCP» для запуска сервисов. Для работы выберите эту папку проекта в Codex.");show("check");
 }).catch(()=>{});
 $("downloadButton").onclick=()=>busy("Готовим файл настроек…",async()=>{
   const exported=await tool("settings.export_data");
@@ -178,7 +178,15 @@ function renderCheck(result,operation){
   box.hidden=false;notice(result.managed.every(x=>x.ready)?"Указанные MCP-проверки пройдены. Нормативное соответствие и полная готовность проекта не проверялись.":indexing?"Подготовка или индексация ещё не завершена. Обновите проверку позже кнопкой; автоматического переподключения нет.":"Часть MCP-проверок не пройдена. Подробности выше.",!indexing&&!result.managed.every(x=>x.ready));
 }
 async function performCheck(){
-  const operation=await tool("settings.run_check");
+  // Re-read the backend's canonical scope: imports and host root changes can
+  // invalidate the values that were shown when this screen first opened.
+  const current=await tool("settings.read");
+  if(!current.preparationScope)throw new Error("Выберите папку проекта.");
+  const operation=await tool("settings.run_check",{authorization:{
+    scope:current.preparationScope,
+    effects:["launch"],
+    evidence:"Пользователь нажал «Подготовить и проверить MCP» в экране настроек."
+  }});
   activeOperation=operation;
   await pollOperation(operation.id);
 }

@@ -11,6 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const state = process.env.EDT_AI_STATE_DIR || path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "1c-ai-core");
 const configPath = process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");
 const resource = "ui://1c-ai-core/settings.html";
+const protocols = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 let selectedRoot = process.env.EDT_AI_PROJECT_ROOT || null;
 let rootLocked = Boolean(selectedRoot);
 let selectionRevision = 0;
@@ -37,6 +38,13 @@ function hasProfile(directory) {
 }
 if (!selectedRoot && hasProfile(process.cwd())) { selectedRoot = process.cwd(); rootLocked = true; }
 const empty = { type: "object", properties: {}, additionalProperties: false };
+const preparationAuthorization = {
+  type: "object", additionalProperties: false,
+  properties: { scope: { type: "string", minLength: 1 }, effects: {
+    type: "array", items: { const: "launch" }, minItems: 1, maxItems: 1,
+  }, evidence: { type: "string", minLength: 1 } },
+  required: ["scope", "effects", "evidence"],
+};
 const primitive = {
   projectRoot: { type: "string", title: "Папка проекта" },
   edtUrl: { type: "string", title: "URL EDT MCP", description: "Override этого каталога и экземпляра. Пустое значение отключает подключение; окружение имеет высший приоритет." },
@@ -58,12 +66,13 @@ async function readValues() {
   // The unconfigured screen remains dependency-free and does not create state.
   if (selectedRoot || fs.existsSync(configPath)) return backend("read", {});
   const defaults = JSON.parse(fs.readFileSync(path.join(root, "settings", "defaults.json"), "utf8"));
-  return { values: values(defaults), instance: process.env.EDT_AI_INSTANCE || "default" };
+  return { values: values(defaults), instance: process.env.EDT_AI_INSTANCE || "default", preparationScope: null };
 }
 function readSettings(actual) {
   return {
     schema: { type: "object", properties: structuredClone(primitive) },
     values: actual.values, instance: actual.instance, connectionSources: actual.connectionSources,
+    preparationScope: actual.preparationScope,
     projectSelection: { status: selectionError ? (pendingRoots ? "pending" : "ambiguous") : selectedRoot ? "selected" : "unselected",
       locked: rootLocked, detail: selectionError },
     layout: [
@@ -92,8 +101,9 @@ const tools = [
       type: "object", properties: primitive, minProperties: 1, additionalProperties: false } }, additionalProperties: false },
     outputSchema: { type: "object", required: ["values"], properties: { values: { type: "object" } } },
     annotations: annotations(false), _meta: appOnly },
-  ...[["settings.import", "Импорт настроек"], ["settings.export", "Экспорт настроек"]].map(([name, title]) => ({
-    name, title, description: title, inputSchema: empty, annotations: annotations(), _meta: appTool,
+  ...[["settings.import", "Открыть импорт"], ["settings.export", "Открыть экспорт"]].map(([name, title]) => ({
+    name, title, description: `${title}. This opens the settings screen; it does not import or export by itself.`,
+    inputSchema: empty, annotations: annotations(), _meta: appTool,
   })),
   { name: "settings.preview", title: "Проверить файл", description: "Preview settings import without writing.",
     inputSchema: { type: "object", required: ["text"], properties: {
@@ -192,6 +202,8 @@ async function call(name, args) {
   const actions = { "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check" };
   if (!actions[name]) throw new Error("Неизвестный инструмент");
   if (name === "settings.run_check" && !selectedRoot) throw new Error("Выберите папку проекта.");
+  // The backend resolves and authorizes the same root immediately before
+  // preparation. A second path resolver here would disagree on profile/Git roots.
   const revision = selectionRevision;
   const proposedRoot = name === "settings.update" ? args.set.projectRoot : args.projectRoot;
   const context = { projectRoot: proposedRoot === undefined ? selectedRoot : proposedRoot || null,
@@ -213,11 +225,22 @@ function validateArguments(schema, value) {
         if (schema.additionalProperties === false) throw new Error("Неизвестное поле: " + key);
       } else validateArguments(schema.properties[key], child);
     }
+  } else if (schema.type === "array") {
+    if (!Array.isArray(value)) throw new Error("Некорректный тип настройки");
+    if (schema.minItems !== undefined && value.length < schema.minItems) throw new Error("Недостаточно элементов настройки");
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) throw new Error("Слишком много элементов настройки");
+    for (const item of value) validateArguments(schema.items || {}, item);
   } else if (schema.type && typeof value !== schema.type) throw new Error("Некорректный тип настройки");
+  if (schema.const !== undefined && value !== schema.const) throw new Error("Некорректное значение настройки");
+  if (schema.enum && !schema.enum.includes(value)) throw new Error("Некорректное значение настройки");
+  if (schema.minLength && value.trim().length < schema.minLength) throw new Error("Пустое значение настройки");
   if (schema.maxLength && value.length > schema.maxLength) throw new Error("Файл слишком большой");
 }
-tools.push({ name: "settings.run_check", title: "Подготовить и проверить MCP", description: "Start one managed runtime preparation/protocol operation. Poll settings.operation with its id; do not repeat to wait for completion.",
-  inputSchema: empty, annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly });
+tools.push({ name: "settings.run_check", title: "Подготовить и проверить MCP", description: "Start one managed runtime preparation/protocol operation after caller-supplied user authorization for launching the selected project services. Pass refresh=true only when an incompatible cached managed artifact must be downloaded again. Poll settings.operation with its id; do not repeat to wait for completion.",
+  inputSchema: { type: "object", properties: {
+    refresh: { type: "boolean" }, authorization: preparationAuthorization,
+  }, required: ["authorization"], additionalProperties: false },
+  annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly });
 
 function write(message) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n"); }
 async function dispatch(message) {
@@ -257,15 +280,26 @@ async function dispatch(message) {
   }
   if (message.method === "notifications/roots/list_changed") { requestRoots(); return; }
   if (!Object.hasOwn(message, "id")) return;
+  // Project selection and operation ownership are connection-scoped. A modern
+  // probe must trigger legacy fallback, not opt into stateless semantics that
+  // this entrypoint cannot provide. Native settings discovery without modern
+  // metadata remains available to the host after legacy initialization.
+  const requested = message.params?._meta?.["io.modelcontextprotocol/protocolVersion"];
+  if (requested && !protocols.includes(requested)) {
+    write({ id: message.id, error: { code: -32601,
+      message: "Session-scoped settings require the initialize handshake." } });
+    return;
+  }
   try {
     let data;
     if (message.method === "initialize") {
       const capability = { "openai/settings": { readTool: "settings.read", updateTool: "settings.update" } };
-      data = { protocolVersion: message.params?.protocolVersion || "2025-11-25",
+      data = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0],
         serverInfo: { name: "1C AI Core Settings", version: "0.1.1" },
         capabilities: { tools: {}, resources: {}, experimental: capability, extensions: capability } };
     } else if (message.method === "server/discover") {
-      data = { _meta: { "io.modelcontextprotocol/serverInfo": { name: "1C AI Core Settings", version: "0.1.1" } },
+      data = { supportedVersions: protocols,
+        _meta: { "io.modelcontextprotocol/serverInfo": { name: "1C AI Core Settings", version: "0.1.1" } },
         capabilities: { tools: {}, resources: {}, extensions: {
           "openai/settings": { readTool: "settings.read", updateTool: "settings.update" } } } };
     } else if (message.method === "ping") data = {};
