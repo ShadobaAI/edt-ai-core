@@ -371,6 +371,26 @@ export class SettingsBackend {
           sessionGuidance: session_guidance, reload: "requested", readiness: "not_checked" };
       });
     }
+    if (action === "reset_connection") {
+      if (!["edt", "v8std"].includes(request.connection)) throw new ConfigError("Неизвестное подключение.");
+      return operation_lock(this.STATE, () => {
+        const config = this.current(), root = config.active_project;
+        if (!root) throw new ConfigError("Выберите папку проекта.");
+        const file = instance_file(config, root);
+        if (exists(file)) {
+          const local = load(file);
+          check_schema(local, "project-local.schema.json");
+          if (local.connections?.[request.connection]) {
+            delete local.connections[request.connection].url;
+            if (!Object.keys(local.connections[request.connection]).length) delete local.connections[request.connection];
+          }
+          check_schema(local, "project-local.schema.json");
+          this.effective(config, local);
+          dump(local, file);
+        }
+        return { values: this.values(config) };
+      });
+    }
     if (action === "update") {
       const changes = request.set || {};
       if (
@@ -525,6 +545,7 @@ export class SettingsBackend {
         }
         return saved;
       });
+      remember_profile(this.STATE, config.active_project, profile_state(config.active_project));
       return {
         status: "imported",
         summary,

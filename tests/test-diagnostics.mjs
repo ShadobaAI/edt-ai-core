@@ -6,9 +6,32 @@ import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import http from "node:http";
 import { fixture, environment, session, ROOT } from "./helpers.mjs";
-import { LOG_POLICY, create_diagnostic_logger, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, diagnostic_state } from "../scripts/diagnostics.mjs";
-import { support_bundle } from "../scripts/support_bundle.mjs";
+import { LOG_POLICY, create_diagnostic_logger, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, diagnostic_state, diagnostic_journal } from "../scripts/diagnostics.mjs";
+import { support_bundle, save_support_bundle, saved_support_report } from "../scripts/support_bundle.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
+
+test("the settings journal returns a bounded newest-first window and survives corrupt log records", t => {
+  const f=fixture(t);environment(t,f.env);const logger=create_diagnostic_logger("fixture",f.state);
+  for(let i=0;i<240;i++)logger.event("event-"+i,{index:i,password:"hidden-secret",message:"x".repeat(2000)},i%2?"info":"error");
+  fs.appendFileSync(path.join(f.state,"diagnostics/events.0.jsonl"),'{"unfinished":');
+  const journal=diagnostic_journal(f.state);
+  assert.equal(journal.total,240);assert.equal(journal.truncated,true);
+  assert.ok(journal.events.length<=200);assert.ok(Buffer.byteLength(JSON.stringify(journal.events))<260*1024);
+  assert.equal(journal.events[0].event,"event-239");assert.equal(journal.events[0].detail.password,"[REDACTED]");
+  assert.ok(journal.issues.length);assert.equal(fs.existsSync(path.join(f.state,"runtime")),false);
+});
+
+test("journal events and session metadata stay app-only and remain readable with broken settings", async t => {
+  const f=fixture(t);f.save();fs.writeFileSync(f.env.EDT_AI_SETTINGS,"broken: [");
+  create_diagnostic_logger("fixture",f.state).event("fixture-error",{token:"private-token",message:"ECONNREFUSED"},"error");
+  const client=await session(t,"mcp/settings.mjs",[],f),tools=(await client.request("tools/list")).tools;
+  assert.deepEqual(tools.find(tool=>tool.name==="settings.diagnostics")._meta.ui.visibility,["app"]);
+  const result=await client.call("settings.diagnostics",{}),journal=result._meta.data;
+  assert.equal(result.structuredContent,undefined);assert.doesNotMatch(JSON.stringify(result.content),/fixture-error|ECONNREFUSED|private-token/);
+  assert.ok(journal.events.some(event=>event.event==="fixture-error"));assert.doesNotMatch(JSON.stringify(journal),/private-token/);
+  assert.match(journal.runtime.node,/^v\d/);assert.equal(journal.session.projectRoot,f.root);
+  assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
+});
 
 test("diagnostic storage follows CODEX_HOME, rotates within 2 MiB and expires old events", t => {
   const f = fixture(t); environment(t, f.env);
@@ -85,15 +108,18 @@ test("export is app-only, contains no report in model content and survives corru
   const client = await session(t, "mcp/settings.mjs", [], f);
   const tools = (await client.request("tools/list")).tools;
   assert.deepEqual(tools.find(tool => tool.name === "settings.export_diagnostics")._meta.ui.visibility, ["app"]);
-  assert.equal(tools.filter(tool => /diagnostic/.test(tool.name)).length, 1);
+  assert.deepEqual(tools.find(tool => tool.name === "settings.open_diagnostics_directory")._meta.ui.visibility, ["app"]);
+  assert.equal(tools.find(tool => tool.name === "settings.export_diagnostics").annotations.readOnlyHint, false);
   const opened = await client.call("settings.open", {});
   assert.equal(opened.structuredContent.configurationError, true);
-  const result = await client.call("settings.export_diagnostics", {}), report = JSON.parse(result._meta.data.text);
+  const result = await client.call("settings.export_diagnostics", {}), text = fs.readFileSync(result._meta.data.path, "utf8"), report = JSON.parse(text);
   assert.equal(result.structuredContent, undefined);
   assert.equal(JSON.stringify(result.content).includes(f.root), false);
   assert.equal(report.snapshot.settings.invalid, true);
   assert.equal(report.snapshot.current.unavailable, true);
-  assert.equal(result._meta.data.text.includes("private-unmarked-598213"), false);
+  assert.equal(result._meta.data.text, undefined);
+  assert.equal(text.includes("private-unmarked-598213"), false);
+  assert.equal(JSON.stringify(result.content).includes(f.state), false);
   assert.ok(report.events.some(event => event.event === "settings_unavailable"));
 });
 
@@ -101,11 +127,39 @@ test("an unbound settings app can export without creating a project or preparing
   const f = fixture(t), client = await session(t, "mcp/settings.mjs", [], f, { EDT_AI_PROJECT_ROOT: "" });
   client.roots = [];
   client.notify("notifications/roots/list_changed");
-  const result = await client.call("settings.export_diagnostics", {}), report = JSON.parse(result._meta.data.text);
+  const result = await client.call("settings.export_diagnostics", {}), report = JSON.parse(fs.readFileSync(result._meta.data.path, "utf8"));
   assert.equal(report.snapshot.host.selectedRoot, null);
   assert.equal(report.snapshot.project, undefined);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+});
+
+test("support export writes one real file and a failed replacement preserves the previous report", t => {
+  const f = fixture(t), first = '{"format":"1c-ai-core-diagnostics","sequence":1}';
+  const saved = save_support_bundle(f.state, { text: first });
+  assert.equal(saved.path, path.join(f.state, "diagnostics/exports/1c-ai-core-diagnostics.json"));
+  assert.equal(fs.readFileSync(saved.path, "utf8"), first);
+  const second = '{"format":"1c-ai-core-diagnostics","sequence":2}';
+  assert.equal(save_support_bundle(f.state, { text: second }).path, saved.path);
+  assert.deepEqual(fs.readdirSync(saved.directory), [saved.filename]);
+  const rename = fs.renameSync;
+  fs.renameSync = (from, to) => { if (to === saved.path) throw Object.assign(new Error("Disk unavailable"), { code: "EACCES" }); return rename(from, to); };
+  try { assert.throws(() => save_support_bundle(f.state, { text: first }), /Disk unavailable/); }
+  finally { fs.renameSync = rename; }
+  assert.equal(fs.readFileSync(saved.path, "utf8"), second);
+  assert.deepEqual(fs.readdirSync(saved.directory), [saved.filename]);
+  assert.equal(saved_support_report(f.state).bytes, Buffer.byteLength(second));
+});
+
+test("failed disk export returns an error instead of a prepared-file success", async t => {
+  const f = fixture(t), client = await session(t, "mcp/settings.mjs", [], f);
+  fs.writeFileSync(path.join(f.state, "diagnostics/exports"), "not a directory");
+  const response = await client.request("tools/call", { name: "settings.export_diagnostics", arguments: {} });
+  assert.equal(response.isError, true);
+  assert.equal(response._meta, undefined);
+  assert.equal(saved_support_report(f.state), null);
+  await assert.rejects(client.call("settings.open_diagnostics_directory", {}), /Сначала сохраните/);
+  await assert.rejects(client.call("settings.open_diagnostics_directory", { path: f.base }), /Неизвестное поле/);
 });
 
 test("a logging failure never breaks the operation or prevents support export", async t => {

@@ -75,10 +75,18 @@ another chat before correcting the actual connection problem.
 
 ## Manual settings
 
-Call settings.open when requested. Its “Настройки 1C AI Core” global app entrypoint
-also opens from the host's plugin apps/navigation without a chat. The separate
-openai/settings native layout contributes fields and that App action to plugin
-details when rendered by the host. If it is absent, check discovery; do not claim
+When asked to open settings from a chat, call settings.profile with the known
+directory of this chat as projectRoot, even if settings.inspect already ran.
+This carries scope into the form when its app calls use a separate MCP connection.
+Never use the latest history/log entry as evidence of the current chat's directory.
+It opens the same
+form scoped to this project, without a profile chooser; its thread entrypoint
+is “Настройки проекта”. The app-only settings.open global entrypoint opens the
+full “Настройки” workspace with the user's profile list through Open plugin or
+app navigation. This is the full settings interface; there is no separate
+structured-settings section on the plugin-details page. Removing that section
+does not remove the global entrypoint or the chat's project settings.
+If the app is absent, check discovery; do not claim
 that chat is the only interface or that a successful tool call proves rendering.
 Both interfaces share scope and backend. Skill switches belong to Codex.
 

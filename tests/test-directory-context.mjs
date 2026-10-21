@@ -51,7 +51,7 @@ test("a unique nested canonical profile keeps its own relative paths and rejects
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
 });
 
-test("nested profile selection works through settings and SessionStart without writes", async t => {
+test("nested profile selection remembers the user visit without writing project files or launching runtime", async t => {
   const f = fixture(t), child = path.join(f.root, "nested");
   dump(f.profile, path.join(child, ".ai/project.yaml"));
   const client = await session(t, "mcp/settings.mjs", [], f),
@@ -59,7 +59,10 @@ test("nested profile selection works through settings and SessionStart without w
   assert.equal(view.values.projectRoot, child);
   assert.equal(view.profile.path, path.join(child, ".ai/project.yaml"));
   assert.equal(view.directoryContext.directory, f.root);
-  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), ["projects"]);
+  assert.equal(view.profileHistory[0].projectRoot, child);
+  assert.ok(view.profileHistory[0].lastOpened);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
   const context = success(node("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
   assert.match(context, /directoryContext/);

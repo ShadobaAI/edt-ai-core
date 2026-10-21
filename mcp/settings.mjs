@@ -9,7 +9,7 @@ import { core_version } from "../scripts/compatibility.mjs";
 import { SettingsOperations } from "./settings-operations.mjs";
 import { plugin_icons, component_icons } from "../scripts/icons.mjs";
 import { folder_action } from "../scripts/settings_folder.mjs";
-import { create_diagnostic_logger, register_diagnostic_secrets } from "../scripts/diagnostics.mjs";
+import { create_diagnostic_logger, register_diagnostic_secrets, diagnostic_journal, sanitize_diagnostics } from "../scripts/diagnostics.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const state = process.env.EDT_AI_STATE_DIR || path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "1c-ai-core");
@@ -103,42 +103,7 @@ function readSettings(actual) {
     folderActions: { supported: process.platform === "win32" },
     projectSelection: { status: selectionError ? (pendingRoots ? "pending" : "ambiguous") : selectedRoot ? "selected" : "unselected",
       locked: rootLocked, detail: selectionError },
-    layout: [
-      { kind: "group", title: "Настройки проекта", items: [
-        { kind: "tool", tool: "settings.open" },
-        { kind: "tool", tool: "settings.profile" },
-        { kind: "tool", tool: "settings.import" }, { kind: "tool", tool: "settings.export" },
-        { kind: "property", property: "projectRoot" },
-      ] },
-      { kind: "group", title: "Подключения", items: [
-        { kind: "property", property: "edtUrl" }, { kind: "property", property: "v8stdUrl" },
-        { kind: "tool", tool: "settings.check" },
-        { kind: "tool", tool: "settings.operation" },
-      ] },
-    ],
   };
-}
-function nativeSettings(actual) {
-  const loaded = actual.profile?.status === "loaded";
-  const fields = {
-    selectedProfile: { type: "string", title: "Выбранный профиль", readOnly: true },
-    profileDirectory: { type: "string", title: "Каталог профиля", readOnly: true },
-    profileStatus: { type: "string", title: "Состояние профиля", readOnly: true },
-    sharedSettings: { type: "string", title: "Общие параметры", readOnly: true },
-  };
-  return { schema: { type: "object", properties: fields }, values: {
-    selectedProfile: actual.profile?.projectId || actual.profile?.profileId || "Профиль не выбран",
-    profileDirectory: actual.values.projectRoot || "Выберите каталог в окне профилей",
-    profileStatus: loaded ? `Профиль прочитан · репозиториев: ${actual.profile.repositories?.length || 0}`
-      : actual.profile?.status === "invalid" ? "Ошибка профиля — откройте настройки для исправления" : "Выберите или создайте профиль",
-    sharedSettings: "Версии и программы запуска компонентов общие для пользователя. Подключения и выбор компонентов зависят от каталога и экземпляра.",
-  }, layout: [
-    { kind: "group", title: "Профиль проекта", items: [
-      { kind: "tool", tool: "settings.open" },
-      ...["selectedProfile", "profileDirectory", "profileStatus"].map(property => ({ kind: "property", property })),
-    ] },
-    { kind: "group", title: "Область действия", items: [{ kind: "property", property: "sharedSettings" }] },
-  ] };
 }
 const annotations = (readOnly = true) => ({ readOnlyHint: readOnly, destructiveHint: false, openWorldHint: false });
 const appOnly = { ui: { visibility: ["app"] } };
@@ -153,20 +118,20 @@ const editArguments = {
   baseRevision: { type: "string", minLength: 1, description: "Required in edit mode: exact baseRevision returned by settings.edit." },
 };
 const tools = [
-  { name: "settings.native_read", title: "Сводка настроек", description: "Read the profile-first native settings landing page.",
-    inputSchema: empty, outputSchema: { type: "object", required: ["schema", "values"], properties: { schema: { type: "object" }, values: { type: "object" }, layout: { type: "array" } } }, annotations: annotations(), _meta: appOnly },
   { name: "settings.select_profile", title: "Открыть профиль", description: "Explicitly select a directory in the settings app. Another chat's profile is read-only and never rebinds the current chat.",
     inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.status", title: "Сводное состояние профиля", description: "Passive profile and local daemon observation. Does not launch services or repeat preparation or probes.",
     inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(), _meta: appOnly },
-  { name: "settings.open", title: "Профили и настройки", description: "Open the manual settings form without launching services. Available from plugin apps/navigation and the plugin details page's native settings action.",
-    inputSchema: empty, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "global" }] } } },
+  { name: "settings.reset_connection", title: "Вернуть наследование подключения", description: "Remove this instance's URL override and inherit the next configured source.",
+    inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std"] } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.open", title: "Настройки", description: "Open the full settings workspace with the user's profile list from Open plugin or app navigation. Does not launch services.",
+    inputSchema: empty, annotations: annotations(), _meta: { ui: { resourceUri: resource, visibility: ["app"] }, "openai/ui": { entrypoints: [{ type: "global" }] } } },
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
     inputSchema: inspectInput, annotations: annotations(), _meta: shared },
   { name: "settings.probe_connections", title: "Проверить EDT и v8std", description: "One read-only external connection test, including exact EDT repository paths/readiness when list_projects is exposed. Does not download or launch services. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
     inputSchema: empty, annotations: { ...annotations(), openWorldHint: true }, _meta: shared },
-  { name: "settings.profile", title: "Профиль текущего чата", description: "Open the profile settings screen with directory context. For chat setup use the compact settings.inspect instead; an already loaded profile needs no reload. Does not launch services or borrow another chat's directory.",
-    inputSchema: empty, annotations: annotations(), _meta: appTool },
+  { name: "settings.profile", title: "Настройки проекта", description: "Open settings for this chat's selected profile, without a profile chooser. Always supply this chat's known projectRoot so the form can retain its directory across MCP connections; {} uses host roots when available. Does not reload profiles, launch services or borrow another chat's directory.",
+    inputSchema: inspectInput, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "thread" }] } } },
   ...[["settings.create", "Создать профиль", "Create the generic .ai/project.yaml and missing project instructions in this chat's selected repository, only when the user requests creation. Never overwrites a profile or existing instructions. Repository mappings still need configuration."],
       ["settings.load", "Загрузить профиль", "Validate and reload the existing .ai/project.yaml for this chat's selected repository. Does not import a file or launch services. Report sessionGuidance; if the host does not refresh tools, ask the user to open a new chat in the same directory or restart Codex."]].map(([name, title, description]) => ({
     name, title, description, inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1, description: "Only for an unbound settings screen. A chat's selected root cannot be changed." } }, additionalProperties: false },
@@ -174,7 +139,7 @@ const tools = [
   })),
   { name: "settings.read", title: "Настройки 1C AI Core", description: "Read plugin settings.",
     inputSchema: empty, outputSchema: { type: "object", required: ["schema", "values"],
-      properties: { schema: { type: "object" }, values: { type: "object" }, layout: { type: "array", items: { type: "object" } } } },
+      properties: { schema: { type: "object" }, values: { type: "object" } } },
     annotations: annotations(), _meta: shared },
   { name: "settings.pick_directory", title: "Выбрать папку проекта", description: "Start the native folder picker for an unbound settings screen and return an operation ID immediately. Poll settings.operation; do not repeat to wait. Cancellation leaves the selection unchanged.",
     inputSchema: { type: "object", properties: { projectRoot: { type: "string" } }, additionalProperties: false },
@@ -188,7 +153,7 @@ const tools = [
     annotations: annotations(false), _meta: shared },
   ...[["settings.import", "Открыть импорт"], ["settings.export", "Открыть экспорт"]].map(([name, title]) => ({
     name, title, description: `${title}. This opens the settings screen; it does not import or export by itself.`,
-    inputSchema: empty, annotations: annotations(), _meta: appTool,
+    inputSchema: inspectInput, annotations: annotations(), _meta: appTool,
   })),
   { name: "settings.preview", title: "Проверить файл", description: "Preview settings import without writing.",
     inputSchema: { type: "object", required: ["text"], properties: {
@@ -203,15 +168,21 @@ const tools = [
     annotations: annotations(false), _meta: shared },
   { name: "settings.export_data", title: "Скачать настройки", description: "Export shared settings and tracked profile defaults; instance overrides stay local.",
     inputSchema: empty, annotations: annotations(), _meta: shared },
-  { name: "settings.export_diagnostics", title: "Скачать диагностику", description: "Download a bounded, redacted support report from the settings app only. Works without a profile and during a running operation. Does not contact services or upload data.",
+  { name: "settings.export_diagnostics", title: "Сохранить диагностику", description: "Save a bounded, redacted support report to disk from the settings app only and return its confirmed path in app metadata. Replaces the previous support report. Works without a profile and during a running operation. Does not contact services or upload data.",
+    inputSchema: empty, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.diagnostics", title: "Журнал и диагностика", description: "Read the last 200 sanitized plugin events and local session metadata in the settings app. Works without a profile and during operations. Does not contact or launch services. Log data is app-only metadata.",
     inputSchema: empty, annotations: annotations(), _meta: appOnly },
+  { name: "settings.open_diagnostics_directory", title: "Открыть папку диагностики", description: "Open the directory containing the saved support report from the settings app only. Does not generate a report or accept arbitrary paths.",
+    inputSchema: empty, annotations: annotations(false), _meta: appOnly },
   { name: "settings.edit", title: "Загрузить настройки для редактирования", description: "Read the complete profile and shared runtime document with a baseRevision. Save edits through settings.preview/apply with mode=edit and that baseRevision; omitted runtime fields reset to defaults, unchanged profiles are not rewritten.",
     inputSchema: empty, annotations: annotations(), _meta: shared },
+  { name: "settings.document", title: "Просмотреть документ профиля", description: "Read a history profile document in the settings app without selecting it for chat operations. Does not write or launch services.",
+    inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(), _meta: appOnly },
   { name: "settings.operation", title: "Состояние операции", description: "Read a running or completed settings operation without retrying it. Results belong to this MCP session and include their original project/instance.",
     inputSchema: { type: "object", properties: { operationId: { type: "string" }, waitMs: { type: "integer", minimum: 0, maximum: 10000, description: "Wait for this operation to finish, up to 10 seconds. Prefer a bounded wait over repeated immediate polls." } }, additionalProperties: false },
     annotations: annotations(), _meta: appTool },
   { name: "settings.check", title: "Подготовить и проверить MCP", description: "Open managed runtime preparation and protocol checks. Does not verify EDT/v8std or project behavior.",
-    inputSchema: empty, annotations: { ...annotations(false), openWorldHint: true }, _meta: appTool },
+    inputSchema: inspectInput, annotations: { ...annotations(false), openWorldHint: true }, _meta: appTool },
 ];
 
 function backend(action, args, context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }, readDeadline = 0) {
@@ -263,7 +234,7 @@ const operations = new SettingsOperations(async (action, args, context) => {
   const directory = await folder_action("pick", args.projectRoot || context.selectedDirectory || "");
   if (context.selectionRevision !== selectionRevision) throw new Error("Папка чата изменилась во время выбора. Откройте настройки заново.");
   if (!directory) return { cancelled: true };
-  const data = await backend("read", {}, { selectedDirectory: directory, rootLocked: false });
+  const data = await backend("read", { remember: true }, { selectedDirectory: directory, rootLocked: false });
   if (context.selectionRevision !== selectionRevision) throw new Error("Папка чата изменилась во время выбора. Откройте настройки заново.");
   selectedRoot = data.values.projectRoot;
   selectionRevision += 1;
@@ -276,7 +247,7 @@ function operationSummary() {
 function result(data, text = JSON.stringify(data)) {
   return { content: [{ type: "text", text }], structuredContent: data };
 }
-async function call(name, args) {
+async function call(name, args, meta = {}) {
   if (pendingRoots) await new Promise(resolve => {
     const timer = setTimeout(resolve, 3000);
     rootReady.then(() => { clearTimeout(timer); resolve(); });
@@ -284,23 +255,56 @@ async function call(name, args) {
   const definition = tools.find(item => item.name === name);
   if (!definition) throw new Error("Неизвестный инструмент");
   validateArguments(definition.inputSchema, args);
+  // App calls may use a fresh MCP connection with empty roots. Carry the
+  // invoking chat's explicit scope, never a global last-used profile.
+  const requestedRoot = meta?.["1c-ai-core/projectRoot"] ??
+    (["settings.profile", "settings.import", "settings.export", "settings.check"].includes(name) ? args.projectRoot : undefined);
+  if (requestedRoot !== undefined) {
+    if (operations.status().status === "running" && !selectedRoot) throw new Error("Дождитесь завершения текущей операции перед привязкой проекта.");
+    const selection = explicit_selection({ directory: selectedRoot }, requestedRoot, selectionError);
+    if (selection.directory !== selectedRoot) { selectedRoot = selection.directory; selectionRevision += 1; }
+    rootLocked ||= ["settings.profile", "settings.import", "settings.export", "settings.check"].includes(name) || meta?.["1c-ai-core/navigation"] !== "profiles";
+  }
+  if (name === "settings.document") {
+    const revision = selectionRevision;
+    const document = await backend("edit", {}, { selectedDirectory: args.projectRoot, rootLocked: false });
+    if (revision !== selectionRevision) throw new Error("Папка чата изменилась. Откройте документ заново.");
+    return { content: [{ type: "text", text: "Документ профиля прочитан." }], _meta: { data: document } };
+  }
+  if (name === "settings.diagnostics") {
+    const data = sanitize_diagnostics({ ...diagnostic_journal(state), observedAt: new Date().toISOString(),
+      runtime: { plugin: core_version, node: process.version, platform: process.platform, architecture: process.arch },
+      session: { projectRoot: selectedRoot, instance: process.env.EDT_AI_INSTANCE || "default", locked: rootLocked,
+        selectionError, pendingRoots: Boolean(pendingRoots), operation: operationSummary(), logger: diagnostic.status() },
+      paths: { state, settings: configPath } });
+    return { content: [{ type: "text", text: "Журнал плагина прочитан." }], _meta: { data } };
+  }
   if (name === "settings.export_diagnostics") {
     diagnostic.event("support_export_requested", { projectRoot: selectedRoot });
-    const { support_bundle } = await import("../scripts/support_bundle.mjs");
+    const { support_bundle, save_support_bundle } = await import("../scripts/support_bundle.mjs");
     const context = { selectedDirectory: selectedRoot, rootLocked };
     const data = await support_bundle({ state, configPath, selectedRoot,
       selection: { rootLocked, selectionError, pendingRoots }, operation: operations.status(), loggerStatus: diagnostic.status(),
       readCurrent: () => backend("read", {}, context, 8000) });
-    // File bytes stay in app metadata and never enter model-visible content.
-    return { content: [{ type: "text", text: "Диагностический файл подготовлен." }], _meta: { data } };
+    const saved = save_support_bundle(state, data);
+    diagnostic.event("support_export_saved", { path: saved.path, bytes: saved.bytes });
+    // Only the settings app receives the saved path. File bytes do not cross
+    // the app bridge, and a success response requires a completed disk write.
+    return { content: [{ type: "text", text: "Диагностический файл сохранён." }], _meta: { data: { ...saved, canOpenDirectory: process.platform === "win32" } } };
+  }
+  if (name === "settings.open_diagnostics_directory") {
+    const { saved_support_report } = await import("../scripts/support_bundle.mjs");
+    const saved = saved_support_report(state);
+    if (!saved) throw new Error("Сначала сохраните диагностический файл.");
+    await folder_action("open", saved.directory);
+    return { content: [{ type: "text", text: "Папка диагностики открыта." }] };
   }
   if (name === "settings.operation") {
     await operations.wait(args.operationId, args.waitMs || 0);
     const operation = operations.status(args.operationId);
-    return result({ ...operation, mode: "operation" }, `${operation.status}${operation.id ? " · " + operation.id : ""}${operation.error ? ": " + operation.error : ""}`);
+    return result({ ...operation, mode: "operation", navigation: "project" }, `${operation.status}${operation.id ? " · " + operation.id : ""}${operation.error ? ": " + operation.error : ""}`);
   }
-  const readOnlyEntry = ["settings.inspect", "settings.read", "settings.native_read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.check"].includes(name);
-  if (name === "settings.native_read") return result(nativeSettings(await readValues()));
+  const readOnlyEntry = ["settings.inspect", "settings.read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.check"].includes(name);
   if (name === "settings.status" || name === "settings.select_profile") {
     if (name === "settings.select_profile" && operations.status().status === "running") throw new Error("Дождитесь завершения текущей операции.");
     const revision = selectionRevision, directory = args.projectRoot || selectedRoot;
@@ -308,6 +312,7 @@ async function call(name, args) {
       { selectedDirectory: directory, rootLocked: false });
     if (revision !== selectionRevision) throw new Error("Папка чата изменилась. Выберите профиль заново.");
     const current = rootLocked ? await readValues() : null;
+    if (revision !== selectionRevision) throw new Error("Папка чата изменилась. Выберите профиль заново.");
     const viewOnly = Boolean(selectionError || (rootLocked && actual.values.projectRoot !== current.values.projectRoot));
     if (name === "settings.select_profile" && !viewOnly) { selectedRoot = actual.values.projectRoot; selectionRevision += 1; }
     const view = readSettings(actual);
@@ -366,18 +371,18 @@ async function call(name, args) {
   }
   if (name === "settings.profile" || name === "settings.open") {
     const view = readSettings(await readValues(true));
-    return result({ ...view, mode: "profile" }, JSON.stringify({ profile: view.profile, directoryContext: view.directoryContext, projectRoot: view.values.projectRoot, instance: view.instance, projectSelection: view.projectSelection, sessionGuidance: view.sessionGuidance }));
+    return result({ ...view, mode: "profile", navigation: name === "settings.profile" ? "project" : "profiles" }, JSON.stringify({ profile: view.profile, directoryContext: view.directoryContext, projectRoot: view.values.projectRoot, instance: view.instance, projectSelection: view.projectSelection, sessionGuidance: view.sessionGuidance }));
   }
   if (name === "settings.import" || name === "settings.export" || name === "settings.check") {
     const actual = await readValues();
-    return result({ mode: name.split(".")[1], values: actual.values });
+    return result({ mode: name.split(".")[1], navigation: "project", values: actual.values });
   }
   if (name === "settings.export_data" || name === "settings.edit") {
     if (!selectedRoot) throw new Error("Выберите папку проекта.");
     const data = await backend(name === "settings.edit" ? "edit" : "export", args);
     return { ...result(data), _meta: { data } };
   }
-  const actions = { "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.updates": "updates", "settings.create": "create", "settings.load": "load" };
+  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.updates": "updates", "settings.create": "create", "settings.load": "load" };
   if (!actions[name]) throw new Error("Неизвестный инструмент");
   if (name === "settings.run_check" && !selectedRoot) throw new Error("Выберите папку проекта.");
   // The backend resolves and authorizes the same root immediately before
@@ -471,20 +476,18 @@ async function dispatch(message) {
   try {
     let data;
     if (message.method === "initialize") {
-      const capability = { "openai/settings": { readTool: "settings.native_read", updateTool: "settings.update" } };
       data = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0],
         instructions: "Start chat setup with settings.inspect once; include this chat's known local projectRoot when the host supplied no directory. Reuse its validation, connection sources and nextSteps. Do not reload an already loaded profile, inspect plugin source, spawn substitute relays or restart chats for empty roots. Create only a missing profile on user request. Preparation needs scoped user authorization. Never select another chat's root.",
         serverInfo: { name: "1C AI Core Settings", version: core_version, icons: plugin_icons() },
-        capabilities: { tools: {}, resources: {}, experimental: capability, extensions: capability } };
+        capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "server/discover") {
       data = { resultType: "complete", supportedVersions: protocols,
         _meta: { "io.modelcontextprotocol/serverInfo": { name: "1C AI Core Settings", version: core_version } },
-        capabilities: { tools: {}, resources: {}, extensions: {
-          "openai/settings": { readTool: "settings.native_read", updateTool: "settings.update" } } } };
+        capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "ping") data = {};
     else if (message.method === "tools/list") data = { tools };
     else if (message.method === "tools/call") {
-      try { data = await call(message.params.name, message.params.arguments || {}); }
+      try { data = await call(message.params.name, message.params.arguments || {}, message.params._meta); }
       catch (error) { diagnostic.event("request_failed", { tool: message.params?.name, projectRoot: selectedRoot, error }, "error"); data = { isError: true, content: [{ type: "text", text: error.message }] }; }
     } else if (message.method === "resources/list") {
       data = { resources: [{ uri: resource, name: "Настройки 1C AI Core", mimeType: "text/html;profile=mcp-app" }] };
@@ -492,7 +495,7 @@ async function dispatch(message) {
       data = { contents: [{ uri: resource, mimeType: "text/html;profile=mcp-app",
         text: fs.readFileSync(path.join(root, "ui/settings.html"), "utf8").replaceAll("__CORE_VERSION__", core_version),
         _meta: { ui: { csp: { connectDomains: [], resourceDomains: [] } },
-                 "openai/ui": { availableDisplayModes: ["inline", "fullscreen"], preferredDisplayMode: "fullscreen" } } }] };
+                 "openai/ui": { availableDisplayModes: ["fullscreen"] } } }] };
     } else {
       write({ id: message.id, error: { code: -32601, message: "Method not found" } });
       return;

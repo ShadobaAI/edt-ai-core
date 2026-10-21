@@ -7,16 +7,21 @@ import { is_dir, is_file, path_identity, project_directory, record_project_owner
 // User state survives plugin upgrades. Never scan unrelated project directories.
 export function remember_profile(state, root, profile) {
   if (!root || profile?.status !== "loaded") return;
-  record_project_owner(state, root);
-  atomic_write(path.join(project_directory(state, root), "profile-history.json"), JSON.stringify({
-    root: path_identity(root), lastOpened: new Date().toISOString(),
-    profileId: profile.profileId, projectId: profile.projectId, repositoryCount: profile.repositories.length,
-  }));
+  // History failure must not turn an already saved profile into a failed operation.
+  try {
+    record_project_owner(state, root);
+    atomic_write(path.join(project_directory(state, root), "profile-history.json"), JSON.stringify({
+      root: path_identity(root), lastOpened: new Date().toISOString(),
+      profileId: profile.profileId, projectId: profile.projectId, repositoryCount: profile.repositories.length,
+    }));
+  } catch { return false; }
+  return true;
 }
 
 export function profile_history(state, selectedRoot = null) {
   const projects = path.join(state, "projects"), records = new Map();
-  for (const entry of fs.existsSync(projects) ? fs.readdirSync(projects, { withFileTypes: true }) : []) {
+  let directories=[];try { directories=fs.readdirSync(projects, { withFileTypes: true }); } catch {}
+  for (const entry of directories) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const home = path.join(projects, entry.name);
     let owner, visit = {};
@@ -24,8 +29,11 @@ export function profile_history(state, selectedRoot = null) {
     catch { try { owner = JSON.parse(fs.readFileSync(path.join(home, "code-index/owner.json"), "utf8")).project_root; } catch {} }
     if (typeof owner !== "string" || !path.isAbsolute(owner)) continue;
     try { visit = JSON.parse(fs.readFileSync(path.join(home, "profile-history.json"), "utf8")); } catch {}
-    const item = { projectRoot: owner, lastOpened: visit.root === owner ? visit.lastOpened || null : null,
-      projectId: visit.projectId, profileId: visit.profileId, repositoryCount: visit.repositoryCount || 0 };
+    if (!visit || typeof visit !== "object" || visit.root !== owner) visit = {};
+    const item = { projectRoot: owner, lastOpened: typeof visit.lastOpened === "string" && Number.isFinite(Date.parse(visit.lastOpened)) ? visit.lastOpened : null,
+      projectId: typeof visit.projectId === "string" ? visit.projectId : null,
+      profileId: typeof visit.profileId === "string" ? visit.profileId : null,
+      repositoryCount: Number.isInteger(visit.repositoryCount) && visit.repositoryCount >= 0 ? visit.repositoryCount : 0 };
     try {
       const profile = !is_dir(owner) ? { status: "unavailable" }
         : !is_file(path.join(owner, ".ai/project.yaml")) ? { status: "missing" } : profile_state(owner);

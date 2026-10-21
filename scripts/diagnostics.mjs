@@ -121,3 +121,20 @@ export function read_diagnostic_logs(state = diagnostic_state()) {
   // The ring bounds bytes; avoid an unbounded array in a malformed local file.
   return { events: events.sort((a, b) => String(a.time).localeCompare(String(b.time))), issues: [...new Set(issues)] };
 }
+
+// A lightweight, bounded window for the settings journal. This does not build
+// an export, read configuration/source files or contact any runtime.
+export function diagnostic_journal(state = diagnostic_state()) {
+  let logs;
+  try { logs = read_diagnostic_logs(state); }
+  catch (error) { logs = { events: [], issues: [error.code || error.name] }; }
+  const events = [], byteLimit = 256 * 1024;
+  let bytes = 0;
+  for (const event of logs.events.slice(-200).reverse()) {
+    const size = Buffer.byteLength(JSON.stringify(event));
+    if (bytes + size > byteLimit) break;
+    events.push(event); bytes += size;
+  }
+  return { events, issues: logs.issues, total: logs.events.length,
+    truncated: events.length < logs.events.length, policy: LOG_POLICY };
+}

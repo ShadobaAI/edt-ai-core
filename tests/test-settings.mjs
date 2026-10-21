@@ -194,7 +194,7 @@ test("exported JSON settings import into another repository and keep local overr
   assert.equal((await backend.main({ action: "read" })).values.edtUrl, "");
 });
 
-test("native settings discovery negotiates legacy sessions and refuses stateless calls before configuration", async (t) => {
+test("settings discovery negotiates legacy sessions and refuses stateless calls before configuration", async (t) => {
   const f = fixture(t),
     client = await session(t, "mcp/settings.mjs", [], f);
   const read = (await client.call("settings.read", {})).structuredContent;
@@ -202,11 +202,12 @@ test("native settings discovery negotiates legacy sessions and refuses stateless
   assert.equal(read.preparationScope, f.root + "#first");
   assert.equal(read.schema.properties.projectRoot.readOnly, true);
   const discovery = await client.request("server/discover");
-  assert.ok(discovery.capabilities.extensions["openai/settings"]);
+  assert.equal(discovery.capabilities.extensions?.["openai/settings"], undefined);
   const modernProbe = await client.request("server/discover", {
       _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
     });
   assert.equal(modernProbe.resultType, "complete");
+  assert.equal(modernProbe.capabilities.extensions?.["openai/settings"], undefined);
   assert.ok(modernProbe.supportedVersions.includes("2025-11-25"));
   await assert.rejects(
     client.request("tools/list", { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } }),
@@ -226,27 +227,50 @@ test("native settings discovery negotiates legacy sessions and refuses stateless
   }
   assert.ok(!fs.existsSync(path.join(f.state, "settings.json")));
 });
-test("native settings open their manual App without a chat or selected project", async (t) => {
+test("one global Settings app opens without a duplicate native section, chat or selected project", async (t) => {
   const f = fixture(t);
   const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
   f.clients.push(client);
   const discovery = await client.request("server/discover", { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } });
   assert.equal(discovery.resultType, "complete");
-  await client.request("initialize", { protocolVersion: discovery.supportedVersions[0], capabilities: {} });
-  const capability = discovery.capabilities.extensions["openai/settings"];
-  const read = (await client.call(capability.readTool, {})).structuredContent;
+  const initialized = await client.request("initialize", { protocolVersion: discovery.supportedVersions[0], capabilities: {} });
+  assert.equal(discovery.capabilities.extensions?.["openai/settings"], undefined);
+  assert.equal(initialized.capabilities.extensions?.["openai/settings"], undefined);
+  assert.equal(initialized.capabilities.experimental?.["openai/settings"], undefined);
+  const read = (await client.call("settings.read", {})).structuredContent;
   assert.equal(read.values.projectRoot, "");
-  assert.ok(read.layout.flatMap(group => group.items).some(item => item.tool === "settings.open"));
+  assert.equal(read.layout, undefined);
   const tools = (await client.request("tools/list")).tools;
+  assert.equal(tools.some(tool => ["settings.native_read", "settings.manage"].includes(tool.name)), false);
   const action = tools.find(tool => tool.name === "settings.open");
+  assert.equal(action.title, "Настройки");
+  assert.deepEqual(tools.filter(tool => tool._meta?.["openai/ui"]?.entrypoints?.some(entry => entry.type === "global")).map(tool => tool.name), [action.name]);
   assert.deepEqual(action._meta["openai/ui"].entrypoints, [{ type: "global" }]);
+  assert.deepEqual(action._meta.ui.visibility, ["app"]);
+  assert.deepEqual(tools.find(tool => tool.name === "settings.profile")._meta["openai/ui"].entrypoints, [{ type: "thread" }]);
   assert.deepEqual(action.inputSchema.properties, {});
   const opened = (await client.call(action.name, {})).structuredContent;
   assert.equal(opened.mode, "profile");
+  assert.equal(opened.navigation, "profiles");
+  assert.equal((await client.call("settings.profile", {})).structuredContent.navigation, "project");
   const resource = await client.request("resources/read", { uri: action._meta.ui.resourceUri });
   assert.match(resource.contents[0].text, /id="editSettingsButton"/);
-  assert.ok(resource.contents[0]._meta["openai/ui"].availableDisplayModes.includes("fullscreen"));
+  assert.deepEqual(resource.contents[0]._meta["openai/ui"].availableDisplayModes,["fullscreen"]);
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
+});
+
+test("the global Settings app stays available when settings or the project profile are broken", async (t) => {
+  const f = fixture(t); f.save();
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS, "invalid settings JSON");
+  fs.writeFileSync(path.join(f.root, ".ai/project.yaml"), "project: [invalid");
+  const before = fs.readFileSync(f.env.EDT_AI_SETTINGS);
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const tools = (await client.request("tools/list")).tools;
+  const app = tools.find(tool => tool._meta?.["openai/ui"]?.entrypoints?.some(entry => entry.type === "global"));
+  const opened = (await client.call(app.name, {})).structuredContent;
+  assert.equal(opened.navigation, "profiles");
+  assert.equal(opened.configurationError, true);
+  assert.deepEqual(fs.readFileSync(f.env.EDT_AI_SETTINGS), before);
 });
 
 test("manual editing resets removed runtime fields and preserves the unchanged profile bytes", async (t) => {
@@ -690,7 +714,7 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     client.call("settings.update", { set: { edtUrl: "x" } }),
     /ещё выполняется/,
   );
-  const report = JSON.parse((await client.call("settings.export_diagnostics", {}))._meta.data.text);
+  const report = JSON.parse(fs.readFileSync((await client.call("settings.export_diagnostics", {}))._meta.data.path, "utf8"));
   assert.equal(report.snapshot.host.operation.id, operation.id);
   assert.equal(report.snapshot.host.operation.status, "running");
   let completed;

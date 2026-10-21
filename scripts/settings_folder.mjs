@@ -22,13 +22,14 @@ export function folder_action(action, directory = "") {
 
 export function windows_folder_api() {
   const koffi = createRequire(import.meta.url)(fileURLToPath(new URL(`../vendor/native/win32_${process.arch}/koffi.node`, import.meta.url)));
-  const ole = koffi.load("ole32.dll"), shell = koffi.load("shell32.dll");
+  const ole = koffi.load("ole32.dll"), shell = koffi.load("shell32.dll"), user = koffi.load("user32.dll");
   const init = ole.func("int32_t __stdcall CoInitializeEx(void *reserved, uint32_t flags)"),
     uninit = ole.func("void __stdcall CoUninitialize()"),
     free = ole.func("void __stdcall CoTaskMemFree(void *memory)"),
     create = ole.func("int32_t __stdcall CoCreateInstance(const void *clsid, void *outer, uint32_t context, const void *iid, _Out_ void **object)"),
     itemFromPath = shell.func("int32_t __stdcall SHCreateItemFromParsingName(str16 path, void *context, const void *iid, _Out_ void **item)"),
-    open = shell.func("intptr_t __stdcall ShellExecuteW(void *owner, str16 operation, str16 file, str16 parameters, str16 directory, int show)");
+    open = shell.func("intptr_t __stdcall ShellExecuteW(void *owner, str16 operation, str16 file, str16 parameters, str16 directory, int show)"),
+    foreground = user.func("void * __stdcall GetForegroundWindow()");
   const guid = text => {
     const hex = text.replaceAll("-", ""), data = Buffer.from(hex, "hex");
     data.writeUInt32LE(parseInt(hex.slice(0, 8), 16), 0);
@@ -73,7 +74,9 @@ export function windows_folder_api() {
       } catch (error) { release(dialog[0]); uninit(); throw error; }
       return {
         show() {
-          const code = method(dialog[0], 3, "int32_t", ["void *"], null);
+          // The MCP worker has no window of its own. Give the modal picker the
+          // active host window as its owner so Windows can activate it.
+          const code = method(dialog[0], 3, "int32_t", ["void *"], foreground());
           if ((code >>> 0) === 0x800704c7) return null; // user cancelled
           checked(code);
           const item = [null], name = [null];

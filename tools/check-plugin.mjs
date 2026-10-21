@@ -162,25 +162,43 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       const client = new McpClient([node, ...args], temp, env, 20);
       client.roots = [];
       try {
-        assert.ok((await client.initialize()).serverInfo);
+        const initialized = await client.initialize();
+        assert.ok(initialized.serverInfo);
         const tools = (await client.request("tools/list")).tools;
         assert.ok(tools.length);
         if (name === "1c-ai-settings") {
           const app = tools.find(tool => tool.name === "settings.open");
+          assert.equal(app.title, "Настройки");
           assert.deepEqual(app._meta["openai/ui"].entrypoints, [{ type: "global" }]);
+          assert.equal(initialized.capabilities.extensions?.["openai/settings"], undefined);
+          assert.equal(initialized.capabilities.experimental?.["openai/settings"], undefined);
+          const discovery = await client.request("server/discover");
+          assert.equal(discovery.capabilities.extensions?.["openai/settings"], undefined);
+          assert.equal(tools.some(tool => ["settings.native_read", "settings.manage"].includes(tool.name)), false);
+          assert.equal((await client.call(app.name, {})).structuredContent.navigation, "profiles");
+          assert.deepEqual(tools.find(tool => tool.name === "settings.profile")._meta["openai/ui"].entrypoints, [{ type: "thread" }]);
           assert.ok(tools.some(tool => tool.name === "settings.inspect"));
           assert.ok(tools.some(tool => tool.name === "settings.probe_connections"));
           assert.deepEqual(tools.find(tool => tool.name === "settings.export_diagnostics")._meta.ui.visibility, ["app"]);
           const support = await client.call("settings.export_diagnostics", {});
           assert.equal(support.structuredContent, undefined);
-          assert.equal(JSON.parse(support._meta.data.text).format, "1c-ai-core-diagnostics");
+          assert.equal(JSON.parse(fs.readFileSync(support._meta.data.path, "utf8")).format, "1c-ai-core-diagnostics");
+          assert.equal(support._meta.data.text, undefined);
           const resource = await client.request("resources/read", { uri: app._meta.ui.resourceUri });
-          assert.ok(resource.contents[0]._meta["openai/ui"].availableDisplayModes.includes("fullscreen"));
+          assert.deepEqual(resource.contents[0]._meta["openai/ui"].availableDisplayModes,["fullscreen"]);
           const before = (await client.call("settings.read", {}))
             .structuredContent;
           assert.equal(before.values.projectRoot, "");
+          assert.equal(before.layout, undefined);
+          for (const id of ["settings.select_profile", "settings.status", "settings.reset_connection"])
+            assert.deepEqual(tools.find(tool => tool.name === id)._meta.ui.visibility, ["app"]);
           const inspected = (await client.call("settings.inspect", { projectRoot: project })).structuredContent;
           assert.equal(inspected.profile.status, "loaded");
+          const selected = (await client.call("settings.select_profile", { projectRoot: project })).structuredContent;
+          assert.equal(selected.viewOnly, false);
+          const observed = (await client.call("settings.status", {})).structuredContent;
+          assert.equal(observed.profileHistory[0].projectRoot, project);
+          assert.ok(observed.summary.observedAt);
           const preview = (
             await client.call("settings.preview", {
               text: yaml,
