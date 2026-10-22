@@ -115,8 +115,8 @@ test("the directory picker binds the canonical project without writes and discar
   assert.equal(progress.action, "pick_directory");
   assert.equal(progress.status, "running");
   assert.equal((await client.call("settings.read", {})).structuredContent.operation.id, pending.id);
-  await assert.rejects(client.call("settings.update", { set: { projectRoot: other } }), /завершения выбора/);
-  await assert.rejects(client.call("settings.run_check", { authorization: { scope: f.root + "#first", effects: ["launch"], evidence: "fixture" } }), /завершения выбора/);
+  await assert.rejects(client.call("settings.update", { set: { projectRoot: other } }), /Завершите или отмените выбор папки/);
+  await assert.rejects(client.call("settings.run_check", { authorization: { scope: f.root + "#first", effects: ["launch"], evidence: "fixture" } }), /Завершите или отмените выбор папки/);
   client.roots = [{ uri: pathToFileURL(other).href }]; client.notify("notifications/roots/list_changed");
   assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, other);
   fs.writeFileSync(released, "");
@@ -141,7 +141,9 @@ test("chat profile tools discover the selected profile and preserve instructions
   const created = (await client.call("settings.create", {})).structuredContent;
   assert.equal(created.profile.status, "loaded");
   assert.equal(created.values.edtUrl, "http://localhost:18111/mcp");
-  assert.match(created.sessionGuidance, /core_runtime_status/);
+  assert.match(created.sessionGuidance, /сообщите агенту путь к его папке/);
+  assert.match(created.sessionGuidance, /«Проверить готовность»/);
+  assert.doesNotMatch(created.sessionGuidance, /selectedDirectory|projectRoot|core_runtime_status|roots/);
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), "Existing project rules\n");
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
   const profileFile = path.join(f.root, ".ai/project.yaml"), before = fs.readFileSync(profileFile);
@@ -600,7 +602,7 @@ test("host roots can change; ambiguous/empty roots never borrow the previous pro
   client.notify("notifications/roots/list_changed");
   await assert.rejects(
     client.call("settings.update", { set: { edtUrl: "http://localhost/mcp" } }),
-    /каталог/,
+    /Не удалось однозначно определить папку проекта/,
   );
   client.roots = [];
   client.notify("notifications/roots/list_changed");

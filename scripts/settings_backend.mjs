@@ -49,7 +49,7 @@ import {
   instance_file,
   instance_files,
 } from "./project_context.mjs";
-import { managed_components, component_enabled, grant_preparation } from "./components.mjs";
+import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion } from "./directory_context.mjs";
 import { profile_history, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness } from "./setup_readiness.mjs";
@@ -74,7 +74,7 @@ const restore = (file, previous) => {
 };
 export const preparation_scope = (root) =>
   root ? `${root}#${instance_name()}` : null;
-export const session_guidance = "Профиль подхватывается автоматически. Если selectedDirectory пуст, передайте известную папку текущего чата в projectRoot инструмента core_runtime_status каждого нужного подключения. Это привязка только его MCP-сессии. Новый чат не исправляет пустые roots. Подготовка MCP запускается отдельно.";
+export const session_guidance = "Профиль определяется по папке текущего чата. Если подключения не видят проект, сообщите агенту путь к его папке в этом чате. Привязка подключений к проекту действует только в текущем чате. Для подготовки сервисов нажмите «Проверить готовность».";
 export function authorize_preparation(request, root) {
   const auth = request.authorization;
   if (
@@ -213,7 +213,7 @@ export class SettingsBackend {
     if (editing && request.baseRevision !== this.edit_revision())
       throw new ConfigError("Настройки изменились после загрузки в редактор. Загрузите их заново.");
     if (!editing && request.baseRevision !== undefined)
-      throw new ConfigError("Ревизия редактора применима только в режиме edit.");
+      throw new ConfigError("Проверка версии документа доступна только при сохранении из редактора.");
     let config = this.current(),
       imported = null;
     const previous = config.active_project,
@@ -239,7 +239,7 @@ export class SettingsBackend {
             Object.keys(changes.mcp).some(key => !["managed", "optional"].includes(key)) ||
             !object(changes.mcp.managed) || !object(changes.mcp.optional) ||
             !Object.hasOwn(data, "profile"))
-          throw new ConfigError("Редактор принимает профиль и полные разделы managed/optional. Подключения экземпляра изменяются отдельно.");
+          throw new ConfigError("Документ должен содержать профиль и полные настройки управляемых и дополнительных компонентов. Адреса подключений изменяются на вкладке «Подключения».");
         if (request.projectRoot !== undefined &&
             (!request.projectRoot || configuration_root(request.projectRoot) !== config.active_project))
           throw new ConfigError("Редактор относится к другой папке. Загрузите настройки заново.");
@@ -336,6 +336,7 @@ export class SettingsBackend {
       return probe_connections(config, root, project_profile(root));
     }
     if (action === "read" || action === "status") {
+      const { installed_versions } = await import("./runtime.mjs");
       const config = this.current(true), profile = profile_state(config.active_project);
       // A broken profile must not prevent opening its repair/import screen.
       const [effective, sources] = ["invalid", "ambiguous"].includes(profile.status)
@@ -351,20 +352,22 @@ export class SettingsBackend {
       const directoryContext = directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project);
       const profileDirectoryContext = config.active_project && directoryContext?.directory !== config.active_project
         ? directory_context(config.active_project) : directoryContext;
+      const readiness = await read_readiness(this.STATE, effective, profile);
       return {
         values: actual,
+        installedVersions: installed_versions(this.STATE, config.active_project),
         profile,
         directoryContext,
         profileDirectoryContext,
         edtPortSuggestion: edt_port_suggestion(actual.edtUrl, profileDirectoryContext?.edt?.connection),
-        readiness: await read_readiness(this.STATE, effective, profile),
+        readiness,
         sessionGuidance: session_guidance,
         instance: instance_name(),
         connectionSources: sources,
         preparationScope: preparation_scope(actual.projectRoot),
         legacyState: legacy,
         profileHistory: profile_history(this.STATE, actual.projectRoot),
-        summary: await profile_summary(this.STATE, effective, profile),
+        summary: await profile_summary(this.STATE, effective, profile, readiness),
       };
     }
     if (["create", "load"].includes(action)) {
@@ -656,17 +659,24 @@ export class SettingsBackend {
       grant_preparation(this.STATE, root, ["code-index"]);
       return runtime.rebuild_index(this.STATE, config, root, data, request.repository);
     }
-    if (action === "check") {
+    if (action === "check" || action === "refresh_readiness") {
       const runtime = await import("./runtime.mjs"),
         policy = await import("./policy_runtime.mjs");
       const config = this.effective(this.current()),
         [root, data] = runtime.project(config.active_project, config, component_enabled(config, "code-index"));
-      authorize_preparation(request, root);
-      grant_preparation(this.STATE, root, managed_components.filter(component => component_enabled(config, component)));
-      const managed = [];
-      for (const component of managed_components) {
-        if (!component_enabled(config, component)) { managed.push({ name: component, ready: true, state: "disabled", detail: "Компонент отключён; установка и запуск пропущены." }); continue; }
+      const automatic = action === "refresh_readiness";
+      if (automatic) {
+        if (request.scope !== preparation_scope(root)) throw new ConfigError("Проверка относится к другой папке или экземпляру.");
+      } else {
+        authorize_preparation(request, root);
+        grant_preparation(this.STATE, root, managed_components.filter(component => component_enabled(config, component)));
+      }
+      const check_component = async component => {
+        if (!component_enabled(config, component)) return { name: component, ready: true, state: "disabled", detail: "Компонент отключён; установка и запуск пропущены." };
         try {
+          // Opening a profile reuses the launch permission for this exact
+          // project and instance; it never grants one or installs a runtime.
+          if (automatic && component_settings(config, component).mode !== "external") require_preparation(this.STATE, root, component);
           const item = await runtime.smoke(
               this.STATE,
               config,
@@ -675,47 +685,60 @@ export class SettingsBackend {
               component,
               90,
               request.refresh === true,
+              null,
+              !automatic,
             ),
             ready = item.index_ready !== false;
-          managed.push({
+          return {
             name: component,
             ready,
             state: ready ? "ready" : item.index_state || "not_checked",
-            ...(item.index ? { repositories: item.index.repositories } : {}),
+            ...(item.index ? { repositories: item.index.repositories, ...(item.index.retryable ? { retryable: true, detail: "Индекс найден; сервис ещё не подтвердил актуальность данных." } : {}) } : {}),
             version: item.server?.version,
-          });
+          };
         } catch (error) {
           const busy = error.message.includes("Another runtime operation");
-          managed.push({
+          return {
             name: component,
             ready: false,
             state: busy ? "preparing" : "error",
             detail: busy ? "Подготовка окружения выполняется…" : error.message,
-          });
+          };
         }
-      }
-      try {
+      };
+      const check_policy = async () => { try {
         const item = await policy.smoke(config);
-        managed.push({
+        return {
           name: "policy",
           ready: true,
           state: "ready",
           version: item.server.version,
-        });
+        };
       } catch (error) {
-        managed.push({
+        return {
           name: "policy",
           ready: false,
           state: "error",
           detail: error.message,
-        });
-      }
-      atomic_write(
-        reconnect_file(this.STATE, root),
-        JSON.stringify({ id: randomUUID() }),
-      );
+        };
+      } };
       const { probe_connections } = await import("./setup_probe.mjs");
-      const { external } = await probe_connections(config, root, data);
+      let managed, external;
+      if (automatic) {
+        // Independent observations run together; opening a profile must not
+        // wait for each managed process and then every external connection.
+        const [checks, probes] = await Promise.all([
+          Promise.all([...managed_components.map(check_component), check_policy()]),
+          probe_connections(config, root, data),
+        ]);
+        managed = checks; external = probes.external;
+      } else {
+        managed = [];
+        for (const component of managed_components) managed.push(await check_component(component));
+        managed.push(await check_policy());
+        atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
+        ({ external } = await probe_connections(config, root, data));
+      }
       const readiness = save_readiness(this.STATE, config, data, managed, external);
       return {
         managed,

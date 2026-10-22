@@ -392,6 +392,67 @@ test("installation uses one authorized operation for the selected component", as
   }
 });
 
+test("installation is disabled for the verified active version and latest resolves independently of prereleases", async () => {
+  for(const component of ["code-index","bsl-ls"]){
+    const field=component==="bsl-ls"?"bslLsVersion":"codeIndexVersion";
+    let finish,installed="v1.0.7";
+    const ui=screen(async(name,args)=>{
+      if(name==="settings.read"||name==="settings.status")return {...read,values:{...read.values,[field]:"latest"},installedVersions:{[component]:installed}};
+      if(name==="settings.versions"){
+        assert.equal(args.component,component);
+        return new Promise(resolve=>{finish=()=>resolve({component,latest:"v1.0.7",versions:[{version:"v2.0.0-rc.1",prerelease:true},{version:"v1.0.7"},{version:"1.0.7"}]});});
+      }
+      throw new Error(name);
+    });await ui.flush();ui.elements.get("updateComponent").value=component;ui.elements.get("updateComponent").events.change();
+    const pending=ui.elements.get("versionButton").onclick();await ui.flush();
+    assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+    finish();await pending;
+    assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+    assert.match(ui.elements.get("installHint").textContent,/latest: v1\.0\.7/);
+    assert.match(ui.elements.get("installUpdateButton").title,/уже установлена/);
+    const choose=async version=>{
+      if(ui.elements.get("versionPopup").hidden)await ui.elements.get("versionButton").onclick();
+      await ui.elements.get("versionOptions").children.find(option=>option.textContent===version).onclick();
+    };
+    await choose("v1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+    await choose("1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+    await choose("v2.0.0-rc.1");assert.equal(ui.elements.get("installUpdateButton").disabled,false);
+    installed="v2.0.0-rc.1";await ui.tick(8000);
+    assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+    await ui.elements.get("installUpdateButton").onclick();
+    assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,0);
+    await choose("latest");assert.equal(ui.elements.get("installUpdateButton").disabled,false);
+  }
+});
+
+test("an unresolved latest keeps installation disabled while exact versions remain usable", async () => {
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,installedVersions:{"code-index":"v1.0.0"}};
+    if(name==="settings.versions")return {component:args.component,versions:[{version:"v1.0.0"},{version:"v2.0.0"}],latest:null,latestError:"HTTP 503"};
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();
+  assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+  assert.match(ui.elements.get("installHint").textContent,/Не удалось определить latest/);
+  await ui.elements.get("versionOptions").children.find(option=>option.textContent==="v2.0.0").onclick();
+  assert.equal(ui.elements.get("installUpdateButton").disabled,false);
+});
+
+test("an inconsistent saved pin can be repaired by installing the working version", async () => {
+  let saved="v2.0.0";
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,values:{...read.values,codeIndexVersion:saved},installedVersions:{"code-index":"v1.0.0"}};
+    if(name==="settings.versions")return {component:args.component,latest:"v2.0.0",versions:[{version:"v1.0.0"},{version:"v2.0.0"}]};
+    if(name==="settings.updates"){assert.equal(args.version,"v1.0.0");return {id:"repair-pin",status:"running"};}
+    if(name==="settings.operation"){saved="v1.0.0";return {id:"repair-pin",action:"updates",status:"completed",result:{component:"code-index",state:"applied",requested:saved,release:saved}};}
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();
+  await ui.elements.get("versionOptions").children.find(option=>option.textContent==="v1.0.0").onclick();
+  assert.equal(ui.elements.get("installUpdateButton").disabled,false);
+  assert.match(ui.elements.get("installHint").textContent,/настройка отличается/);
+  await ui.elements.get("installUpdateButton").onclick();assert.equal(saved,"v1.0.0");
+  assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+});
+
 test("the catalog refresh icon preserves search and selection, bypasses cache and shares an in-flight request", async () => {
   let calls=0,finish;
   const ui=screen(async(name,args)=>{
@@ -684,7 +745,7 @@ test("a locked project remains locked and preparation polling does not restart i
   assert.match(ui.elements.get("status").textContent, /Сводка обновляется автоматически/);
   const contents = element => [element.textContent, ...element.children.map(contents)].join(" ");
   const lines = contents(ui.elements.get("connections"));
-  assert.match(lines, /MCP и workspace API доступны/);
+  assert.match(lines, /Подключение к BSL LS и работа с проектами доступны/);
   assert.match(lines, /тестовых данных/);
 });
 
@@ -1027,6 +1088,229 @@ test("opening, selecting and reloading a profile render its service status immed
   assert.equal(ui.calls.filter(call => ["settings.status", "settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
 });
 
+test("opening and observing a profile keep managed status and service results consistent", async () => {
+  let stale = false,projectRoot=read.values.projectRoot;
+  const ui = screen(async (name,args) => {
+    if(name==="settings.refresh_readiness")return {id:"observe",action:"refresh_readiness",status:"running"};
+    if(name==="settings.operation")return {id:"observe",action:"refresh_readiness",projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};
+    assert.ok(["settings.read", "settings.status", "settings.select_profile"].includes(name));
+    if(name==="settings.select_profile"){projectRoot=args.projectRoot;stale=false;}
+    return { ...read, values: { ...read.values, projectRoot, bslLsEnabled: true }, readiness: {
+      state: stale ? "stale" : "ready", checkedAt: "2026-10-22T12:00:00Z",
+      checks: [{ id: "code-index", label: "Индекс кода", state: "ready", repositories: [{ edtProject: "Product", state: "ready" }] }, { id: "bsl-ls", label: "BSL LS", state: "ready" }],
+    }, summary: { observedAt: "2026-10-22T12:00:00Z", components: [
+      { id: "code-index", status: stale ? "stopped" : "ready", ...(!stale?{checkedAt:"2026-10-22T12:00:00Z"}:{}) },
+      { id: "bsl-ls", status: stale ? "check_stale" : "ready", checkedAt: "2026-10-22T12:00:00Z" },
+    ] } };
+  });
+  const contents = node => [node.textContent, ...node.children.map(contents)].join(" ");
+  await ui.flush();
+  assert.equal(ui.elements.get("indexSummary").textContent, "Индекс актуален");
+  assert.equal(ui.elements.get("bslSummary").textContent, "API доступен");
+  assert.equal(ui.elements.get("connections").hidden, false);
+  assert.match(contents(ui.elements.get("connections")), /API доступен/);
+  assert.match(contents(ui.elements.get("connections")), /Product: готов/);
+  const detail=ui.elements.get("connections").children[1];detail.open=true;
+  await ui.tick(8000);assert.equal(ui.elements.get("connections").children[1],detail);
+  stale = true; await ui.tick(8000);
+  assert.equal(ui.elements.get("indexSummary").textContent, "Не запущен");
+  assert.equal(ui.elements.get("bslSummary").textContent, "Проверка устарела");
+  assert.doesNotMatch(contents(ui.elements.get("connections")), /API доступен|Индекс актуален/);
+  assert.doesNotMatch(contents(ui.elements.get("connections")), /Product: готов/);
+  assert.match(contents(ui.elements.get("connections")), /Проверка устарела/);
+  assert.equal(ui.elements.get("connections").children[1].open,true);
+  await ui.context.selectProfile("C:/fixture/other");
+  assert.equal(ui.elements.get("bslSummary").textContent,"API доступен");
+  assert.equal(ui.elements.get("connections").children[1].open,false);
+  assert.equal(ui.calls.filter(call=>["settings.run_check","settings.probe_connections"].includes(call.params?.name)).length,0);
+});
+
+test("loading, selecting and reloading profiles run live readiness checks without a button click", async () => {
+  let projectRoot=read.values.projectRoot,verified=false,checks=0,release;
+  const snapshot=()=>({...read,values:{...read.values,projectRoot},preparationScope:projectRoot+"#default",instance:"default",
+    readiness:{state:verified?"ready":"stale",checks:[]},summary:{components:[{id:"code-index",status:verified?"ready":"stopped"},{id:"bsl-ls",status:verified?"ready":"check_stale"}]}});
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return snapshot();
+    if(name==="settings.refresh_readiness"){checks++;assert.equal(args.scope,projectRoot+"#default");assert.equal(args.authorization,undefined);return {id:"observe-"+checks,action:"refresh_readiness",status:"running"};}
+    if(name==="settings.operation"){await new Promise(resolve=>{release=resolve;});verified=true;return {id:args.operationId,action:"refresh_readiness",projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};}
+    if(name==="settings.select_profile"){projectRoot=args.projectRoot;verified=false;return snapshot();}
+    if(name==="settings.load"){verified=false;return {};}
+    throw new Error(name);
+  });
+  await ui.flush();assert.equal(checks,1);assert.match(ui.elements.get("readinessTitle").textContent,/Обновляем готовность/);
+  release();await ui.flush();
+  assert.equal(ui.elements.get("indexSummary").textContent,"Индекс актуален");assert.equal(ui.elements.get("bslSummary").textContent,"API доступен");
+  assert.match(ui.elements.get("readinessTitle").textContent,/можно начинать работу/);
+  await ui.tick(8000);await ui.tick(8000);assert.equal(checks,1);
+  const selected=ui.context.selectProfile("C:/fixture/other");await ui.flush();assert.equal(checks,2);release();await selected;
+  const reloaded=ui.elements.get("loadButton").onclick();await ui.flush();assert.equal(checks,3);release();await reloaded;
+  ui.document.hidden=true;ui.documentEvents.visibilitychange();ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.flush();assert.equal(checks,4);release();await ui.flush();
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,0);
+});
+
+test("automatic readiness defers drafts, skips viewed profiles and follows an existing check", async () => {
+  let ready=false,checks=0;
+  const current=()=>({...read,instance:"default",readiness:{state:ready?"ready":"stale",checks:[]}});
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return current();
+    if(name==="settings.refresh_readiness"){checks++;return {id:"observe",action:"refresh_readiness",status:"running"};}
+    if(name==="settings.operation"){ready=true;return {id:"observe",action:"refresh_readiness",status:"completed",result:{managed:[],external:{}}};}
+    if(name==="settings.select_profile")return {...current(),values:{projectRoot:args.projectRoot},preparationScope:args.projectRoot+"#default",viewOnly:true};
+    throw new Error(name);
+  });await ui.flush();assert.equal(checks,1);
+  ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
+  await ui.elements.get("refreshButton").onclick();await ui.tick(8000);assert.equal(checks,1);assert.equal(ui.elements.get("edtUrl").value,"draft");
+  ui.elements.get("discardDraftButton").onclick();await ui.flush();assert.equal(checks,2);
+  await ui.context.selectProfile("C:/foreign");assert.equal(checks,2);
+  const running=screen(async name=>{
+    if(name==="settings.read")return {...current(),operation:{id:"existing",action:"check",status:"running"}};
+    if(name==="settings.operation")return {id:"existing",action:"check",status:"running"};
+    throw new Error(name);
+  });await running.flush();assert.equal(running.calls.filter(call=>call.params?.name==="settings.refresh_readiness").length,0);
+  assert.equal(running.calls.filter(call=>call.params?.name==="settings.operation").length,1);
+});
+
+test("automatic checks leave navigation and drafts usable and do not release another action's busy state", async () => {
+  let releaseCheck,releaseEditor,verified=false;
+  const ui=screen(async name=>{
+    if(name==="settings.read")return {...read,instance:"default",values:{...read.values,edtUrl:"saved"},readiness:{state:verified?"ready":"stale",checks:[]}};
+    if(name==="settings.refresh_readiness")return {id:"background",action:"refresh_readiness",status:"running"};
+    if(name==="settings.operation"){await new Promise(resolve=>{releaseCheck=resolve;});verified=true;return {id:"background",action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};}
+    if(name==="settings.edit"){await new Promise(resolve=>{releaseEditor=resolve;});return {text:"{}",baseRevision:"document"};}
+    if(name==="settings.versions")return {versions:[]};
+    throw new Error(name);
+  });await ui.flush();
+  for(const id of ["profileTab","checkTab","editorTab","edtUrl","bslLsEnabled","selectProfileButton"])assert.equal(ui.elements.get(id).disabled,false,id);
+  for(const id of ["saveButton","readinessButton","installUpdateButton"])assert.equal(ui.elements.get(id).disabled,true,id);
+  ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
+  ui.elements.get("checkTab").onclick();assert.equal(ui.elements.get("checkPanel").hidden,false);
+  const editing=ui.elements.get("editSettingsButton").onclick();await ui.flush();
+  releaseCheck();await ui.flush();assert.equal(ui.elements.get("edtUrl").disabled,true,"document loading still owns its busy state");
+  releaseEditor();await editing;assert.equal(ui.elements.get("edtUrl").disabled,false);assert.equal(ui.elements.get("edtUrl").value,"draft");
+});
+
+test("a profile can be selected while the previous automatic check is still running", async () => {
+  const scopes=[];let projectRoot=read.values.projectRoot,operationRoot=projectRoot,release,releaseStart,running=false;
+  const snapshot=()=>({...read,values:{projectRoot},instance:"default",preparationScope:projectRoot+"#default",readiness:{state:"stale",checks:[]},operation:running?{id:"background",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:"running"}:{status:"idle"}});
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return snapshot();
+    if(name==="settings.refresh_readiness"){scopes.push(args.scope);operationRoot=projectRoot;running=true;if(scopes.length===2)await new Promise(resolve=>{releaseStart=resolve;});return {id:"background",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:"running"};}
+    if(name==="settings.operation"){const root=operationRoot;await new Promise(resolve=>{release=resolve;});running=false;return {id:"background",action:"refresh_readiness",projectRoot:root,instance:"default",status:"completed",result:{managed:[],external:{}}};}
+    if(name==="settings.select_profile"){projectRoot=args.projectRoot;return snapshot();}
+    throw new Error(name);
+  });await ui.flush();assert.deepEqual(scopes,[read.preparationScope]);
+  await ui.context.selectProfile("C:/next-profile");assert.equal(ui.elements.get("projectRoot").value,"C:/next-profile");assert.equal(scopes.length,1);
+  assert.equal(ui.elements.get("edtUrl").disabled,false);
+  release();await ui.flush();assert.deepEqual(scopes,[read.preparationScope,"C:/next-profile#default"]);
+  assert.equal(ui.elements.get("readinessButton").disabled,true,"the previous check cannot release the new check's startup lock");
+  releaseStart();await ui.flush();
+  release();await ui.flush();assert.equal(ui.elements.get("projectRoot").value,"C:/next-profile");
+});
+
+test("a late refresh from the previous automatic check cannot undo a completed profile selection", async () => {
+  const firstRoot=read.values.projectRoot,secondRoot="C:/selected-profile",scopes=[];let reads=0,releaseCheck,releaseRead,releaseSelection;
+  const snapshot=root=>({...read,values:{projectRoot:root},instance:"default",preparationScope:root+"#default",readiness:{state:"stale",checks:[]},operation:{status:"completed"}});
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"){reads++;if(reads===2)return new Promise(resolve=>{releaseRead=()=>resolve(snapshot(firstRoot));});return snapshot(reads===1?firstRoot:secondRoot);}
+    if(name==="settings.refresh_readiness"){scopes.push(args.scope);return {id:args.scope,action:"refresh_readiness",projectRoot:args.scope.split("#")[0],instance:"default",status:"running"};}
+    if(name==="settings.operation"){const root=args.operationId.split("#")[0];await new Promise(resolve=>{releaseCheck=resolve;});return {id:args.operationId,action:"refresh_readiness",projectRoot:root,instance:"default",status:"completed",result:{managed:[],external:{}}};}
+    if(name==="settings.select_profile")return new Promise(resolve=>{releaseSelection=()=>resolve(snapshot(secondRoot));});
+    throw new Error(name);
+  });await ui.flush();
+  const selecting=ui.context.selectProfile(secondRoot);await ui.flush();releaseCheck();await ui.flush();assert.equal(typeof releaseRead,"function");
+  releaseSelection();await selecting;assert.equal(ui.elements.get("projectRoot").value,secondRoot);
+  releaseRead();await ui.flush();assert.equal(ui.elements.get("projectRoot").value,secondRoot);assert.deepEqual(scopes,[firstRoot+"#default",secondRoot+"#default"]);
+  releaseCheck();await ui.flush();
+});
+
+test("missing startup freshness is retried automatically with a bounded per-profile budget", async () => {
+  let checks=0;
+  const ui=screen(async name=>{
+    if(name==="settings.read"||name==="settings.status")return {...read,instance:"default",readiness:{state:"blocked",checks:[]}};
+    if(name==="settings.refresh_readiness"){checks++;return {id:"settling",action:"refresh_readiness",status:"running"};}
+    if(name==="settings.operation")return {id:"settling",action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[{name:"code-index",state:"not_checked",ready:false,retryable:true}],external:{}}};
+    throw new Error(name);
+  });await ui.flush();assert.equal(checks,1);
+  for(let attempt=0;attempt<10;attempt++)await ui.tick(8000);
+  assert.equal(checks,4,"initial observation plus three retries; status polling does not reset the budget");
+  ui.document.hidden=true;ui.documentEvents.visibilitychange();ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.flush();
+  for(let attempt=0;attempt<10;attempt++)await ui.tick(8000);
+  assert.equal(checks,8,"returning to the form starts a new bounded cycle");
+});
+
+test("an existing readiness check completed on the first poll does not trigger another check", async () => {
+  let completed=false;
+  const ui=screen(async name=>{
+    if(name==="settings.read")return {...read,instance:"default",readiness:{state:completed?"ready":"stale",checks:[]},operation:completed?{status:"completed"}:{id:"existing",action:"check",status:"running"}};
+    if(name==="settings.operation"){completed=true;return {id:"existing",action:"check",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};}
+    throw new Error(name);
+  });await ui.flush();
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.operation").length,1);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.refresh_readiness").length,0);
+});
+
+test("echoed automatic check results keep the selected settings view without restarting polling", async () => {
+  const ui=screen(async name=>{
+    if(name==="settings.read")return {...read,instance:"default",readiness:{state:"ready",checks:[]}};
+    if(name==="settings.refresh_readiness")return {id:"automatic",action:"refresh_readiness",status:"running"};
+    if(name==="settings.operation")return {id:"automatic",action:"refresh_readiness",mode:"operation",navigation:"project",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};
+    throw new Error(name);
+  },{echo:true});await ui.flush();
+  assert.equal(ui.elements.get("profileBrowser").hidden,false);assert.equal(ui.elements.get("profilePanel").hidden,false);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.operation").length,1);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.refresh_readiness").length,1);
+});
+
+test("a real operation entry matching the backend snapshot still opens its result", async () => {
+  const operation={id:"existing",action:"load",projectRoot:read.values.projectRoot,instance:"default",status:"completed"};
+  const ui=screen(async name=>{
+    if(name==="settings.read")return {...read,instance:"default",operation};
+    if(name==="settings.operation")return operation;
+    throw new Error(name);
+  });await ui.flush();
+  ui.deliver({jsonrpc:"2.0",method:"ui/notifications/tool-result",params:{structuredContent:{id:"existing",mode:"operation",navigation:"project"}}});await ui.flush();
+  assert.equal(ui.elements.get("checkPanel").hidden,false);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.operation").length,1);
+  assert.match(ui.elements.get("status").textContent,/Профиль загружен/);
+});
+
+test("a host scope change during a check queues readiness for the new profile", async () => {
+  const firstRoot=read.values.projectRoot,secondRoot="C:/new-host-root",scopes=[];
+  let projectRoot=firstRoot,operationRoot=firstRoot,finished=false;
+  const snapshot=()=>({...read,values:{projectRoot},instance:"default",preparationScope:projectRoot+"#default",readiness:{state:"stale",checks:[]},operation:{id:"check",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:finished?"completed":"running"}});
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...snapshot(),operation:{status:"idle"}};
+    if(name==="settings.status")return snapshot();
+    if(name==="settings.refresh_readiness"){scopes.push(args.scope);operationRoot=projectRoot;return {id:"check",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:"running"};}
+    if(name==="settings.operation")return {id:"check",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:finished?"completed":"running",...(finished?{result:{managed:[],external:{}}}:{})};
+    throw new Error(name);
+  });await ui.flush();assert.deepEqual(scopes,[firstRoot+"#default"]);
+  projectRoot=secondRoot;await ui.context.refreshStatus();assert.equal(ui.elements.get("projectRoot").value,secondRoot);assert.equal(scopes.length,1);
+  finished=true;await ui.tick();await ui.flush();assert.deepEqual(scopes,[firstRoot+"#default",secondRoot+"#default"]);
+});
+
+test("indexing is checked again automatically until ready, and retries respect drafts and profile scope", async () => {
+  let checks=0,projectRoot=read.values.projectRoot,state="indexing",viewOnly=false;
+  const snapshot=()=>({...read,values:{projectRoot},instance:"default",viewOnly,preparationScope:projectRoot+"#default",readiness:{state:state==="ready"?"ready":"blocked",checks:[]}});
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return snapshot();
+    if(name==="settings.refresh_readiness"){checks++;return {id:"observe",action:"refresh_readiness",status:"running"};}
+    if(name==="settings.operation")return {id:"observe",action:"refresh_readiness",projectRoot,instance:"default",status:"completed",result:{managed:[{name:"code-index",ready:state==="ready",state}],external:{}}};
+    if(name==="settings.select_profile"){projectRoot=args.projectRoot;viewOnly=true;return snapshot();}
+    throw new Error(name);
+  });await ui.flush();assert.equal(checks,1);
+  const retry=[...ui.timers.entries()].find(([,timer])=>timer.ms===8000);assert.ok(retry);ui.timers.delete(retry[0]);retry[1].fn();await ui.flush();assert.equal(checks,2);
+  ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
+  await ui.tick(8000);await ui.tick(8000);assert.equal(checks,2);
+  state="ready";ui.elements.get("discardDraftButton").onclick();await ui.flush();assert.equal(checks,3);
+  await ui.tick(8000);assert.equal(checks,3);assert.match(ui.elements.get("readinessTitle").textContent,/можно начинать работу/);
+  state="indexing";await ui.elements.get("refreshButton").onclick();assert.equal(checks,4);
+  const oldRetry=[...ui.timers.values()].find(timer=>timer.ms===8000);
+  await ui.context.selectProfile("C:/view-only");await ui.tick(8000);assert.equal(checks,4);
+  oldRetry.fn();await ui.flush();assert.equal(checks,4);
+  ui.lifecycle.pagehide();assert.equal([...ui.timers.values()].filter(timer=>[1000,8000].includes(timer.ms)).length,0);
+});
+
 test("automatic observation preserves drafts and never repeats preparation or external probes", async () => {
   let observations=0;
   const ui=screen(async name=>{
@@ -1051,8 +1335,11 @@ test("observation pauses for hidden windows, ignores late closed responses and d
   const ui=screen(async name=>name==="settings.read"?read:new Promise(resolve=>{release=resolve;}));
   await ui.flush();ui.document.hidden=true;ui.documentEvents.visibilitychange();
   assert.equal([...ui.timers.values()].filter(timer=>timer.ms===8000).length,0);
-  ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.tick(8000);
+  ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.flush();
   assert.equal([...ui.timers.values()].filter(timer=>timer.ms===8000).length,0);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.status").length,1);
+  await ui.context.refreshStatus();
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.status").length,1);
   ui.lifecycle.pagehide();release({...read,profile:{status:"loaded",projectId:"Late"}});await ui.flush();
   assert.equal(ui.elements.get("profileTitle").textContent,"Project");
   assert.equal([...ui.timers.values()].filter(timer=>timer.ms===8000).length,0);

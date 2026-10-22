@@ -53,7 +53,7 @@ export function profile_history(state, selectedRoot = null) {
 }
 
 // Passive observation only: no installation, preparation, process launch or MCP probe.
-export async function profile_summary(state, config, profile) {
+export async function profile_summary(state, config, profile, readiness = {}) {
   const root = config.active_project, components = [];
   for (const id of ["code-index", "bsl-ls"]) {
     const options = config.mcp.managed[id];
@@ -69,7 +69,12 @@ export async function profile_summary(state, config, profile) {
         status = "not_checked";
       }
     }
-    components.push({ id, status });
+    const check = readiness.checks?.find(item => item.id === id);
+    const checked = check && profile.status === "loaded" && status !== "disabled" &&
+      (id === "bsl-ls" || status === "running" || status === "external");
+    if (checked) status = ["ready", "blocked"].includes(readiness.state) ? check.state : "check_stale";
+    components.push({ id, status, ...(checked ? { checkedAt: readiness.checkedAt,
+      detail: readiness.state === "stale" ? readiness.reason : check.detail } : {}) });
   }
   return { observedAt: new Date().toISOString(), profile: profile.status, components };
 }

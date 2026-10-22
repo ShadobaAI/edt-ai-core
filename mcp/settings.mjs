@@ -101,6 +101,7 @@ function readSettings(actual) {
   return {
     schema: { type: "object", properties: structuredClone(primitive) },
     values: actual.values, instance: actual.instance, connectionSources: actual.connectionSources,
+    installedVersions: actual.installedVersions,
     preparationScope: actual.preparationScope,
     profile: actual.profile, directoryContext: actual.directoryContext, sessionGuidance: actual.sessionGuidance,
     profileDirectoryContext: actual.profileDirectoryContext,
@@ -132,15 +133,17 @@ const tools = [
     inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.status", title: "Сводное состояние профиля", description: "Passive profile and local daemon observation. Does not launch services or repeat preparation or probes.",
     inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(), _meta: appOnly },
+  { name: "settings.refresh_readiness", title: "Обновить готовность профиля", description: "Refresh live service checks when the settings app loads a profile. Reuses only this project's and instance's existing preparation permission and installed runtimes. Does not grant permission, download components or rebind chat connections. Poll settings.operation with the returned id.",
+    inputSchema: { type: "object", properties: { scope: { type: "string", minLength: 1 } }, required: ["scope"], additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly },
   { name: "settings.reset_connection", title: "Вернуть наследование подключения", description: "Remove this instance's URL override and inherit the next configured source.",
     inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std"] } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
-  { name: "settings.open", title: "Настройки", description: "Open the full settings workspace with the user's profile list from Open plugin or app navigation. Does not launch services.",
+  { name: "settings.open", title: "Настройки", description: "Open the full settings workspace with the user's profile list from Open plugin or app navigation. The form automatically refreshes readiness using installed runtimes and existing project-scoped preparation permissions.",
     inputSchema: empty, annotations: annotations(), _meta: { ui: { resourceUri: resource, visibility: ["app"] }, "openai/ui": { entrypoints: [{ type: "global" }] } } },
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
     inputSchema: inspectInput, annotations: annotations(), _meta: shared },
   { name: "settings.probe_connections", title: "Проверить EDT и v8std", description: "One read-only external connection test, including exact EDT repository paths/readiness when list_projects is exposed. Does not download or launch services. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
     inputSchema: { type: "object", properties: { connections: { type: "object", properties: { edt: { type: "string" }, v8std: { type: "string" } }, additionalProperties: false, description: "Optional unsaved URLs to test without persisting them. An empty string tests a disabled connection." } }, additionalProperties: false }, annotations: { ...annotations(), openWorldHint: true }, _meta: shared },
-  { name: "settings.profile", title: "Настройки проекта", description: "Open settings for this chat's selected profile, without a profile chooser. Always supply this chat's known projectRoot so the form can retain its directory across MCP connections; {} uses host roots when available. Does not reload profiles, launch services or borrow another chat's directory.",
+  { name: "settings.profile", title: "Настройки проекта", description: "Open settings for this chat's selected profile, without a profile chooser. Always supply this chat's known projectRoot so the form can retain its directory across MCP connections; {} uses host roots when available. The form automatically refreshes readiness using installed runtimes and existing preparation permissions. Does not reload profiles or borrow another chat's directory.",
     inputSchema: inspectInput, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "thread" }] } } },
   ...[["settings.create", "Создать профиль", "Create the generic .ai/project.yaml and missing project instructions in this chat's selected repository, only when the user requests creation. Never overwrites a profile or existing instructions. Repository mappings still need configuration."],
       ["settings.load", "Загрузить профиль", "Validate and reload the existing .ai/project.yaml for this chat's selected repository. Does not import a file or launch services. Report sessionGuidance; if the host does not refresh tools, ask the user to open a new chat in the same directory or restart Codex."]].map(([name, title, description]) => ({
@@ -195,7 +198,7 @@ const tools = [
   { name: "settings.operation", title: "Состояние операции", description: "Read a running or completed settings operation without retrying it. Results belong to this MCP session and include their original project/instance.",
     inputSchema: { type: "object", properties: { operationId: { type: "string" }, waitMs: { type: "integer", minimum: 0, maximum: 10000, description: "Wait for this operation to finish, up to 10 seconds. Prefer a bounded wait over repeated immediate polls." } }, additionalProperties: false },
     annotations: annotations(), _meta: appTool },
-  { name: "settings.check", title: "Проверка готовности", description: "Open setup readiness checks for MCP connections, managed runtimes, policy and skill files. This entry only opens the form; preparation starts through settings.run_check with scoped authorization.",
+  { name: "settings.check", title: "Проверка готовности", description: "Open setup readiness checks for MCP connections, managed runtimes, policy and skill files. The form automatically refreshes previously prepared components. Initial preparation still requires settings.run_check with scoped authorization.",
     inputSchema: inspectInput, annotations: { ...annotations(false), openWorldHint: true }, _meta: appTool },
 ];
 
@@ -223,18 +226,18 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
       try {
         data = JSON.parse(output);
       } catch {
-        const error = new Error(`Backend завершился без результата (${code}). Исход операции неизвестен; проверьте настройки и runtime перед повтором. ${errors}`);
+        const error = new Error(`Сервис настроек завершился без результата (код ${code}). Исход операции неизвестен; проверьте сохранённые настройки и состояние сервисов перед повтором. ${errors}`);
         error.outcomeUnknown = true;
         reject(error); return;
       }
       if (!data || typeof data !== "object" || Array.isArray(data) || typeof data.ok !== "boolean" ||
           (data.ok && (!data.result || typeof data.result !== "object" || Array.isArray(data.result)))) {
-        const error = new Error("Backend вернул некорректный ответ. Исход операции неизвестен; проверьте фактическое состояние перед повтором.");
+        const error = new Error("Сервис настроек вернул некорректный ответ. Исход операции неизвестен; проверьте сохранённые настройки и состояние сервисов перед повтором.");
         error.outcomeUnknown = true; reject(error); return;
       }
-      if (data.ok !== true) { const error = new Error(data.error || "Backend сообщил об ошибке."); error.code = data.errorCode; error.outcomeUnknown = data.outcomeUnknown === true; reject(error); return; }
+      if (data.ok !== true) { const error = new Error(data.error || "Сервис настроек сообщил об ошибке."); error.code = data.errorCode; error.outcomeUnknown = data.outcomeUnknown === true; reject(error); return; }
       if (code !== 0) {
-        const error = new Error("Backend вернул результат, но завершился с ошибкой. Проверьте фактическое состояние перед повтором.");
+        const error = new Error("Сервис настроек вернул результат, но завершился с ошибкой. Проверьте сохранённые настройки и состояние сервисов перед повтором.");
         error.outcomeUnknown = true; reject(error); return;
       }
       register_diagnostic_secrets(data.result);
@@ -324,8 +327,15 @@ async function call(name, args, meta = {}) {
   if (name === "settings.versions") {
     let cached = versionCatalogs.get(args.component);
     if (args.refresh || !cached || cached.expires < Date.now()) {
-      const promise = import("../scripts/runtime.mjs").then(runtime => runtime.list_versions(args.component, undefined, { refresh: args.refresh })).then(data => {
-        diagnostic.event("version_catalog_loaded", { component: args.component, versions: data.versions.length });return data;
+      const promise = import("../scripts/runtime.mjs").then(async runtime => {
+        const [catalog, latest] = await Promise.allSettled([
+          runtime.list_versions(args.component, undefined, { refresh: args.refresh }),
+          runtime.latest_version(args.component, undefined, { refresh: args.refresh }),
+        ]);
+        if (catalog.status === "rejected") throw catalog.reason;
+        const data = { ...catalog.value, latest: latest.status === "fulfilled" ? latest.value : null,
+          ...(latest.status === "rejected" ? { latestError: latest.reason.message } : {}) };
+        diagnostic.event("version_catalog_loaded", { component: args.component, versions: data.versions.length, latest: data.latest });return data;
       });
       cached = { promise, expires: Date.now() + 5 * 60 * 1000 };versionCatalogs.set(args.component, cached);
       promise.catch(() => { if (versionCatalogs.get(args.component) === cached) versionCatalogs.delete(args.component); });
@@ -333,7 +343,7 @@ async function call(name, args, meta = {}) {
     return result(await cached.promise);
   }
   if (name === "settings.status" || name === "settings.select_profile") {
-    if (name === "settings.select_profile" && operations.status().status === "running") throw new Error("Дождитесь завершения текущей операции.");
+    if (name === "settings.select_profile" && operations.status().status === "running" && operations.status().action !== "refresh_readiness") throw new Error("Дождитесь завершения текущей операции.");
     const revision = selectionRevision, directory = args.projectRoot || selectedRoot;
     const actual = await backend(name === "settings.status" ? "status" : "read", { remember: name === "settings.select_profile" },
       { selectedDirectory: directory, rootLocked: false });
@@ -352,7 +362,7 @@ async function call(name, args, meta = {}) {
   }
   if (name === "settings.inspect") {
     if (operations.status().status === "running" && args.projectRoot !== undefined && !selectedRoot)
-      throw new Error("Операция ещё выполняется. Проверьте settings.operation перед выбором папки.");
+      throw new Error("Дождитесь завершения текущей операции перед выбором папки.");
     const selection = explicit_selection({ directory: selectedRoot }, args.projectRoot, selectionError);
     if (selection.directory !== selectedRoot) { selectedRoot = selection.directory; selectionRevision += 1; }
     if (args.projectRoot !== undefined) rootLocked = true;
@@ -362,12 +372,12 @@ async function call(name, args, meta = {}) {
     return result(snapshot, `Профиль: ${snapshot.profile.status}. Следующие шаги: ${snapshot.nextSteps.join(", ") || "нет"}.`);
   }
   if (selectionError && !readOnlyEntry) throw new Error(selectionError);
-  if (operations.status().status === "running" && !readOnlyEntry) throw new Error(
+  if (operations.status().status === "running" && !readOnlyEntry && !(operations.status().action === "refresh_readiness" && ["settings.edit", "settings.preview", "settings.export_data"].includes(name))) throw new Error(
     operations.status().action === "pick_directory"
-      ? "Дождитесь завершения выбора папки. Завершите или отмените выбор в системном окне; состояние доступно в settings.operation."
-      : "Операция ещё выполняется. Состояние доступно в settings.operation; повтор не запущен.");
+      ? "Завершите или отмените выбор папки в системном окне."
+      : "Операция ещё выполняется. Дождитесь её завершения.");
   if (name === "settings.probe_connections") {
-    if (!selectedRoot) throw new Error("Выберите папку проекта через settings.inspect с projectRoot.");
+    if (!selectedRoot) throw new Error("Проект чата не определён. Сообщите агенту путь к папке проекта в текущем чате.");
     return result(operations.status(operations.start("probe", args, { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }).id));
   }
   if (name === "settings.pick_directory") {
@@ -421,16 +431,16 @@ async function call(name, args, meta = {}) {
     }
     return { ...result(data), _meta: { data } };
   }
-  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.rebuild_index": "rebuild_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load" };
+  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.refresh_readiness": "refresh_readiness", "settings.rebuild_index": "rebuild_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load" };
   if (!actions[name]) throw new Error("Неизвестный инструмент");
-  if (name === "settings.run_check" && !selectedRoot) throw new Error("Выберите папку проекта.");
+  if (["settings.run_check", "settings.refresh_readiness"].includes(name) && !selectedRoot) throw new Error("Выберите папку проекта.");
   // The backend resolves and authorizes the same root immediately before
   // preparation. A second path resolver here would disagree on profile/Git roots.
   const revision = selectionRevision;
   const proposedRoot = name === "settings.update" ? args.set.projectRoot : args.projectRoot;
   const context = { projectRoot: proposedRoot === undefined ? selectedRoot : proposedRoot || null,
     selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" };
-  if (name === "settings.run_check") return result(operations.status(operations.start("check", args, context).id));
+  if (["settings.run_check", "settings.refresh_readiness"].includes(name)) return result(operations.status(operations.start(actions[name], args, context).id));
   if (name === "settings.rebuild_index") return result(operations.status(operations.start("rebuild_index", args, context).id));
   if (name === "settings.updates") return result(operations.status(operations.start("updates", args, context).id));
   const data = await (name === "settings.preview" ? backend(actions[name], args, context) : operations.execute(actions[name], args, context));
@@ -477,7 +487,7 @@ tools.push({ name: "settings.updates", title: "Обновления компон
     component: { enum: ["code-index", "bsl-ls"], description: "Target component for this operation. Only check may omit it to inspect both components." }, authorization: preparationAuthorization,
   }, required: ["operation"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
-tools.push({ name: "settings.versions", title: "Версии компонента", description: "List all published release tags, including prereleases, newest publication first. Read-only catalog; does not install or launch components. The settings form searches the complete catalog locally.",
+tools.push({ name: "settings.versions", title: "Версии компонента", description: "List all published release tags, including prereleases, newest publication first, and resolve latest through GitHub's stable-release endpoint. Read-only catalog; does not install or launch components. The settings form searches the complete catalog locally.",
   inputSchema: { type: "object", properties: { component: { enum: ["code-index", "bsl-ls"] }, refresh: { type: "boolean", description: "Bypass the catalog cache and revalidate GitHub responses for a manual refresh or retry." } }, required: ["component"], additionalProperties: false },
   annotations: { ...annotations(), openWorldHint: true }, _meta: appOnly });
 for (const tool of tools) tool.icons = component_icons("settings");
@@ -500,7 +510,7 @@ async function dispatch(message) {
         selectedRoot = roots_selection(message).directory;
         rootLocked = Boolean(selectedRoot);
         selectionError = null;
-      } catch { selectedRoot = null; selectionError = "Выберите один локальный каталог проекта; неоднозначные roots блокируют изменение настроек."; }
+      } catch { selectedRoot = null; selectionError = "Не удалось однозначно определить папку проекта этого чата. Укажите одну папку проекта на этом компьютере."; }
     }
     finishRoots?.(); finishRoots = null;
     return;

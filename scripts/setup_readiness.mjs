@@ -33,9 +33,9 @@ export function setup_assets(pluginRoot = ROOT) {
   try {
     const hooks = load(inside(pluginRoot, "hooks/hooks.json"));
     for (const [event, script] of [["SessionStart", "session-start.mjs"], ["PreToolUse", "guard.mjs"]])
-      if (!hooks.hooks?.[event]?.some(group => group.hooks?.some(hook => hook.type === "command" && hook.command?.includes(script)))) throw new Error("Не настроен hook " + event);
+      if (!hooks.hooks?.[event]?.some(group => group.hooks?.some(hook => hook.type === "command" && hook.command?.includes(script)))) throw new Error("Не настроен обработчик события " + event);
     for (const name of files) if (!is_file(inside(pluginRoot, name))) throw new Error("Нет файла: " + name);
-    checks.push({ id: "source-guard", label: "Файлы защиты и подключения плагина", state: "ready", detail: "Файлы hooks, политики и подключений доступны. Активация hooks хостом здесь не проверяется." });
+    checks.push({ id: "source-guard", label: "Файлы защиты и подключения плагина", state: "ready", detail: "Файлы защиты, политики и подключений доступны. Работу защиты при вызове инструментов в Codex эта проверка не подтверждает." });
   } catch (error) { checks.push({ id: "source-guard", label: "Файлы защиты и подключения плагина", state: "error", detail: error.message }); }
   checks.push({ id: "node", label: "Среда Node.js", state: Number(process.versions.node.split(".")[0]) >= 22 ? "ready" : "error", detail: process.version });
   return { checks, fingerprint: sha256(Buffer.from(stable([...files].sort().map(name => [name, digest(inside(pluginRoot, name))])))) };
@@ -52,8 +52,9 @@ export function readiness_fingerprint(state, config, profile, assets = setup_ass
 export function save_readiness(state, config, profile, managed, external) {
   const assets = setup_assets();
   const checks = [{ id: "profile", label: "Профиль и проекты", state: profile.repositories.length ? "ready" : "error", detail: "Настроено проектов: " + profile.repositories.length },
-    ...managed.map(item => ({ id: item.name, label: ({ "code-index": "Индекс кода", "bsl-ls": "BSL LS", policy: "Политика" })[item.name] || item.name, state: item.state === "disabled" ? "disabled" : item.ready ? "ready" : item.state || "error", detail: item.detail })),
-    ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : item.connected ? "not_verified" : "error", detail: item.detail || (!item.configured ? "Укажите адрес MCP." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
+    ...managed.map(item => ({ id: item.name, label: ({ "code-index": "Индекс кода", "bsl-ls": "BSL LS", policy: "Политика" })[item.name] || item.name, state: item.state === "disabled" ? "disabled" : item.ready ? "ready" : item.state || "error", detail: item.detail,
+      ...(item.repositories ? { repositories: item.repositories } : {}) })),
+    ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : item.connected ? "not_verified" : "error", detail: item.detail || (!item.configured ? "Укажите адрес сервера в настройках подключений." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
     ...assets.checks];
   const result = { state: checks.every(passed) ? "ready" : "blocked", checkedAt: new Date().toISOString(), checks, scope: "setup" };
   atomic_write(receipt_file(state, config.active_project), JSON.stringify({ version: 1, fingerprint: readiness_fingerprint(state, config, profile, assets), result }));

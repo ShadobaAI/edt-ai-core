@@ -8,9 +8,10 @@ import { fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { setup_assets } from "../scripts/setup_readiness.mjs";
 import { instance_directory } from "../scripts/project_paths.mjs";
+import { grant_preparation } from "../scripts/components.mjs";
 
 async function ready_fixture(t) {
-  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false;
+  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false;
   const server=createServer(async(req,res)=>{
     let text="";for await(const part of req)text+=part;
     if(!text){res.writeHead(202).end();return;}const message=JSON.parse(text);calls++;
@@ -18,13 +19,18 @@ async function ready_fixture(t) {
     if(message.method==="server/discover")return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:message.id,error:{code:-32601,message:"legacy"}}));
     if(message.method==="initialize")return reply({protocolVersion:"2025-11-25",serverInfo:{name:"fixture",version:"1"},capabilities:{tools:{}}});
     if(message.method.startsWith("notifications/"))return res.writeHead(202).end();
-    if(message.method==="tools/list")return reply({tools:noTools&&req.url==="/v8std"?[]:[{name:"list_projects",inputSchema:{type:"object",properties:{format:{enum:["json"]}}}}]});
+    if(message.method==="tools/list"){
+      if(req.url==="/bsl")return reply({tools:[...(["register_workspace_folder","list_workspace_folders","unregister_workspace_folder"].map(name=>({name,inputSchema:{type:"object"}}))),{name:"analyze",inputSchema:{type:"object",properties:{workspaceFolder:{type:"string"}},required:["workspaceFolder"]}}]});
+      if(req.url==="/index")return reply({tools:[{name:"health",inputSchema:{type:"object"}}]});
+      return reply({tools:noTools&&req.url==="/v8std"?[]:[{name:"list_projects",inputSchema:{type:"object",properties:{format:{enum:["json"]}}}}]});
+    }
+    if(message.method==="tools/call"&&req.url==="/index")return reply({structuredContent:{mcp:{status:"ok"},daemon:{status:"online"},repos:[{repo:"product",root_path:f.root,path_status:{status:"ready"},data_version:settling&&++indexChecks===1?{}:{stale:false}}]}});
     if(message.method==="tools/call")return reply({content:[{type:"text",text:JSON.stringify({projects:[{name:"Product",path:wrongPath?f.base:f.root,open:true,state:"ready",edtProject:true}]})}]});
     reply({});
   });server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>{server.closeAllConnections();return new Promise(done=>server.close(done));});
   const backend=new SettingsBackend(),url="http://127.0.0.1:"+server.address().port;
   await backend.main({action:"update",set:{codeIndexEnabled:false,bslLsEnabled:false,edtUrl:url+"/edt",v8stdUrl:url+"/v8std"}});
-  return {f,backend,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;}};
+  return {f,backend,url,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks};
 }
 
 test("one readiness check verifies externals, policy and skills, and passive reads reuse scoped evidence",async t=>{
@@ -37,6 +43,50 @@ test("one readiness check verifies externals, policy and skills, and passive rea
   const contacted=count();assert.equal((await new SettingsBackend().main({action:"status"})).readiness.state,"ready");assert.equal(count(),contacted);
   process.env.EDT_AI_INSTANCE="another";assert.equal((await backend.main({action:"read"})).readiness.state,"not_checked");process.env.EDT_AI_INSTANCE="first";
   f.profile.repositories[0].edt_project="Changed";f.save();assert.equal((await backend.main({action:"read"})).readiness.state,"stale");
+});
+
+test("automatic readiness makes fresh probes without new launch grants or reconnecting relays",async t=>{
+  const {f,backend,count,wrong}=await ready_fixture(t),scope=f.root+"#first";
+  const first=await backend.main({action:"refresh_readiness",scope});assert.equal(first.readiness.state,"ready");
+  const calls=count();wrong();
+  const second=await backend.main({action:"refresh_readiness",scope});assert.ok(count()>calls);assert.equal(second.readiness.state,"blocked");
+  assert.equal(second.external.edt.ready,false);
+  const home=instance_directory(f.state,f.root);
+  assert.equal(fs.existsSync(path.join(home,"first.preparation.json")),false);
+  assert.equal(fs.existsSync(path.join(home,"first.reconnect.json")),false);
+  const before=count();await assert.rejects(backend.main({action:"refresh_readiness",scope:f.root+"#another"}),/другой папке или экземпляру/);assert.equal(count(),before);
+});
+
+test("automatic readiness never prepares unapproved components or downloads missing runtimes",async t=>{
+  const {f,backend}=await ready_fixture(t),scope=f.root+"#first";
+  await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true,edtUrl:"",v8stdUrl:""}});
+  const unprepared=await backend.main({action:"refresh_readiness",scope});
+  for(const component of ["code-index","bsl-ls"]){const item=unprepared.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не подготовлен/);}
+  grant_preparation(f.state,f.root,["code-index","bsl-ls"]);
+  const file=path.join(instance_directory(f.state,f.root),"first.preparation.json"),before=fs.readFileSync(file);
+  const missing=await backend.main({action:"refresh_readiness",scope});
+  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не установлен или повреждён/);}
+  assert.deepEqual(fs.readFileSync(file),before);assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
+  process.env.EDT_AI_INSTANCE="another";
+  const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.match(other.managed.find(item=>item.name==="code-index").detail,/не подготовлен/);
+});
+
+test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{
+  const {f,backend,url,count,settle,indexChecks}=await ready_fixture(t);
+  const config=backend.current();
+  for(const component of ["code-index","bsl-ls"])Object.assign(config.mcp.managed[component],{enabled:true,mode:"external",url:url+(component==="bsl-ls"?"/bsl":"/index")});
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
+  await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true}});
+  fs.mkdirSync(path.join(f.root,".code-index"));fs.writeFileSync(path.join(f.root,".code-index/index.db"),"existing");settle();
+  assert.equal((await backend.main({action:"read"})).summary.components.find(item=>item.id==="bsl-ls").status,"external");
+  const calls=count(),result=await backend.main({action:"refresh_readiness",scope:f.root+"#first"});
+  assert.ok(count()>calls);assert.equal(result.readiness.state,"ready");
+  assert.equal(indexChecks(),2,"a startup health response without freshness is observed again before completing the check");
+  for(const component of ["code-index","bsl-ls"]){
+    assert.equal(result.managed.find(item=>item.name===component).ready,true);
+    const summary=(await backend.main({action:"read"})).summary.components.find(item=>item.id===component);assert.equal(summary.status,"ready");assert.equal(summary.checkedAt,result.readiness.checkedAt);
+  }
+  assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });
 
 test("readiness never passes wrong EDT mappings or a connected server without tools",async t=>{

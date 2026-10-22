@@ -44,32 +44,52 @@ export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPON
 export async function list_versions(component, io = { fetch_json }, options = {}) {
   if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
   const releases = [], deadline = Date.now() + 90000;
-  for (let page = 1; page <= 100; page++) {
+  const base = `https://api.github.com/repos/${SPECS[component]}/releases`;
+  const readPage = async (query, fresh) => {
     if (Date.now() >= deadline) throw new ConfigError("Version catalog timed out; retry loading the list");
-    const base = `https://api.github.com/repos/${SPECS[component]}/releases?per_page=100`;
-    let items = await io.fetch_json(base + (page === 1 ? "" : `&page=${page}`), Math.min(30000, deadline - Date.now()), { fresh: options.refresh === true });
+    let hasNext = null;
+    const items = await io.fetch_json(base + query, Math.min(30000, deadline - Date.now()), {
+      fresh, on_response: response => { hasNext = /;\s*rel="next"/.test(response.headers.get("link") || ""); },
+    });
     if (!Array.isArray(items)) throw new ConfigError("Invalid runtime release list");
-    // A transient/cached empty first page must not become a five-minute empty
-    // catalog. Retry the equivalent explicit first page with HTTP revalidation.
-    if (page === 1 && !items.length) {
-      items = await io.fetch_json(base + "&page=1", Math.min(30000, Math.max(1, deadline - Date.now())), { fresh: true });
-      if (!Array.isArray(items)) throw new ConfigError("Invalid runtime release list");
-      if (!items.length) throw new ConfigError("GitHub returned an empty version catalog. Retry loading versions; an empty catalog is not cached.");
+    return { items, hasNext };
+  };
+  let pageSize = 100, nextExpected = false;
+  for (let page = 1; page <= 10000 / pageSize; page++) {
+    let result = await readPage(page === 1 ? `?per_page=${pageSize}` : `?page=${page}&per_page=${pageSize}`, options.refresh === true);
+    // Empty query variants occur even while equivalent queries return releases.
+    // A Link-advertised page must not silently truncate the successful catalog.
+    if (!result.items.length && (page === 1 || nextExpected)) {
+      result = await readPage(page === 1 ? "?page=1&per_page=100" : `?per_page=${pageSize}&page=${page}`, true);
+      if (page === 1 && !result.items.length) {
+        pageSize = 50;
+        result = await readPage("?page=1&per_page=50", true);
+      }
+      if (!result.items.length) throw new ConfigError("GitHub вернул пустую страницу каталога после повторных запросов. Обновите список позже; неполный результат не сохранён.");
     }
+    const { items, hasNext } = result;
     for (const item of items) {
       if (!item || item.draft || typeof item.tag_name !== "string" || item.tag_name === "latest" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(item.tag_name)) continue;
       const publishedAt = item.published_at || item.created_at || null;
       releases.push({ version: item.tag_name, prerelease: Boolean(item.prerelease), publishedAt });
     }
-    if (items.length < 100) {
+    if (hasNext === false || (hasNext === null && items.length < pageSize)) {
       releases.sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
       const seen = new Set();
       const versions = releases.filter(item => { if (seen.has(item.version)) return false;seen.add(item.version);return true; });
       if (!versions.length) throw new ConfigError("GitHub returned no published version tags. Retry loading versions.");
       return { component, versions };
     }
+    nextExpected = hasNext === true;
   }
   throw new ConfigError("Version catalog exceeds 10000 releases; the list was not truncated");
+}
+export async function latest_version(component, io = { fetch_json }, options = {}) {
+  if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
+  const release = await runtime_release(component, { version: "latest", allow_prerelease: false }, {
+    fetch_json: url => io.fetch_json(url, 30000, { fresh: options.refresh === true }),
+  });
+  return release.tag_name;
 }
 async function runtime_release(component, options, io) {
   const requested = options.version, automatic = requested === "latest";
@@ -116,6 +136,7 @@ export async function fetch_json(url, timeout = 30000, options = {}) {
     redirect: "error",
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
+  options.on_response?.(response);
   return response.json();
 }
 export function artifact(state, component, slot = "active") {
@@ -146,6 +167,25 @@ export function artifact(state, component, slot = "active") {
   )
     throw new ConfigError("Invalid runtime-lock artifact path");
   return is_file(target) && sha(target) === entry.sha256 ? target : null;
+}
+export function installed_versions(state, root = null) {
+  let lock;
+  try { lock = read_json(path.join(state, "runtime-lock.json"), {}); }
+  catch { lock = {}; }
+  return Object.fromEntries(managed_components.map(component => {
+    try {
+      const active = artifact(state, component);
+      if (component === "code-index" && root) {
+        const home = path.join(project_home(state, root), "code-index"), owner = read_json(path.join(home, "owner.json"), {}), daemon = read_json(path.join(home, "daemon.json"), {});
+        if (owner.project_root && path_key(owner.project_root) === path_key(root) && owner.pid === daemon.pid && alive(owner.pid) && owner.executable !== active && owned_executable(state, owner)) {
+          const release = path.relative(path.join(state, "runtime/code-index"), owner.executable).split(path.sep)[0];
+          if (/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(release)) return [component, release];
+        }
+      }
+      return [component, active ? lock[component].release : null];
+    }
+    catch { return [component, null]; }
+  }));
 }
 export async function ensure_installed(
   state,
@@ -285,7 +325,7 @@ export function project(selected, config, requireRepositories = true) {
 export const path_key = path_identity;
 export const project_home = (state, root) =>
   project_directory(state, root);
-export const installed_runtime = (state, config, component, refresh = false) =>
+export const installed_runtime = (state, config, component, refresh = false, allow_install = true) =>
   operation_lock(
     state,
     () => {
@@ -293,6 +333,8 @@ export const installed_runtime = (state, config, component, refresh = false) =>
       const release = read_json(path.join(state, "runtime-lock.json"), {})[component]?.release;
       if (current && (refresh || (requested !== "latest" && requested.replace(/^v/, "") !== release?.replace(/^v/, ""))))
         throw new ConfigError("A verified runtime is already active; use settings.updates to download, validate and apply the requested candidate.");
+      if (!current && !allow_install)
+        throw new ConfigError("Компонент не установлен или повреждён. Выполните «Проверить готовность» для подготовки runtime.");
       return ensure_installed(state, config, component, refresh);
     },
     120,
@@ -584,11 +626,12 @@ export async function launch_command(
   data,
   refresh = false,
   selected_artifact = null,
+  allow_install = true,
 ) {
   if (!component_enabled(config, component)) throw new ConfigError("Component is disabled: " + component);
   if (component === "code-index") {
     if (!data.repositories.length) throw new ConfigError("Configure explicit repositories (id, relative path, alias) in the project profile");
-    let exe = selected_artifact || await installed_runtime(state, config, component, refresh);
+    let exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
     const oldHome = path.join(project_home(state, root), "code-index"), owner = read_json(path.join(oldHome, "owner.json"), {});
     if (!selected_artifact && await daemon_health(oldHome) && owned_executable(state, owner)) exe = owner.executable;
     const home = await ensure_daemon(state, root, data, exe);
@@ -613,7 +656,7 @@ export async function launch_command(
       throw new ConfigError("Configured BSL LS configuration does not exist");
   }
   const java = java_command(config),
-    exe = selected_artifact || await installed_runtime(state, config, component, refresh);
+    exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
   return [
     [
       node,
@@ -713,7 +756,10 @@ export function index_status(body, root, data) {
   });
   const ready = index_readiness(body, root, data);
   const state = ready ? "ready" : ["mismatch", "error", "stale", "indexing", "missing"].find(state => repositories.some(repo => repo.state === state)) || "not_checked";
-  return { ready, state: !ready && state === "ready" ? "not_checked" : state, repositories };
+  const retryable = state === "not_checked" && body?.mcp?.status === "ok" && body?.daemon?.status === "online" &&
+    body?.repos?.length === data.repositories.length && repositories.length > 0 &&
+    repositories.every(repo => repo.present && ["ready", "not_checked"].includes(repo.state)) && repositories.some(repo => repo.state === "not_checked");
+  return { ready, state, repositories, ...(retryable ? { retryable: true } : {}) };
 }
 
 // The native CLI is the writer. Stop only the owned project daemon and never
@@ -763,6 +809,7 @@ export async function smoke(
   timeout = 90,
   refresh = false,
   selected_artifact = null,
+  allow_install = true,
 ) {
   const options = component_settings(config, component);
   if (!component_enabled(config, component)) return { component, status: "disabled" };
@@ -781,6 +828,7 @@ export async function smoke(
       data,
       refresh,
       selected_artifact,
+      allow_install,
     );
     client = new McpClient(command, cwd, env, options.timeout_seconds || timeout, { maxBytes: options.max_response_bytes });
   }
@@ -803,7 +851,7 @@ export async function smoke(
         if (health.isError) throw new ConfigError("code-index health failed: " + JSON.stringify(health).slice(0, 4000));
         const body = health.structuredContent || JSON.parse(health.content.find(part => part.type === "text").text);
         result.index = index_status(body, root, data);
-        if (result.index.state !== "indexing" || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;
+        if ((result.index.state !== "indexing" && !result.index.retryable) || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;
         await sleep(250);
       } while (true);
       result.index_ready = result.index.ready;

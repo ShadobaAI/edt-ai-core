@@ -49,6 +49,7 @@ test("installation commits the saved version only after validation and restores 
   const first=source("v1.0.0");
   await ensure_installed(f.state,settings(f.env.EDT_AI_SETTINGS),"bsl-ls",false,{fetch_json:async()=>first.release,fetch:async()=>new Response(first.bytes)});
   const original=artifact(f.state,"bsl-ls"),lockfile=path.join(f.state,"runtime-lock.json");
+  assert.equal((await backend.main({action:"read"})).installedVersions["bsl-ls"],"v1.0.0");
   let valid=true,offline=false,failWrite="",expectedSaved="v1.0.0";
   const server=path.join(f.base,"updates-mcp.mjs");
   fs.writeFileSync(server,`import readline from 'node:readline';
@@ -127,18 +128,21 @@ test("an update waiting for the state lock reads the release policy after acquir
 test("the settings MCP never caches empty catalogs and refresh bypasses both caches", async t => {
   const f=fixture(t),preload=path.join(f.base,"catalog-fetch.mjs");
   fs.writeFileSync(preload,`let calls=0;globalThis.fetch=async(url,options)=>{
+    if(String(url).endsWith('/latest'))return new Response(JSON.stringify({tag_name:'v1.0.7',prerelease:false}));
     const count=++calls;
-    if(count<=2)return new Response('[]');
-    if(count===4&&!(options.cache==='no-store'&&options.headers['Cache-Control']==='no-cache'))throw new Error('Refresh did not revalidate HTTP cache');
+    if(count<=3)return new Response('[]');
+    if(count===5&&!(options.cache==='no-store'&&options.headers['Cache-Control']==='no-cache'))throw new Error('Refresh did not revalidate HTTP cache');
     return new Response(JSON.stringify([{tag_name:'v1.0.'+count,published_at:'2026-10-22T00:00:00Z'}]));
   };`);
   const client=new McpClient([process.execPath,"--import",pathToFileURL(preload).href,path.join(ROOT,"mcp/settings.mjs")],f.root,f.env,10);f.clients.push(client);await client.initialize();
-  await assert.rejects(client.call("settings.versions",{component:"bsl-ls"}),/empty version catalog/);
+  await assert.rejects(client.call("settings.versions",{component:"bsl-ls"}),/пустую страницу/);
   const first=(await client.call("settings.versions",{component:"bsl-ls"})).structuredContent;
-  assert.equal(first.versions[0].version,"v1.0.3");
+  assert.equal(first.versions[0].version,"v1.0.4");assert.equal(first.latest,"v1.0.7");
   assert.deepEqual((await client.call("settings.versions",{component:"bsl-ls"})).structuredContent,first);
   const refreshed=(await client.call("settings.versions",{component:"bsl-ls",refresh:true})).structuredContent;
-  assert.equal(refreshed.versions[0].version,"v1.0.4");
+  assert.equal(refreshed.versions[0].version,"v1.0.5");
+  const snapshot=(await client.call("settings.read",{})).structuredContent;
+  assert.deepEqual(snapshot.installedVersions,{"code-index":null,"bsl-ls":null});
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });
 

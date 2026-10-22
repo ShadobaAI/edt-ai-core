@@ -275,8 +275,15 @@ test("index status distinguishes existing ready data, active indexing, stale dat
     const changed=structuredClone(body);changed.repos[0].path_status.status=status;changed.repos[0].data_version.stale=stale;
     assert.equal(index_status(changed,f.root,f.profile).state,expected);
   }
+  const settling=structuredClone(body);settling.repos[0].data_version={};
+  assert.equal(index_status(settling,f.root,f.profile).ready,false);
+  assert.equal(index_status(settling,f.root,f.profile).retryable,true);
+  for(const change of [x=>x.daemon.status="offline",x=>x.mcp.status="error",x=>x.repos.push(x.repos[0])]){
+    const invalid=structuredClone(settling);change(invalid);assert.notEqual(index_status(invalid,f.root,f.profile).retryable,true);
+  }
   fs.rmSync(path.join(f.root,".code-index/index.db"));body.repos[0].path_status.status="unknown";
   assert.equal(index_status(body,f.root,f.profile).state,"missing");
+  assert.notEqual(index_status(body,f.root,f.profile).retryable,true);
   body.repos[0].root_path=f.base;assert.equal(index_status(body,f.root,f.profile).state,"mismatch");
 });
 
