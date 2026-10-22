@@ -1,135 +1,153 @@
-# Разработка и выпуск
+# Разработка и сборка
 
-## Окружение
+Корень репозитория — исходники одного плагина `1c-ai-core`.
+Техническое устройство описано в [ARCHITECTURE.md](ARCHITECTURE.md),
+правила агента — в корневом `AGENTS.md`.
 
-Для локальных регрессий нужны Node.js 22+ и Git; в CI настроены Node 22
-и 24 на Windows, Linux и macOS. Внешние EDT/v8std и Java нужны для соответствующих
-live-проверок; обычные регрессии используют тестовые данные и локальные серверы.
+## Начало работы
 
-Установите зависимости разработчика и создайте автономный bundle:
+Нужны Node.js 22+, npm и Git. EDT не требуется для изменения Node.js-кода
+и локальных регрессий. Необходимое внешнее окружение подключается отдельно
+для live-проверок интеграций.
 
-```text
+```sh
+git clone https://github.com/ShadobaAI/edt-ai-core.git
+cd edt-ai-core
 npm ci --ignore-scripts
 node tools/vendor.mjs
 ```
 
-`package-lock.json` фиксирует версии и npm integrity. `vendor.mjs` собирает
-YAML/Ajv/ZIP в ESM bundle, копирует лицензии и проверяет SHA-512 двух готовых
-Windows N-API модулей Koffi по lockfile. Кэш загрузок находится в `.work/`.
-Компилятор, Python, PowerShell и Bash не нужны. `vendor/` генерируется и входит
-в готовый ZIP; `node_modules`, esbuild и инструменты разработчика туда не входят.
+`vendor.mjs` собирает runtime-библиотеки из lockfile в `vendor/deps.mjs`,
+копирует готовые Windows-модули Koffi и формирует `vendor/NOTICE.txt`.
+Каталог `vendor/` генерируется и не хранится в Git. Изменяя зависимости,
+обновляйте `package.json`, lockfile и проверяйте сведения о лицензиях.
+
+| Что менять | Где искать |
+| --- | --- |
+| Подключения Codex | `plugin.json`, `mcp.json`, `hooks/hooks.json` |
+| Профиль и его загрузку | `schemas/`, `scripts/profile.mjs`, `project_context.mjs`, `selection.mjs` |
+| Форму и настройки | `ui/settings.html`, `mcp/settings.mjs`, `scripts/settings_backend.mjs` |
+| Запуск и обновление MCP | `scripts/runtime.mjs`, `lazy_mcp.mjs`, `mcp/bsl-ls-proxy.mjs` |
+| Правила работы агента | `skills/`; принятые границы — `skills/catalog.yaml` |
+| Нормативный протокол и guard | `policy/`, `scripts/guard.mjs`, `hooks/` |
+| Поставку | `scripts/package_layout.mjs`, `tools/package-plugin.mjs`, `tools/check-plugin.mjs` |
 
 ## Проверки
+
+Запускайте регрессии изменённого модуля, например:
+
+```sh
+node --test tests/test-profiles.mjs tests/test-profile-settings.mjs
+```
+
+Полный набор:
 
 ```sh
 node tools/test.mjs
 ```
 
-Усиленный прогон с `PATH`, содержащим только Node (Git используется по явно
-разрешённому абсолютному пути для сборочных фикстур):
+`npm test` дополнительно вызывает vendor-сборку через `tools/develop.mjs`.
+Тестовый runner использует Node без shell/glob expansion. Фикстуры проверяют
+схемы, изоляцию, API, ошибки и упаковку; они не подтверждают фактическую
+приёмку установленного EDT, v8std, JAR, тестовых баз и UI Codex.
 
-```text
-node tools/without-shells.mjs tools/test.mjs
-node tools/without-shells.mjs tools/vendor.mjs
-node tools/without-shells.mjs tools/package-plugin.mjs
-```
-
-Для небольшой правки запускайте относящиеся к ней тесты. Полная регрессия
-выполняется в CI. Live-проверки описаны в [руководстве](USAGE.md);
-подтверждённые результаты и ограничения — в [журнале](VERIFICATION.md).
+Для документации сверяйте команды и поля с реализацией, проверяйте ссылки
+и примеры YAML. Для changes в составе поставки проверяйте оба архива и
+извлечённый плагин. Сборка не является обязательным завершением каждой задачи.
 
 ## Локальная сборка
 
+После установки dev-зависимостей выполните:
+
 ```sh
-node tools/package-plugin.mjs
-# Явная версия для локальной проверки:
-node tools/package-plugin.mjs --version 0.3.0
+bash tools/build-plugin.sh
 ```
 
-Сборщику нужны Node.js, Git и заранее созданный `vendor/`.
-`node tools/develop.mjs build` обновляет bundle перед сборкой.
-`bash tools/build-plugin.sh` сохранён по запросу как необязательная обёртка
-dev-контура над этими Node-командами. Локальная сборка ничего не публикует.
+На Windows можно использовать Git Bash. Обёртка запускает только
+`vendor.mjs` и `package-plugin.mjs`; при интерактивном запуске ждёт Enter
+перед закрытием. Она не запускает тесты и ничего не публикует.
+Эквивалент без Bash:
 
-В `.build/` появятся:
+```sh
+node tools/vendor.mjs
+node tools/package-plugin.mjs
+```
 
-- `1c-ai-core-VERSION.zip` — плагин;
-- `1c-ai-core-VERSION-marketplace.zip` — локальный магазин с плагином;
-- `SHA256SUMS` — контрольные суммы;
-- `marketplace/` — готовый каталог локального магазина.
+Сборщик проверяет входы, затем заменяет `.build/`. Не храните в ней нужные
+ручные файлы. Результат:
 
-Сборщик пересоздаёт `.build/`. Локальная версия берётся из максимального
-стабильного тега, достижимого из HEAD, и версии `plugin.json`: используется большая
-из них. До первого тега версия берётся из `plugin.json`.
-Сборка работает до первого коммита. `build-info.json` фиксирует версию,
-ревизию, незакоммиченные изменения и ID запуска CI. В пакет входят `LICENSE`,
-`NOTICE.md` и `SOURCE.md` со сведениями об исходниках сборки.
+```text
+.build/
+  marketplace/
+    .agents/plugins/marketplace.json
+    plugins/1c-ai-core/
+  1c-ai-core-VERSION.zip
+  1c-ai-core-VERSION-marketplace.zip
+  SHA256SUMS
+```
 
-Проверьте запуск плагина и отдельно — контрольные суммы и распаковку.
-Для распаковки укажите новый, ещё не существующий каталог:
+Первый ZIP содержит плагин в каталоге `1c-ai-core/`, второй — корень магазина
+с каталогом `.agents/plugins/` и готовым пакетом. Внутри плагина сборщик
+создаёт `.codex-plugin/plugin.json`, `build-info.json` и `SOURCE.md`.
+
+Локальная версия выбирается как максимальная из версии `plugin.json`
+и стабильных tags, достижимых из HEAD. Её можно задать явно:
+`node tools/package-plugin.mjs --version 0.3.1` (пример версии).
+Для tag-сборки CI версия обязана совпадать с tag. Сборщик не меняет
+manifest исходников и отмечает dirty-состояние в build-info/SOURCE.
+
+Проверьте извлечённый пакет:
 
 ```sh
 node tools/check-plugin.mjs .build/marketplace/plugins/1c-ai-core
-node tools/verify-package.mjs .build ".work/extracted plugin"
 ```
 
-Проверка пакета запускает entrypoints вне checkout, с Unicode и пробелами в путях,
-`PATH` только с Node и перехватом запрещённых процессов/shell-вызовов. Она проверяет
-импорт/экспорт настроек, CLI профиля, все MCP-входы и guard, без установки npm.
-Сам smoke выполняется в отдельном Node-процессе, чтобы Windows освободила N-API DLL.
+Проверка запускает MCP из готового пакета с Node-only окружением,
+проверяет manifest, bundled-зависимости, лицензии и профильные операции.
+Для проверки контрольных сумм ZIP и извлечения используйте
+`node tools/verify-package.mjs .build .work/verified-package`;
+путь вывода должен быть новым. После извлечения можно проверить
+`.work/verified-package/plugins/1c-ai-core` тем же `check-plugin.mjs`.
 
-Состав пакета задаётся в `scripts/package_layout.mjs` и используется как
-`tools/package-plugin.mjs`, так и локальным `prepare_install.mjs`.
-Изменяя его, сохраняйте
-переносимую команду `node` и исключайте локальные настройки,
-credentials и инструменты разработки; runtime-зависимости поставляются внутри.
-Проектные профили принадлежат
-репозиториям проектов; здесь поставляется только `generic-1c`.
-В `assets/` поставляется SVG-иконка; `logo` и `composerIcon` должны ссылаться
-на существующий квадратный asset. `check-plugin.mjs`, вызываемый CI при сборке
-и проверке распакованного пакета, проверяет asset, ShadobaAI в обоих manifest
-и SessionStart. Локальный `prepare_install.mjs` переписывает команду Node
-для каждого hook, включая guard и discovery профиля.
+Установите готовый магазин в Codex:
+
+```sh
+codex plugin marketplace add ./.build/marketplace
+```
+
+Затем установите плагин из этого источника. Codex использует установленную
+копию в кэше, поэтому изменение исходников само по себе не обновляет
+работающий плагин. После пересборки обновите локальный источник/установку
+и перезагрузите её средствами хоста.
+
+## Состав и лицензии пакета
+
+Allowlist определяет `scripts/package_layout.mjs`. Пакет содержит runtime,
+навыки, схемы, документацию, generic-профиль, vendor bundle и лицензии.
+Не содержит `tools/`, `tests/`, `node_modules/`, Git, проектные профили,
+локальные настройки и состояние пользователя. Bash-обёртка остаётся
+в исходниках и не поставляется пользователю.
+
+Обязательно сохраняются `LICENSE` (MPL 2.0), `NOTICE.md`,
+`UNICODE-LICENSE.txt`, сгенерированные `vendor/NOTICE.txt` и `SOURCE.md`.
+Сторонние компоненты сохраняют свои лицензии; сведения о происхождении
+нельзя заменять общей лицензией плагина.
 
 ## CI и публикация
 
-**Build 1c-ai-core plugin** запускается для PR и push стабильного тега
-`MAJOR.MINOR.PATCH` без `v`. Обычный push ветки сборку не запускает.
-Workflow проверяет регрессии, собирает ZIP и хранит их вместе с `SHA256SUMS`
-в Actions artifact `1c-ai-core-plugin` 14 дней. Распакованный пакет проверяется
-в матрице Windows/Linux/macOS и Node 22/24. Все `run`-шаги используют `node {0}`;
-workflow не требует Bash или PowerShell для скриптов плагина.
+Workflow `build-plugin.yml` запускается для pull requests и стабильных
+числовых tags вида `0.3.1` без префикса `v`. Обычный push ветки его не запускает.
+CI устанавливает dev-зависимости, собирает vendor, запускает регрессии,
+проверяет ZIP и публикует artifact `1c-ai-core-plugin`. Затем smoke-matrix
+проверяет извлечённый пакет на Windows/Linux/macOS с Node 22 и 24.
 
-После успешного завершения всей сборки тега **Publish 1c-ai-core to codex-plugins**
-обновляет `plugins/1c-ai-core` и его запись в каталоге
-[ShadobaAI/codex-plugins](https://github.com/ShadobaAI/codex-plugins).
-PR-сборки не публикуются.
+`publish-marketplace.yml` получает успешную tag-сборку после завершения
+всего workflow, проверяет её происхождение, revision, версию, run ID,
+контрольные суммы и отсутствие dirty-состояния. Доверенные publication tools
+берутся из main. Публикация обновляет только `ShadobaAI/codex-plugins`,
+сохраняя остальные записи магазина и запрещая откат версии.
 
-Для выпуска:
-
-1. Добавьте в Actions secrets исходного репозитория `MARKETPLACE_TOKEN`:
-   fine-grained token для `ShadobaAI/codex-plugins` с правом **Contents: Read and write**.
-   Ветка `main` магазина должна разрешать push владельцу токена.
-2. Отправьте проверенные исходники в `main`.
-3. Создайте свободный тег версии и отправьте его. Например, если `0.3.0` ещё не занят:
-
-   ```sh
-   git tag 0.3.0
-   git push origin 0.3.0
-   ```
-
-Версия релиза берётся из запускающего тега. Публикация проверяет репозиторий,
-workflow, ревизию, тег, run ID, чистоту сборки и содержимое архивов.
-Код из артефакта с токеном публикации не исполняется.
-Git-аутентификация передаётся отдельным source/marketplace процессам через
-временные HTTP headers окружения; shell credential helper не устанавливается.
-Повторный выпуск той же сборки ничего не меняет; замена версии и откат запрещены.
-Для повторной попытки запустите workflow публикации вручную с `build_run_id`
-успешной сборки тега.
-
-## Документация
-
-[Инструкция пользователю](USAGE.md), [архитектура](https://github.com/ShadobaAI/edt-ai-core/blob/main/docs/design/ARCHITECTURE.md),
-[техническая схема](https://github.com/ShadobaAI/edt-ai-core/blob/main/docs/design/TECHNICAL_ARCHITECTURE.md), [план развития](ROADMAP.md).
-Архитектурные документы включают будущие возможности; фактическая готовность
-отмечена в [журнале проверок](VERIFICATION.md).
+Для публикации нужен `MARKETPLACE_TOKEN` с Contents write к репозиторию
+магазина. Это CI-секрет; пользователь плагина его не настраивает.
+Ручной запуск публикации принимает ID успешной release-сборки.
+Создание tag и публикация выполняются только по отдельному поручению.

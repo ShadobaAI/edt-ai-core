@@ -1,32 +1,46 @@
-# Исходные репозитории
+# Источники и происхождение
 
-Этот репозиторий содержит исходники плагина `1c-ai-core`, его тесты, схемы,
-универсальные навыки и шаблоны профилей. Копии ИИ-окружений проектов здесь
-не хранятся. Для изучения и переноса поведения используются их репозитории:
+## Репозитории проекта
 
-| Окружение | Репозиторий | Путь ИИ-окружения | Путь навыков |
-| --- | --- | --- | --- |
-| CRM | [crm-ai-dev](https://git.fsk.ru/ShadobaAI/crm-ai-dev.git) | корень репозитория, размещённый в `CRM_EDT/.codex/` | `skills/` |
-| Kafka | [kafka-tools](https://github.com/ShadobaAI/kafka-tools.git) | `ai/` | `ai/.codex/skills/` |
+| Назначение | Источник |
+| --- | --- |
+| Исходники 1C AI Core | [ShadobaAI/edt-ai-core](https://github.com/ShadobaAI/edt-ai-core) |
+| Установочный Git-магазин | [ShadobaAI/codex-plugins](https://github.com/ShadobaAI/codex-plugins) |
+| Регистрация и устройство магазинов Codex | [Официальная документация OpenAI](https://developers.openai.com/plugins/build/plugins) |
 
-Наблюдаемые ревизии указаны в `skills/catalog.yaml`; локальные
-изменения в исходных окружениях могут отличаться от этих коммитов. Перед
-переносом поведения проверяйте актуальный checkout и его изменения. Для CRM
-требуется доступ к корпоративному Git.
+## Внешние компоненты
 
-В ядро переносится универсальная реализация навыка. Пути, aliases, EDT-проекты,
-тестовые маршруты и другие параметры окружения задаются профилем. Плагин не
-загружает проектные skills автоматически и не требует эти репозитории для
-своей работы. Подробная сверка поведения навыков ещё не завершена.
-При сверке сначала учитывать принятые решения `migration_decisions` в
-`skills/catalog.yaml`: отличия от исходников могут быть осознанными
-исключениями, в частности `platform-documentation-edt-only`.
-Решения `platform-documentation-edt-only` и `bsp-documentation-without-ssl-mcp`
-исключают `1c-docs-mcp` (HelpSearchServer) и `1c-ssl-mcp`, включая дополнительные
-и резервные подключения. Их отсутствие не является дефектом миграции;
-готовность заменяющих маршрутов оценивается отдельно.
+Registry компонентов задан в [components.mjs](../scripts/components.mjs),
+release/runtime contract — в [runtime-manifest.yaml](../runtime/runtime-manifest.yaml).
 
-Профили и локальные экспорты CRM/Kafka удалены из репозитория по решению
-пользователя от 2026-10-20. Их проработка отложена до отдельной задачи.
-В `profiles/generic-1c/` остаётся только универсальный шаблон; реальные профили
-должны храниться в репозиториях проектов или в локальных пользовательских настройках.
+| Компонент | Источник/назначение |
+| --- | --- |
+| Code-index | [Regsorm/code-index-mcp](https://github.com/Regsorm/code-index-mcp), managed release binary |
+| BSL Language Server | [1c-syntax/bsl-language-server](https://github.com/1c-syntax/bsl-language-server), внешний JAR |
+| Koffi | [Koromix/koffi](https://github.com/Koromix/koffi), bundled Windows API bridge |
+| Unicode case folding | [Unicode](https://www.unicode.org/), данные и отдельная лицензия в пакете |
+| EDT-MCP и v8std | Серверы пользователя; проверяются по живому MCP-контракту |
+
+Версии Node-библиотек закреплены в `package-lock.json`. Авторство и лицензии
+перечислены в [NOTICE.md](../NOTICE.md), [UNICODE-LICENSE.txt](../UNICODE-LICENSE.txt)
+и генерируемом `vendor/NOTICE.txt`. Детали происхождения policy —
+в [mcp/PROVENANCE.md](../mcp/PROVENANCE.md).
+
+## Источники универсальных навыков
+
+| Окружение | Репозиторий | Навыки |
+| --- | --- | --- |
+| CRM | [crm-ai-dev](https://git.fsk.ru/ShadobaAI/crm-ai-dev.git), требуется доступ к корпоративному Git | `skills/` |
+| Kafka | [kafka-tools](https://github.com/ShadobaAI/kafka-tools.git) | `ai/.codex/skills/` |
+
+Наблюдаемые ревизии и принятые решения находятся в
+[skills/catalog.yaml](../skills/catalog.yaml). Текущая полнота миграции
+не следует из одного наличия навыка: нужно сверять поведение с доступным
+источником и учитывать `migration_decisions`.
+
+В ядро переносится универсальное поведение. Проектные пути, aliases,
+EDT-проекты, профили и exports не поставляются; остаётся только `generic-1c`.
+`1c-docs-mcp` (HelpSearchServer) и `1c-ssl-mcp` исключены, включая optional
+и fallback варианты. Замещающие маршруты оцениваются отдельно.
+Текущий контракт знаний и MCP ИБ описан в [INTEGRATIONS.md](INTEGRATIONS.md),
+этапы реализации — в [ROADMAP.md](ROADMAP.md).
