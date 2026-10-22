@@ -59,9 +59,15 @@ export async function profile_summary(state, config, profile) {
     const options = config.mcp.managed[id];
     let status = options.enabled === false ? "disabled" : options.mode === "external" ? "external" : "not_checked";
     if (id === "code-index" && status === "not_checked" && root && profile.status === "loaded") {
-      const { daemon_health } = await import("./runtime.mjs");
-      const health = await daemon_health(path.join(project_directory(state, root), "code-index"));
-      status = health ? "running" : "stopped";
+      const home = path.join(project_directory(state, root), "code-index");
+      try {
+        const { daemon_health } = await import("./runtime.mjs");
+        const health = await daemon_health(home);
+        status = health ? "running" : "stopped";
+      } catch {
+        // Auxiliary runtime metadata must not block opening valid settings.
+        status = "not_checked";
+      }
     }
     components.push({ id, status });
   }

@@ -69,8 +69,11 @@ prefixes, aliases, ports or a running EDT.
   use $1c-code-index for efficient discovery and coverage checks.
   Node 22+ is required. The selected BSL JAR determines Java requirements; a JVM
   startup error identifies incompatibility without a hardcoded Java release gate.
-  JS dependencies are bundled. Use settings.updates or the Services screen to
-  check stable releases, download a candidate, validate/apply, or roll back.
+  JS dependencies are bundled. Use settings.updates(operation=install, version=...)
+  or select a version and click Install in the Services screen. Installation
+  downloads, validates and activates the selected release; its saved version
+  changes only after success. Select an older release to downgrade. Separate
+  check/download/apply/rollback API operations remain available for compatibility.
   No third-party release is a capability allowlist. Preserve full native schemas;
   read core_runtime_status once per new binding for native instructions.
 - The bundled read-only `policy` MCP runs through Node without external setup.

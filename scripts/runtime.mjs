@@ -41,13 +41,21 @@ import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
 
 export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPONENTS[id].repository]));
-export async function list_versions(component, io = { fetch_json }) {
+export async function list_versions(component, io = { fetch_json }, options = {}) {
   if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
   const releases = [], deadline = Date.now() + 90000;
   for (let page = 1; page <= 100; page++) {
     if (Date.now() >= deadline) throw new ConfigError("Version catalog timed out; retry loading the list");
-    const items = await io.fetch_json(`https://api.github.com/repos/${SPECS[component]}/releases?per_page=100&page=${page}`, Math.min(30000, deadline - Date.now()));
+    const base = `https://api.github.com/repos/${SPECS[component]}/releases?per_page=100`;
+    let items = await io.fetch_json(base + (page === 1 ? "" : `&page=${page}`), Math.min(30000, deadline - Date.now()), { fresh: options.refresh === true });
     if (!Array.isArray(items)) throw new ConfigError("Invalid runtime release list");
+    // A transient/cached empty first page must not become a five-minute empty
+    // catalog. Retry the equivalent explicit first page with HTTP revalidation.
+    if (page === 1 && !items.length) {
+      items = await io.fetch_json(base + "&page=1", Math.min(30000, Math.max(1, deadline - Date.now())), { fresh: true });
+      if (!Array.isArray(items)) throw new ConfigError("Invalid runtime release list");
+      if (!items.length) throw new ConfigError("GitHub returned an empty version catalog. Retry loading versions; an empty catalog is not cached.");
+    }
     for (const item of items) {
       if (!item || item.draft || typeof item.tag_name !== "string" || item.tag_name === "latest" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(item.tag_name)) continue;
       const publishedAt = item.published_at || item.created_at || null;
@@ -56,7 +64,9 @@ export async function list_versions(component, io = { fetch_json }) {
     if (items.length < 100) {
       releases.sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
       const seen = new Set();
-      return { component, versions: releases.filter(item => { if (seen.has(item.version)) return false;seen.add(item.version);return true; }) };
+      const versions = releases.filter(item => { if (seen.has(item.version)) return false;seen.add(item.version);return true; });
+      if (!versions.length) throw new ConfigError("GitHub returned no published version tags. Retry loading versions.");
+      return { component, versions };
     }
   }
   throw new ConfigError("Version catalog exceeds 10000 releases; the list was not truncated");
@@ -98,9 +108,10 @@ export const read_json = (file, fallback = null) =>
 export const save_json = (file, value) =>
   atomic_write(file, JSON.stringify(value, null, 2) + "\n");
 export const sha = (file) => sha256(fs.readFileSync(file));
-export async function fetch_json(url, timeout = 30000) {
+export async function fetch_json(url, timeout = 30000, options = {}) {
   const response = await fetch(url, {
-    headers: { "User-Agent": "1c-ai-core/" + core_version },
+    headers: { "User-Agent": "1c-ai-core/" + core_version, ...(options.fresh ? { "Cache-Control": "no-cache" } : {}) },
+    ...(options.fresh ? { cache: "no-store" } : {}),
     signal: AbortSignal.timeout(timeout),
     redirect: "error",
   });
@@ -339,18 +350,19 @@ export async function acquire_reader(state, root) {
 }
 export async function update_component(state, config, root, data, component, action, io = {}) {
   if (!managed_components.includes(component)) throw new ConfigError("Unknown managed component");
-  if (!component_enabled(config, component) || component_settings(config, component).mode === "external") throw new ConfigError("Enable managed mode before updating " + component);
   const lockfile = path.join(state, "runtime-lock.json");
   return operation_lock(state, async () => {
-    if (action === "download") {
+    if (io.load_context) ({ config, root, data } = await io.load_context());
+    if (!component_enabled(config, component) || component_settings(config, component).mode === "external") throw new ConfigError("Enable managed mode before updating " + component);
+    if (["download", "install"].includes(action)) {
       const file = await ensure_installed(state, config, component, true, io.fetch_json ? io : { fetch_json, fetch }, { stage: true });
-      return { component, state: "candidate_downloaded", path: file };
+      if (action === "download") return { component, state: "candidate_downloaded", path: file };
     }
-    if (!["apply", "rollback"].includes(action)) throw new ConfigError("Unknown update action");
+    if (!["install", "apply", "rollback"].includes(action)) throw new ConfigError("Unknown update action");
     const before = read_json(lockfile, {}), entry = before[component] || {}, slot = action === "rollback" ? "previous" : "candidate";
     const candidate = artifact(state, component, slot);
     if (!candidate) throw new ConfigError("No verified " + slot + " artifact; download a candidate first");
-    if (action === "apply") {
+    if (action !== "rollback") {
       const options = component_settings(config, component), selected = entry[slot];
       if ((options.version !== "latest" && options.version.replace(/^v/, "") !== selected.release.replace(/^v/, "")) ||
           (options.version === "latest" && !options.allow_prerelease && selected.prerelease === true))
@@ -375,11 +387,17 @@ export async function update_component(state, config, root, data, component, act
       const checked = await (io.smoke || smoke)(state, config, root, data, component, 90, false, candidate);
       const lock = read_json(lockfile, {});
       lock[component] = { ...entry[slot], ...(entry.release ? { previous: active_entry(entry) } : {}) };
-      save_json(lockfile, lock);
+      const restoreConfig = await io.commit?.(entry[slot].release);
+      try { save_json(lockfile, lock); }
+      catch (error) {
+        try { await restoreConfig?.(); }
+        catch (restoreError) { throw uncertain_update("Runtime activation failed; settings restoration needs attention: " + restoreError.message); }
+        throw error;
+      }
       let reconnect = "requested";
       try { signal_component(state, root, component, true); }
       catch { reconnect = "open_new_chat"; }
-      return { component, state: "applied", release: entry[slot].release, protocol: checked.status, indexReady: checked.index_ready ?? null, reconnect };
+      return { component, state: "applied", release: entry[slot].release, requested: component_settings(config, component).version, protocol: checked.status, indexReady: checked.index_ready ?? null, reconnect };
     } catch (error) {
       if (component === "code-index") {
         try { await (io.stop || stop_daemon)(state, root); }
@@ -388,6 +406,7 @@ export async function update_component(state, config, root, data, component, act
         if (old) try { await (io.restart || ensure_daemon)(state, root, data, old); }
         catch (restartError) { leaveMaintenance = true; throw uncertain_update("Candidate failed; restoration needs attention: " + restartError.message); }
       }
+      if (error.outcomeUnknown) throw error;
       throw new ConfigError("Candidate rejected; active artifact retained: " + error.message);
     }
     } finally {
@@ -633,7 +652,7 @@ export function validate_bsl_tools(tools) {
     throw new ConfigError(
       "BSL LS lacks the native multi-workspace API: " +
         missing.join(", ") +
-        ". In component settings, select an explicit version with this API, then check, download and apply the update. " +
+        ". In component settings, select an explicit version with this API, then install the selected version. " +
         "External servers must expose workspace registration and workspaceFolder parameters.",
     );
 }

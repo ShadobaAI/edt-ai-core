@@ -19,7 +19,12 @@ release/runtime contract — в [runtime-manifest.yaml](../runtime/runtime-manif
 | BSL Language Server | [1c-syntax/bsl-language-server](https://github.com/1c-syntax/bsl-language-server), внешний JAR |
 | Koffi | [Koromix/koffi](https://github.com/Koromix/koffi), bundled Windows API bridge |
 | Unicode case folding | [Unicode](https://www.unicode.org/), данные и отдельная лицензия в пакете |
-| EDT-MCP и v8std | Серверы пользователя; проверяются по живому MCP-контракту |
+| EDT-MCP | Сервер пользователя; проверяется по живому MCP-контракту |
+| v8std: исходный проект | [zeegin/v8std](https://github.com/zeegin/v8std), основа |
+| v8std: рекомендуемый форк | [ShadobaAI/v8std](https://github.com/ShadobaAI/v8std), форк автора 1C AI Core с базой знаний по Vanessa и YaXUnit |
+| v8std: готовый Docker-образ | [aleksp99/v8std-mcp](https://hub.docker.com/r/aleksp99/v8std-mcp), образ автора 1C AI Core из ShadobaAI/v8std с базой знаний по Vanessa и YaXUnit |
+
+v8std запускается пользователем отдельно и проверяется по живому MCP-контракту.
 
 Версии Node-библиотек закреплены в `package-lock.json`. Авторство и лицензии
 перечислены в [NOTICE.md](../NOTICE.md), [UNICODE-LICENSE.txt](../UNICODE-LICENSE.txt)

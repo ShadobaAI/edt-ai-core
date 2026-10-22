@@ -364,7 +364,7 @@ export class SettingsBackend {
         preparationScope: preparation_scope(actual.projectRoot),
         legacyState: legacy,
         profileHistory: profile_history(this.STATE, actual.projectRoot),
-        ...(action === "status" ? { summary: await profile_summary(this.STATE, effective, profile) } : {}),
+        summary: await profile_summary(this.STATE, effective, profile),
       };
     }
     if (["create", "load"].includes(action)) {
@@ -611,15 +611,44 @@ export class SettingsBackend {
       const runtime = await import("./runtime.mjs"), config = this.effective(this.current());
       const component = request.component;
       if (component !== undefined && !managed_components.includes(component)) throw new ConfigError("Выберите компонент.");
+      if (Object.hasOwn(request, "version") && request.operation !== "install") throw new ConfigError("Версия задаётся только для установки.");
       if (request.operation === "check") return { components: await Promise.all((component ? [component] : managed_components).map(async id => {
         try { return await runtime.check_updates(this.STATE, config, id); }
         catch (error) { return { component: id, state: "error", detail: error.message }; }
       })), projectRoot: config.active_project };
-      const [root, data] = runtime.project(config.active_project, config, component === "code-index");
-      authorize_preparation(request, root);
       if (!managed_components.includes(component)) throw new ConfigError("Выберите компонент.");
-      if (["apply", "rollback"].includes(request.operation)) grant_preparation(this.STATE, root, [component]);
-      return { ...await runtime.update_component(this.STATE, config, root, data, component, request.operation), projectRoot: root };
+      let projectRoot;
+      const result = await runtime.update_component(this.STATE, null, null, null, component, request.operation, {
+        load_context: () => {
+          const shared = this.current();
+          if (Object.hasOwn(request, "version")) {
+            shared.mcp.managed[component].version = request.version;
+            shared.mcp.managed[component].allow_prerelease = false;
+            this.checked(shared);
+          }
+          const config = this.effective(shared);
+          if (Object.hasOwn(request, "version") && config.mcp.managed[component].version !== request.version)
+            throw new ConfigError("Версия компонента закреплена локальными настройками проекта или экземпляра. Измените локальную версию перед установкой.");
+          const [root, data] = runtime.project(config.active_project, config, component === "code-index");
+          authorize_preparation(request, root);
+          if (["install", "apply", "rollback"].includes(request.operation)) grant_preparation(this.STATE, root, [component]);
+          projectRoot = root;
+          return { config, root, data };
+        },
+        commit: release => {
+          if (request.operation !== "rollback" && !Object.hasOwn(request, "version")) return;
+          const shared = this.current(), version = request.operation === "rollback" ? release : request.version;
+          shared.mcp.managed[component].version = version;
+          shared.mcp.managed[component].allow_prerelease = false;
+          this.checked(shared);
+          if (this.effective(shared).mcp.managed[component].version !== version)
+            throw new ConfigError("Локальные настройки версии изменились во время установки. Рабочая версия сохранена.");
+          const previousConfig = bytes(this.CONFIG);
+          this.store_shared_settings(shared);
+          return () => restore(this.CONFIG, previousConfig);
+        },
+      });
+      return { ...result, projectRoot };
     }
     if (action === "rebuild_index") {
       const runtime = await import("./runtime.mjs"), config = this.effective(this.current()), [root, data] = runtime.project(config.active_project, config, true);

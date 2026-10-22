@@ -323,8 +323,10 @@ async function call(name, args, meta = {}) {
   const readOnlyEntry = ["settings.inspect", "settings.read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.check", "settings.versions"].includes(name);
   if (name === "settings.versions") {
     let cached = versionCatalogs.get(args.component);
-    if (!cached || cached.expires < Date.now()) {
-      const promise = import("../scripts/runtime.mjs").then(runtime => runtime.list_versions(args.component));
+    if (args.refresh || !cached || cached.expires < Date.now()) {
+      const promise = import("../scripts/runtime.mjs").then(runtime => runtime.list_versions(args.component, undefined, { refresh: args.refresh })).then(data => {
+        diagnostic.event("version_catalog_loaded", { component: args.component, versions: data.versions.length });return data;
+      });
       cached = { promise, expires: Date.now() + 5 * 60 * 1000 };versionCatalogs.set(args.component, cached);
       promise.catch(() => { if (versionCatalogs.get(args.component) === cached) versionCatalogs.delete(args.component); });
     }
@@ -468,14 +470,15 @@ tools.push({ name: "settings.run_check", title: "Проверить готовн
 tools.push({ name: "settings.rebuild_index", title: "Пересоздать индекс EDT-проекта", description: "Rebuild only one configured repository with the native index --force CLI, after scoped authorization. Stops the owned project daemon and requires current readers to finish. Does not edit the profile or source files. Poll settings.operation; do not retry a running operation.",
   inputSchema: { type: "object", properties: { repository: { type: "string", minLength: 1 }, authorization: preparationAuthorization }, required: ["repository", "authorization"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
-tools.push({ name: "settings.updates", title: "Обновления компонентов", description: "Check releases using the component's saved version and allow_prerelease policy, download a separate candidate, apply it after live protocol validation, or roll back to the previous artifact. Stable releases are the default. Mutating operations require scoped authorization. Poll settings.operation; do not retry a running operation.",
+tools.push({ name: "settings.updates", title: "Обновления компонентов", description: "Install the component's saved version in one operation: download a candidate, validate its live protocol and activate it. An explicit version can upgrade or downgrade. Stable releases are the default for latest. Separate check, download, apply and rollback operations remain available. Mutating operations require scoped authorization. Poll settings.operation; do not retry a running operation.",
   inputSchema: { type: "object", properties: {
-    operation: { enum: ["check", "download", "apply", "rollback"] },
+    operation: { enum: ["install", "check", "download", "apply", "rollback"] },
+    version: { ...primitive.codeIndexVersion, title: "Версия для установки", description: "Install only: selected tag or latest (stable). Saved only after successful validation and activation; omit to use the saved release policy." },
     component: { enum: ["code-index", "bsl-ls"], description: "Target component for this operation. Only check may omit it to inspect both components." }, authorization: preparationAuthorization,
   }, required: ["operation"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
 tools.push({ name: "settings.versions", title: "Версии компонента", description: "List all published release tags, including prereleases, newest publication first. Read-only catalog; does not install or launch components. The settings form searches the complete catalog locally.",
-  inputSchema: { type: "object", properties: { component: { enum: ["code-index", "bsl-ls"] } }, required: ["component"], additionalProperties: false },
+  inputSchema: { type: "object", properties: { component: { enum: ["code-index", "bsl-ls"] }, refresh: { type: "boolean", description: "Bypass the catalog cache and revalidate GitHub responses for a manual refresh or retry." } }, required: ["component"], additionalProperties: false },
   annotations: { ...annotations(), openWorldHint: true }, _meta: appOnly });
 for (const tool of tools) tool.icons = component_icons("settings");
 

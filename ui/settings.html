@@ -23,7 +23,7 @@ select{padding:5px 8px;min-height:32px;border:1px solid var(--line);border-radiu
 .upload{display:flex;align-items:center;gap:12px;padding:16px;border:1px dashed var(--line);border-radius:5px;cursor:pointer;max-width:460px;margin:16px 0 0}.upload:hover{background:var(--surface)}.upload .icon{width:20px;height:20px;color:var(--muted)}.upload strong{font-weight:500}.upload small{display:block;font-size:12px;color:var(--muted)}input[type=file]{position:absolute;width:1px;height:1px;opacity:0}.upload:focus-within{outline:2px solid var(--accent);outline-offset:2px}.replace{display:flex;gap:8px;align-items:flex-start;font-size:12px;margin-top:12px}.replace input{accent-color:var(--accent);margin-top:3px}
 details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer;list-style-position:inside}details p{margin-top:8px}pre{white-space:pre-wrap;font:12px/1.6 ui-monospace,"Cascadia Code",Consolas,monospace;margin:8px 0 0}ul{margin:8px 0;padding-left:18px;overflow-wrap:anywhere}.service{padding:10px 0;border-bottom:1px solid var(--line)}.service:last-child{border:0}.service .row{margin:0}.service-name{display:flex;gap:8px;align-items:center;font-weight:500}.service-summary{list-style:none;display:flex;cursor:pointer}.service-summary::-webkit-details-marker{display:none}.service-summary:after{content:"›";margin-left:6px}.service-summary>span:last-of-type{margin-left:auto}.service[open]>.service-summary:after{transform:rotate(90deg)}details.service{margin-top:0;color:inherit;font-size:13px}.check-scope{margin-bottom:12px}.support p{max-width:700px}.support .actions{margin-top:12px}
 .json-tree{min-height:360px;max-height:650px;overflow:auto;padding:12px;border:1px solid var(--line);border-radius:5px;background:var(--surface);font:12px/1.6 ui-monospace,Consolas,monospace}.json-tree details{margin:4px 0;color:var(--text)}.json-children{margin-left:18px;border-left:1px solid var(--line);padding-left:10px}.json-leaf{display:flex;align-items:center;gap:10px;margin:5px 0}.json-leaf span{flex:0 1 35%;overflow-wrap:anywhere}.json-leaf input{flex:1;min-width:90px;font:inherit}.json-leaf input[aria-invalid=true]{border-color:var(--warn)}.editor-validation{font-size:12px;margin:6px 0;overflow-wrap:anywhere}.editor-validation.error{color:var(--warn)}
-.version-picker{position:relative;min-width:110px;max-width:100%}.version-picker>button{width:100%;justify-content:space-between;gap:14px}.version-picker>button span{max-width:220px;overflow:hidden;text-overflow:ellipsis}.version-popup{position:absolute;top:calc(100% + 5px);right:0;z-index:30;width:280px;max-width:calc(100vw - 40px);padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);box-shadow:0 6px 22px #0002}.version-options{max-height:240px;overflow:auto;margin-top:6px}.version-options button{display:block;width:100%;text-align:left;justify-content:flex-start;border:0;background:transparent;font-family:ui-monospace,Consolas,monospace;font-size:12px}.version-options button[aria-selected=true]{color:var(--accent);font-weight:600}.version-options button[data-focused=true],.version-options button:hover{background:var(--surface)}.version-popup p{font-size:11px}.version-popup>button{margin-top:6px;width:100%;font-size:12px}
+.version-picker{position:relative;min-width:110px;max-width:100%}.version-picker>button{width:100%;justify-content:space-between;gap:14px}.version-picker>button span{max-width:220px;overflow:hidden;text-overflow:ellipsis}.version-popup{position:absolute;top:calc(100% + 5px);right:0;z-index:30;width:280px;max-width:calc(100vw - 40px);padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);box-shadow:0 6px 22px #0002}.version-toolbar{display:flex;align-items:center;gap:6px}.version-toolbar input{flex:1}.version-options{max-height:240px;overflow:auto;margin-top:6px}.version-options button{display:block;width:100%;text-align:left;justify-content:flex-start;border:0;background:transparent;font-family:ui-monospace,Consolas,monospace;font-size:12px}.version-options button[aria-selected=true]{color:var(--accent);font-weight:600}.version-options button[data-focused=true],.version-options button:hover{background:var(--surface)}.version-popup p{font-size:11px}.version-popup>button{margin-top:6px;width:100%;font-size:12px}
 .status{margin-top:22px;padding:10px 0;border-top:1px solid var(--line);font-size:12px;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere}.status.error{color:var(--color-text-danger,#b33a32)}.unsaved{color:var(--warn);font-size:11px;margin-top:10px}
 @media(prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:var(--color-background-primary,#202226);--surface:var(--color-background-secondary,#26292e);--text:var(--color-text-primary,#e6e8ed);--muted:var(--color-text-secondary,#a0a8b5);--line:var(--color-border-primary,#3b4049);--accent:#8ab4ff;--on-accent:#162337;--good:#82c6a3;--warn:#dcb776}}
 :root[data-theme=dark]{--bg:var(--color-background-primary,#202226);--surface:var(--color-background-secondary,#26292e);--text:var(--color-text-primary,#e6e8ed);--muted:var(--color-text-secondary,#a0a8b5);--line:var(--color-border-primary,#3b4049);--accent:#8ab4ff;--on-accent:#162337;--good:#82c6a3;--warn:#dcb776}
@@ -111,10 +111,10 @@ details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer
 <div class="panel"><h2>Обновления</h2>
 <div class="actions"><label for="updateComponent">Компонент</label><select id="updateComponent"><option value="code-index">Индекс кода</option><option value="bsl-ls">BSL LS</option></select>
 <div id="versionPicker" class="version-picker"><button id="versionButton" aria-label="Выбрать версию компонента" aria-haspopup="listbox" aria-expanded="false" aria-controls="versionPopup"><span id="versionValue">latest</span><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg></button>
-<div id="versionPopup" class="version-popup" hidden><input id="versionSearch" type="text" placeholder="Поиск версии…" aria-label="Поиск версии" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="versionOptions" autocomplete="off" spellcheck="false"><div id="versionOptions" class="version-options" role="listbox" aria-label="Версии компонента"></div><p id="versionHint" role="status"></p><button id="moreVersionsButton" hidden>Показать ещё</button><button id="retryVersionsButton" hidden>Повторить загрузку</button></div></div></div>
-<p class="muted">latest — последний стабильный выпуск. Выбранная версия сохраняется сразу для всех проектов пользователя.</p>
-<p>Все действия ниже относятся к выбранному компоненту. Проверка обновлений не перезапускает сервисы. Скачанное обновление применяется после проверки его API. Текущие операции индекса должны завершиться.</p>
-<div class="actions"><button id="updatesButton"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Проверить обновления</button><button id="downloadUpdateButton"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Скачать</button><button id="applyUpdateButton"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>Применить</button><button id="rollbackUpdateButton"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Откатить</button></div><pre id="updatesResult"></pre></div>
+<div id="versionPopup" class="version-popup" hidden><div class="version-toolbar"><input id="versionSearch" type="text" placeholder="Поиск версии…" aria-label="Поиск версии" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="versionOptions" autocomplete="off" spellcheck="false"><button id="refreshVersionsButton" class="icon-button" title="Обновить список версий" aria-label="Обновить список версий"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button></div><div id="versionOptions" class="version-options" role="listbox" aria-label="Версии компонента"></div><p id="versionHint" role="status"></p><button id="moreVersionsButton" hidden>Показать ещё</button></div></div></div>
+<p class="muted">latest — последний стабильный выпуск. Версия сохраняется для всех проектов пользователя после успешной установки.</p>
+<p>Установка скачает выбранную версию, проверит её API и переключит компонент. Для возврата к старой версии выберите её в списке и установите. Текущие операции индекса должны завершиться.</p>
+<div class="actions"><button id="installUpdateButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Установить</button></div><pre id="updatesResult"></pre></div>
 <h2 class="runtime-heading">Сервисы проекта</h2><p>Подготовьте runtime и проверьте доступность MCP.</p><div id="connections" class="panel" hidden></div>
 <div class="actions"><button id="checkButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>Подготовить и проверить</button></div>
 <div class="actions"><label for="indexRepository">EDT-проект</label><select id="indexRepository" aria-label="EDT-проект для пересоздания индекса"></select><button id="rebuildIndexButton">Пересоздать индекс</button></div><p class="muted">Пересоздаётся индекс только выбранного проекта из профиля. Текущие запросы к индексу должны завершиться; сервис будет временно остановлен.</p>
@@ -135,10 +135,12 @@ let initialData=null,lastPreview=null,fileText="",editBaseRevision=null,checkTim
 const dirtyFields=new Set();let statusTimer=null,statusPolling=false,disposed=false,historySignature="",viewRevision=0,editorOriginal="",previewMode="import",navigationMode="project",activeMode="profile",diagnosticsLoading=false,diagnosticsData=null,journalSignature="";const expandedLogs=new Set();let profilesOpen=false;const profileMedia=window.matchMedia?.("(max-width:900px)");
 const treeErrors=new Map();let jsonInputs=[];
 const updateResults=new Map();
+const selectedVersions=new Map();
 const versionCatalogs=new Map();let versionOpen=false,versionLimit=50,versionIndex=-1,visibleVersions=[];
 const versionField=component=>component==="bsl-ls"?"bslLsVersion":"codeIndexVersion";
 const checkboxField=field=>field.endsWith("Enabled")||field.endsWith("AllowPrerelease");
 const savedField=(values,field)=>checkboxField(field)?Boolean(values?.[field]):values?.[field]||(field.endsWith("Version")?"latest":"");
+const selectedVersion=component=>selectedVersions.get(component)||savedField(currentData?.values,versionField(component));
 function resize(){
   if(resizeTimer!==null)clearTimeout(resizeTimer);
   resizeTimer=setTimeout(()=>{
@@ -268,7 +270,7 @@ function renderReadiness(){
 function renderCurrent(current,{preserveDraft=false}={}){
   current.viewOnly=Boolean(current.viewOnly);
   const changedRoot=currentData&&currentData.values?.projectRoot!==current.values?.projectRoot;
-  if(changedRoot){dirtyFields.clear();invalidate();$("settingsText").value="";editorOriginal="";editBaseRevision=null;resetJsonEditor();$("probeResult").hidden=true;$("connections").hidden=true;$("exportSaved").hidden=true;updateResults.clear();renderUpdates();}
+  if(changedRoot){dirtyFields.clear();invalidate();$("settingsText").value="";editorOriginal="";editBaseRevision=null;resetJsonEditor();$("probeResult").hidden=true;$("connections").hidden=true;$("exportSaved").hidden=true;updateResults.clear();selectedVersions.clear();renderUpdates();}
   $("legacyState").hidden=current.legacyState?.status!=="owner_unknown"||!Object.keys(current.legacyState?.connections||{}).length;
   $("legacyConnections").textContent=Object.entries(current.legacyState?.connections||{}).map(([name,item])=>name+": "+(item.url||"отключён")).join("\n");
   for(const field of ["codeIndexEnabled","bslLsEnabled"])if(!preserveDraft||!dirtyFields.has(field))$(field).checked=Boolean(current.values?.[field]);
@@ -348,7 +350,8 @@ function syncControls(){
   $("openDiagnosticsButton").disabled=!connected||diagnosticsBusy||$("diagnosticsSaved").hidden;
   $("openExportButton").disabled||=$("exportSaved").hidden;
   const loaded=currentData?.profile?.status==="loaded",draftRoot=dirtyFields.has("projectRoot"),blocked=currentData?.viewOnly||draftRoot;
-  for(const id of ["saveButton","probeButton","saveComponentsButton","updateComponent","versionButton","versionSearch","moreVersionsButton","retryVersionsButton","checkButton","readinessButton","updatesButton","downloadUpdateButton","applyUpdateButton","rollbackUpdateButton","downloadButton","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled"])$(id).disabled||=!loaded||blocked;
+  for(const id of ["saveButton","probeButton","saveComponentsButton","updateComponent","versionButton","versionSearch","moreVersionsButton","refreshVersionsButton","checkButton","readinessButton","installUpdateButton","downloadButton","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled"])$(id).disabled||=!loaded||blocked;
+  $("refreshVersionsButton").disabled||=!connected||Boolean(versionCatalogs.get($("updateComponent").value)?.loading);
   for(const id of ["indexRepository","rebuildIndexButton"])$(id).disabled||=!loaded||blocked||currentData?.values?.codeIndexEnabled===false||!$("indexRepository").value;
   for(const id of ["checkTab","editorTab","exportTab"])$(id).disabled||=!loaded;
   for(const id of ["createButton","loadButton","previewButton","applyButton","file","reviewEditButton","migrateConnectionsButton"])$(id).disabled||=blocked||!currentData?.values?.projectRoot;
@@ -462,22 +465,24 @@ $("migrateConnectionsButton").onclick=()=>busy("Переносим провер�
   if(!Object.keys(set).length)throw new Error("Подключения задаются источником с более высоким приоритетом.");
   await tool("settings.update",{set});await refresh();notice("Подключения сохранены для выбранной папки. Старое состояние сохранено.");
 }).catch(()=>{});
-async function performUpdate(operation){
+async function installVersion(){
   const current=await refresh();if(!current.preparationScope)throw new Error("Выберите папку проекта.");
-  const authorization={scope:current.preparationScope,effects:["launch"],evidence:"Пользователь выбрал действие обновления «"+operation+"» в настройках."};
-  const job=await tool("settings.updates",{operation,component:$("updateComponent").value,...(operation==="check"?{}:{authorization})});activeOperation=job;await pollOperation(job.id);
+  const component=$("updateComponent").value,version=selectedVersion(component);
+  updateResults.delete(component);renderUpdates();
+  const authorization={scope:current.preparationScope,effects:["launch"],evidence:"Пользователь нажал «Установить» для компонента «"+component+"», версия «"+version+"»."};
+  const job=await tool("settings.updates",{operation:"install",component,version,authorization});activeOperation=job;await pollOperation(job.id);
 }
-for(const [button,operation]of [["updatesButton","check"],["downloadUpdateButton","download"],["applyUpdateButton","apply"],["rollbackUpdateButton","rollback"]])$(button).onclick=()=>busy("Выполняем действие обновления…",()=>performUpdate(operation)).catch(()=>{});
+$("installUpdateButton").onclick=()=>busy("Устанавливаем версию…",installVersion).catch(()=>{});
 function renderUpdates(){
-  const item=updateResults.get($("updateComponent").value),states={disabled:"отключён",external:"внешний экземпляр",current:"актуален",update_available:"доступно обновление",error:"ошибка проверки",applied:"применён",candidate_downloaded:"кандидат скачан"};
-  $("updatesResult").textContent=item?(item.component==="bsl-ls"?"BSL LS":"Индекс кода")+": "+(states[item.state]||item.state)+(item.release?" · "+item.release:"")+(item.active?"\nУстановлен: "+item.active:"")+(item.latest?" · новый: "+item.latest:"")+(item.candidate?"\nКандидат: "+item.candidate:"")+(item.previous?" · для отката: "+item.previous:"")+(item.detail?"\n"+item.detail:"")+(item.reconnect==="open_new_chat"?"\nДля подключения откройте новый чат.":""):"Проверьте обновления выбранного компонента.";
+  const item=updateResults.get($("updateComponent").value),states={disabled:"отключён",external:"внешний экземпляр",current:"актуален",update_available:"выбранная версия отличается от установленной",error:"ошибка проверки",applied:"установлена версия",candidate_downloaded:"кандидат скачан"};
+  $("updatesResult").textContent=item?(item.component==="bsl-ls"?"BSL LS":"Индекс кода")+": "+(states[item.state]||item.state)+(item.release?" · "+item.release:"")+(item.active?"\nУстановлен: "+item.active:"")+(item.latest?" · выбран: "+item.latest:"")+(item.candidate?"\nКандидат: "+item.candidate:"")+(item.detail?"\n"+item.detail:"")+(item.reconnect==="open_new_chat"?"\nДля подключения откройте новый чат.":""):"Выберите версию и нажмите «Установить».";
 }
 function renderVersion(){
-  $("versionValue").textContent=savedField(currentData?.values,versionField($("updateComponent").value));
+  $("versionValue").textContent=selectedVersion($("updateComponent").value);
   if(versionOpen)renderVersionOptions();
 }
 function renderVersionOptions(){
-  const component=$("updateComponent").value,catalog=versionCatalogs.get(component),selected=savedField(currentData?.values,versionField(component)),query=$("versionSearch").value.trim().toLowerCase();
+  const component=$("updateComponent").value,catalog=versionCatalogs.get(component),selected=selectedVersion(component),query=$("versionSearch").value.trim().toLowerCase();
   const all=[{version:"latest"},...(catalog?.versions||[])];if(!all.some(item=>item.version===selected))all.push({version:selected});
   const matches=all.filter(item=>item.version.toLowerCase().includes(query));visibleVersions=matches.slice(0,versionLimit);versionIndex=Math.min(versionIndex,visibleVersions.length-1);
   $("versionOptions").replaceChildren(...visibleVersions.map((item,index)=>{
@@ -485,15 +490,18 @@ function renderVersionOptions(){
     option.disabled=busyActive||Boolean(currentData?.viewOnly)||dirtyFields.has("projectRoot");option.onclick=()=>chooseVersion(component,item.version);return option;
   }));
   if(versionIndex>=0)$("versionSearch").setAttribute("aria-activedescendant","version-option-"+versionIndex);else $("versionSearch").removeAttribute("aria-activedescendant");
-  $("moreVersionsButton").hidden=matches.length<=versionLimit;$("retryVersionsButton").hidden=!catalog?.error||standalone;
-  $("versionHint").textContent=standalone?"Список выпусков загружается в настройках плагина в Codex.":catalog?.loading?"Загружаем все версии…":catalog?.error?"Не удалось загрузить версии: "+catalog.error:matches.length?"Найдено: "+matches.length+" · показано: "+visibleVersions.length:"Версии не найдены.";
+  const missing=!catalog?.loading&&!catalog?.versions?.length;
+  $("moreVersionsButton").hidden=matches.length<=versionLimit;
+  $("refreshVersionsButton").disabled=standalone||!connected||busyActive||activeOperation?.status==="running"||currentData?.profile?.status!=="loaded"||Boolean(currentData?.viewOnly)||dirtyFields.has("projectRoot")||Boolean(catalog?.loading);
+  $("refreshVersionsButton").setAttribute("aria-busy",String(Boolean(catalog?.loading)));
+  $("versionHint").textContent=standalone?"Список выпусков загружается в настройках плагина в Codex.":catalog?.loading?"Загружаем все версии…":catalog?.error?"Не удалось загрузить версии: "+catalog.error:missing?"Каталог версий не загружен. Нажмите значок обновления.":matches.length?"Найдено: "+matches.length+" · показано: "+visibleVersions.length:"Версии не найдены.";
 }
 async function loadVersions(component,retry=false){
   if(!connected)return;
-  const existing=versionCatalogs.get(component);if(existing&&!retry&&(existing.loading||existing.expires>Date.now()))return existing.promise;
+  const existing=versionCatalogs.get(component);if(existing&&(existing.loading||(!retry&&existing.expires>Date.now())))return existing.promise;
   const catalog={loading:true,versions:existing?.versions||[],expires:Date.now()+5*60*1000};versionCatalogs.set(component,catalog);if(versionOpen&&$("updateComponent").value===component)renderVersionOptions();
-  catalog.promise=(async()=>{try{const result=await tool("settings.versions",{component});if(result.component!==component||!Array.isArray(result.versions))throw new Error("Некорректный список версий.");catalog.versions=result.versions;}
-    catch(error){catalog.error=error.message;}finally{catalog.loading=false;if(versionOpen&&$("updateComponent").value===component)renderVersionOptions();}})();return catalog.promise;
+  catalog.promise=(async()=>{try{const result=await tool("settings.versions",{component,...(retry?{refresh:true}:{})});if(result.component!==component||!Array.isArray(result.versions))throw new Error("Некорректный список версий.");if(!result.versions.length)throw new Error("Сервер вернул пустой каталог. Повторите загрузку.");catalog.versions=result.versions;}
+    catch(error){catalog.error=error.message;catalog.expires=0;}finally{catalog.loading=false;if(versionOpen&&$("updateComponent").value===component)renderVersionOptions();}})();return catalog.promise;
 }
 function closeVersionPicker(focus=true){versionOpen=false;$("versionPopup").hidden=true;$("versionButton").setAttribute("aria-expanded","false");if(focus)$("versionButton").focus();}
 function openVersionPicker(){
@@ -501,21 +509,19 @@ function openVersionPicker(){
 }
 function chooseVersion(component,version){
   if(component!==$("updateComponent").value||busyActive||currentData?.viewOnly)return;closeVersionPicker();if(standalone)return;
-  return busy("Сохраняем версию…",async()=>{
-    const set={[versionField(component)]:version},flag=component==="bsl-ls"?"bslLsAllowPrerelease":"codeIndexAllowPrerelease";if(currentData?.values?.[flag])set[flag]=false;
-    await tool("settings.update",{set});updateResults.delete(component);renderUpdates();await refresh();notice("Версия "+version+" сохранена. Скачайте и примените выбранную версию.");
-  }).catch(()=>{});
+  selectedVersions.set(component,version);updateResults.delete(component);renderVersion();renderUpdates();notice("Выбрана версия "+version+". Нажмите «Установить».");
 }
 $("versionButton").onclick=()=>versionOpen?closeVersionPicker():openVersionPicker();
 $("versionButton").addEventListener("keydown",event=>{if(event.key==="ArrowDown"){event.preventDefault();openVersionPicker();}});
 $("versionSearch").addEventListener("input",()=>{versionLimit=50;versionIndex=-1;renderVersionOptions();});
 $("versionSearch").addEventListener("keydown",event=>{
   if(event.key==="Escape"){event.preventDefault();closeVersionPicker();}
-  else if(event.key==="Tab")closeVersionPicker(false);
   else if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();versionIndex=Math.max(0,Math.min(visibleVersions.length-1,versionIndex+(event.key==="ArrowDown"?1:-1)));renderVersionOptions();$("versionOptions").children[versionIndex]?.scrollIntoView?.({block:"nearest"});}
   else if(event.key==="Enter"){event.preventDefault();const item=visibleVersions[Math.max(0,versionIndex)];if(item)chooseVersion($("updateComponent").value,item.version);}
 });
-$("moreVersionsButton").onclick=()=>{versionLimit+=50;renderVersionOptions();};$("retryVersionsButton").onclick=()=>loadVersions($("updateComponent").value,true);
+$("versionPopup").addEventListener("keydown",event=>{if(event.key==="Escape"){event.preventDefault();closeVersionPicker();}});
+$("versionPicker").addEventListener("focusout",event=>{if(event.relatedTarget&&!$("versionPicker").contains(event.relatedTarget))closeVersionPicker(false);});
+$("moreVersionsButton").onclick=()=>{versionLimit+=50;renderVersionOptions();};$("refreshVersionsButton").onclick=()=>loadVersions($("updateComponent").value,true);
 document.addEventListener("pointerdown",event=>{if(versionOpen&&!$("versionPicker").contains(event.target))closeVersionPicker(false);});
 $("updateComponent").addEventListener("change",()=>{closeVersionPicker(false);renderVersion();renderUpdates();});
 $("reviewEditButton").onclick=()=>previewChanges(true);
@@ -611,7 +617,7 @@ async function pollOperation(operationId){
       await refresh();notice("Индекс проекта «"+(operation.result.edtProject||operation.result.repository)+"» пересоздан. "+(operation.result.state==="ready"?"Готов к работе.":"Проверьте актуальное состояние сервисов."));return;
     }
     if(operation.action==="updates"){
-      const data=operation.result;for(const item of data.components||[data])updateResults.set(item.component,item);renderUpdates();await refresh();notice("Операция обновления завершена.");return;
+      const data=operation.result;for(const item of data.components||[data]){updateResults.set(item.component,item);if(item.state==="applied"&&selectedVersions.get(item.component)===item.requested)selectedVersions.delete(item.component);}renderUpdates();await refresh();notice("Операция обновления завершена.");return;
     }
     if(operation.action==="probe"){
       const result=operation.result;$("probeResult").hidden=false;

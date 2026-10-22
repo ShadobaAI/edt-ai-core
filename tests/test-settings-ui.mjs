@@ -94,7 +94,7 @@ test("standalone preview keeps saving, updates and service launches unavailable 
   const ui=screen(()=>{throw new Error("No plugin calls in preview");},{standalone:true});await ui.flush();
   for(const mode of ["check","import","export","editor","support"]){
     ui.elements.get(mode+"Tab").onclick();
-    for(const id of ["saveButton","saveComponentsButton","checkButton","rebuildIndexButton","updatesButton","downloadUpdateButton","applyUpdateButton","rollbackUpdateButton","downloadButton","previewButton","applyButton","diagnosticsButton"])
+    for(const id of ["saveButton","saveComponentsButton","checkButton","rebuildIndexButton","installUpdateButton","refreshVersionsButton","downloadButton","previewButton","applyButton","diagnosticsButton"])
       assert.equal(ui.elements.get(id).disabled,true,id);
   }
   await ui.elements.get("checkButton").onclick();
@@ -288,29 +288,28 @@ test("directory context shows EDT and Git facts safely while an ambiguous profil
   assert.equal(ui.elements.get("createButton").hidden, true);
 });
 
-test("component selection is saved independently and update polling never repeats apply",async()=>{
+test("component selection is saved independently and update polling never repeats installation",async()=>{
   let enabled=false,polls=0;
   const ui=screen(async(name,args)=>{
     if(name==="settings.read")return {...read,values:{...read.values,codeIndexEnabled:true,bslLsEnabled:enabled}};
     if(name==="settings.update"){assert.equal(args.set.bslLsEnabled,true);enabled=true;return {};}
-    if(name==="settings.updates"){assert.equal(args.operation,"apply");assert.equal(args.component,"bsl-ls");assert.equal(args.authorization.scope,read.preparationScope);return {id:"update",status:"running"};}
+    if(name==="settings.updates"){assert.equal(args.operation,"install");assert.equal(args.component,"bsl-ls");assert.equal(args.authorization.scope,read.preparationScope);return {id:"update",status:"running"};}
     if(name==="settings.operation")return ++polls===1?{id:"update",status:"running",action:"updates"}:{id:"update",status:"completed",action:"updates",result:{component:"bsl-ls",state:"applied",release:"v9.0.0"}};
     throw new Error(name);
   });
   await ui.flush();assert.equal(ui.elements.get("bslLsEnabled").checked,false);
   ui.elements.get("bslLsEnabled").checked=true;await ui.elements.get("saveComponentsButton").onclick();
   assert.equal(ui.calls.filter(c=>c.params?.name==="settings.run_check").length,0);
-  ui.elements.get("updateComponent").value="bsl-ls";await ui.elements.get("applyUpdateButton").onclick();await ui.tick();
+  ui.elements.get("updateComponent").value="bsl-ls";await ui.elements.get("installUpdateButton").onclick();await ui.tick();
   assert.equal(ui.calls.filter(c=>c.params?.name==="settings.updates").length,1);
-  assert.match(ui.elements.get("updatesResult").textContent,/BSL LS: применён · v9.0.0/);
+  assert.match(ui.elements.get("updatesResult").textContent,/BSL LS: установлена версия · v9.0.0/);
 });
 
-test("one searchable version picker saves only the selected component and restores each saved version", async () => {
+test("the searchable version picker keeps independent drafts without changing runtime settings", async () => {
   const values={...read.values,codeIndexVersion:"latest",bslLsVersion:"latest",bslLsAllowPrerelease:true};
   const ui=screen(async(name,args)=>{
     if(name==="settings.read"||name==="settings.status")return {...read,values:{...values}};
     if(name==="settings.versions")return {component:args.component,versions:args.component==="bsl-ls"?[{version:"v1.1.0-rc.7"},{version:"v1.0.7"}]:[{version:"v1.14.1"}]};
-    if(name==="settings.update"){assert.deepEqual(JSON.parse(JSON.stringify(args.set)),{bslLsVersion:"v1.1.0-rc.7",bslLsAllowPrerelease:false});Object.assign(values,args.set);return {values};}
     throw new Error(name);
   });await ui.flush();assert.equal(ui.elements.get("versionValue").textContent,"latest");
   for(const id of ["codeIndexVersion","bslLsVersion","codeIndexAllowPrerelease","bslLsAllowPrerelease","saveVersionsButton"])assert.equal(ui.elements.has(id),false);
@@ -322,15 +321,17 @@ test("one searchable version picker saves only the selected component and restor
   ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"latest");
   await ui.elements.get("versionButton").onclick();assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.14.1"]);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
+  await ui.tick(8000);assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
+  assert.equal(values.bslLsVersion,"latest");assert.equal(values.bslLsAllowPrerelease,true);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,0);
 });
 
 test("version search covers the complete large catalog, limits visible rows and supports keyboard selection", async () => {
-  const versions=Array.from({length:2500},(_,i)=>({version:"v"+(2500-i)+".0.0"}));let selected;
+  const versions=Array.from({length:2500},(_,i)=>({version:"v"+(2500-i)+".0.0"}));
   const ui=screen(async(name,args)=>{
-    if(name==="settings.read")return {...read,values:{...read.values,codeIndexVersion:selected||"latest"}};
+    if(name==="settings.read")return {...read,values:{...read.values,codeIndexVersion:"latest"}};
     if(name==="settings.versions")return {component:args.component,versions};
-    if(name==="settings.update"){selected=args.set.codeIndexVersion;return {};}
     throw new Error(name);
   });await ui.flush();await ui.elements.get("versionButton").onclick();
   assert.equal(ui.elements.get("versionOptions").children.length,50);assert.equal(ui.elements.get("moreVersionsButton").hidden,false);
@@ -340,7 +341,8 @@ test("version search covers the complete large catalog, limits visible rows and 
   ui.elements.get("versionSearch").events.keydown({key:"ArrowDown",preventDefault(){}});
   assert.equal(ui.elements.get("versionSearch").attributes["aria-activedescendant"],"version-option-0");
   ui.elements.get("versionSearch").events.keydown({key:"Enter",preventDefault(){}});await ui.flush();await ui.flush();
-  assert.equal(selected,"v1.0.0");assert.equal(ui.elements.get("versionValue").textContent,"v1.0.0");
+  assert.equal(ui.elements.get("versionValue").textContent,"v1.0.0");
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
   await ui.elements.get("versionButton").onclick();ui.elements.get("versionSearch").events.keydown({key:"Escape",preventDefault(){}});
   assert.equal(ui.elements.get("versionPopup").hidden,true);assert.equal(ui.calls.filter(call=>call.params?.name==="settings.versions").length,1);
 });
@@ -354,23 +356,106 @@ test("a failed version catalog can retry and a late response cannot replace anot
       if(++attempt===1)throw new Error("offline");return {component:"code-index",versions:[{version:"v1.14.1"}]};
     }throw new Error(name);
   });await ui.flush();await ui.elements.get("versionButton").onclick();assert.match(ui.elements.get("versionHint").textContent,/offline/);
-  await ui.elements.get("retryVersionsButton").onclick();assert.equal(ui.elements.get("retryVersionsButton").hidden,true);
+  await ui.elements.get("refreshVersionsButton").onclick();assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();const pending=ui.elements.get("versionButton").onclick();await ui.flush();
   ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();finish();await pending;
   assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.14.1"]);
 });
 
-test("update check uses the selected component and only renders its result", async () => {
+test("an empty BSL LS catalog shows a retry and refreshes the server instead of reporting latest as the full list", async () => {
+  let attempts=0;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return read;
+    if(name==="settings.versions"){
+      if(args.component==="code-index")return {component:"code-index",versions:[{version:"v1.14.1"}]};
+      if(++attempts===1)return {component:"bsl-ls",versions:[]};
+      assert.equal(args.refresh,true);return {component:"bsl-ls",versions:[{version:"v1.1.0-rc.7"},{version:"v1.0.7"}]};
+    }throw new Error(name);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();
+  ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();
+  assert.match(ui.elements.get("versionHint").textContent,/пустой каталог/);assert.doesNotMatch(ui.elements.get("versionHint").textContent,/Найдено: 1/);
+  assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);await ui.elements.get("refreshVersionsButton").onclick();
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.1.0-rc.7","v1.0.7"]);
+  assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);
+});
+
+test("installation uses one authorized operation for the selected component", async () => {
   for(const component of ["code-index","bsl-ls"]){
     const ui=screen(async(name,args)=>{
       if(name==="settings.read")return read;
-      if(name==="settings.updates"){assert.equal(args.operation,"check");assert.equal(args.component,component);assert.equal(args.authorization,undefined);return {id:"check-update",status:"running"};}
-      if(name==="settings.operation")return {id:"check-update",action:"updates",status:"completed",result:{components:[{component,state:"current"}]}};
+      if(name==="settings.updates"){assert.equal(args.operation,"install");assert.equal(args.component,component);assert.equal(args.version,"latest");assert.equal(args.authorization.scope,read.preparationScope);return {id:"install-update",status:"running"};}
+      if(name==="settings.operation")return {id:"install-update",action:"updates",status:"completed",result:{component,state:"applied",release:"v1.0.0"}};
       throw new Error(name);
-    });await ui.flush();ui.elements.get("updateComponent").value=component;await ui.elements.get("updatesButton").onclick();
+    });await ui.flush();ui.elements.get("updateComponent").value=component;await ui.elements.get("installUpdateButton").onclick();
     assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,1);
-    assert.equal(ui.elements.get("updatesResult").textContent,component==="bsl-ls"?"BSL LS: актуален":"Индекс кода: актуален");
+    assert.equal(ui.elements.get("updatesResult").textContent,(component==="bsl-ls"?"BSL LS":"Индекс кода")+": установлена версия · v1.0.0");
   }
+});
+
+test("the catalog refresh icon preserves search and selection, bypasses cache and shares an in-flight request", async () => {
+  let calls=0,finish;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,values:{...read.values,codeIndexVersion:"v1.0.0"}};
+    if(name==="settings.versions"){
+      if(++calls===1)return {component:args.component,versions:[{version:"v1.0.0"}]};
+      assert.equal(args.component,"code-index");assert.equal(args.refresh,true);
+      return new Promise(resolve=>{finish=()=>resolve({component:args.component,versions:[{version:"v1.0.1"},{version:"v1.0.0"}]});});
+    }
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();
+  ui.elements.get("versionSearch").value="v1.0";ui.elements.get("versionSearch").events.input();
+  const pending=ui.elements.get("refreshVersionsButton").onclick();await ui.flush();
+  assert.equal(ui.elements.get("refreshVersionsButton").disabled,true);
+  assert.equal(ui.elements.get("refreshVersionsButton").attributes["aria-busy"],"true");
+  const duplicate=ui.elements.get("refreshVersionsButton").onclick();assert.equal(calls,2);
+  finish();await pending;await duplicate;
+  assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);
+  assert.equal(ui.elements.get("refreshVersionsButton").attributes["aria-busy"],"false");
+  assert.equal(ui.elements.get("versionSearch").value,"v1.0");
+  assert.equal(ui.elements.get("versionValue").textContent,"v1.0.0");
+  assert.equal(ui.elements.get("versionPopup").hidden,false);
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["v1.0.1","v1.0.0"]);
+  ui.elements.get("versionSearch").events.keydown({key:"Tab"});
+  assert.equal(ui.elements.get("versionPopup").hidden,false);
+  ui.elements.get("versionPopup").events.keydown({key:"Escape",preventDefault(){}});
+  assert.equal(ui.elements.get("versionPopup").hidden,true);
+  assert.equal(ui.calls.filter(call=>["settings.update","settings.updates"].includes(call.params?.name)).length,0);
+});
+
+test("a failed installation is reported without resubmitting or claiming success", async () => {
+  const ui=screen(async(name)=>{
+    if(name==="settings.read")return read;
+    if(name==="settings.updates")return {id:"failed-install",status:"running"};
+    if(name==="settings.operation")return {id:"failed-install",action:"updates",status:"failed",error:"Candidate rejected; active artifact retained: bad API"};
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("installUpdateButton").onclick();
+  assert.match(ui.elements.get("status").textContent,/active artifact retained/);
+  assert.doesNotMatch(ui.elements.get("updatesResult").textContent,/установлена версия/);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,1);
+});
+
+test("installing an older draft saves it on success and a later failure clears the old success message", async () => {
+  let saved="v2.0.0",attempts=0;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return {...read,values:{...read.values,codeIndexVersion:saved}};
+    if(name==="settings.versions")return {component:"code-index",versions:[{version:"v1.0.0"}]};
+    if(name==="settings.updates"){
+      assert.equal(args.operation,"install");assert.equal(args.version,"v1.0.0");
+      if(++attempts===1)assert.equal(saved,"v2.0.0");
+      return {id:"install-"+attempts,status:"running"};
+    }
+    if(name==="settings.operation"){
+      if(attempts===2)return {id:"install-2",action:"updates",status:"failed",error:"offline"};
+      saved="v1.0.0";return {id:"install-1",action:"updates",status:"completed",result:{component:"code-index",state:"applied",release:saved,requested:saved}};
+    }
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();
+  await ui.elements.get("versionOptions").children.find(option=>option.textContent==="v1.0.0").onclick();
+  assert.equal(saved,"v2.0.0");await ui.elements.get("installUpdateButton").onclick();
+  assert.equal(saved,"v1.0.0");assert.match(ui.elements.get("updatesResult").textContent,/установлена версия · v1.0.0/);
+  await ui.elements.get("installUpdateButton").onclick();assert.match(ui.elements.get("status").textContent,/offline/);
+  assert.doesNotMatch(ui.elements.get("updatesResult").textContent,/установлена версия/);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
 });
 
 test("switching the update component hides unrelated results and scopes every action", async () => {
@@ -381,8 +466,9 @@ test("switching the update component hides unrelated results and scopes every ac
     throw new Error(name);
   });await ui.flush();
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();
-  for(const id of ["updatesButton","downloadUpdateButton","applyUpdateButton","rollbackUpdateButton"])await ui.elements.get(id).onclick();
-  assert.deepEqual(ui.calls.filter(call=>call.params?.name==="settings.updates").map(call=>[call.params.arguments.component,call.params.arguments.operation]),[["bsl-ls","check"],["bsl-ls","download"],["bsl-ls","apply"],["bsl-ls","rollback"]]);
+  for(const id of ["updatesButton","downloadUpdateButton","applyUpdateButton","rollbackUpdateButton","retryVersionsButton"])assert.equal(ui.elements.has(id),false);
+  await ui.elements.get("installUpdateButton").onclick();
+  assert.deepEqual(ui.calls.filter(call=>call.params?.name==="settings.updates").map(call=>[call.params.arguments.component,call.params.arguments.operation]),[["bsl-ls","install"]]);
   assert.match(ui.elements.get("updatesResult").textContent,/BSL LS: актуален/);
   ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();
   assert.doesNotMatch(ui.elements.get("updatesResult").textContent,/BSL LS/);
@@ -916,6 +1002,29 @@ test("fixed host height is respected and flexible height is capped without resiz
   assert.equal(sizes().length, count);
   height = 450;ui.resize();await ui.tick(50);
   assert.equal(sizes().at(-1).params.height, 490);
+});
+
+test("opening, selecting and reloading a profile render its service status immediately", async () => {
+  let projectRoot = read.values.projectRoot, running = false;
+  const snapshot = () => ({ ...read, values: { ...read.values, projectRoot }, summary: {
+    observedAt: "2026-10-22T12:00:00Z",
+    components: [{ id: "code-index", status: running ? "running" : "stopped" }, { id: "bsl-ls", status: "disabled" }],
+  } });
+  const ui = screen(async (name, args) => {
+    if (name === "settings.read") return snapshot();
+    if (name === "settings.select_profile") { projectRoot = args.projectRoot; running = true; return snapshot(); }
+    if (name === "settings.load") { running = false; return {}; }
+    throw new Error(name);
+  });
+  await ui.flush();
+  assert.equal(ui.elements.get("indexSummary").textContent, "Не запущен");
+  assert.equal(ui.elements.get("bslSummary").textContent, "Отключён");
+  await ui.context.selectProfile("C:/fixture/other");
+  assert.equal(ui.elements.get("indexSummary").textContent, "Процесс работает");
+  await ui.elements.get("loadButton").onclick();
+  assert.equal(ui.elements.get("indexSummary").textContent, "Не запущен");
+  assert.match(ui.elements.get("autoRefreshState").textContent, /Автообновление/);
+  assert.equal(ui.calls.filter(call => ["settings.status", "settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
 });
 
 test("automatic observation preserves drafts and never repeats preparation or external probes", async () => {

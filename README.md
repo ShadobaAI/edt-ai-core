@@ -32,6 +32,20 @@ JS-зависимости включены в пакет: пользовател
 Исходники плагина находятся в `edt-ai-core`, установочный магазин —
 в отдельном репозитории `codex-plugins`.
 
+## v8std
+
+v8std предоставляет нормативные материалы и базу знаний для разработки 1С:
+
+- [zeegin/v8std](https://github.com/zeegin/v8std) — исходный проект, основа.
+- [ShadobaAI/v8std](https://github.com/ShadobaAI/v8std) — форк автора 1C AI Core
+  с базой знаний по Vanessa и YaXUnit. Рекомендуется использовать этот форк.
+- [aleksp99/v8std-mcp](https://hub.docker.com/r/aleksp99/v8std-mcp) — готовый
+  Docker-образ автора 1C AI Core, собранный из
+  [ShadobaAI/v8std](https://github.com/ShadobaAI/v8std), с базой знаний по
+  Vanessa и YaXUnit.
+
+Сервер v8std запускается отдельно; его MCP URL указывается в настройках плагина.
+
 ## Настройка и работа
 
 Попросите **«Открой настройки проекта 1C AI Core»** в чате или откройте

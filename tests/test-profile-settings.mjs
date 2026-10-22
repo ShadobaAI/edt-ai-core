@@ -8,6 +8,60 @@ import { dump } from "../scripts/common.mjs";
 import { profile_history } from "../scripts/profile_history.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
+import { createServer } from "node:http";
+import { once } from "node:events";
+
+test("loading settings returns fresh service status without a separate status request or preparation", async t => {
+  const f = fixture(t); f.save();
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const initial = (await client.call("settings.read", {})).structuredContent;
+  assert.equal(initial.summary?.components.find(item => item.id === "code-index")?.status, "stopped");
+  assert.equal(initial.summary.components.find(item => item.id === "bsl-ls").status, "disabled");
+  assert.equal(fs.existsSync(path.join(f.state, "projects")), false);
+  const requests = [];
+  const server = createServer((req, res) => {
+    requests.push(req.url);
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ pid: process.pid, status: "running" }));
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); return new Promise(done => server.close(done)); });
+  const home = path.join(project_directory(f.state, f.root), "code-index");
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(path.join(home, "daemon.json"), JSON.stringify({ pid: process.pid, http_port: server.address().port }));
+  for (const name of ["settings.read", "settings.open", "settings.profile"]) {
+    const current = (await client.call(name, {})).structuredContent;
+    assert.equal(current.summary.components.find(item => item.id === "code-index").status, "running", name);
+    assert.ok(Number.isFinite(Date.parse(current.summary.observedAt)));
+    assert.equal(current.readiness.state, "not_checked");
+    assert.equal(current.operation.status, "idle");
+  }
+  await client.call("settings.load", {});
+  fs.rmSync(path.join(home, "daemon.json"));
+  const reloaded = (await client.call("settings.read", {})).structuredContent;
+  assert.equal(reloaded.summary.components.find(item => item.id === "code-index").status, "stopped");
+  assert.deepEqual(requests, ["/health", "/health", "/health"]);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
+
+test("unavailable daemon metadata does not prevent loading a valid profile or its settings", async t => {
+  const f = fixture(t); f.save();
+  const home = path.join(project_directory(f.state, f.root), "code-index"), metadata = path.join(home, "daemon.json");
+  fs.mkdirSync(home, { recursive: true });
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  for (const content of ["{", "null", null]) {
+    if (content === null) { fs.rmSync(metadata); fs.mkdirSync(metadata); }
+    else fs.writeFileSync(metadata, content);
+    for (const name of ["settings.read", "settings.open", "settings.profile", "settings.select_profile"]) {
+      const current = (await client.call(name, name === "settings.select_profile" ? { projectRoot: f.root } : {})).structuredContent;
+      assert.equal(current.profile.status, "loaded", name);
+      assert.notEqual(current.configurationError, true);
+      assert.equal(current.values.projectRoot, f.root);
+      assert.equal(current.summary?.components.find(item => item.id === "code-index")?.status, content === null ? "stopped" : "not_checked");
+      assert.equal(current.operation.status, "idle");
+    }
+  }
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
 
 test("connection probe overrides are transient and validated before contacting services", async t => {
   const f=fixture(t);environment(t,f.env);f.save();const backend=new SettingsBackend();
@@ -43,6 +97,7 @@ test("history selection previews another project without rebinding the chat or l
   const client=await session(t,"mcp/settings.mjs",[],f);
   const preview=(await client.call("settings.select_profile",{projectRoot:other})).structuredContent;
   assert.equal(preview.viewOnly,true);assert.equal(preview.profile.projectId,"other");
+  assert.equal(preview.summary?.components.find(item=>item.id==="code-index")?.status,"stopped");
   assert.equal(preview.chatProjectRoot,f.root);
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   const status=(await client.call("settings.status",{projectRoot:other})).structuredContent;
@@ -83,6 +138,7 @@ test("an unbound settings window selects a profile explicitly and remembers it w
   f.clients.push(client);client.roots=[];await client.initialize();
   const selected=(await client.call("settings.select_profile",{projectRoot:f.root})).structuredContent;
   assert.equal(selected.viewOnly,false);assert.equal(selected.values.projectRoot,f.root);
+  assert.equal(selected.summary?.components.find(item=>item.id==="code-index")?.status,"stopped");
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   assert.equal(profile_history(f.state).length,1);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS),false);

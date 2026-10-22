@@ -7,7 +7,7 @@ import { fixture } from "./helpers.mjs";
 import { settings } from "../scripts/common.mjs";
 import { zip } from "../scripts/archives.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
-import { SPECS, platform_build, check_updates, list_versions, ensure_installed, update_component, artifact, read_json } from "../scripts/runtime.mjs";
+import { SPECS, platform_build, check_updates, list_versions, ensure_installed, installed_runtime, update_component, artifact, read_json } from "../scripts/runtime.mjs";
 
 function download(component) {
   if (component === "bsl-ls") return zip({ "META-INF/MANIFEST.MF": Buffer.from("fixture") });
@@ -34,6 +34,7 @@ function releases(component) {
       if (url === base + "/latest") return stable;
       if (url === base + "?per_page=100") return [release("v9.0.0", true, true), preview, stable];
       if (url === base + "/tags/v1.1.0-rc.7") return preview;
+      if (url === base + "/tags/v1.0.7") return stable;
       throw new Error("Unexpected release URL: " + url);
     },
     fetch: async url => { downloads.push(url); return new Response(bytes); },
@@ -41,13 +42,53 @@ function releases(component) {
 }
 
 for (const component of ["code-index", "bsl-ls"]) {
+  test(`${component}: one installation validates a fresh candidate and also installs an older selected version`, async t => {
+    const f=fixture(t),config=settings(),options=config.mcp.managed[component],r=releases(component);
+    options.enabled=true;
+    const first=await ensure_installed(f.state,config,component,false,r.io);
+    const events=[];
+    const io={...r.io,stop:async()=>{events.push("stop");},smoke:async(...args)=>{
+      events.push("validate");assert.equal(args.at(-1),artifact(f.state,component,"candidate"));
+      return {status:"mcp_ready"};
+    }};
+    options.version=r.preview.tag_name;
+    let result=await update_component(f.state,config,f.root,f.profile,component,"install",io);
+    assert.equal(result.release,r.preview.tag_name);assert.equal(result.state,"applied");
+    const newer=artifact(f.state,component);assert.notEqual(newer,first);
+    assert.equal(artifact(f.state,component,"previous"),first);
+    assert.equal(await installed_runtime(f.state,config,component),newer);
+    options.version=r.stable.tag_name;
+    result=await update_component(f.state,config,f.root,f.profile,component,"install",io);
+    assert.equal(result.release,r.stable.tag_name);
+    assert.equal(artifact(f.state,component),first);assert.equal(artifact(f.state,component,"previous"),newer);
+    assert.equal(await installed_runtime(f.state,config,component),first);
+    assert.equal(events.filter(event=>event==="validate").length,2);
+  });
+
+  test(`${component}: failed installation leaves the verified active artifact unchanged`, async t => {
+    const f=fixture(t),config=settings(),options=config.mcp.managed[component],r=releases(component);
+    options.enabled=true;
+    const first=await ensure_installed(f.state,config,component,false,r.io);
+    options.version=r.preview.tag_name;
+    await assert.rejects(update_component(f.state,config,f.root,f.profile,component,"install",{
+      ...r.io,stop:async()=>{},restart:async(...args)=>{assert.equal(args.at(-1),first);},smoke:async()=>{throw new Error("bad native API");}
+    }),/Candidate rejected; active artifact retained: bad native API/);
+    assert.equal(artifact(f.state,component),first);
+    let launched=false;
+    await assert.rejects(update_component(f.state,config,f.root,f.profile,component,"install",{
+      ...r.io,fetch:async()=>new Response("",{status:503}),smoke:async()=>{launched=true;}
+    }),/HTTP 503/);
+    assert.equal(artifact(f.state,component),first);assert.equal(launched,false);
+  });
+
   test(`${component}: the version catalog follows every page and sorts by publication date, including prereleases`, async () => {
     const releases=Array.from({length:201},(_,i)=>({tag_name:`v1.0.${i}`,published_at:new Date(Date.UTC(2026,0,1)+i*86400000).toISOString()}));
     releases.push({tag_name:"v0.1.0",published_at:"2026-10-20T00:00:00Z"},{tag_name:"v2.0.0-rc.7",prerelease:true,published_at:"2026-10-19T00:00:00Z"},
       {tag_name:"v1.0.0",published_at:"2020-01-01T00:00:00Z"},{tag_name:"v9.0.0",draft:true},{tag_name:"../bad"},null);
-    const urls=[],result=await list_versions(component,{fetch_json:async(url,timeout)=>{urls.push(url);assert.ok(timeout>0&&timeout<=30000);const page=Number(new URL(url).searchParams.get("page"));return releases.slice((page-1)*100,page*100);}});
+    const urls=[],result=await list_versions(component,{fetch_json:async(url,timeout)=>{urls.push(url);assert.ok(timeout>0&&timeout<=30000);const page=Number(new URL(url).searchParams.get("page")||1);return releases.slice((page-1)*100,page*100);}});
     assert.equal(result.component,component);assert.equal(result.versions.length,203);assert.equal(urls.length,3);
-    assert.ok(urls.every(url=>url.startsWith(`https://api.github.com/repos/${SPECS[component]}/releases?per_page=100&page=`)));
+    assert.equal(urls[0],`https://api.github.com/repos/${SPECS[component]}/releases?per_page=100`);
+    assert.ok(urls.slice(1).every(url=>url.startsWith(`https://api.github.com/repos/${SPECS[component]}/releases?per_page=100&page=`)));
     assert.deepEqual(result.versions.slice(0,3).map(item=>item.version),["v0.1.0","v2.0.0-rc.7","v1.0.200"]);
     assert.equal(result.versions[1].prerelease,true);assert.equal(result.versions.at(-1).publishedAt,"2026-01-01T00:00:00.000Z");
   });
@@ -56,6 +97,19 @@ for (const component of ["code-index", "bsl-ls"]) {
     let pages=0;
     await assert.rejects(list_versions(component,{fetch_json:async()=>{if(++pages===1)return Array.from({length:100},(_,i)=>({tag_name:`v1.0.${i}`}));throw new Error("rate limited");}}),/rate limited/);
     await assert.rejects(list_versions(component,{fetch_json:async()=>({tag_name:"v1.0.0"})}),/Invalid runtime release list/);
+  });
+
+  test(`${component}: an empty first page retries without HTTP cache and never succeeds with an empty catalog`, async () => {
+    const calls=[];
+    const result=await list_versions(component,{fetch_json:async(url,timeout,options)=>{calls.push({url,options});return calls.length===1?[]:[{tag_name:"v1.1.0-rc.7",prerelease:true}];}});
+    assert.equal(result.versions[0].version,"v1.1.0-rc.7");assert.equal(calls.length,2);
+    assert.equal(new URL(calls[0].url).searchParams.has("page"),false);
+    assert.equal(new URL(calls[1].url).searchParams.get("page"),"1");assert.equal(calls[1].options.fresh,true);
+    await assert.rejects(list_versions(component,{fetch_json:async()=>[]}),/empty version catalog/);
+    await assert.rejects(list_versions(component,{fetch_json:async()=>[{draft:true,tag_name:"v1.0.0"}]}),/no published version tags/);
+    let fresh;
+    await list_versions(component,{fetch_json:async(url,timeout,options)=>{fresh=options.fresh;return [{tag_name:"v1.0.0"}];}},{refresh:true});
+    assert.equal(fresh,true);
   });
 
   for (const mode of ["default stable", "allow prereleases", "exact prerelease", "exact prerelease without v"]) {
