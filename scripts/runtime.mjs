@@ -41,6 +41,42 @@ import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
 
 export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPONENTS[id].repository]));
+export async function list_versions(component, io = { fetch_json }) {
+  if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
+  const releases = [], deadline = Date.now() + 90000;
+  for (let page = 1; page <= 100; page++) {
+    if (Date.now() >= deadline) throw new ConfigError("Version catalog timed out; retry loading the list");
+    const items = await io.fetch_json(`https://api.github.com/repos/${SPECS[component]}/releases?per_page=100&page=${page}`, Math.min(30000, deadline - Date.now()));
+    if (!Array.isArray(items)) throw new ConfigError("Invalid runtime release list");
+    for (const item of items) {
+      if (!item || item.draft || typeof item.tag_name !== "string" || item.tag_name === "latest" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(item.tag_name)) continue;
+      const publishedAt = item.published_at || item.created_at || null;
+      releases.push({ version: item.tag_name, prerelease: Boolean(item.prerelease), publishedAt });
+    }
+    if (items.length < 100) {
+      releases.sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
+      const seen = new Set();
+      return { component, versions: releases.filter(item => { if (seen.has(item.version)) return false;seen.add(item.version);return true; }) };
+    }
+  }
+  throw new ConfigError("Version catalog exceeds 10000 releases; the list was not truncated");
+}
+async function runtime_release(component, options, io) {
+  const requested = options.version, automatic = requested === "latest";
+  const tag = /^\d+\.\d+\.\d+/.test(requested) ? "v" + requested : requested;
+  const releaseURL = automatic ? (options.allow_prerelease ? "?per_page=100" : "/latest") : "/tags/" + tag;
+  const response = await io.fetch_json(`https://api.github.com/repos/${SPECS[component]}/releases${releaseURL}`);
+  // GitHub lists releases newest first. Drafts are never runnable candidates.
+  const release = automatic && options.allow_prerelease
+    ? (Array.isArray(response) ? response.find(item => !item.draft) : null) : response;
+  if (!release || release.draft || (automatic && !options.allow_prerelease && release.prerelease))
+    throw new ConfigError("No eligible runtime release; use a stable release, allow_prerelease, or an explicit version");
+  if (!automatic && release.tag_name !== tag)
+    throw new ConfigError("Runtime release response does not match the requested version");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(release.tag_name || ""))
+    throw new ConfigError("Unsupported release tag: " + release.tag_name);
+  return release;
+}
 export function platform_build(
   platform = process.platform,
   arch = process.arch,
@@ -125,16 +161,8 @@ export async function ensure_installed(
       requested.replace(/^v/, "") === current.release.replace(/^v/, ""))
   )
     return existing;
-  const releaseURL =
-    requested === "latest" ? "latest" : "tags/" + (/^\d+\.\d+\.\d+/.test(requested) ? "v" + requested : requested);
-  const release = await io.fetch_json(
-    `https://api.github.com/repos/${SPECS[component]}/releases/${releaseURL}`,
-  );
-  if (release.draft || (release.prerelease && requested === "latest"))
-    throw new ConfigError("Only stable releases are supported");
+  const release = await runtime_release(component, component_settings(config, component), io);
   const version = release.tag_name;
-  if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(version || ""))
-    throw new ConfigError("Unsupported release tag: " + version);
   if (existing && current.release === version && !refresh) return existing;
   const candidates = release.assets.filter((asset) =>
     component === "code-index"
@@ -209,6 +237,7 @@ export async function ensure_installed(
   const lock = read_json(path.join(state, "runtime-lock.json"), {});
   const entry = {
     release: version,
+    prerelease: Boolean(release.prerelease),
     path: path.relative(resolve(state), resolve(target)),
     sha256: contentSHA,
     asset_sha256: digest.slice(7),
@@ -273,8 +302,7 @@ export async function check_updates(state, config, component, io = { fetch_json 
   const options = component_settings(config, component);
   if (!component_enabled(config, component) || options.mode === "external")
     return { component, state: !component_enabled(config, component) ? "disabled" : "external" };
-  const release = await io.fetch_json(`https://api.github.com/repos/${SPECS[component]}/releases/latest`);
-  if (release.draft || release.prerelease || typeof release.tag_name !== "string") throw new ConfigError("Invalid stable release response");
+  const release = await runtime_release(component, options, io);
   const current = read_json(path.join(state, "runtime-lock.json"), {})[component] || {};
   return { component, state: current.release === release.tag_name ? "current" : "update_available", active: current.release || null,
     latest: release.tag_name, requested: options.version, candidate: current.candidate?.release || null, previous: current.previous?.release || null };
@@ -322,6 +350,12 @@ export async function update_component(state, config, root, data, component, act
     const before = read_json(lockfile, {}), entry = before[component] || {}, slot = action === "rollback" ? "previous" : "candidate";
     const candidate = artifact(state, component, slot);
     if (!candidate) throw new ConfigError("No verified " + slot + " artifact; download a candidate first");
+    if (action === "apply") {
+      const options = component_settings(config, component), selected = entry[slot];
+      if ((options.version !== "latest" && options.version.replace(/^v/, "") !== selected.release.replace(/^v/, "")) ||
+          (options.version === "latest" && !options.allow_prerelease && selected.prerelease === true))
+        throw new ConfigError("Downloaded candidate does not match the current release settings; download a new candidate before applying");
+    }
     const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
     if (component === "code-index") await operation_lock(home, () => {
       const old = read_json(maintenance);
@@ -599,7 +633,8 @@ export function validate_bsl_tools(tools) {
     throw new ConfigError(
       "BSL LS lacks the native multi-workspace API: " +
         missing.join(", ") +
-        ". Use a BSL LS artifact exposing workspace registration and workspaceFolder parameters.",
+        ". In component settings, select an explicit version with this API, then check, download and apply the update. " +
+        "External servers must expose workspace registration and workspaceFolder parameters.",
     );
 }
 export function index_readiness(body, root, data) {
@@ -644,6 +679,62 @@ export function index_readiness(body, root, data) {
     body.daemon.status === "online"
   );
 }
+export function index_status(body, root, data) {
+  const repositories = data.repositories.map(repo => {
+    const directory = inside(root, repo.path), item = body?.repos?.find(item => item.repo === repo.alias);
+    const present = is_file(path.join(directory, ".code-index/index.db"));
+    let state = "not_checked";
+    if (!item || !item.root_path || path_key(item.root_path) !== path_key(directory)) state = "mismatch";
+    else if (item.path_status?.error || item.path_status?.status === "error") state = "error";
+    else if (item.data_version?.stale === true) state = "stale";
+    else if (["indexing", "initializing", "pending", "reindexing", "reindexing_extras"].includes(item.path_status?.status)) state = "indexing";
+    else if (item.path_status?.status === "ready" && item.data_version?.stale === false) state = "ready";
+    else if (!present) state = "missing";
+    return { id: repo.id, edtProject: repo.edt_project, alias: repo.alias, present, state };
+  });
+  const ready = index_readiness(body, root, data);
+  const state = ready ? "ready" : ["mismatch", "error", "stale", "indexing", "missing"].find(state => repositories.some(repo => repo.state === state)) || "not_checked";
+  return { ready, state: !ready && state === "ready" ? "not_checked" : state, repositories };
+}
+
+// The native CLI is the writer. Stop only the owned project daemon and never
+// delete databases or use a shell command to rebuild a selected repository.
+export async function rebuild_index(state, config, root, data, repositoryId, io = {}) {
+  const repo = data.repositories.find(repo => repo.id === repositoryId);
+  if (!repo) throw new ConfigError("Выберите EDT-проект из профиля.");
+  if (!component_enabled(config, "code-index") || component_settings(config, "code-index").mode === "external")
+    throw new ConfigError("Пересоздание доступно для управляемого индекса кода.");
+  const directory = inside(root, repo.path), home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
+  const exe = await (io.installed || installed_runtime)(state, config, "code-index");
+  return operation_lock(state, async () => {
+    if (!io.installed && artifact(state, "code-index") !== exe) throw new ConfigError("Версия индексатора изменилась. Повторите действие после завершения обновления.");
+    await operation_lock(home, () => { check_maintenance(home); save_json(maintenance, { pid: process.pid, root: resolve(root), ownerId: runtimeOwner }); });
+    let keepMaintenance = false, stopped = false;
+    try {
+      signal_component(state, root, "code-index", true);
+      for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
+      if (active_readers(state, root).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите пересоздание.");
+      try { await (io.stop || stop_daemon)(state, root); stopped = true; }
+      catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + error.message); }
+      await (io.run || run_index)(exe, directory, home);
+      await (io.restart || ensure_daemon)(state, root, data, exe); stopped = false;
+      const checked = await (io.smoke || smoke)(state, config, root, data, "code-index", 90, false, exe);
+      return { projectRoot: root, repository: repo.id, edtProject: repo.edt_project, state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
+    } finally {
+      if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe); }
+      catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + error.message); }
+      if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
+      signal_component(state, root, "code-index", true);
+    }
+  }, 180);
+}
+async function run_index(exe, directory, home) {
+  const log = fs.openSync(path.join(home, "rebuild.log"), "a");
+  try {
+    const child = launch(exe, ["index", directory, "--force"], { cwd: directory, env: { ...process.env, CODE_INDEX_HOME: home }, stdio: ["ignore", log, log] });
+    await new Promise((done, reject) => { child.once("error", reject); child.once("close", code => code === 0 ? done() : reject(new ConfigError("Пересоздание индекса завершилось с ошибкой; см. rebuild.log (код " + code + ")."))); });
+  } finally { fs.closeSync(log); }
+}
 export async function smoke(
   state,
   config,
@@ -687,13 +778,17 @@ export async function smoke(
       tools: tools.map((tool) => tool.name),
     };
     if (component === "code-index") {
-      const health = await client.request("tools/call", { name: "health", arguments: {} });
-      if (health.isError) throw new ConfigError("code-index health failed: " + JSON.stringify(health).slice(0, 4000));
-      result.index_ready = index_readiness(
-        JSON.parse(health.content.find((part) => part.type === "text").text),
-        root,
-        data,
-      );
+      const deadline = Date.now() + 4000;
+      do {
+        const health = await client.request("tools/call", { name: "health", arguments: {} });
+        if (health.isError) throw new ConfigError("code-index health failed: " + JSON.stringify(health).slice(0, 4000));
+        const body = health.structuredContent || JSON.parse(health.content.find(part => part.type === "text").text);
+        result.index = index_status(body, root, data);
+        if (result.index.state !== "indexing" || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;
+        await sleep(250);
+      } while (true);
+      result.index_ready = result.index.ready;
+      result.index_state = result.index.state;
       result.readiness_scope =
         "Reported repository paths and data freshness; check operation-specific coverage in each response";
     }
@@ -735,7 +830,7 @@ export async function stop_daemon(state, root, io = { stop: run_sync }) {
         timeout: 20000,
       });
       for (let i = 0; i < 40; i++) {
-        if (!(await daemon_health(home))) return;
+        if (!(await daemon_health(home)) && !alive(owner.pid)) return;
         await sleep(250);
       }
       throw new ConfigError("Daemon stop is not confirmed");

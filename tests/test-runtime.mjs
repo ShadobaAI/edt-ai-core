@@ -13,6 +13,8 @@ import {
   read_json,
   validate_bsl_tools,
   index_readiness,
+  index_status,
+  rebuild_index,
   path_key,
   ensure_daemon,
   daemon_health,
@@ -24,6 +26,8 @@ import { zip, extract_binary } from "../scripts/archives.mjs";
 import { launch, stop_child, alive } from "../scripts/processes.mjs";
 import { inspect } from "../scripts/doctor.mjs";
 import { gzipSync } from "node:zlib";
+import { createServer } from "node:http";
+import { once } from "node:events";
 
 for (const [platform, arch, expected] of [
   ["win32", "x64", "windows-x64.zip"],
@@ -262,6 +266,36 @@ test("index readiness needs exact aliases, paths and positive freshness, includi
   if (process.platform === "win32")
     assert.equal(path_key("\\\\?\\" + f.root), path_key(f.root));
 });
+test("index status distinguishes existing ready data, active indexing, stale data and errors", t => {
+  const f=fixture(t), body={mcp:{status:"ok"},daemon:{status:"online"},repos:[{repo:"product",root_path:f.root,path_status:{status:"ready"},data_version:{stale:false}}]};
+  fs.mkdirSync(path.join(f.root,".code-index"));fs.writeFileSync(path.join(f.root,".code-index/index.db"),"existing");
+  assert.equal(index_status(body,f.root,f.profile).state,"ready");
+  assert.equal(index_status(body,f.root,f.profile).repositories[0].present,true);
+  for(const [status,stale,expected] of [["indexing",false,"indexing"],["ready",true,"stale"],["error",false,"error"],["unknown",undefined,"not_checked"]]){
+    const changed=structuredClone(body);changed.repos[0].path_status.status=status;changed.repos[0].data_version.stale=stale;
+    assert.equal(index_status(changed,f.root,f.profile).state,expected);
+  }
+  fs.rmSync(path.join(f.root,".code-index/index.db"));body.repos[0].path_status.status="unknown";
+  assert.equal(index_status(body,f.root,f.profile).state,"missing");
+  body.repos[0].root_path=f.base;assert.equal(index_status(body,f.root,f.profile).state,"mismatch");
+});
+
+test("index rebuild targets exactly one repository and restores the owned service", async t => {
+  const f=fixture(t), config=settings(), calls=[];
+  f.profile.repositories.push({id:"extension",path:"src",alias:"extension",edt_project:"Extension"});f.save();
+  const before=fs.readFileSync(path.join(f.root,".ai/project.yaml")), home=path.join(project_home(f.state,f.root),"code-index");
+  const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async(exe,directory)=>{assert.equal(exe,"fixture-exe");assert.equal(directory,path.join(f.root,"src"));calls.push("run");},restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true,index_state:"ready"})};
+  const result=await rebuild_index(f.state,config,f.root,f.profile,"extension",io);
+  assert.equal(result.repository,"extension");assert.equal(result.state,"ready");assert.deepEqual(calls,["stop","run","restart"]);
+  assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
+  await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"foreign",io),/EDT-проект/);
+  calls.length=0;
+  await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,run:async()=>{throw new Error("index failed");}}),/index failed/);
+  assert.deepEqual(calls,["stop","restart"]);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
+  await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>{throw new Error("unknown stop");}}),error=>error.outcomeUnknown===true);
+  assert.equal(fs.existsSync(path.join(home,"maintenance.json")),true);
+});
+
 test("parallel readers share exactly one owned daemon per profile and preserve unrelated processes", async (t) => {
   const f = fixture(t);
   let launches = 0;
@@ -313,6 +347,16 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
   await assert.rejects(stop_daemon(f.state, f.root), /ownership/);
   assert.equal(alive(otherHealth.pid), true);
 });
+test("daemon stop waits for process exit after its HTTP listener closes", async t => {
+  const f=fixture(t),home=path.join(project_home(f.state,f.root),"code-index"),hash=sha256(Buffer.from("fixture")),exe=path.join(f.state,"runtime/code-index/fixture",hash,"bsl-indexer.exe");
+  fs.mkdirSync(path.dirname(exe),{recursive:true});fs.writeFileSync(exe,"fixture");
+  const server=createServer((req,res)=>res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({pid:process.pid,status:"running",paths:[]})));
+  server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>server.close());
+  save_json(path.join(home,"daemon.json"),{pid:process.pid,http_port:server.address().port});
+  save_json(path.join(home,"owner.json"),{pid:process.pid,project_root:f.root,executable:exe});
+  await assert.rejects(stop_daemon(f.state,f.root,{stop:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}}),/stop is not confirmed/);
+});
+
 test("an unhealthy but live stale PID blocks competing daemon startup on every OS", async (t) => {
   const f = fixture(t),
     home = path.join(project_home(f.state, f.root), "code-index");

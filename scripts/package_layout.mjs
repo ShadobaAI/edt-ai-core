@@ -30,12 +30,15 @@ export const FILES = [
   "vendor/native/win32_x64/koffi.node",
   "vendor/native/win32_arm64/koffi.node",
   ...[
+    "README",
+    "ARCHITECTURE",
     "DEVELOPMENT",
     "USAGE",
-    "NATIVE_SETTINGS",
-    "SETTINGS_REVIEW",
+    "PROFILES",
+    "PROJECT_AGENTS",
+    "REQUIREMENTS",
+    "INTEGRATIONS",
     "ROADMAP",
-    "VERIFICATION",
     "SOURCES",
   ].map((name) => "docs/" + name + ".md"),
 ];

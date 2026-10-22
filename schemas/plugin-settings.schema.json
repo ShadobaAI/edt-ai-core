@@ -139,6 +139,10 @@
                   "type": "string",
                   "pattern": "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$"
                 },
+                "allow_prerelease": {
+                  "type": "boolean",
+                  "default": false
+                },
                 "enabled": {
                   "type": "boolean"
                 },
@@ -183,6 +187,10 @@
                 "version": {
                   "type": "string",
                   "pattern": "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$"
+                },
+                "allow_prerelease": {
+                  "type": "boolean",
+                  "default": false
                 },
                 "java": {
                   "type": "string",

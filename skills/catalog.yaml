@@ -74,7 +74,7 @@ migration_decisions:
     decided_on: '2026-10-19'
     decided_by: user
     scope: 1c-ai-core skills, project profiles, installation and readiness checks
-    basis: docs/design/KORA_3_1.md, D-01 and section 7.3; confirmed by user
+    basis: User-confirmed exclusion; current contract in docs/INTEGRATIONS.md
     excluded_source_servers:
       - 1c-ssl-mcp
     rationale:

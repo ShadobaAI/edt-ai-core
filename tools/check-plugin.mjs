@@ -164,6 +164,9 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       try {
         const initialized = await client.initialize();
         assert.ok(initialized.serverInfo);
+        assert.equal(name, name.toLowerCase());
+        assert.equal(initialized.serverInfo.title, name);
+        assert.equal(initialized.serverInfo.name, initialized.serverInfo.name.toLowerCase());
         const tools = (await client.request("tools/list")).tools;
         assert.ok(tools.length);
         if (name === "1c-ai-settings") {
@@ -173,6 +176,7 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
           assert.equal(initialized.capabilities.extensions?.["openai/settings"], undefined);
           assert.equal(initialized.capabilities.experimental?.["openai/settings"], undefined);
           const discovery = await client.request("server/discover");
+          assert.equal(discovery._meta["io.modelcontextprotocol/serverInfo"].title, name);
           assert.equal(discovery.capabilities.extensions?.["openai/settings"], undefined);
           assert.equal(tools.some(tool => ["settings.native_read", "settings.manage"].includes(tool.name)), false);
           assert.equal((await client.call(app.name, {})).structuredContent.navigation, "profiles");

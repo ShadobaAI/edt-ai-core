@@ -113,7 +113,7 @@ function dispatch(message, registry, session) {
   let result;
   if (message.method === "initialize") {
     result = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0], capabilities: { tools: {} },
-      serverInfo: { name: "1c-ai-policy-readonly", version: policyProtocolVersion, icons: component_icons("policy") } };
+      serverInfo: { name: "1c-ai-policy-readonly", title: "policy", version: policyProtocolVersion, icons: component_icons("policy") } };
   } else if (message.method === "ping") result = {};
   else if (message.method === "tools/list") result = { tools };
   else if (message.method === "tools/call") {

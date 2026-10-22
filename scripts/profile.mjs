@@ -185,7 +185,7 @@ export function profile_state(selected) {
     target = profile_target(root);
     const data = project_profile(root);
     return { status: "loaded", path: target, profileId: data.profile_id,
-      projectId: data.project.id, repositories: data.repositories.map(({ id, path, alias }) => ({ id, path, alias })) };
+      projectId: data.project.id, repositories: data.repositories.map(({ id, path, alias, edt_project }) => ({ id, path, alias, edt_project })) };
   } catch (error) {
     if (error instanceof ProfileAmbiguous)
       return { status: "ambiguous", path: null, candidates: error.candidates.map(root => profile_target(root)), detail: error.message };

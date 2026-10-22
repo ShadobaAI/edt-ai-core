@@ -9,6 +9,17 @@ import { profile_history } from "../scripts/profile_history.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
 
+test("connection probe overrides are transient and validated before contacting services", async t => {
+  const f=fixture(t);environment(t,f.env);f.save();const backend=new SettingsBackend();
+  const before=await backend.main({action:"read"}), profileBytes=fs.readFileSync(path.join(f.root,".ai/project.yaml"));
+  const result=await backend.main({action:"probe",connections:{edt:"",v8std:""}});
+  assert.equal(result.external.edt.configured,false);assert.equal(result.external.v8std.configured,false);
+  assert.deepEqual((await backend.main({action:"read"})).values,before.values);
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS),false);assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),profileBytes);
+  await assert.rejects(backend.main({action:"probe",connections:{edt:"file:///invalid"}}));
+  await assert.rejects(backend.main({action:"probe",connections:{unknown:""}}));
+});
+
 test("history persists across sessions, detects damaged and removed profiles, and keeps unavailable directories", async t => {
   const f=fixture(t);environment(t,f.env);f.save();const backend=new SettingsBackend();
   await backend.main({action:"read"});assert.equal(fs.existsSync(path.join(f.state,"projects")),false);
@@ -44,6 +55,26 @@ test("history selection previews another project without rebinding the chat or l
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   assert.equal(fs.existsSync(path.join(other,".ai/project.local.yaml")),false);
   await assert.rejects(client.call("settings.update",{set:{projectRoot:other}}),/текущей сессией/);
+});
+
+test("history counts EDT descriptors separately from repositories and refreshes old records", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Base</name></projectDescription>");
+  fs.mkdirSync(path.join(f.root, "extension"));
+  fs.writeFileSync(path.join(f.root, "extension/.project"), "<projectDescription><name>Extension</name></projectDescription>");
+  const backend = new SettingsBackend();
+  const view = await backend.main({ action: "read", remember: true });
+  assert.equal(view.directoryContext.edt.projectCount, 2);
+  let item = profile_history(f.state)[0];
+  assert.equal(item.repositoryCount, 1); assert.equal(item.edtProjectCount, 2);
+  const history = path.join(project_directory(f.state, f.root), "profile-history.json");
+  const saved = JSON.parse(fs.readFileSync(history, "utf8"));
+  assert.equal(saved.edtProjectCount, 2);
+  delete saved.edtProjectCount; fs.writeFileSync(history, JSON.stringify(saved));
+  assert.equal(profile_history(f.state)[0].edtProjectCount, 2);
+  fs.rmSync(path.join(f.root, "extension/.project"));
+  item = profile_history(f.state)[0];
+  assert.equal(item.repositoryCount, 1); assert.equal(item.edtProjectCount, 1);
 });
 
 test("an unbound settings window selects a profile explicitly and remembers it without changing shared configuration", async t => {

@@ -312,7 +312,7 @@ async function dispatch(message) {
           protocolVersion: PROTOCOLS.includes(proposed)
             ? proposed
             : PROTOCOLS[0],
-          serverInfo: { name: "1c-ai-" + component, version: core_version, icons: component_icons(component) },
+          serverInfo: { name: "1c-ai-" + component, title: component, version: core_version, icons: component_icons(component) },
           capabilities: {
             tools: { listChanged: true },
             resources: {},

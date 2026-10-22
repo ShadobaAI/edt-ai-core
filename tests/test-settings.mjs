@@ -65,10 +65,12 @@ test("the directory picker binds the canonical project without writes and discar
     assert.equal(started.status, "running");
     return finishOperation(started.id);
   }
-  async function finishOperation(id) {
+  async function finishOperation(id, meta) {
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
-      const job = (await client.call("settings.operation", { operationId: id })).structuredContent;
+      const response = await client.request("tools/call", { name: "settings.operation", arguments: { operationId: id }, ...(meta ? { _meta: meta } : {}) });
+      assert.notEqual(response.isError, true, response.content?.[0]?.text);
+      const job = response.structuredContent;
       if (job.status !== "running") return job;
       await sleep(5);
     }
@@ -86,6 +88,22 @@ test("the directory picker binds the canonical project without writes and discar
   fs.writeFileSync(choice, JSON.stringify({ directory: null }));
   assert.equal((await finishedPicker()).result.cancelled, true);
   assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, f.root);
+  // App polling may still carry the previous profile while the native picker
+  // has already selected its replacement. Reading a job must never rebind it.
+  const previousScope = { "1c-ai-core/projectRoot": f.root, "1c-ai-core/navigation": "profiles" };
+  fs.mkdirSync(path.join(other, "src"));dump(f.profile, path.join(other, ".ai/project.yaml"));
+  const profileBefore = fs.readFileSync(path.join(other, ".ai/project.yaml"));
+  fs.writeFileSync(choice, JSON.stringify({ directory: other }));
+  const replacement = (await client.request("tools/call", { name: "settings.pick_directory", arguments: { projectRoot: f.root }, _meta: previousScope })).structuredContent;
+  const replaced = await finishOperation(replacement.id, previousScope);
+  assert.equal(replaced.status, "completed");assert.equal(replaced.result.values.projectRoot, other);
+  const selected = (await client.call("settings.select_profile", { projectRoot: other })).structuredContent;
+  assert.equal(selected.values.projectRoot, other);assert.equal(selected.profile.status, "loaded");
+  assert.equal(selected.profileHistory.some(item => item.projectRoot === other), true);
+  assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, other);
+  assert.deepEqual(fs.readFileSync(path.join(other, ".ai/project.yaml")), profileBefore);
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+  await client.call("settings.select_profile", { projectRoot: f.root });
   fs.writeFileSync(choice, JSON.stringify({ directory: f.root, wait: true }));
   const pending = (await client.call("settings.pick_directory", {})).structuredContent;
   assert.equal(pending.status, "running");
@@ -287,7 +305,7 @@ test("manual editing resets removed runtime fields and preserves the unchanged p
   const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
   const preview = (await client.call("settings.preview", request)).structuredContent;
   assert.equal(preview.replacesProfile, false);
-  assert.deepEqual(preview.sharedRuntimeChanges["bsl-ls"], { mode: "auto", version: "latest", java: "java", node: "node", configuration: null, enabled: false });
+  assert.deepEqual(preview.sharedRuntimeChanges["bsl-ls"], { mode: "auto", version: "latest", allow_prerelease: false, java: "java", node: "node", configuration: null, enabled: false });
   const result = (await client.call("settings.apply", { ...request, revision: preview.revision })).structuredContent;
   assert.equal(result.backup, null);
   assert.deepEqual(fs.readFileSync(profilePath), before);

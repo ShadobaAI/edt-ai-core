@@ -50,8 +50,9 @@ import {
   instance_files,
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation } from "./components.mjs";
-import { directory_context, edt_connection } from "./directory_context.mjs";
+import { directory_context, edt_connection, edt_port_suggestion } from "./directory_context.mjs";
 import { profile_history, remember_profile, profile_summary } from "./profile_history.mjs";
+import { read_readiness, save_readiness } from "./setup_readiness.mjs";
 
 export const FIELDS = {
   projectRoot: ["active_project"],
@@ -59,6 +60,10 @@ export const FIELDS = {
   v8stdUrl: ["mcp", "required", "v8std", "url"],
   codeIndexEnabled: ["mcp", "managed", "code-index", "enabled"],
   bslLsEnabled: ["mcp", "managed", "bsl-ls", "enabled"],
+  codeIndexVersion: ["mcp", "managed", "code-index", "version"],
+  codeIndexAllowPrerelease: ["mcp", "managed", "code-index", "allow_prerelease"],
+  bslLsVersion: ["mcp", "managed", "bsl-ls", "version"],
+  bslLsAllowPrerelease: ["mcp", "managed", "bsl-ls", "allow_prerelease"],
   openvikingEnabled: ["mcp", "optional", "openviking", "enabled"],
   openvikingUrl: ["mcp", "optional", "openviking", "url"],
 };
@@ -319,6 +324,14 @@ export class SettingsBackend {
     if (action === "probe") {
       const config = this.effective(this.current()), root = config.active_project;
       if (!root) throw new ConfigError("Выберите папку проекта.");
+      if (request.connections !== undefined) {
+        if (!object(request.connections) || Object.keys(request.connections).some(name => !["edt", "v8std"].includes(name)))
+          throw new ConfigError("Некорректные подключения для проверки.");
+        for (const [name, url] of Object.entries(request.connections)) {
+          if (typeof url !== "string") throw new ConfigError("Адрес подключения должен быть строкой.");
+          config.mcp.required[name].url = url ? validate_url(url, name) : "";
+        }
+      }
       const { probe_connections } = await import("./setup_probe.mjs");
       return probe_connections(config, root, project_profile(root));
     }
@@ -335,10 +348,16 @@ export class SettingsBackend {
         try { const data = load(file); check_schema(data, "project-local.schema.json"); legacy.connections = data.connections || {}; }
         catch { legacy.connections = {}; }
       }
+      const directoryContext = directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project);
+      const profileDirectoryContext = config.active_project && directoryContext?.directory !== config.active_project
+        ? directory_context(config.active_project) : directoryContext;
       return {
         values: actual,
         profile,
-        directoryContext: directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project),
+        directoryContext,
+        profileDirectoryContext,
+        edtPortSuggestion: edt_port_suggestion(actual.edtUrl, profileDirectoryContext?.edt?.connection),
+        readiness: await read_readiness(this.STATE, effective, profile),
         sessionGuidance: session_guidance,
         instance: instance_name(),
         connectionSources: sources,
@@ -401,7 +420,7 @@ export class SettingsBackend {
         throw new ConfigError("Некорректное изменение настроек.");
       for (const [key, value] of Object.entries(changes))
         if (
-          typeof value !== (key.endsWith("Enabled") ? "boolean" : "string")
+          typeof value !== (key.endsWith("Enabled") || key.endsWith("AllowPrerelease") ? "boolean" : "string")
         )
           throw new ConfigError("Некорректный тип настройки: " + key);
       const selected = this.lockedRoot();
@@ -591,7 +610,8 @@ export class SettingsBackend {
     if (action === "updates") {
       const runtime = await import("./runtime.mjs"), config = this.effective(this.current());
       const component = request.component;
-      if (request.operation === "check") return { components: await Promise.all(managed_components.map(async id => {
+      if (component !== undefined && !managed_components.includes(component)) throw new ConfigError("Выберите компонент.");
+      if (request.operation === "check") return { components: await Promise.all((component ? [component] : managed_components).map(async id => {
         try { return await runtime.check_updates(this.STATE, config, id); }
         catch (error) { return { component: id, state: "error", detail: error.message }; }
       })), projectRoot: config.active_project };
@@ -600,6 +620,12 @@ export class SettingsBackend {
       if (!managed_components.includes(component)) throw new ConfigError("Выберите компонент.");
       if (["apply", "rollback"].includes(request.operation)) grant_preparation(this.STATE, root, [component]);
       return { ...await runtime.update_component(this.STATE, config, root, data, component, request.operation), projectRoot: root };
+    }
+    if (action === "rebuild_index") {
+      const runtime = await import("./runtime.mjs"), config = this.effective(this.current()), [root, data] = runtime.project(config.active_project, config, true);
+      authorize_preparation(request, root);
+      grant_preparation(this.STATE, root, ["code-index"]);
+      return runtime.rebuild_index(this.STATE, config, root, data, request.repository);
     }
     if (action === "check") {
       const runtime = await import("./runtime.mjs"),
@@ -625,7 +651,8 @@ export class SettingsBackend {
           managed.push({
             name: component,
             ready,
-            state: ready ? "ready" : "indexing",
+            state: ready ? "ready" : item.index_state || "not_checked",
+            ...(item.index ? { repositories: item.index.repositories } : {}),
             version: item.server?.version,
           });
         } catch (error) {
@@ -658,18 +685,17 @@ export class SettingsBackend {
         reconnect_file(this.STATE, root),
         JSON.stringify({ id: randomUUID() }),
       );
+      const { probe_connections } = await import("./setup_probe.mjs");
+      const { external } = await probe_connections(config, root, data);
+      const readiness = save_readiness(this.STATE, config, data, managed, external);
       return {
         managed,
         projectRoot: root,
         instance: instance_name(),
         actionPolicy: effective_policy(data.policy),
-        external: Object.fromEntries(
-          Object.entries(config.mcp.required).map(([name, item]) => [
-            name,
-            { configured: !!item.url, liveVerified: false },
-          ]),
-        ),
-        fullReadiness: "not_verified",
+        external,
+        readiness,
+        fullReadiness: readiness.state === "ready" ? "verified" : "not_ready",
       };
     }
     throw new ConfigError("Неизвестная операция.");

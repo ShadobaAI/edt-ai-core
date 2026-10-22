@@ -11,10 +11,14 @@ mcp:
       enabled: true
       mode: auto
       version: latest
+      allow_prerelease: false
     bsl-ls:
       enabled: false
       mode: auto
       version: latest
+      allow_prerelease: false
+# latest selects stable releases unless allow_prerelease is true.
+# Set version to an exact tag (including a prerelease) to pin a release.
 # For external mode set mode: external and url. Advanced connection fields:
 # headers_env: { Authorization: MY_MCP_AUTH_HEADER } (the complete header value)
 # timeout_seconds: 60

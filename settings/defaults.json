@@ -17,11 +17,13 @@
       "code-index": {
         "mode": "auto",
         "version": "latest",
+        "allow_prerelease": false,
         "enabled": true
       },
       "bsl-ls": {
         "mode": "auto",
         "version": "latest",
+        "allow_prerelease": false,
         "java": "java",
         "node": "node",
         "configuration": null,

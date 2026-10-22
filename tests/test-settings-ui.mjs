@@ -14,6 +14,8 @@ function screen(handler, options = {}) {
     classList = { toggle() {} };
     addEventListener(name, fn) { this.events[name] = fn; }
     setAttribute(key, value) { (this.attributes ||= {})[key] = value; }
+    removeAttribute(key) { delete (this.attributes ||= {})[key]; }
+    contains(target) { return target===this||this.children.some(child=>child.contains?.(target)); }
     replaceChildren(...children) { this.children = children; }
     append(...children) { this.children.push(...children); }
     click() { if (this.tag === "a") downloads.push({ filename: this.download, href: this.href }); }
@@ -22,6 +24,7 @@ function screen(handler, options = {}) {
     getBoundingClientRect() { return { height: options.height?.() ?? 500 }; }
   }
   for (const match of html.matchAll(/<(\w+)[^>]*\bid="([^"]+)"/g)) { const element = new Element(match[1]); element.id = match[2]; elements.set(match[2], element); }
+  for(const match of html.matchAll(/<select\b[^>]*\bid="([^"]+)"[^>]*>\s*<option value="([^"]+)"/g))elements.get(match[1]).value=match[2];
   const parent = { postMessage(request) {
     calls.push(request);
     if (!request.id) return;
@@ -42,10 +45,16 @@ function screen(handler, options = {}) {
   } };
   const document = { hidden: false, addEventListener: (name, fn) => { documentEvents[name] = fn; }, getElementById: id => elements.get(id), createElement: tag => new Element(tag), createElementNS: (_, tag) => new Element(tag),
     createTextNode: text => ({textContent:text}), querySelector: () => new Element("main"), body: new Element("body"),
-    querySelectorAll: () => [...elements.values()].filter(element => ["button", "input"].includes(element.tag)),
+    querySelectorAll: () => {
+      const found=new Set();const visit=element=>{if(found.has(element))return;found.add(element);for(const child of element.children||[])visit(child);};
+      for(const element of elements.values())visit(element);
+      return [...found].filter(element=>["button","input","textarea","select"].includes(element.tag));
+    },
     documentElement: { scrollHeight: 500, style: { setProperty() {} }, setAttribute() {} } };
   const media={matches:Boolean(options.narrow),addEventListener(name,fn){this.listener=fn;}};
-  const context = vm.createContext({ document, window: { parent, matchMedia:()=>media, addEventListener: (name, listener) => { if(name === "message")message = listener;else lifecycle[name] = listener; } },
+  const browserWindow={parent,matchMedia:()=>media,addEventListener:(name,listener)=>{if(name==="message")message=listener;else lifecycle[name]=listener;}};
+  if(options.standalone)browserWindow.parent=browserWindow;
+  const context = vm.createContext({ document, window: browserWindow,
     setTimeout: (fn, ms) => { const id = ++nextTimer; timers.set(id, { fn, ms }); return id; }, clearTimeout: id => timers.delete(id),
     getComputedStyle: () => ({ paddingTop: "20px", paddingBottom: "20px" }),
     ResizeObserver: class { constructor(callback) { observedResize = callback; } observe() {} },
@@ -61,6 +70,146 @@ function screen(handler, options = {}) {
 const read = { values: { projectRoot: "C:/fixture/project" }, preparationScope: "C:/fixture/project#default",
   profile: { status: "loaded", projectId: "Project", profileId: "generic-1c", repositories: [] },
   schema: { properties: { projectRoot: { readOnly: true } } } };
+
+function treeInputs(ui){const inputs=[];const visit=node=>{if(node.tag==="input")inputs.push(node);for(const child of node.children||[])visit(child);};visit(ui.elements.get("jsonTree"));return inputs;}
+
+test("opening the HTML directly allows every preview tab without a host or profile", async () => {
+  const ui=screen(()=>{throw new Error("Standalone preview must not contact the plugin");},{standalone:true});await ui.flush();
+  assert.equal(ui.elements.get("standaloneHint").hidden,false);
+  assert.equal(ui.elements.get("profileTitle").textContent,"Предпросмотр настроек");
+  assert.equal(ui.elements.get("profileState").textContent,"Без подключения");
+  for(const mode of ["check","editor","import","export","support","profile"]){
+    const tab=ui.elements.get(mode+"Tab");assert.equal(tab.disabled,false);tab.onclick();
+    assert.equal(ui.elements.get(mode+"Panel").hidden,false);assert.equal(tab.attributes["aria-selected"],"true");
+  }
+  ui.elements.get("profileTab").events.keydown({key:"ArrowRight",preventDefault(){}});
+  assert.equal(ui.elements.get("checkPanel").hidden,false);
+  assert.equal(ui.elements.get("versionButton").disabled,false);await ui.elements.get("versionButton").onclick();
+  assert.equal(ui.elements.get("versionPopup").hidden,false);assert.equal(ui.elements.get("versionSearch").disabled,false);
+  assert.match(ui.elements.get("versionHint").textContent,/в настройках плагина/);
+  assert.deepEqual(ui.calls,[]);assert.ok(![...ui.timers.values()].some(timer=>timer.ms===8000));
+});
+
+test("standalone preview keeps saving, updates and service launches unavailable after navigation", async () => {
+  const ui=screen(()=>{throw new Error("No plugin calls in preview");},{standalone:true});await ui.flush();
+  for(const mode of ["check","import","export","editor","support"]){
+    ui.elements.get(mode+"Tab").onclick();
+    for(const id of ["saveButton","saveComponentsButton","checkButton","rebuildIndexButton","updatesButton","downloadUpdateButton","applyUpdateButton","rollbackUpdateButton","downloadButton","previewButton","applyButton","diagnosticsButton"])
+      assert.equal(ui.elements.get(id).disabled,true,id);
+  }
+  await ui.elements.get("checkButton").onclick();
+  assert.deepEqual(ui.calls,[]);assert.match(ui.elements.get("status").textContent,/Подключение к плагину/);
+});
+
+test("JSON tree edits typed values and sends the exact document through revision-protected preview", async () => {
+  const text=JSON.stringify({settings:{enabled:false,items:[1,null]},profile:{name:"<script>"}},null,2);
+  let previewText;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text,baseRevision:"base-json"};
+    if(name==="settings.preview"){assert.equal(args.baseRevision,"base-json");assert.equal(args.mode,"edit");previewText=args.text;return {revision:"reviewed",projectRoot:read.values.projectRoot,repositories:[]};}
+    throw new Error(name);
+  });await ui.flush();ui.elements.get("editorMode").value="tree";await ui.elements.get("editSettingsButton").onclick();
+  assert.equal(ui.elements.get("jsonTree").hidden,false);assert.equal(ui.elements.get("settingsText").hidden,true);
+  const inputs=treeInputs(ui);assert.equal(inputs[3].value,'"<script>"');
+  inputs[0].value="true";inputs[0].events.input();inputs[1].value="42";inputs[1].events.input();
+  inputs[2].value='"typed"';inputs[2].events.input();
+  const expected={settings:{enabled:true,items:[42,"typed"]},profile:{name:"<script>"}};
+  assert.deepEqual(JSON.parse(ui.elements.get("settingsText").value),expected);
+  await ui.tick(8000);assert.deepEqual(JSON.parse(ui.elements.get("settingsText").value),expected);
+  await ui.elements.get("reviewEditButton").onclick();assert.deepEqual(JSON.parse(previewText),expected);
+  ui.elements.get("editorMode").value="text";ui.elements.get("editorMode").events.change();
+  assert.equal(ui.elements.get("settingsText").hidden,false);
+});
+
+test("profile table and header show detected EDT projects separately from the shared Git repository", async () => {
+  const projects=[{name:"Base",directory:"C:/fixture/project/configuration"},{name:"<Extension>",directory:"C:/fixture/project/extension"}];
+  const ui=screen(async()=>({...read,profile:{...read.profile,repositories:[{id:"shared",path:read.values.projectRoot}]},directoryContext:{edt:{detectedProjects:projects.slice(0,1),projectCount:1},git:{status:"not_repository"}},profileDirectoryContext:{edt:{detectedProjects:projects,projectCount:2},git:{status:"detected",root:read.values.projectRoot}}}));
+  await ui.flush();assert.equal(ui.elements.get("profileEdtProjectCount").textContent,"EDT-проектов: 2");
+  const rows=ui.elements.get("profileEdtProjects").children;assert.equal(rows.length,2);
+  assert.deepEqual(rows.map(row=>row.children.map(cell=>cell.textContent)),projects.map(project=>[project.name,project.directory]));
+  assert.equal(ui.elements.get("profileGitRoot").textContent,"Git-репозиторий каталога профиля: "+read.values.projectRoot);
+});
+
+test("invalid tree values guard preview, import and profile changes until corrected or discarded", async () => {
+  const ui=screen(async name=>{if(name==="settings.read")return read;if(name==="settings.edit")return {text:'{"value":false}',baseRevision:"base"};throw new Error(name);});
+  await ui.flush();ui.elements.get("editorMode").value="tree";await ui.elements.get("editSettingsButton").onclick();
+  const input=treeInputs(ui)[0];input.value="fals";input.events.input();
+  assert.equal(input.attributes["aria-invalid"],"true");assert.equal(ui.elements.get("reviewEditButton").disabled,true);
+  assert.equal(ui.elements.get("unsavedHint").hidden,false);
+  await ui.elements.get("reviewEditButton").onclick();await ui.elements.get("previewButton").onclick();
+  await ui.context.selectProfile("C:/another");
+  assert.equal(ui.calls.filter(call=>["settings.preview","settings.select_profile"].includes(call.params?.name)).length,0);
+  ui.elements.get("editorMode").value="text";ui.elements.get("editorMode").events.change();assert.equal(ui.elements.get("editorMode").value,"tree");
+  input.value="true";input.events.input();assert.equal(ui.elements.get("reviewEditButton").disabled,false);
+  input.value="{";input.events.input();ui.elements.get("discardDraftButton").onclick();
+  assert.equal(ui.elements.get("jsonTree").children.length,0);assert.equal(ui.elements.get("unsavedHint").hidden,true);
+});
+
+test("JSON tree blocks edits while a different project directory is awaiting selection", async () => {
+  const ui=screen(async name=>name==="settings.edit"?{text:'{"value":false}',baseRevision:"base"}:{...read,schema:{properties:{projectRoot:{readOnly:false}}}});
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();
+  const input=treeInputs(ui)[0];assert.equal(input.disabled,false);
+  ui.elements.get("projectRoot").value="C:/different";ui.elements.get("projectRoot").events.input();
+  assert.equal(ui.elements.get("settingsText").disabled,true);assert.equal(input.disabled,true);
+  input.value="true";input.events.input();assert.equal(ui.elements.get("settingsText").value,'{"value":false}');
+  ui.elements.get("projectRoot").value=read.values.projectRoot;ui.elements.get("projectRoot").events.input();
+  assert.equal(input.disabled,false);input.events.input();assert.equal(JSON.parse(ui.elements.get("settingsText").value).value,true);
+});
+
+test("JSON formatting validates syntax without losing invalid text, and YAML stays editable", async () => {
+  const ui=screen(async name=>{if(name==="settings.read")return read;if(name==="settings.edit")return {text:'{"value":1}',baseRevision:"base"};throw new Error(name);});
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();
+  ui.elements.get("formatJsonButton").onclick();assert.equal(ui.elements.get("settingsText").value,'{\n  "value": 1\n}');
+  ui.elements.get("settingsText").value='{"value":';ui.elements.get("settingsText").events.input();ui.elements.get("formatJsonButton").onclick();
+  assert.equal(ui.elements.get("settingsText").value,'{"value":');assert.match(ui.elements.get("editorValidation").textContent,/Не удалось форматировать JSON/);
+  ui.elements.get("settingsText").value="value: true";ui.elements.get("settingsText").events.input();
+  ui.elements.get("editorMode").value="tree";ui.elements.get("editorMode").events.change();
+  assert.equal(ui.elements.get("editorMode").value,"text");assert.equal(ui.elements.get("settingsText").value,"value: true");
+});
+
+test("history JSON tree is read-only and prototype-like keys remain ordinary document data", async () => {
+  const text='{"__proto__":{"value":false},"constructor":"safe"}';
+  const ui=screen(async name=>{if(name==="settings.read")return {...read,viewOnly:true};if(name==="settings.document")return {text};throw new Error(name);});
+  await ui.flush();ui.elements.get("editorMode").value="tree";await ui.elements.get("editSettingsButton").onclick();
+  assert.ok(treeInputs(ui).every(input=>input.readOnly));assert.equal(ui.elements.get("formatJsonButton").disabled,true);
+  const input=treeInputs(ui)[0];input.value="true";input.events.input();assert.equal(ui.elements.get("settingsText").value,text);
+  const editable=screen(async name=>name==="settings.edit"?{text,baseRevision:"base"}:read);await editable.flush();
+  editable.elements.get("editorMode").value="tree";await editable.elements.get("editSettingsButton").onclick();
+  const field=treeInputs(editable)[0];field.value="true";field.events.input();
+  assert.equal(JSON.parse(editable.elements.get("settingsText").value).__proto__.value,true);
+  assert.equal(vm.runInContext("Object.prototype.value",editable.context),undefined);
+});
+
+test("settings export confirms a saved file and opens its folder without browser downloads", async () => {
+  const savedPath="C:/fixture/state/exports/1c-ai-core-settings.json";
+  const ui=screen(async name=>{
+    if(name==="settings.read")return read;
+    if(name==="settings.save_export")return {path:savedPath,canOpenDirectory:true};
+    if(name==="settings.open_export_directory")return {};
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("downloadButton").onclick();
+  assert.equal(ui.elements.get("exportPath").textContent,savedPath);
+  assert.equal(ui.elements.get("exportSaved").hidden,false);
+  assert.equal(ui.elements.get("openExportButton").hidden,false);
+  assert.match(ui.elements.get("status").textContent,/Файл настроек сохранён/);
+  assert.equal(ui.downloads.length,0);
+  await ui.elements.get("openExportButton").onclick();
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.open_export_directory").length,1);
+});
+
+test("settings export never reports success when the disk write fails or no path is confirmed", async () => {
+  for(const result of [null,{text:"{}"}]){
+    const ui=screen(async name=>{
+      if(name==="settings.read")return read;
+      if(name==="settings.save_export"){if(!result)throw new Error("Disk unavailable");return result;}
+      throw new Error(name);
+    });await ui.flush();await ui.elements.get("downloadButton").onclick();
+    assert.equal(ui.elements.get("exportSaved").hidden,true);
+    assert.match(ui.elements.get("status").textContent,/Disk unavailable|не подтверждено/);
+    assert.equal(ui.downloads.length,0);
+  }
+});
 
 test("diagnostics save stays available during preparation and shows the confirmed file path", async () => {
   const operation = { id: "pending", action: "check", status: "running" };
@@ -156,6 +305,91 @@ test("component selection is saved independently and update polling never repeat
   assert.match(ui.elements.get("updatesResult").textContent,/BSL LS: применён · v9.0.0/);
 });
 
+test("one searchable version picker saves only the selected component and restores each saved version", async () => {
+  const values={...read.values,codeIndexVersion:"latest",bslLsVersion:"latest",bslLsAllowPrerelease:true};
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return {...read,values:{...values}};
+    if(name==="settings.versions")return {component:args.component,versions:args.component==="bsl-ls"?[{version:"v1.1.0-rc.7"},{version:"v1.0.7"}]:[{version:"v1.14.1"}]};
+    if(name==="settings.update"){assert.deepEqual(JSON.parse(JSON.stringify(args.set)),{bslLsVersion:"v1.1.0-rc.7",bslLsAllowPrerelease:false});Object.assign(values,args.set);return {values};}
+    throw new Error(name);
+  });await ui.flush();assert.equal(ui.elements.get("versionValue").textContent,"latest");
+  for(const id of ["codeIndexVersion","bslLsVersion","codeIndexAllowPrerelease","bslLsAllowPrerelease","saveVersionsButton"])assert.equal(ui.elements.has(id),false);
+  ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.1.0-rc.7","v1.0.7"]);
+  ui.elements.get("versionSearch").value="rc.7";ui.elements.get("versionSearch").events.input();await ui.tick(8000);
+  assert.equal(ui.elements.get("versionSearch").value,"rc.7");assert.equal(ui.elements.get("versionOptions").children.length,1);
+  await ui.elements.get("versionOptions").children[0].onclick();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");assert.equal(ui.elements.get("versionPopup").hidden,true);
+  ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"latest");
+  await ui.elements.get("versionButton").onclick();assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.14.1"]);
+  ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,0);
+});
+
+test("version search covers the complete large catalog, limits visible rows and supports keyboard selection", async () => {
+  const versions=Array.from({length:2500},(_,i)=>({version:"v"+(2500-i)+".0.0"}));let selected;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,values:{...read.values,codeIndexVersion:selected||"latest"}};
+    if(name==="settings.versions")return {component:args.component,versions};
+    if(name==="settings.update"){selected=args.set.codeIndexVersion;return {};}
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();
+  assert.equal(ui.elements.get("versionOptions").children.length,50);assert.equal(ui.elements.get("moreVersionsButton").hidden,false);
+  ui.elements.get("moreVersionsButton").onclick();assert.equal(ui.elements.get("versionOptions").children.length,100);
+  ui.elements.get("versionSearch").value="v1.0.0";ui.elements.get("versionSearch").events.input();
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["v1.0.0"]);
+  ui.elements.get("versionSearch").events.keydown({key:"ArrowDown",preventDefault(){}});
+  assert.equal(ui.elements.get("versionSearch").attributes["aria-activedescendant"],"version-option-0");
+  ui.elements.get("versionSearch").events.keydown({key:"Enter",preventDefault(){}});await ui.flush();await ui.flush();
+  assert.equal(selected,"v1.0.0");assert.equal(ui.elements.get("versionValue").textContent,"v1.0.0");
+  await ui.elements.get("versionButton").onclick();ui.elements.get("versionSearch").events.keydown({key:"Escape",preventDefault(){}});
+  assert.equal(ui.elements.get("versionPopup").hidden,true);assert.equal(ui.calls.filter(call=>call.params?.name==="settings.versions").length,1);
+});
+
+test("a failed version catalog can retry and a late response cannot replace another component's list", async () => {
+  let attempt=0,finish;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return read;
+    if(name==="settings.versions"){
+      if(args.component==="bsl-ls")return new Promise(resolve=>{finish=()=>resolve({component:"bsl-ls",versions:[{version:"v1.1.0-rc.7"}]});});
+      if(++attempt===1)throw new Error("offline");return {component:"code-index",versions:[{version:"v1.14.1"}]};
+    }throw new Error(name);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();assert.match(ui.elements.get("versionHint").textContent,/offline/);
+  await ui.elements.get("retryVersionsButton").onclick();assert.equal(ui.elements.get("retryVersionsButton").hidden,true);
+  ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();const pending=ui.elements.get("versionButton").onclick();await ui.flush();
+  ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();finish();await pending;
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.14.1"]);
+});
+
+test("update check uses the selected component and only renders its result", async () => {
+  for(const component of ["code-index","bsl-ls"]){
+    const ui=screen(async(name,args)=>{
+      if(name==="settings.read")return read;
+      if(name==="settings.updates"){assert.equal(args.operation,"check");assert.equal(args.component,component);assert.equal(args.authorization,undefined);return {id:"check-update",status:"running"};}
+      if(name==="settings.operation")return {id:"check-update",action:"updates",status:"completed",result:{components:[{component,state:"current"}]}};
+      throw new Error(name);
+    });await ui.flush();ui.elements.get("updateComponent").value=component;await ui.elements.get("updatesButton").onclick();
+    assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,1);
+    assert.equal(ui.elements.get("updatesResult").textContent,component==="bsl-ls"?"BSL LS: актуален":"Индекс кода: актуален");
+  }
+});
+
+test("switching the update component hides unrelated results and scopes every action", async () => {
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return read;
+    if(name==="settings.updates")return {id:args.operation,action:"updates",status:"completed"};
+    if(name==="settings.operation")return {id:args.operationId,action:"updates",status:"completed",result:{component:"bsl-ls",state:"current"}};
+    throw new Error(name);
+  });await ui.flush();
+  ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();
+  for(const id of ["updatesButton","downloadUpdateButton","applyUpdateButton","rollbackUpdateButton"])await ui.elements.get(id).onclick();
+  assert.deepEqual(ui.calls.filter(call=>call.params?.name==="settings.updates").map(call=>[call.params.arguments.component,call.params.arguments.operation]),[["bsl-ls","check"],["bsl-ls","download"],["bsl-ls","apply"],["bsl-ls","rollback"]]);
+  assert.match(ui.elements.get("updatesResult").textContent,/BSL LS: актуален/);
+  ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();
+  assert.doesNotMatch(ui.elements.get("updatesResult").textContent,/BSL LS/);
+  ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();
+  assert.match(ui.elements.get("updatesResult").textContent,/BSL LS: актуален/);
+});
+
 test("external connection button polls one read-only probe and displays project readiness", async () => {
   let probes = 0;
   const ui = screen(async (name) => {
@@ -213,6 +447,7 @@ test("picking a directory refreshes the profile and invalidates an earlier impor
   let selected = false;
   const ui = screen(async (name, args) => {
     if (name === "settings.read") return selected ? { ...read, schema: {}, profile: { status: "missing" } } : { values: { projectRoot: "" }, schema: {}, profile: { status: "unselected" } };
+    if (name === "settings.select_profile") return { ...read, schema: {}, profile: { status: "missing" } };
     if (name === "settings.pick_directory") { assert.equal(args.projectRoot, ""); return { id: "picker", status: "running" }; }
     if (name === "settings.operation") { selected = true; return { id: "picker", status: "completed", action: "pick_directory", result: read }; }
     throw new Error(name);
@@ -242,6 +477,98 @@ test("cancelling the directory picker preserves the draft and reviewed import", 
   assert.equal(ui.elements.get("projectRoot").value, "C:/draft");
   assert.equal(ui.elements.get("preview").hidden, false);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.read").length, 1);
+});
+
+for (const delayed of [false, true]) test(`picking another project replaces the old app scope after ${delayed ? "delayed" : "immediate"} completion`, async () => {
+  const nextRoot = "C:/fixture/another", next = { ...read, schema: {}, values: { projectRoot: nextRoot },
+    profile: { status: "missing" }, profileHistory: [{ projectRoot: nextRoot, status: "missing" }] };
+  let selectedRoot = read.values.projectRoot, polls = 0;
+  const ui = screen(async (name, args, meta) => {
+    if (name === "settings.operation") {
+      if (delayed && ++polls === 1) return { id: "another-picker", action: "pick_directory", status: "running" };
+      selectedRoot = nextRoot;
+      return { id: "another-picker", action: "pick_directory", status: "completed", result: next };
+    }
+    if (meta?.["1c-ai-core/projectRoot"] && meta["1c-ai-core/projectRoot"] !== selectedRoot)
+      throw new Error("Каталог закреплён этой MCP-сессией.");
+    if (name === "settings.read" || name === "settings.status") return selectedRoot === nextRoot ? next : { ...read, schema: {} };
+    if (name === "settings.pick_directory") {
+      assert.equal(args.projectRoot, read.values.projectRoot);
+      return { id: "another-picker", action: "pick_directory", status: "running" };
+    }
+    if (name === "settings.select_profile") { assert.equal(args.projectRoot, nextRoot); return next; }
+    throw new Error(name);
+  }, { narrow: true });
+  await ui.flush();ui.elements.get("profileToggleButton").onclick();ui.elements.get("addProfileButton").onclick();
+  await ui.elements.get("pickDirectoryButton").onclick();
+  if (delayed) {
+    assert.equal(ui.elements.get("pickDirectoryButton").disabled, true);
+    await ui.tick();
+  }
+  assert.equal(ui.elements.get("projectRoot").value, nextRoot);
+  assert.equal(ui.elements.get("profilePath").textContent, nextRoot);
+  assert.equal(ui.elements.get("createButton").hidden, false);
+  assert.equal(ui.elements.get("createButton").disabled, false);
+  assert.equal(ui.elements.get("profileBrowser").hidden, true);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.pick_directory").length, 1);
+  await ui.tick(8000);
+  assert.equal(ui.elements.get("projectRoot").value, nextRoot);
+  assert.doesNotMatch(ui.elements.get("autoRefreshState").textContent, /Нет свежих данных/);
+  assert.equal(ui.calls.filter(call => ["settings.create", "settings.run_check"].includes(call.params?.name)).length, 0);
+});
+
+test("a late observation of the previous profile cannot replace the completed folder selection", async () => {
+  const nextRoot = "C:/fixture/another", next = { ...read, schema: {}, values: { projectRoot: nextRoot } };
+  let polls = 0, releaseStatus;
+  const ui = screen(async name => {
+    if (name === "settings.read") return { ...read, schema: {} };
+    if (name === "settings.status") return new Promise(resolve => { releaseStatus = resolve; });
+    if (name === "settings.pick_directory") return { id: "picker", status: "running" };
+    if (name === "settings.operation") return ++polls === 1
+      ? { id: "picker", action: "pick_directory", status: "running" }
+      : { id: "picker", action: "pick_directory", status: "completed", result: next };
+    if (name === "settings.select_profile") return next;
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("pickDirectoryButton").onclick();
+  await ui.tick(8000);assert.equal(typeof releaseStatus, "function");
+  await ui.tick();assert.equal(ui.elements.get("profilePath").textContent, nextRoot);
+  releaseStatus({ ...read, schema: {} });await ui.flush();
+  assert.equal(ui.elements.get("profilePath").textContent, nextRoot);
+  assert.equal(ui.elements.get("projectRoot").value, nextRoot);
+});
+
+test("selecting the current folder replaces a manually typed directory draft", async () => {
+  const ui = screen(async name => {
+    if (name === "settings.read" || name === "settings.select_profile") return { ...read, schema: {} };
+    if (name === "settings.pick_directory") return { id: "same-picker", status: "running" };
+    if (name === "settings.operation") return { id: "same-picker", status: "completed", action: "pick_directory", result: read };
+    throw new Error(name);
+  });
+  await ui.flush();ui.elements.get("projectRoot").value = "C:/draft";ui.elements.get("projectRoot").events.input();
+  await ui.elements.get("pickDirectoryButton").onclick();
+  assert.equal(ui.elements.get("projectRoot").value, read.values.projectRoot);
+  assert.equal(ui.elements.get("unsavedHint").hidden, true);
+  assert.equal(ui.elements.get("saveButton").disabled, false);
+});
+
+for (const failsToStart of [false, true]) test(`a picker ${failsToStart ? "startup" : "operation"} error keeps the current project and allows retry`, async () => {
+  const ui = screen(async name => {
+    if (name === "settings.read") return { ...read, schema: {} };
+    if (name === "settings.pick_directory") {
+      if (failsToStart) throw new Error("Не удалось открыть окно выбора папки.");
+      return { id: "failed-picker", status: "running" };
+    }
+    if (name === "settings.operation") return { id: "failed-picker", action: "pick_directory", status: "failed", error: "Не удалось открыть окно выбора папки." };
+    throw new Error(name);
+  });
+  await ui.flush();ui.elements.get("projectRoot").value = "C:/draft";ui.elements.get("projectRoot").events.input();
+  await ui.elements.get("pickDirectoryButton").onclick();
+  assert.match(ui.elements.get("status").textContent, /Не удалось открыть окно выбора папки/);
+  assert.equal(ui.elements.get("projectRoot").value, "C:/draft");
+  assert.equal(ui.elements.get("profilePath").textContent, read.values.projectRoot);
+  assert.equal(ui.elements.get("pickDirectoryButton").disabled, false);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, 0);
 });
 
 test("a locked project remains locked and preparation polling does not restart it", async () => {
@@ -355,6 +682,92 @@ test("profile creation reports restart guidance without preparing services", asy
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });
 
+test("the readiness summary checks once and retains a scoped result across refresh", async () => {
+  let completed=false;
+  const readiness={state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",label:"EDT",state:"ready"},{id:"policy",label:"Политика",state:"ready"},{id:"skills",label:"Навыки",state:"ready"}]};
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,readiness:completed?readiness:{state:"not_checked"}};
+    if(name==="settings.run_check"){assert.equal(args.authorization.scope,read.preparationScope);return {id:"ready-check",status:"running"};}
+    if(name==="settings.operation"){completed=true;return {id:"ready-check",status:"completed",action:"check",result:{managed:[],external:{},readiness}};}
+    throw new Error(name);
+  });await ui.flush();assert.match(ui.elements.get("readinessTitle").textContent,/ещё не проверена/);
+  await ui.elements.get("readinessButton").onclick();
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,1);
+  assert.match(ui.elements.get("readinessTitle").textContent,/можно начинать работу/);
+  assert.equal(ui.elements.get("readinessItems").children.length,3);
+  ui.elements.get("edtUrl").value="http://localhost:2222/mcp";ui.elements.get("edtUrl").events.input();
+  assert.match(ui.elements.get("readinessTitle").textContent,/несохранённые/);
+  await ui.elements.get("readinessButton").onclick();assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,1);
+});
+
+test("failed service checks name the failing component and stale indexes offer rebuilding", async () => {
+  const ui=screen(async()=>read);await ui.flush();
+  ui.context.renderCheck({managed:[{name:"policy",state:"error",ready:false,detail:"Policy unavailable"},{name:"code-index",state:"stale",ready:false}],external:{}},{projectRoot:read.values.projectRoot});
+  const contents=node=>[node.textContent,...node.children.map(contents)].join(" ");
+  const text=contents(ui.elements.get("connections"));assert.match(text,/Ошибка проверки/);assert.doesNotMatch(text,/Ошибка индекса/);
+  assert.match(text,/Индекс устарел/);assert.match(text,/Пересоздайте индекс/);assert.doesNotMatch(text,/Дождитесь завершения/);
+});
+
+test("a stale readiness result cannot display ready", async () => {
+  const ui=screen(async()=>({...read,readiness:{state:"stale",checkedAt:"2026-10-22T12:00:00Z",reason:"Изменился порт EDT.",checks:[{id:"edt",label:"EDT",state:"ready"}]}}));
+  await ui.flush();assert.match(ui.elements.get("readinessTitle").textContent,/повторить/);assert.match(ui.elements.get("readinessDetail").textContent,/Изменился порт/);
+});
+
+test("EDT port suggestion is adjacent, explicit, and saves only the instance URL", async () => {
+  let saved,applied=false;
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,values:{...read.values,edtUrl:applied?suggestion.url:"http://localhost:8765/mcp"},edtPortSuggestion:applied?null:suggestion};
+    if(name==="settings.update"){saved=args.set;applied=true;return {};}
+    throw new Error(name);
+  });await ui.flush();assert.equal(ui.elements.get("edtPortHint").hidden,false);
+  assert.match(ui.elements.get("edtPortText").textContent,/19801.*8765/);
+  ui.elements.get("v8stdUrl").value="http://localhost:9000/mcp";ui.elements.get("v8stdUrl").events.input();
+  await ui.elements.get("useEdtPortButton").onclick();
+  assert.equal(JSON.stringify(saved),JSON.stringify({edtUrl:suggestion.url}));
+  assert.equal(ui.elements.get("edtPortHint").hidden,true);assert.equal(ui.elements.get("v8stdUrl").value,"http://localhost:9000/mcp");
+});
+
+test("EDT port suggestion never overwrites a draft or accepts a changed preference", async () => {
+  let reads=0;
+  const ui=screen(async name=>{
+    if(name==="settings.read")return {...read,edtPortSuggestion:{configuredPort:8765,detectedPort:++reads===1?19801:19802,url:"http://localhost:"+(reads===1?19801:19802)+"/mcp"}};
+    throw new Error(name);
+  });await ui.flush();await ui.elements.get("useEdtPortButton").onclick();
+  assert.match(ui.elements.get("status").textContent,/Настройки EDT изменились/);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
+  ui.elements.get("edtUrl").value="http://localhost:20000/mcp";ui.elements.get("edtUrl").events.input();
+  assert.equal(ui.elements.get("useEdtPortButton").disabled,true);
+});
+
+test("rebuilding an index uses the selected EDT repository and never repeats the operation", async () => {
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,profile:{...read.profile,repositories:[{id:"main",path:"src",edt_project:"Base"},{id:"ext",path:"extension",edt_project:"Extension"}]}};
+    if(name==="settings.rebuild_index"){assert.equal(args.repository,"ext");assert.equal(args.authorization.scope,read.preparationScope);return {id:"rebuild",status:"running"};}
+    if(name==="settings.operation")return {id:"rebuild",action:"rebuild_index",status:"completed",result:{repository:"ext",edtProject:"Extension",state:"ready"}};
+    throw new Error(name);
+  });await ui.flush();ui.elements.get("indexRepository").value="ext";await ui.elements.get("rebuildIndexButton").onclick();
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.rebuild_index").length,1);
+  assert.match(ui.elements.get("status").textContent,/Extension.*пересоздан.*Готов/);
+});
+
+test("connection checks use unsaved fields without saving and preserve drafts", async () => {
+  let checked;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,values:{...read.values,edtUrl:"http://localhost:4000/mcp",v8stdUrl:"http://localhost:8000/mcp"}};
+    if(name==="settings.probe_connections"){checked=args.connections;return {id:"draft-probe",status:"running"};}
+    if(name==="settings.operation")return {id:"draft-probe",status:"completed",action:"probe",result:{external:{edt:{configured:true,connected:true},v8std:{configured:false,connected:false}}}};
+    throw new Error(name);
+  });await ui.flush();
+  ui.elements.get("edtUrl").value="http://localhost:4001/mcp";ui.elements.get("edtUrl").events.input();
+  ui.elements.get("v8stdUrl").value="";ui.elements.get("v8stdUrl").events.input();
+  await ui.elements.get("probeButton").onclick();
+  assert.equal(JSON.stringify(checked),JSON.stringify({edt:"http://localhost:4001/mcp",v8std:""}));
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
+  assert.equal(ui.elements.get("edtUrl").value,"http://localhost:4001/mcp");
+  assert.equal(ui.elements.get("unsavedHint").hidden,false);
+});
+
 test("editing connections saves only writable changes for the bound project", async () => {
   let written;
   const ui = screen(async (name, args) => {
@@ -406,13 +819,14 @@ test("reopening settings resumes the pending picker and enables preparation only
     if (name === "settings.read") return selected
       ? { ...read, profile: { status: "loaded", profileId: "selected-profile" }, operation: { ...picker, status: "completed" } }
       : { ...read, operation: picker };
+    if (name === "settings.select_profile") return { ...read, profile: { status: "loaded", profileId: "selected-profile" }, operation: { ...picker, status: "completed" } };
     if (name === "settings.operation") return selected ? { ...picker, status: "completed", result: read } : picker;
     throw new Error(name);
   });
   await ui.flush();
   assert.equal(ui.elements.get("checkButton").disabled, true);
   assert.equal(ui.elements.get("pickDirectoryButton").disabled, true);
-  assert.equal(ui.elements.get("operationButton").disabled, false);
+  assert.equal(ui.elements.has("operationButton"), false);
   assert.match(ui.elements.get("status").textContent, /системный выбор папки/);
   selected = true;
   await ui.tick();
@@ -438,18 +852,18 @@ test("preparation observes a picker started by another settings view without lau
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });
 
-test("state refreshes a completed load and queries the latest operation instead of the previous one", async () => {
+test("opening an operation result refreshes its completed load without repeating the action", async () => {
   let reads = 0;
   const ui = screen(async (name, args) => {
     if (name === "settings.read") return { ...read, profile: { status: "loaded", profileId: ++reads === 1 ? "old" : "reloaded" }, operation: { id: "previous", action: "update", status: "completed" } };
     if (name === "settings.operation") {
-      assert.equal(JSON.stringify(args), "{}");
+      assert.equal(JSON.stringify(args), '{"operationId":"latest"}');
       return { id: "latest", action: "load", status: "completed", result: { sessionGuidance: "Профиль доступен в новом чате." } };
     }
     throw new Error(name);
   });
   await ui.flush();
-  await ui.elements.get("operationButton").onclick();
+  ui.deliver({jsonrpc:"2.0",method:"ui/notifications/tool-result",params:{structuredContent:{mode:"operation",id:"latest",navigation:"profiles"}}});await ui.flush();
   assert.equal(ui.elements.get("profileTitle").textContent, "reloaded");
   assert.match(ui.elements.get("status").textContent, /Профиль загружен.*новом чате/);
   assert.doesNotMatch(ui.elements.get("status").textContent, /Обновите настройки/);
@@ -470,7 +884,7 @@ test("echoed load and operation results do not navigate, refresh recursively or 
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.read").length, 2);
   assert.equal(ui.elements.get("profilePanel").hidden, false);
   ui.elements.get("checkTab").onclick();
-  await ui.elements.get("operationButton").onclick();
+  await ui.context.pollOperation(operation.id);
   for (let index = 0; index < 3; index++) ui.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: operation } });
   await ui.flush();
   assert.equal(ui.elements.get("checkPanel").hidden, false);
@@ -559,6 +973,23 @@ test("history previews another profile read-only without selecting it for chat o
   assert.equal(ui.elements.get("settingsText").value,"history-profile-document");
   assert.equal(ui.elements.get("settingsText").disabled,false);
   await ui.tick(8000);assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
+});
+
+test("profile cards show EDT project counts instead of repository counts", async () => {
+  const ui = screen(async () => ({ ...read,
+    profile: { ...read.profile, repositories: [{ id: "one", path: "." }] },
+    directoryContext: { edt: { projectCount: 2 } },
+    profileHistory: [
+      { projectRoot: "C:/other", projectId: "Other", status: "loaded", repositoryCount: 3, edtProjectCount: 0 },
+      { projectRoot: "C:/old", projectId: "Old", status: "unavailable", repositoryCount: 5 },
+    ],
+  }));
+  await ui.flush();
+  const cards = ui.elements.get("profileHistory").children;
+  assert.equal(cards.find(card => card.children[0].textContent === "Project").children[2].textContent, "EDT-проектов: 2");
+  assert.equal(cards.find(card => card.children[0].textContent === "Other").children[2].textContent, "EDT-проектов: 0");
+  assert.equal(cards.find(card => card.children[0].textContent === "Old").children[2].textContent, "EDT-проектов: —");
+  assert.equal(ui.elements.get("profileEdtProjectCount").textContent, "EDT-проектов: 2");
 });
 
 test("typing a new directory requires explicit selection and leaves current settings intact", async () => {

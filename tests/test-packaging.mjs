@@ -40,6 +40,11 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
     first = package_plugin(),
     hash = first.archives.map((file) => sha256(fs.readFileSync(file)));
   assert.deepEqual(
+    fs.readdirSync(path.join(first.plugin, "docs")).sort(),
+    fs.readdirSync(path.join(ROOT, "docs")).filter(name => name.endsWith(".md")).sort(),
+    "The package must contain the complete current documentation, without obsolete design/review assets",
+  );
+  assert.deepEqual(
     package_plugin().archives.map((file) => sha256(fs.readFileSync(file))),
     hash,
   );

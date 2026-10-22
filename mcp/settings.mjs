@@ -57,15 +57,22 @@ const primitive = {
   v8stdUrl: { type: "string", title: "URL v8std MCP", description: "Override этого каталога и экземпляра. Пустое значение отключает подключение; окружение имеет высший приоритет." },
   codeIndexEnabled: { type: "boolean", title: "Индекс кода" },
   bslLsEnabled: { type: "boolean", title: "BSL LS", description: "Дополнительный анализатор; включайте при необходимости." },
+  codeIndexVersion: { type: "string", title: "Версия индекса кода", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
+  codeIndexAllowPrerelease: { type: "boolean", title: "Предварительные релизы индекса кода", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
+  bslLsVersion: { type: "string", title: "Версия BSL LS", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
+  bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   openvikingEnabled: { type: "boolean", title: "Флаг OpenViking", description: "Резерв конфигурации. Подключение OpenViking этим плагином ещё не реализовано.", readOnly: true },
   openvikingUrl: { type: "string", title: "URL OpenViking", description: "Сохранённое значение; соединение и поиск не выполняются.", readOnly: true },
 };
+const versionCatalogs = new Map();
 
 function values(c) {
   return {
     projectRoot: c.active_project || "",
     edtUrl: c.mcp.required.edt.url, v8stdUrl: c.mcp.required.v8std.url,
     codeIndexEnabled: c.mcp.managed["code-index"].enabled !== false, bslLsEnabled: c.mcp.managed["bsl-ls"].enabled !== false,
+    codeIndexVersion: c.mcp.managed["code-index"].version, codeIndexAllowPrerelease: Boolean(c.mcp.managed["code-index"].allow_prerelease),
+    bslLsVersion: c.mcp.managed["bsl-ls"].version, bslLsAllowPrerelease: Boolean(c.mcp.managed["bsl-ls"].allow_prerelease),
     openvikingEnabled: Boolean(c.mcp.optional?.openviking?.enabled),
     openvikingUrl: c.mcp.optional?.openviking?.url || "",
   };
@@ -96,6 +103,9 @@ function readSettings(actual) {
     values: actual.values, instance: actual.instance, connectionSources: actual.connectionSources,
     preparationScope: actual.preparationScope,
     profile: actual.profile, directoryContext: actual.directoryContext, sessionGuidance: actual.sessionGuidance,
+    profileDirectoryContext: actual.profileDirectoryContext,
+    edtPortSuggestion: actual.edtPortSuggestion,
+    readiness: actual.readiness,
     legacyState: actual.legacyState,
     profileHistory: actual.profileHistory || [], summary: actual.summary,
     configurationError: actual.configurationError,
@@ -129,7 +139,7 @@ const tools = [
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
     inputSchema: inspectInput, annotations: annotations(), _meta: shared },
   { name: "settings.probe_connections", title: "Проверить EDT и v8std", description: "One read-only external connection test, including exact EDT repository paths/readiness when list_projects is exposed. Does not download or launch services. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
-    inputSchema: empty, annotations: { ...annotations(), openWorldHint: true }, _meta: shared },
+    inputSchema: { type: "object", properties: { connections: { type: "object", properties: { edt: { type: "string" }, v8std: { type: "string" } }, additionalProperties: false, description: "Optional unsaved URLs to test without persisting them. An empty string tests a disabled connection." } }, additionalProperties: false }, annotations: { ...annotations(), openWorldHint: true }, _meta: shared },
   { name: "settings.profile", title: "Настройки проекта", description: "Open settings for this chat's selected profile, without a profile chooser. Always supply this chat's known projectRoot so the form can retain its directory across MCP connections; {} uses host roots when available. Does not reload profiles, launch services or borrow another chat's directory.",
     inputSchema: inspectInput, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "thread" }] } } },
   ...[["settings.create", "Создать профиль", "Create the generic .ai/project.yaml and missing project instructions in this chat's selected repository, only when the user requests creation. Never overwrites a profile or existing instructions. Repository mappings still need configuration."],
@@ -168,6 +178,10 @@ const tools = [
     annotations: annotations(false), _meta: shared },
   { name: "settings.export_data", title: "Скачать настройки", description: "Export shared settings and tracked profile defaults; instance overrides stay local.",
     inputSchema: empty, annotations: annotations(), _meta: shared },
+  { name: "settings.save_export", title: "Сохранить файл настроек", description: "Save the portable settings export to a local file and return its confirmed path to the settings app. Replaces the previous export; instance overrides stay local.",
+    inputSchema: empty, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.open_export_directory", title: "Открыть папку экспорта", description: "Open the directory containing the saved settings export. Does not accept arbitrary paths or generate another export.",
+    inputSchema: empty, annotations: annotations(false), _meta: appOnly },
   { name: "settings.export_diagnostics", title: "Сохранить диагностику", description: "Save a bounded, redacted support report to disk from the settings app only and return its confirmed path in app metadata. Replaces the previous support report. Works without a profile and during a running operation. Does not contact services or upload data.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
   { name: "settings.diagnostics", title: "Журнал и диагностика", description: "Read the last 200 sanitized plugin events and local session metadata in the settings app. Works without a profile and during operations. Does not contact or launch services. Log data is app-only metadata.",
@@ -181,7 +195,7 @@ const tools = [
   { name: "settings.operation", title: "Состояние операции", description: "Read a running or completed settings operation without retrying it. Results belong to this MCP session and include their original project/instance.",
     inputSchema: { type: "object", properties: { operationId: { type: "string" }, waitMs: { type: "integer", minimum: 0, maximum: 10000, description: "Wait for this operation to finish, up to 10 seconds. Prefer a bounded wait over repeated immediate polls." } }, additionalProperties: false },
     annotations: annotations(), _meta: appTool },
-  { name: "settings.check", title: "Подготовить и проверить MCP", description: "Open managed runtime preparation and protocol checks. Does not verify EDT/v8std or project behavior.",
+  { name: "settings.check", title: "Проверка готовности", description: "Open setup readiness checks for MCP connections, managed runtimes, policy and skill files. This entry only opens the form; preparation starts through settings.run_check with scoped authorization.",
     inputSchema: inspectInput, annotations: { ...annotations(false), openWorldHint: true }, _meta: appTool },
 ];
 
@@ -255,6 +269,13 @@ async function call(name, args, meta = {}) {
   const definition = tools.find(item => item.name === name);
   if (!definition) throw new Error("Неизвестный инструмент");
   validateArguments(definition.inputSchema, args);
+  // A job owns its original context. The picker can finish before the app
+  // learns its new directory; stale view metadata must not rebind this read.
+  if (name === "settings.operation") {
+    await operations.wait(args.operationId, args.waitMs || 0);
+    const operation = operations.status(args.operationId);
+    return result({ ...operation, mode: "operation", navigation: "project" }, `${operation.status}${operation.id ? " · " + operation.id : ""}${operation.error ? ": " + operation.error : ""}`);
+  }
   // App calls may use a fresh MCP connection with empty roots. Carry the
   // invoking chat's explicit scope, never a global last-used profile.
   const requestedRoot = meta?.["1c-ai-core/projectRoot"] ??
@@ -299,12 +320,16 @@ async function call(name, args, meta = {}) {
     await folder_action("open", saved.directory);
     return { content: [{ type: "text", text: "Папка диагностики открыта." }] };
   }
-  if (name === "settings.operation") {
-    await operations.wait(args.operationId, args.waitMs || 0);
-    const operation = operations.status(args.operationId);
-    return result({ ...operation, mode: "operation", navigation: "project" }, `${operation.status}${operation.id ? " · " + operation.id : ""}${operation.error ? ": " + operation.error : ""}`);
+  const readOnlyEntry = ["settings.inspect", "settings.read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.check", "settings.versions"].includes(name);
+  if (name === "settings.versions") {
+    let cached = versionCatalogs.get(args.component);
+    if (!cached || cached.expires < Date.now()) {
+      const promise = import("../scripts/runtime.mjs").then(runtime => runtime.list_versions(args.component));
+      cached = { promise, expires: Date.now() + 5 * 60 * 1000 };versionCatalogs.set(args.component, cached);
+      promise.catch(() => { if (versionCatalogs.get(args.component) === cached) versionCatalogs.delete(args.component); });
+    }
+    return result(await cached.promise);
   }
-  const readOnlyEntry = ["settings.inspect", "settings.read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.check"].includes(name);
   if (name === "settings.status" || name === "settings.select_profile") {
     if (name === "settings.select_profile" && operations.status().status === "running") throw new Error("Дождитесь завершения текущей операции.");
     const revision = selectionRevision, directory = args.projectRoot || selectedRoot;
@@ -377,12 +402,24 @@ async function call(name, args, meta = {}) {
     const actual = await readValues();
     return result({ mode: name.split(".")[1], navigation: "project", values: actual.values });
   }
-  if (name === "settings.export_data" || name === "settings.edit") {
+  if (name === "settings.open_export_directory") {
+    const { saved_settings_export } = await import("../scripts/settings_export.mjs");
+    const saved = saved_settings_export(state);
+    if (!saved) throw new Error("Сначала сохраните файл настроек.");
+    await folder_action("open", saved.directory);
+    return { content: [{ type: "text", text: "Папка с файлом настроек открыта." }] };
+  }
+  if (name === "settings.export_data" || name === "settings.edit" || name === "settings.save_export") {
     if (!selectedRoot) throw new Error("Выберите папку проекта.");
     const data = await backend(name === "settings.edit" ? "edit" : "export", args);
+    if (name === "settings.save_export") {
+      const { save_settings_export } = await import("../scripts/settings_export.mjs");
+      const saved = save_settings_export(state, data);
+      return { content: [{ type: "text", text: "Файл настроек сохранён." }], _meta: { data: { ...saved, canOpenDirectory: process.platform === "win32" } } };
+    }
     return { ...result(data), _meta: { data } };
   }
-  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.updates": "updates", "settings.create": "create", "settings.load": "load" };
+  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.rebuild_index": "rebuild_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load" };
   if (!actions[name]) throw new Error("Неизвестный инструмент");
   if (name === "settings.run_check" && !selectedRoot) throw new Error("Выберите папку проекта.");
   // The backend resolves and authorizes the same root immediately before
@@ -392,6 +429,7 @@ async function call(name, args, meta = {}) {
   const context = { projectRoot: proposedRoot === undefined ? selectedRoot : proposedRoot || null,
     selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" };
   if (name === "settings.run_check") return result(operations.status(operations.start("check", args, context).id));
+  if (name === "settings.rebuild_index") return result(operations.status(operations.start("rebuild_index", args, context).id));
   if (name === "settings.updates") return result(operations.status(operations.start("updates", args, context).id));
   const data = await (name === "settings.preview" ? backend(actions[name], args, context) : operations.execute(actions[name], args, context));
   if (revision === selectionRevision && !rootLocked && !selectionError && data.values && Object.hasOwn(data.values, "projectRoot")) {
@@ -422,17 +460,23 @@ function validateArguments(schema, value) {
   if (schema.minLength && value.trim().length < schema.minLength) throw new Error("Пустое значение настройки");
   if (schema.maxLength && value.length > schema.maxLength) throw new Error("Файл слишком большой");
 }
-tools.push({ name: "settings.run_check", title: "Подготовить и проверить MCP", description: "Start one managed runtime preparation/protocol operation after caller-supplied user authorization for launching the selected project services. Pass refresh=true only when an incompatible cached managed artifact must be downloaded again. Poll settings.operation with its id; do not repeat to wait for completion.",
+tools.push({ name: "settings.run_check", title: "Проверить готовность к работе", description: "Prepare enabled managed runtimes and check all configured MCPs, exact EDT project readiness, index health, bundled policy, skills and guard files. Requires scoped authorization for launching project services. The timestamped setup result expires on settings/files changes or after 15 minutes; host hook trust/activation is not established. Pass refresh=true only for an incompatible cached managed artifact. Poll settings.operation with its id; do not repeat to wait.",
   inputSchema: { type: "object", properties: {
     refresh: { type: "boolean" }, authorization: preparationAuthorization,
   }, required: ["authorization"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
-tools.push({ name: "settings.updates", title: "Обновления компонентов", description: "Check upstream stable releases without restarting services, download a separate candidate, apply it after live protocol validation, or roll back to the previous artifact. Mutating operations require scoped authorization. Poll settings.operation; do not retry a running operation.",
+tools.push({ name: "settings.rebuild_index", title: "Пересоздать индекс EDT-проекта", description: "Rebuild only one configured repository with the native index --force CLI, after scoped authorization. Stops the owned project daemon and requires current readers to finish. Does not edit the profile or source files. Poll settings.operation; do not retry a running operation.",
+  inputSchema: { type: "object", properties: { repository: { type: "string", minLength: 1 }, authorization: preparationAuthorization }, required: ["repository", "authorization"], additionalProperties: false },
+  annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
+tools.push({ name: "settings.updates", title: "Обновления компонентов", description: "Check releases using the component's saved version and allow_prerelease policy, download a separate candidate, apply it after live protocol validation, or roll back to the previous artifact. Stable releases are the default. Mutating operations require scoped authorization. Poll settings.operation; do not retry a running operation.",
   inputSchema: { type: "object", properties: {
     operation: { enum: ["check", "download", "apply", "rollback"] },
-    component: { enum: ["code-index", "bsl-ls"] }, authorization: preparationAuthorization,
+    component: { enum: ["code-index", "bsl-ls"], description: "Target component for this operation. Only check may omit it to inspect both components." }, authorization: preparationAuthorization,
   }, required: ["operation"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
+tools.push({ name: "settings.versions", title: "Версии компонента", description: "List all published release tags, including prereleases, newest publication first. Read-only catalog; does not install or launch components. The settings form searches the complete catalog locally.",
+  inputSchema: { type: "object", properties: { component: { enum: ["code-index", "bsl-ls"] } }, required: ["component"], additionalProperties: false },
+  annotations: { ...annotations(), openWorldHint: true }, _meta: appOnly });
 for (const tool of tools) tool.icons = component_icons("settings");
 
 function write(message) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n"); }
@@ -478,11 +522,11 @@ async function dispatch(message) {
     if (message.method === "initialize") {
       data = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0],
         instructions: "Start chat setup with settings.inspect once; include this chat's known local projectRoot when the host supplied no directory. Reuse its validation, connection sources and nextSteps. Do not reload an already loaded profile, inspect plugin source, spawn substitute relays or restart chats for empty roots. Create only a missing profile on user request. Preparation needs scoped user authorization. Never select another chat's root.",
-        serverInfo: { name: "1C AI Core Settings", version: core_version, icons: plugin_icons() },
+        serverInfo: { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version, icons: plugin_icons() },
         capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "server/discover") {
       data = { resultType: "complete", supportedVersions: protocols,
-        _meta: { "io.modelcontextprotocol/serverInfo": { name: "1C AI Core Settings", version: core_version } },
+        _meta: { "io.modelcontextprotocol/serverInfo": { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version } },
         capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "ping") data = {};
     else if (message.method === "tools/list") data = { tools };

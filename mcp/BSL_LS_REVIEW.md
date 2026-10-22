@@ -2,6 +2,19 @@
 
 ## Проверенный контракт
 
+Дополнение 2026-10-22: официальный `v1.1.0-rc.7` прошёл нативный сценарий
+`tests/bsl_workspace_smoke.mjs` на Java 25.0.2: регистрация и удаление workspace,
+повторная регистрация, анализ с разными настройками, Unicode/URI, явный файл
+настроек и независимость двух сессий. Размер JAR — 131237628 байт, SHA-256 —
+`b593e7eec760b0b7e6adadaf09f448d24a79ba833d69c7001aa17b211c762dd2`,
+совпадают с
+[GitHub release](https://github.com/1c-syntax/bsl-language-server/releases/tag/v1.1.0-rc.7).
+Ниже сохранён результат прежней проверки установленного `v1.0.7`; её ограничения
+относятся к этому артефакту. Плагин по умолчанию выбирает стабильные релизы.
+Переход на prerelease требует настройки пользователя, общей по логике с code-index:
+`allow_prerelease: true` либо точный тег в `version`, затем скачивание и применение
+с проверкой API. Специального автоматического перехода BSL LS на prerelease нет.
+
 Сверены предоставленные локальные `docs/en/features/McpMode.md`,
 `McpWorkspaceBootstrap`, `McpWorkspaceResolver`, `McpDocumentReader`,
 `McpRootsBootstrapper`, `McpRootsChangeConsumer`, инструменты workspace и оба

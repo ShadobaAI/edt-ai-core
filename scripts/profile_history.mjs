@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { atomic_write } from "./common.mjs";
 import { profile_state } from "./profile.mjs";
+import { edt_project_count } from "./directory_context.mjs";
 import { is_dir, is_file, path_identity, project_directory, record_project_owner } from "./project_paths.mjs";
 
 // User state survives plugin upgrades. Never scan unrelated project directories.
@@ -13,6 +14,7 @@ export function remember_profile(state, root, profile) {
     atomic_write(path.join(project_directory(state, root), "profile-history.json"), JSON.stringify({
       root: path_identity(root), lastOpened: new Date().toISOString(),
       profileId: profile.profileId, projectId: profile.projectId, repositoryCount: profile.repositories.length,
+      edtProjectCount: edt_project_count(root),
     }));
   } catch { return false; }
   return true;
@@ -33,13 +35,15 @@ export function profile_history(state, selectedRoot = null) {
     const item = { projectRoot: owner, lastOpened: typeof visit.lastOpened === "string" && Number.isFinite(Date.parse(visit.lastOpened)) ? visit.lastOpened : null,
       projectId: typeof visit.projectId === "string" ? visit.projectId : null,
       profileId: typeof visit.profileId === "string" ? visit.profileId : null,
-      repositoryCount: Number.isInteger(visit.repositoryCount) && visit.repositoryCount >= 0 ? visit.repositoryCount : 0 };
+      repositoryCount: Number.isInteger(visit.repositoryCount) && visit.repositoryCount >= 0 ? visit.repositoryCount : 0,
+      edtProjectCount: Number.isInteger(visit.edtProjectCount) && visit.edtProjectCount >= 0 ? visit.edtProjectCount : null };
     try {
       const profile = !is_dir(owner) ? { status: "unavailable" }
         : !is_file(path.join(owner, ".ai/project.yaml")) ? { status: "missing" } : profile_state(owner);
       Object.assign(item, { status: profile.status, detail: profile.detail,
         projectId: profile.projectId || item.projectId, profileId: profile.profileId || item.profileId,
         repositoryCount: profile.repositories?.length ?? item.repositoryCount });
+      if (profile.status !== "unavailable") item.edtProjectCount = edt_project_count(owner);
     } catch (error) { item.status = "unavailable"; item.detail = error.message; }
     item.selected = selectedRoot === owner;
     const previous = records.get(owner);

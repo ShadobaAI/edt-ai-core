@@ -115,10 +115,16 @@ export function* project_directories(root, prune = () => false) {
     const directory = pending.pop();
     yield directory;
     if (prune(directory)) continue;
+    // Profile and project discovery inspect metadata beside an EDT source
+    // tree. Descending into configuration objects can exhaust the budget
+    // before a new project has any .ai/project.yaml to find.
+    const descriptor = path.join(directory, ".project");
+    const source = is_file(descriptor) && contained(directory, resolve(descriptor))
+      ? resolve(path.join(directory, "src")) : null;
     for (const entry of fs.readdirSync(directory, { withFileTypes: true }).sort((a, b) => b.name.localeCompare(a.name))) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || ignored.has(entry.name)) continue;
       const child = resolve(path.join(directory, entry.name));
-      if (contained(root, child)) pending.push(child);
+      if (child !== source && contained(root, child)) pending.push(child);
     }
   }
 }

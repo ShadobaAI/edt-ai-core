@@ -41,6 +41,40 @@ function xml_text(value) {
     return number > 0 && number <= 0x10ffff ? String.fromCodePoint(number) : entity;
   }).trim();
 }
+export function edt_port_suggestion(effectiveUrl, detected) {
+  if (!effectiveUrl || detected?.status !== "detected") return null;
+  try {
+    const current = new URL(effectiveUrl);
+    // A remote EDT is not owned by the local workspace preferences.
+    if (!["localhost", "127.0.0.1", "[::1]"].includes(current.hostname)) return null;
+    const configuredPort = Number(current.port || (current.protocol === "https:" ? 443 : 80));
+    if (configuredPort === detected.port) return null;
+    current.port = String(detected.port);
+    return { configuredPort, detectedPort: detected.port, url: current.href, preferences: detected.preferences, workspace: detected.workspace };
+  } catch { return null; }
+}
+export function edt_project_descriptors(selected) {
+  if (!selected) return null;
+  const root = resolve(selected);
+  const projects = [];
+  try {
+    for (const directory of project_directories(root)) {
+      const descriptor = path.join(directory, ".project");
+      if (!is_file(descriptor) || !contained(root, resolve(descriptor))) continue;
+      let name = path.basename(directory);
+      try {
+        const text = text_file(descriptor, root)?.replace(/<!--[\s\S]*?-->/g, "");
+        const declared = text?.match(/<projectDescription\s*>\s*<name\s*>([^<]+)<\/name>/)?.[1];
+        if (declared && !/<!DOCTYPE|<!ENTITY/i.test(text)) name = xml_text(declared);
+      } catch { /* The descriptor still establishes the project directory. */ }
+      projects.push({ directory, name, descriptor });
+    }
+    return projects;
+  } catch { return null; }
+}
+export function edt_project_count(selected) {
+  return edt_project_descriptors(selected)?.length ?? null;
+}
 export function edt_projects(selected) {
   const root = resolve(selected), projects = [], errors = [], found = new Set();
   try {
@@ -92,5 +126,6 @@ export function git_context(selected) {
 export function directory_context(selected) {
   if (!selected) return null;
   const directory = resolve(selected);
-  return { directory, edt: { ...edt_projects(directory), connection: edt_connection(directory) }, git: git_context(directory) };
+  const detectedProjects = edt_project_descriptors(directory);
+  return { directory, edt: { ...edt_projects(directory), detectedProjects, projectCount: detectedProjects?.length ?? null, connection: edt_connection(directory) }, git: git_context(directory) };
 }

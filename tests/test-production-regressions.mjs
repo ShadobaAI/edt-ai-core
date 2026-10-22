@@ -16,6 +16,8 @@ import { casefold } from "../scripts/casefold.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { createServer } from "node:http";
+import { once } from "node:events";
+import { launch, stop_child } from "../scripts/processes.mjs";
 import { stop_daemon, platform_build, save_json, acquire_reader, installed_runtime } from "../scripts/runtime.mjs";
 const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href;
 async function managed(t, f, prepare = true) {
@@ -138,12 +140,13 @@ test("stop validates the running daemon's old immutable executable after active 
     old=path.join(f.state,"runtime/code-index/v1.0.0",digest,platform_build().executable),
     home=path.join(project_home(f.state,f.root),"code-index");
   fs.mkdirSync(path.dirname(old),{recursive:true});fs.writeFileSync(old,bytes);
-  const server=createServer((req,res)=>res.end(JSON.stringify({pid:process.pid,status:"running"})));
+  const child=launch(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});await once(child,"spawn");f.clients.push({close:()=>stop_child(child,0)});
+  const server=createServer((req,res)=>res.end(JSON.stringify({pid:child.pid,status:"running"})));
   await new Promise(done=>server.listen(0,"127.0.0.1",done));t.after(()=>server.close());
-  save_json(path.join(home,"daemon.json"),{pid:process.pid,http_port:server.address().port});
-  save_json(path.join(home,"owner.json"),{pid:process.pid,project_root:f.root,executable:old});
+  save_json(path.join(home,"daemon.json"),{pid:child.pid,http_port:server.address().port});
+  save_json(path.join(home,"owner.json"),{pid:child.pid,project_root:f.root,executable:old});
   let stopped=false;
-  await stop_daemon(f.state,f.root,{stop:async(exe,args)=>{assert.equal(exe,old);assert.deepEqual(args,["daemon","stop"]);stopped=true;await new Promise(done=>server.close(done));fs.rmSync(path.join(home,"daemon.json"));}});
+  await stop_daemon(f.state,f.root,{stop:async(exe,args)=>{assert.equal(exe,old);assert.deepEqual(args,["daemon","stop"]);stopped=true;await new Promise(done=>server.close(done));await stop_child(child,0);fs.rmSync(path.join(home,"daemon.json"));}});
   assert.equal(stopped,true);
 });
 test("maintenance blocks new reader leases before a runtime switch",async t=>{

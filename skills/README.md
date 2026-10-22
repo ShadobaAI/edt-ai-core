@@ -24,7 +24,8 @@ Before judging migration parity, apply the accepted `migration_decisions` in
 records the user's decision of 2026-10-19 to exclude HelpSearchServer, including
 as an optional core provider, because of installation and paid-service costs.
 `bsp-documentation-without-ssl-mcp` records the exclusion of `1c-ssl-mcp`, including
-as an optional or fallback provider, following KORA D-01 and section 7.3.
+as an optional or fallback provider. The current knowledge integration contract
+is described in [INTEGRATIONS.md](../docs/INTEGRATIONS.md).
 Neither server's absence is a migration defect or a reason to restore it.
 Review EDT documentation coverage and the planned BSP knowledge/OpenViking
 replacement separately; excluding legacy servers does not establish replacement

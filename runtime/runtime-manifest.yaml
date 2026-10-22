@@ -1,6 +1,10 @@
 version: 0.1.0
 description: Descriptive runtime contract; scripts/runtime.mjs implements release selection.
 platform: auto
+release_selection:
+  default: latest_stable
+  allow_prerelease: user_opt_in_per_component
+  version: latest_or_explicit_tag
 managed:
   code-index:
     repository: Regsorm/code-index-mcp
