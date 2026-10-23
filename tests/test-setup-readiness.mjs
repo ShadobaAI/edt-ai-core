@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { setup_assets } from "../scripts/setup_readiness.mjs";
@@ -59,6 +61,14 @@ test("automatic readiness makes fresh probes without new launch grants or reconn
 
 test("automatic readiness never prepares unapproved components or downloads missing runtimes",async t=>{
   const {f,backend}=await ready_fixture(t),scope=f.root+"#first";
+  // Supply a Java probe fixture so Node-only PATH reaches the missing-JAR check.
+  const config=backend.current();config.mcp.managed["bsl-ls"].java=process.execPath;
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
+  const spawnSync=childProcess.spawnSync;
+  t.mock.method(childProcess,"spawnSync",(command,args,options)=>command===process.execPath&&args?.[0]==="-version"?{status:0,stderr:'java version "21"'}:spawnSync(command,args,options));
+  syncBuiltinESMExports();
+  t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  const download=t.mock.method(globalThis,"fetch",async()=>{throw new Error("Unexpected download");});
   await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true,edtUrl:"",v8stdUrl:""}});
   const unprepared=await backend.main({action:"refresh_readiness",scope});
   for(const component of ["code-index","bsl-ls"]){const item=unprepared.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не подготовлен/);}
@@ -69,6 +79,7 @@ test("automatic readiness never prepares unapproved components or downloads miss
   assert.deepEqual(fs.readFileSync(file),before);assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   process.env.EDT_AI_INSTANCE="another";
   const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.match(other.managed.find(item=>item.name==="code-index").detail,/не подготовлен/);
+  assert.equal(download.mock.callCount(),0);
 });
 
 test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{

@@ -91,7 +91,8 @@ test("build validates all inputs before removing a previous build and refuses es
 });
 test("stable version ordering, untagged initial checkout and release-tag override protection", (t) => {
   const f = fixture(t);
-  environment(t, f.env);
+  // The fixture starts as a branch build, even when this suite runs for a tag.
+  environment(t, { ...f.env, GITHUB_ACTIONS: "true", GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "fixture" });
   assert.ok(compare_version("1.10.0", "1.9.9") > 0);
   for (const version of ["v1.0.0", "01.0.0", "1.0", "1.0.0-rc.1", "1.0.0\n"])
     assert.throws(() => version_key(version));
