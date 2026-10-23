@@ -44,14 +44,19 @@ const ajv = new Ajv2020({
 });
 const validators = new Map();
 export function check_schema(data, name) {
-  if (!validators.has(name))
-    validators.set(
-      name,
-      ajv.compile(
-        JSON.parse(fs.readFileSync(path.join(ROOT, "schemas", name), "utf8")),
-      ),
-    );
-  const validate = validators.get(name);
+  if (!validators.has(name)) {
+    const schema = JSON.parse(fs.readFileSync(path.join(ROOT, "schemas", name), "utf8"));
+    const versionField = ["schema_version", "version"].find(field => Object.hasOwn(schema.properties?.[field] || {}, "const"));
+    validators.set(name, { validate: ajv.compile(schema), versionField,
+      version: schema.properties?.[versionField]?.const, versionRequired: schema.required?.includes(versionField) });
+  }
+  const { validate, versionField, version, versionRequired } = validators.get(name);
+  if (versionField && (versionRequired || object(data) && Object.hasOwn(data, versionField)) && data?.[versionField] !== version) {
+    const received = data?.[versionField];
+    throw Object.assign(new ConfigError(
+      `Unsupported contract version for ${name}: ${versionField}=${typeof received === "string" ? JSON.stringify(received) : received === undefined ? "missing" : typeof received}; expected ${JSON.stringify(version)}. Review the document contract before explicitly updating it; automatic migration is not performed.`,
+    ), { code: "UNSUPPORTED_CONTRACT_VERSION", contract: name, expectedVersion: version });
+  }
   if (!validate(data))
     throw new ConfigError(
       validate.errors

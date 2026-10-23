@@ -72,7 +72,7 @@ jobs:
         with:
           name: 1c-ai-core-plugin
           path: .build/download
-      - name: Verify archives and extracted plugin with Node-only PATH
+      - name: Verify archives, knowledge contracts and extracted plugin with Node-only PATH
         run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'smoke'], {stdio:'inherit'})
       - name: Runtime regressions
         run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'test'], {stdio:'inherit'})

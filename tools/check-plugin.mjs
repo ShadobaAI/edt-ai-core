@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
@@ -153,6 +154,34 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
     ]);
     const profile = path.join(project, ".ai/project.yaml");
     let yaml = fs.readFileSync(profile, "utf8");
+    // Exercise the shipped knowledge schemas and containment validator through
+    // the extracted, bundled runtime; no server or real knowledge is involved.
+    const common = await import(pathToFileURL(path.join(root, "scripts/common.mjs")).href);
+    const knowledge = await import(pathToFileURL(path.join(root, "scripts/knowledge.mjs")).href);
+    const profiles = await import(pathToFileURL(path.join(root, "scripts/profile.mjs")).href);
+    knowledge.validate_manifest(common.load(path.join(root, "knowledge/recommended-manifest.yaml")));
+    const corpus = path.join(project, "knowledge"); fs.mkdirSync(corpus);
+    const metadata = { schema_version: "0.1", kind: "document", id: "smoke", title: "Smoke fixture",
+      provenance: { source: "https://example.org/source" }, scope: ["Isolated fixture"], revision: "edition-1",
+      compatibility: { fixture: "1" }, status: "published" };
+    const content = "---\n" + JSON.stringify(metadata) + "\n---\n# Fixture\n";
+    fs.writeFileSync(path.join(corpus, "smoke.md"), content);
+    const catalog = { schema_version: "0.1", kind: "catalog", provider: "openviking",
+      collections: [{ id: "smoke", description: "Isolated fixture" }],
+      materials: [{ id: "smoke", collection: "smoke", path: "smoke.md", sha256: createHash("sha256").update(content).digest("hex") }] };
+    fs.writeFileSync(path.join(corpus, "catalog.json"), JSON.stringify(catalog));
+    const candidate = common.parse(yaml);
+    assert.equal(candidate.schema_version, "0.2");
+    candidate.knowledge = { provider: "openviking", mode: "transitional", manifest: "knowledge/catalog.json",
+      collections: ["smoke"], required: false, dependent_actions: [] };
+    profiles.validate_at(project, candidate);
+    const declared = knowledge.load_manifest(project, "knowledge/catalog.json", ["smoke"]);
+    knowledge.validate_publication_receipt({ schema_version: "0.1", provider: "openviking",
+      server: { endpoint: "https://example.org/mcp", scope: "fixture" }, collections: ["smoke"],
+      publication_revision: "a".repeat(40), manifest_sha256: declared.sha256, index_revision: "fixture-1",
+      verified_at: "2026-10-24T08:00:00Z", expires_at: "2026-10-25T08:00:00Z", evidence_ref: "https://example.org/publication" });
+    assert.equal(knowledge.knowledge_status(candidate, common.load(path.join(root, "settings/defaults.json"))).state, "not_configured");
+    assert.throws(() => profiles.validate({ ...candidate, schema_version: "0.1" }), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
     // Import through the real settings stdio server exercises bundled YAML/Ajv.
     const { McpClient } = await import(
       pathToFileURL(path.join(root, "scripts/mcp_client.mjs")).href

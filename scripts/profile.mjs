@@ -30,6 +30,7 @@ import {
 } from "./project_paths.mjs";
 import { effective_policy } from "./action_policy.mjs";
 import { core_version, satisfies_core } from "./compatibility.mjs";
+import { load_manifest } from "./knowledge.mjs";
 export function validate(data) {
   check_schema(data, "project-profile.schema.json");
   if (!satisfies_core(data.compatibility.core)) throw new ConfigError(`Profile requires core ${data.compatibility.core}; running ${core_version}. Review the profile contract before changing compatibility.core.`);
@@ -140,6 +141,7 @@ export function scoped_paths(data) {
 export function validate_at(root, data) {
   validate(data);
   scoped_paths(data).forEach((relative) => inside(root, relative));
+  if (data.knowledge.manifest) load_manifest(root, data.knowledge.manifest, data.knowledge.collections);
   const config = data.testing.vanessa_config;
   if (
     config &&

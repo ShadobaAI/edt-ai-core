@@ -16,7 +16,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "0.1"
+      "const": "0.2"
     },
     "profile_id": {
       "type": "string",
@@ -440,10 +440,22 @@
           "type": "array",
           "items": {
             "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
           },
           "uniqueItems": true
+        },
+        "search": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["publication", "snapshot", "access", "max_results", "max_excerpt_chars", "max_material_chars"],
+          "properties": {
+            "publication": { "const": "verified" },
+            "snapshot": { "const": "consistent" },
+            "access": { "const": "read_only" },
+            "max_results": { "type": "integer", "minimum": 1, "maximum": 100 },
+            "max_excerpt_chars": { "type": "integer", "minimum": 128, "maximum": 8000 },
+            "max_material_chars": { "type": "integer", "minimum": 1024, "maximum": 100000 }
+          }
         }
       },
       "required": [
@@ -472,8 +484,9 @@
           "if": { "properties": { "provider": { "const": "none" } } },
           "then": { "properties": {
             "mode": { "const": "disabled" }, "required": { "const": false },
+            "manifest": { "type": "null" },
             "collections": { "maxItems": 0 }, "dependent_actions": { "maxItems": 0 }
-          } }
+          }, "not": { "required": ["search"] } }
         },
         {
           "if": { "properties": { "required": { "const": false } }, "required": ["required"] },

@@ -52,6 +52,9 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
   const extracted = path.join(f.base, "extracted plugin"),
     info = verify(path.join(ROOT, ".build"), extracted);
   assert.equal(info.plugin, "1c-ai-core");
+  const ambient = path.join(f.base, "unrelated-settings.json");
+  fs.writeFileSync(ambient, JSON.stringify({ version: "99.0" }));
+  environment(t, { ...f.env, EDT_AI_SETTINGS: ambient });
   const result = await check(path.join(extracted, "plugins/1c-ai-core"));
   assert.equal(result.runtime, "node-only");
   const download = path.join(f.base, "download");

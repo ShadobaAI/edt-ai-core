@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "provider", "collections", "materials"],
+  "properties": {
+    "schema_version": { "const": "0.1" },
+    "kind": { "enum": ["catalog", "recommendations"] },
+    "provider": { "const": "openviking" },
+    "collections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "description"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "description": { "type": "string", "pattern": "\\S" }
+        }
+      }
+    },
+    "materials": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "collection", "path", "sha256"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "collection": { "$ref": "#/$defs/id" },
+          "path": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9_\\p{L}][^\\\\:\\u0000-\\u001f?#%]*\\.md$" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    }
+  },
+  "allOf": [{
+    "if": { "properties": { "kind": { "const": "recommendations" } } },
+    "then": { "properties": { "materials": { "maxItems": 0 } } }
+  }],
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" }
+  }
+}

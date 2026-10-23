@@ -1,6 +1,6 @@
-schema_version: '0.1'
+schema_version: '0.2'
 profile_id: generic-1c
-profile_version: 0.1.0
+profile_version: 0.2.0
 project:
   id: generic-1c
   adapter: generic-1c
