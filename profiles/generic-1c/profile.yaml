@@ -21,8 +21,12 @@ testing:
   yaxunit: false
   vanessa: false
 knowledge:
+  mode: disabled
   provider: none
   manifest: null
+  collections: []
+  required: false
+  dependent_actions: []
 compatibility:
   core: '>=0.1.0'
 

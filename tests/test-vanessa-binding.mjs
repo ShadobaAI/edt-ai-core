@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { launch, stop_child } from "../scripts/processes.mjs";
 import { ROOT } from "./helpers.mjs";
+import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 function binding(t) {
   const f = fixture(t),
     file = path.join(f.root, ".ai/vanessa.local.json");
@@ -51,6 +52,17 @@ function binding(t) {
     });
   return { ...f, file, raw, save, invoke };
 }
+test("KORA blocks Vanessa workflow before connecting or launching", t => {
+  const f = binding(t);
+  f.profile.knowledge = { mode: "kora", provider: "openviking", manifest: null, collections: ["architecture"], required: true, dependent_actions: [...WORKFLOW_ACTIONS] };
+  f.save();
+  for (const command of ["list", "connect", "start", "run", "call"]) {
+    const result = f.invoke(command);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /Knowledge workflow blocked/, command);
+  }
+});
+
 test("Vanessa wrapper rejects disabled and mismatched bindings before launching anything", (t) => {
   const f = binding(t);
   f.profile.testing.vanessa = false;

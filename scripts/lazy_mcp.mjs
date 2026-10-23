@@ -29,6 +29,7 @@ import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
 import { Ajv, Ajv2020 } from "../vendor/deps.mjs";
 import { create_diagnostic_logger, register_diagnostic_secrets } from "./diagnostics.mjs";
+import { knowledge_status, require_workflow_knowledge } from "./knowledge.mjs";
 
 const component = argumentsOf(undefined, [], ["component"]).component;
 if (!Object.hasOwn(COMPONENTS, component))
@@ -101,6 +102,10 @@ function configContext() {
     effective_settings(config, root, data, null, state),
     data,
   ];
+}
+function checkKnowledgeWorkflow() {
+  const [, config, profile] = configContext();
+  require_workflow_knowledge(profile, config);
 }
 async function refreshTools() {
   const revision = client.tools_revision,
@@ -423,6 +428,7 @@ async function dispatch(message) {
           detail: lastError,
           selectedDirectory: selected,
           selectionSource: selection.source,
+          knowledge: (() => { try { const [, config, profile] = configContext(); return knowledge_status(profile, config); } catch { return null; } })(),
           nativeToolCount: tools.length,
           toolAccess: "Use core_runtime_tools for live schemas and core_runtime_call if native tools are absent from the host catalogue. Both accept this chat's projectRoot for empty host roots.",
         };
@@ -458,6 +464,7 @@ async function dispatch(message) {
             if (pending.cancelled || client !== owner || epoch !== generation) throw new ConfigError("Runtime batch interrupted before the next call; completed calls were not rolled back");
             await refreshNotifiedTools();
             validateNative(call);
+            checkKnowledgeWorkflow();
             pending.client = owner;
             diagnostic.event("native_request_started", { requestId: id, tool: call.name, projectRoot: selected });
             dispatched = true;
@@ -480,6 +487,9 @@ async function dispatch(message) {
           structuredContent: { binding: ownerBinding, results, completed: results.filter(entry => entry.result && !entry.result.isError).length, requested: params.arguments.calls.length },
           ...(failed ? { isError: true } : {}) };
       } else if (client) {
+        // Discovery/status controls remain available to repair setup. Native
+        // workflow calls, resources and prompts cannot bypass mandatory KORA.
+        checkKnowledgeWorkflow();
         const keys = {
             "resources/list": "resources",
             "resources/templates/list": "resourceTemplates",

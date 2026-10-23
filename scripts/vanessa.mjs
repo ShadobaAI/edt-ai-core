@@ -22,6 +22,8 @@ import { binding } from "./policy_runtime.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { effective_settings } from "./project_context.mjs";
+import { require_workflow_knowledge } from "./knowledge.mjs";
 export function runtime_profile(selected, with_digest = false) {
   const root = locate_project(selected),
     data = project_profile(root);
@@ -85,6 +87,8 @@ export async function main() {
       true,
     ),
     action = command === "describe" ? a.for_action || "run" : command;
+  if (!["describe", "configure", "doctor"].includes(command))
+    require_workflow_knowledge(data, effective_settings(settings(a.settings), root, data));
   const infobase = (value) =>
     value.type === "file"
       ? {

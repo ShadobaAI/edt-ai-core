@@ -14,6 +14,7 @@ import { effective_settings } from "./project_context.mjs";
 import { effective_policy } from "./action_policy.mjs";
 import { smoke as policySmoke } from "./policy_runtime.mjs";
 import { managed_components, component_enabled } from "./components.mjs";
+import { knowledge_status } from "./knowledge.mjs";
 export async function inspect(
   selected,
   config,
@@ -33,6 +34,7 @@ export async function inspect(
     external: {},
     full_development_readiness: "not_verified",
     profile_id: data.profile_id,
+    knowledge: knowledge_status(data, config),
     action_policy: effective_policy(data.policy),
     source_guard: {
       packaged: exists(path.join(ROOT, "hooks/hooks.json")),
@@ -53,14 +55,10 @@ export async function inspect(
   report.warnings.push(
     "EDT/v8std live acceptance requires the user's running servers",
   );
-  if (
-    data.knowledge.provider === "openviking" &&
-    (!config.mcp.optional.openviking?.enabled ||
-      !config.mcp.optional.openviking?.url)
-  )
-    report.warnings.push(
-      "Profile requests optional OpenViking, but no enabled URL is configured",
-    );
+  if (report.knowledge.state === "invalid" || report.knowledge.mode === "kora")
+    report.errors.push("knowledge: " + report.knowledge.detail);
+  else if (report.knowledge.provider === "openviking")
+    report.warnings.push("knowledge: " + report.knowledge.detail);
   if (live && !report.errors.length) {
     project(root, config);
     try {

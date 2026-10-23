@@ -24,6 +24,10 @@ export function setup_inspection(read, state) {
   const detected = directoryContext?.edt?.connection;
   const issues = [];
   const next = [];
+  if (read.knowledge?.state === "invalid") {
+    issues.push({ code: "knowledge_configuration_invalid", detail: read.knowledge.detail });
+    next.push("repair_knowledge_configuration");
+  } else if (read.knowledge?.state === "not_configured") next.push("configure_knowledge_connection");
   if (projectSelection?.detail) next.push("resolve_host_directory");
   else if (!values.projectRoot) next.push("select_directory");
   else if (profile.status === "missing") next.push("create_profile");
@@ -51,7 +55,7 @@ export function setup_inspection(read, state) {
     coreVersion: core_version, projectRoot: values.projectRoot, instance, profile: { ...profile, ...(document?.compatibility ? { compatibility: document.compatibility } : {}) },
     values, connectionSources, repositories, managed, preparationScope, projectSelection, operation,
     detected: { edt: detected || null, projects, ...(directoryContext?.edt?.errors ? { errors: directoryContext.edt.errors } : {}) },
-    issues, nextSteps: next, readiness: read.readiness,
+    issues, nextSteps: next, readiness: read.readiness, knowledge: read.knowledge,
     bindingGuidance: "When a runtime's selectedDirectory is empty, call its core_runtime_status with this projectRoot once. A new chat/restart does not supply missing roots. Do not spawn substitute relays or inspect plugin source for setup.",
   };
 }

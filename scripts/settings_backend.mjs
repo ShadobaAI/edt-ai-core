@@ -53,6 +53,7 @@ import { managed_components, component_enabled, grant_preparation, require_prepa
 import { directory_context, edt_connection, edt_port_suggestion } from "./directory_context.mjs";
 import { profile_history, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness } from "./setup_readiness.mjs";
+import { knowledge_status } from "./knowledge.mjs";
 
 export const FIELDS = {
   projectRoot: ["active_project"],
@@ -361,6 +362,7 @@ export class SettingsBackend {
         profileDirectoryContext,
         edtPortSuggestion: edt_port_suggestion(actual.edtUrl, profileDirectoryContext?.edt?.connection),
         readiness,
+        knowledge: profile.status === "loaded" ? knowledge_status(project_profile(config.active_project), effective) : null,
         sessionGuidance: session_guidance,
         instance: instance_name(),
         connectionSources: sources,

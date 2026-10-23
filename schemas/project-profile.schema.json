@@ -411,6 +411,13 @@
     "knowledge": {
       "type": "object",
       "properties": {
+        "mode": { "enum": ["disabled", "transitional", "kora"] },
+        "required": { "type": "boolean" },
+        "dependent_actions": {
+          "type": "array",
+          "items": { "enum": ["discovery", "design", "implementation", "review", "runtime"] },
+          "uniqueItems": true
+        },
         "provider": {
           "enum": [
             "none",
@@ -442,6 +449,36 @@
       "required": [
         "provider",
         "manifest"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "provider": { "const": "openviking" } } },
+          "then": {
+            "required": ["mode", "collections", "required", "dependent_actions"],
+            "properties": { "collections": { "minItems": 1 }, "mode": { "enum": ["transitional", "kora"] } }
+          }
+        },
+        {
+          "if": { "properties": { "required": { "const": true } }, "required": ["required"] },
+          "then": { "required": ["dependent_actions"], "properties": { "dependent_actions": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "kora" } }, "required": ["mode"] },
+          "then": { "required": ["required", "dependent_actions"], "properties": {
+            "required": { "const": true }, "dependent_actions": { "minItems": 5 }
+          } }
+        },
+        {
+          "if": { "properties": { "provider": { "const": "none" } } },
+          "then": { "properties": {
+            "mode": { "const": "disabled" }, "required": { "const": false },
+            "collections": { "maxItems": 0 }, "dependent_actions": { "maxItems": 0 }
+          } }
+        },
+        {
+          "if": { "properties": { "required": { "const": false } }, "required": ["required"] },
+          "then": { "properties": { "dependent_actions": { "maxItems": 0 } } }
+        }
       ],
       "additionalProperties": false
     },

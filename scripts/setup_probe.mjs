@@ -2,13 +2,17 @@ import path from "node:path";
 import { RemoteMcp } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
 import { resolve } from "./project_paths.mjs";
+import { knowledge_status } from "./knowledge.mjs";
 
 // Read-only external acceptance for setup, without launching managed services,
 // publishing their schemas to the model, or inventing native tool arguments.
 export async function probe_connections(config, root, profile) {
+  const knowledge = knowledge_status(profile, config);
   const names = ["edt", "v8std"];
-  if (config.mcp.optional.openviking?.enabled || profile.knowledge?.provider === "openviking") names.push("openviking");
+  if (knowledge.state !== "disabled") names.push("openviking");
   const external = Object.fromEntries(await Promise.all(names.map(async name => {
+    if (name === "openviking" && ["invalid", "not_configured"].includes(knowledge.state))
+      return [name, { configured: false, connected: false, ready: false, state: knowledge.state, detail: knowledge.detail }];
     const options = config.mcp.required[name] || config.mcp.optional[name];
     if (!options?.url || options.enabled === false) return [name, { configured: false, connected: false, ready: false }];
     const client = new RemoteMcp(options.url, Math.min(options.timeout_seconds || 20, 30), { headers_env: options.headers_env, maxBytes: options.max_response_bytes });
@@ -41,10 +45,15 @@ export async function probe_connections(config, root, profile) {
           }
         }
       }
-      result.ready = name !== "edt" || result.projectReadiness === "verified";
+      result.ready = name === "edt" ? result.projectReadiness === "verified" : name !== "openviking";
+      if (name === "openviking") {
+        result.searchReadiness = "not_verified";
+        result.collections = knowledge.collections;
+        result.detail = knowledge.detail;
+      }
     } catch (error) { result.detail = error.message; }
     finally { await client.close().catch(() => {}); }
     return [name, result];
   })));
-  return { projectRoot: root, external, fullReadiness: "not_verified" };
+  return { projectRoot: root, external, knowledge, fullReadiness: "not_verified" };
 }

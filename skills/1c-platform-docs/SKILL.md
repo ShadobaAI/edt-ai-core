@@ -49,9 +49,15 @@ implementation and acceptance of that route remain separate from this exclusion.
 
 BSP is a library, not the built-in platform. Use the profile's bounded
 `code-index` route for installed definitions and real usages; EDT supplies missing
-live-project facts. Optional knowledge cards may help locate a candidate when
-their provenance and version are known, but add no installation dependency.
+live-project facts. Enabled knowledge cards may help locate a candidate when
+their provenance and version are known. Apply the profile's required knowledge
+gate from `$1c-routing` before dependent work, including all workflow in KORA.
 An unresolved installed-version or contract mismatch remains a reported gap.
+
+Knowledge coverage is limited to the explicitly selected collections. The
+recommended manifest does not require every collection. Missing coverage or an
+empty/filtered search result does not prove that an API is absent; retain that
+uncertainty and verify the relevant installed contract before making that claim.
 
 Changes follow `$1c-code-change`. Report the API fact, its source and material
 coverage or compatibility limits.

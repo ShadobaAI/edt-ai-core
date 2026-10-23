@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
-import { inside, ConfigError, entrypoint } from "./common.mjs";
+import { inside, ConfigError, entrypoint, settings } from "./common.mjs";
 import { project_profile } from "./profile.mjs";
-import { locate_project, resolve, contained } from "./project_paths.mjs";
+import { locate_project, resolve, contained, state_root } from "./project_paths.mjs";
 import { casefold } from "./casefold.mjs";
+import { effective_settings } from "./project_context.mjs";
+import { knowledge_gate } from "./knowledge.mjs";
 export function* strings(value) {
   if (typeof value === "string") yield value;
   else if (Array.isArray(value)) {
@@ -13,6 +15,23 @@ export function* strings(value) {
   }
 }
 const escapeRE = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const setupMethods = new Set([
+  "create", "load", "import", "export", "select_profile", "status", "refresh_readiness", "reset_connection", "open", "inspect", "probe_connections", "profile", "read", "pick_directory",
+  "open_directory", "update", "preview", "apply", "export_data", "save_export", "open_export_directory", "export_diagnostics", "diagnostics",
+  "open_diagnostics_directory", "edit", "document", "operation", "check", "run_check", "rebuild_index", "updates", "versions",
+]);
+function setup_control(name) {
+  const match = /^mcp__([A-Za-z0-9_-]+)__(.+)$/.exec(name);
+  if (!match) return false;
+  const server = match[1].replaceAll("_", "-"), method = match[2];
+  if (server === "1c-ai-settings") {
+    const settingsMethod = /^settings[._](.+)$/.exec(method);
+    return Boolean(settingsMethod && setupMethods.has(settingsMethod[1]));
+  }
+  if (["edt", "v8std", "code-index", "bsl-ls"].includes(server))
+    return ["core_runtime_status", "core_runtime_tools"].includes(method);
+  return server === "policy" && ["get_action_policy", "check_action"].includes(method);
+}
 export function reason(event) {
   if (/(?:^|__|\.)core_runtime_call$/.test(String(event.tool_name || ""))) {
     const args = event.tool_input;
@@ -41,6 +60,13 @@ export function reason(event) {
     throw error;
   }
   const name = String(event.tool_name || "");
+  const setupControl = setup_control(name);
+  // Setup validates its own scope and must stay usable to repair a bad profile.
+  if (setupControl) return null;
+  const data = project_profile(root);
+  const config = effective_settings(settings(process.env.EDT_AI_SETTINGS || path.join(state_root(), "settings.json")), root, data);
+  const gate = knowledge_gate(data, config, "workflow");
+  if (!gate.allowed) return "Knowledge workflow blocked: " + gate.reason;
   let args = event.tool_input || {};
   if (typeof args !== "object" || Array.isArray(args))
     args = { command: String(args) };
@@ -66,7 +92,6 @@ export function reason(event) {
   const indexed = /code[_-]index/i.test(name) && Object.hasOwn(args, "repo"),
     generic = filesystem.has(bare) || /filesystem.*__/i.test(name);
   if (!generic && !indexed) return null;
-  const data = project_profile(root);
   if (indexed && !data.repositories.some((repo) => repo.alias === args.repo))
     return "code-index alias is outside the selected project profile";
   if (!generic) return null;

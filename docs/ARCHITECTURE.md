@@ -25,8 +25,9 @@ flowchart TD
     Runtime --> BSL
 ```
 
-Контуры OpenViking и MCP ИБ имеют статус **«Планируется»**. Их место в потоке
-данных и границы описаны в [INTEGRATIONS.md](INTEGRATIONS.md).
+Для OpenViking реализованы режимы знаний и workflow gates; поисковый адаптер
+и MCP ИБ планируются. Их место в потоке данных и границы описаны
+в [INTEGRATIONS.md](INTEGRATIONS.md).
 
 | Модуль | Ответственность |
 | --- | --- |
