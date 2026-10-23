@@ -14,10 +14,15 @@ try {
     temp,
     process.platform === "win32" ? "node.exe" : "node",
   );
-  try {
-    fs.linkSync(process.execPath, node);
-  } catch {
+  // A hard link can stay locked by this still-running Node process on Windows.
+  if (process.platform === "win32") {
     fs.copyFileSync(process.execPath, node);
+  } else {
+    try {
+      fs.linkSync(process.execPath, node);
+    } catch {
+      fs.copyFileSync(process.execPath, node);
+    }
   }
   if (process.platform !== "win32") fs.chmodSync(node, 0o755);
   const preload = path.join(temp, "guard.mjs");
@@ -40,5 +45,5 @@ for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSyn
   if (result.error) throw result.error;
   process.exitCode = result.status ?? 1;
 } finally {
-  fs.rmSync(temp, { recursive: true, force: true });
+  await fs.promises.rm(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
