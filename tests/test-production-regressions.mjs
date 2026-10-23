@@ -36,7 +36,16 @@ test("unselected connections never borrow active_project; roots fallback is shar
 });
 test("distinct Unicode filesystem directories cannot share instances or daemon homes", t => {
   const f = fixture(t), roots = ["Straße", "STRASSE"].map(name => path.join(f.base,name));
-  roots.forEach(root => fs.mkdirSync(root));
+  fs.mkdirSync(roots[0]);
+  // Some filesystems (including default APFS) treat this pair as one name.
+  // Only distinct directories can exercise the former case-folded state collision.
+  if (fs.existsSync(roots[1])) {
+    const first = fs.statSync(roots[0]), second = fs.statSync(roots[1]);
+    assert.equal(first.dev, second.dev);
+    assert.equal(first.ino, second.ino);
+    return t.skip("Filesystem treats Straße and STRASSE as the same directory");
+  }
+  fs.mkdirSync(roots[1]);
   assert.notEqual(instance_directory(f.state,roots[0]), instance_directory(f.state,roots[1]));
   assert.notEqual(project_home(f.state,roots[0]), project_home(f.state,roots[1]));
 });

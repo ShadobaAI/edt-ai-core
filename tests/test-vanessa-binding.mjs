@@ -180,7 +180,8 @@ test("identical relative runtime files in distinct clones cannot share authoriza
   const approval = path.join(f.base, "approval.json");
   fs.writeFileSync(approval, JSON.stringify(request));
   const clone = path.join(f.base, "clone");
-  fs.cpSync(f.root, clone, { recursive: true });
+  // Use JS traversal for Unicode paths on Node 22/Windows (nodejs/node#61950).
+  fs.cpSync(f.root, clone, { recursive: true, filter: () => true });
   const result = node(
     "scripts/vanessa.mjs",
     ["start", "--project-root", clone, "--authorization-file", approval],

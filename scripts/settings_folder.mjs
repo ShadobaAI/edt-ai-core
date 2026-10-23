@@ -9,6 +9,13 @@ import { Worker, isMainThread, parentPort, workerData } from "node:worker_thread
 export function folder_action(action, directory = "") {
   if (process.platform !== "win32") return Promise.reject(new Error("Выбор и открытие папки доступны в Windows. Укажите путь в поле папки."));
   if (!["pick", "open"].includes(action)) return Promise.reject(new Error("Неизвестное действие с папкой."));
+  // Reject invalid input before starting a native worker. Keep the worker-side
+  // check as well in case the directory changes between validation and use.
+  if (action === "open") {
+    try {
+      if (!directory || !path.isAbsolute(directory) || !fs.statSync(directory).isDirectory()) throw new Error("Папка проекта не найдена.");
+    } catch (error) { return Promise.reject(error); }
+  }
   return new Promise((resolve, reject) => {
     let replied = false;
     const worker = new Worker(new URL(import.meta.url), { workerData: { settingsFolder: true, action, directory } });

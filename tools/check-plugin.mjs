@@ -265,7 +265,8 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       liveExternal: "not_verified",
     };
   } finally {
-    fs.rmSync(temp, { recursive: true, force: true });
+    // Windows may retain executable/stdio handles briefly after child close.
+    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 export async function check(selected) {

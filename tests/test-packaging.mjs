@@ -274,7 +274,8 @@ test("publication bounded conflict recovery preserves a concurrently published p
   push_release(checkout, payload, ROOT, build, process.env, exec);
   const newer = { ...build, version: "9.9.9" },
     newerPayload = path.join(f.base, "newer");
-  fs.cpSync(payload, newerPayload, { recursive: true });
+  // Use JS traversal for Unicode paths on Node 22/Windows (nodejs/node#61950).
+  fs.cpSync(payload, newerPayload, { recursive: true, filter: () => true });
   fs.writeFileSync(
     path.join(newerPayload, "plugins/1c-ai-core/build-info.json"),
     JSON.stringify(newer),

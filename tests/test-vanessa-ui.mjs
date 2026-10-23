@@ -16,7 +16,7 @@ import * as wire from "./test-vanessa-ui-fixtures.mjs";
 import { runFeature } from "../vanessa/run.mjs";
 import { awaitEditorTransition } from "../vanessa/transition.mjs";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "vanessa-ui-contract-"));
+const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "vanessa-ui-contract-")));
 // Isolate the shared control registry from real manager claims on this machine.
 // Only this fixture process sees the replacement; no user metadata is removed.
 const nativeTmpdir = os.tmpdir;
@@ -421,7 +421,7 @@ try {
   };
   const networkOptions = ["run", "--profile", profileFile, "--feature", feature, "--scenario", scenario];
   const networkCompleted = await main([...networkOptions]);
-  assert.equal(networkCompleted.status, "completed");
+  assert.equal(networkCompleted.status, "completed", JSON.stringify(networkCompleted));
   assert.equal(JSON.parse(fs.readFileSync(networkCompleted.receipt)).status, "unverified", "raw result text never becomes a passing test");
   for (const variant of ["timeoutRun", "timeoutResults", "toolErrorRun", "toolErrorResults"]) {
     httpMode = variant; calls = [];
@@ -445,7 +445,7 @@ try {
 } finally {
   server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   os.tmpdir = nativeTmpdir;
-  const resolved = path.resolve(root), tempRoot = path.resolve(os.tmpdir()) + path.sep;
+  const resolved = fs.realpathSync.native(root), tempRoot = fs.realpathSync.native(os.tmpdir()) + path.sep;
   assert.ok(resolved.startsWith(tempRoot) && path.basename(resolved).startsWith("vanessa-ui-contract-"));
   fs.rmSync(resolved, { recursive: true, force: true });
 }

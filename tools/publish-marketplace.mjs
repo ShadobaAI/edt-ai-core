@@ -184,6 +184,9 @@ export function stage_release(checkout, payload, source, build, exec = run) {
   if (exists(target)) fs.rmSync(target, { recursive: true });
   fs.cpSync(path.join(payload, "plugins/1c-ai-core"), target, {
     recursive: true,
+    // Force JS traversal: Node 22's native Windows copy mishandles Unicode
+    // paths (nodejs/node#61950), including a checkout below a Unicode temp dir.
+    filter: () => true,
   });
   stage_catalog(checkout, exec);
   return true;
