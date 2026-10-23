@@ -12,6 +12,7 @@ import {
   inside,
   load,
   validate_url,
+  validate_openviking_url,
   settings,
   operation_lock,
   state_path,
@@ -35,7 +36,7 @@ export function validate(data) {
   check_schema(data, "project-profile.schema.json");
   if (!satisfies_core(data.compatibility.core)) throw new ConfigError(`Profile requires core ${data.compatibility.core}; running ${core_version}. Review the profile contract before changing compatibility.core.`);
   for (const [name, entry] of Object.entries(data.connections || {}))
-    validate_url(entry.url, name);
+    if (entry.url) name === "openviking" ? validate_openviking_url(entry.url) : validate_url(entry.url, name);
   const repos = new Map(data.repositories.map((repo) => [repo.id, repo]));
   if (
     repos.size !== data.repositories.length ||

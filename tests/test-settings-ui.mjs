@@ -557,7 +557,7 @@ test("manual settings require a fresh preview after editing and apply the review
   const ui = screen(async (name, args) => {
     if(name === "settings.read") return read;
     if(name === "settings.edit") return { text, baseRevision: "loaded" };
-    if(name === "settings.preview") { assert.equal(args.mode, "edit"); assert.equal(args.baseRevision, "loaded"); return { revision: "reviewed", projectRoot: read.values.projectRoot, repositories: [] }; }
+    if(name === "settings.preview") { assert.equal(args.mode, "edit"); assert.equal(args.baseRevision, "loaded"); return { revision: "reviewed", projectRoot: read.values.projectRoot, repositories: [], openviking: { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 4, max_response_bytes: 4096 } }; }
     if(name === "settings.apply") { assert.equal(args.text, text); assert.equal(args.revision, "reviewed"); assert.equal(args.mode, "edit"); assert.equal(args.baseRevision, "loaded"); return {}; }
     throw new Error(name);
   });
@@ -566,6 +566,7 @@ test("manual settings require a fresh preview after editing and apply the review
   assert.equal(ui.elements.get("settingsText").value, text);
   await ui.elements.get("reviewEditButton").onclick();
   assert.equal(ui.elements.get("preview").hidden, false);
+  assert.equal(ui.elements.get("openvikingStatus").textContent, "Включён: https://knowledge.example/mcp · 4 с · 4096 байт");
   ui.elements.get("settingsText").events.input();
   await ui.elements.get("applyButton").onclick();
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.apply").length, 0);

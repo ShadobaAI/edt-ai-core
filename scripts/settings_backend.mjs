@@ -191,9 +191,16 @@ export class SettingsBackend {
         Buffer.from(resolve(target)),
         bytes(target) || Buffer.alloc(0),
       );
-    if (config.active_project)
+    if (config.active_project) {
+      // Track source revisions even when a higher-priority value masks them or
+      // the imported document does not replace the current profile.
+      for (const name of [".ai/project.yaml", ".ai/project.local.yaml"]) {
+        const file = inside(config.active_project, name);
+        chunks.push(Buffer.from(file), bytes(file) || Buffer.alloc(0));
+      }
       for (const file of instance_files(config, config.active_project))
         chunks.push(Buffer.from(file), bytes(file) || Buffer.alloc(0));
+    }
     if (config.active_project)
       chunks.push(Buffer.from(stable(edt_connection(config.active_project))));
     return sha256(Buffer.concat(chunks));
@@ -397,7 +404,7 @@ export class SettingsBackend {
       });
     }
     if (action === "reset_connection") {
-      if (!["edt", "v8std"].includes(request.connection)) throw new ConfigError("Неизвестное подключение.");
+      if (!["edt", "v8std", "openviking"].includes(request.connection)) throw new ConfigError("Неизвестное подключение.");
       return operation_lock(this.STATE, () => {
         const config = this.current(), root = config.active_project;
         if (!root) throw new ConfigError("Выберите папку проекта.");
@@ -456,15 +463,16 @@ export class SettingsBackend {
             config.active_project = value;
             continue;
           }
-          if (["edtUrl", "v8stdUrl"].includes(key)) {
+          if (["edtUrl", "v8stdUrl", "openvikingUrl", "openvikingEnabled"].includes(key)) {
             if (!config.active_project)
               throw new ConfigError(
                 "Для настройки подключений выберите папку проекта.",
               );
             root = configuration_root(config.active_project);
-            (instanceChanges.connections ||= {})[
-              key === "edtUrl" ? "edt" : "v8std"
-            ] = { url: value ? validate_url(value) : "" };
+            const name = key.startsWith("openviking") ? "openviking" : key === "edtUrl" ? "edt" : "v8std";
+            const connections = instanceChanges.connections ||= {};
+            connections[name] = { ...connections[name],
+              ...(key === "openvikingEnabled" ? { enabled: value } : { url: value ? validate_url(value) : "" }) };
             continue;
           }
           if (["codeIndexEnabled", "bslLsEnabled"].includes(key)) {
@@ -524,6 +532,7 @@ export class SettingsBackend {
         ),
         edtConfigured: !!applied.mcp.required.edt.url,
         v8stdConfigured: !!applied.mcp.required.v8std.url,
+        openviking: structuredClone(applied.mcp.optional.openviking),
         replacesProfile: !!(target && exists(target)),
         connectionUrls: Object.fromEntries(
           Object.entries(applied.mcp.required).map(([name, item]) => [

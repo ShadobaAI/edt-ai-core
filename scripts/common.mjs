@@ -117,7 +117,7 @@ export function validate_settings(config) {
   for (const [name, entry] of Object.entries({ ...config.mcp.required, ...config.mcp.managed }))
     if (entry.url) validate_url(entry.url, name);
   if (config.mcp.optional.openviking?.url)
-    validate_url(config.mcp.optional.openviking.url, "OpenViking");
+    validate_openviking_url(config.mcp.optional.openviking.url);
   return config;
 }
 export function validate_url(value, name = "MCP") {
@@ -137,6 +137,12 @@ export function validate_url(value, name = "MCP") {
       `Invalid ${name} MCP URL: credentials, invalid port or scheme`,
     );
   }
+  return value;
+}
+export function validate_openviking_url(value) {
+  validate_url(value, "OpenViking");
+  if (new URL(value).search)
+    throw new ConfigError("OpenViking endpoint query parameters are not supported; authorization must use headers_env.");
   return value;
 }
 export function state_path(config, override) {

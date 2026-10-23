@@ -61,8 +61,8 @@ const primitive = {
   codeIndexAllowPrerelease: { type: "boolean", title: "Предварительные релизы индекса кода", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   bslLsVersion: { type: "string", title: "Версия BSL LS", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
   bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
-  openvikingEnabled: { type: "boolean", title: "Флаг OpenViking", description: "Резерв конфигурации. Подключение OpenViking этим плагином ещё не реализовано.", readOnly: true },
-  openvikingUrl: { type: "string", title: "URL OpenViking", description: "Сохранённое значение; соединение и поиск не выполняются.", readOnly: true },
+  openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Override текущего каталога и экземпляра. Не изменяет режим и обязательность знаний; поисковый адаптер пока не реализован." },
+  openvikingUrl: { type: "string", title: "URL OpenViking", description: "Override текущего каталога и экземпляра. Пустое значение отключает транспорт; окружение имеет высший приоритет." },
 };
 const versionCatalogs = new Map();
 
@@ -107,6 +107,7 @@ function readSettings(actual) {
     profileDirectoryContext: actual.profileDirectoryContext,
     edtPortSuggestion: actual.edtPortSuggestion,
     readiness: actual.readiness,
+    knowledge: actual.knowledge,
     legacyState: actual.legacyState,
     profileHistory: actual.profileHistory || [], summary: actual.summary,
     configurationError: actual.configurationError,
@@ -136,7 +137,7 @@ const tools = [
   { name: "settings.refresh_readiness", title: "Обновить готовность профиля", description: "Refresh live service checks when the settings app loads a profile. Reuses only this project's and instance's existing preparation permission and installed runtimes. Does not grant permission, download components or rebind chat connections. Poll settings.operation with the returned id.",
     inputSchema: { type: "object", properties: { scope: { type: "string", minLength: 1 } }, required: ["scope"], additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly },
   { name: "settings.reset_connection", title: "Вернуть наследование подключения", description: "Remove this instance's URL override and inherit the next configured source.",
-    inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std"] } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
+    inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std", "openviking"] } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.open", title: "Настройки", description: "Open the full settings workspace with the user's profile list from Open plugin or app navigation. The form automatically refreshes readiness using installed runtimes and existing project-scoped preparation permissions.",
     inputSchema: empty, annotations: annotations(), _meta: { ui: { resourceUri: resource, visibility: ["app"] }, "openai/ui": { entrypoints: [{ type: "global" }] } } },
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
@@ -396,8 +397,8 @@ async function call(name, args, meta = {}) {
     const view = readSettings(await readValues());
     for (const [name, source] of Object.entries(view.connectionSources || {})) {
       if (source.startsWith("environment:") || source === "connections_file") {
-        view.schema.properties[name === "edt" ? "edtUrl" : "v8stdUrl"] = {
-          ...primitive[name === "edt" ? "edtUrl" : "v8stdUrl"], readOnly: true,
+        view.schema.properties[name + "Url"] = {
+          ...primitive[name + "Url"], readOnly: true,
           description: "Значение задаёт " + source + ". Сначала измените этот источник с более высоким приоритетом.",
         };
       }

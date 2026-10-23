@@ -8,6 +8,7 @@ import {
   inside,
   load,
   validate_url,
+  validate_openviking_url,
   state_path,
 } from "./common.mjs";
 import {
@@ -66,7 +67,7 @@ export function resolved_settings(
 ) {
   let overrides = { connections: data?.connections || {} };
   const sources = Object.fromEntries(
-    Object.keys(overrides.connections).map((name) => [name, "profile"]),
+    Object.entries(overrides.connections).filter(([, entry]) => Object.hasOwn(entry, "url")).map(([name]) => [name, "profile"]),
   );
   const local = local_overrides(root);
   overrides = deep_merge(overrides, local);
@@ -107,7 +108,8 @@ export function resolved_settings(
       sources.edt = "edt_workspace";
     }
   }
-  for (const name of ["edt", "v8std"]) {
+  for (const name of ["edt", "v8std", "openviking"]) {
+    const defaults = name === "openviking" ? config.mcp.optional[name] : config.mcp.required[name];
     const variable =
       connections[name]?.url_env || `EDT_AI_${name.toUpperCase()}_URL`;
     if (Object.hasOwn(process.env, variable)) {
@@ -115,17 +117,22 @@ export function resolved_settings(
       sources[name] = "environment:" + variable;
     } else
       sources[name] ||=
-        config.mcp.required[name].url &&
+        defaults?.url &&
         (name !== "edt" || legacy_edt_matches(config, root))
-          ? "legacy"
+          ? name === "openviking" ? "settings" : "legacy"
           : "unconfigured";
   }
-  for (const [name, entry] of Object.entries(overlay))
-    if (entry.url) validate_url(entry.url, name);
+  for (const [name, entry] of Object.entries(overlay)) {
+    if (entry.url) name === "openviking" ? validate_openviking_url(entry.url) : validate_url(entry.url, name);
+    delete entry.url_env; // Resolution metadata is not part of the transport contract.
+  }
+  const openviking = overlay.openviking;
+  delete overlay.openviking;
   return [
     deep_merge(config, {
       active_project: resolve(root),
-      mcp: { required: overlay, managed: overrides.components || {} },
+      mcp: { required: overlay, managed: overrides.components || {},
+        ...(openviking ? { optional: { openviking } } : {}) },
     }),
     sources,
   ];

@@ -94,6 +94,7 @@ details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer
 <div class="actions"><button id="previewButton"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>Проверить файл</button></div>
 <div class="review-area" id="preview" hidden><h2>Проверенные изменения</h2><div class="row"><strong>Профиль</strong><span id="previewProfile"></span></div><div id="previewRoot" class="path"></div><ul id="repositories"></ul><div id="importEffects" class="muted"></div>
 <div class="row"><span>EDT</span><span id="edtStatus" class="muted"></span></div><div class="row"><span>v8std</span><span id="v8Status" class="muted"></span></div>
+<div class="row"><span>Транспорт OpenViking</span><span id="openvikingStatus" class="muted"></span></div>
 <label class="replace" id="replaceLabel" hidden><input id="replace" type="checkbox"><span>Заменить существующий профиль. Резервная копия сохранится рядом.</span></label><div class="actions"><button id="applyButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button></div></div>
 </section>
 <section id="exportPanel" role="tabpanel" aria-labelledby="exportTab" hidden>
@@ -597,6 +598,7 @@ function previewChanges(editing){return busy("Проверяем изменен�
   $("previewProfile").textContent=preview.profileId||"Настройки плагина";$("previewRoot").textContent=preview.projectRoot||"Папка проекта не выбрана";
   $("repositories").replaceChildren(...preview.repositories.map(repo=>{const item=document.createElement("li");item.textContent=repo.id+" · "+repo.path;return item;}));
   $("edtStatus").textContent=preview.connectionUrls?.edt||"Адрес не указан";$("v8Status").textContent=preview.connectionUrls?.v8std||"Адрес не указан";
+  $("openvikingStatus").textContent=(preview.openviking?.enabled?"Включён: ":"Выключен: ")+(preview.openviking?.url||"адрес не указан")+" · "+(preview.openviking?.timeout_seconds??20)+" с · "+(preview.openviking?.max_response_bytes??2097152)+" байт";
   $("applyButton").innerHTML="";$("applyButton").append(icon("save"),document.createTextNode(editing?"Сохранить изменения":"Импортировать"));$("importEffects").textContent=(preview.writesInstanceConnections?"Подключения из файла сохранятся для текущего экземпляра. ":"")+(Object.keys(preview.sharedRuntimeChanges||{}).length?"Изменятся общие параметры среды выполнения, включая программы запуска: "+JSON.stringify(preview.sharedRuntimeChanges):"")+(Object.keys(preview.sharedOptionalChanges||{}).length?" Изменятся общие дополнительные параметры: "+JSON.stringify(preview.sharedOptionalChanges):"");
   $("replaceLabel").hidden=!preview.replacesProfile;$("replace").checked=false;$("preview").hidden=false;notice("Изменения проверены. Проверьте каталог и состав изменений перед сохранением.");
 }).catch(()=>{});}

@@ -31,6 +31,7 @@ export function fixture(t) {
     "EDT_AI_CONNECTIONS_FILE",
     "EDT_AI_EDT_URL",
     "EDT_AI_V8STD_URL",
+    "EDT_AI_OPENVIKING_URL",
   ])
     delete env[key];
   const save = () => dump(profile, path.join(root, ".ai/project.yaml"));

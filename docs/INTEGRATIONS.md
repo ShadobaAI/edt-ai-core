@@ -143,7 +143,10 @@ EDT или code-index не выполняется. Адресное чтение
 диагностика `knowledge` через settings/doctor/relay status, workflow gate KORA
 в native relay, hook и CLI Vanessa, manifest рекомендаций, поля
 `mcp.optional.openviking` и диагностическая проба настроенного endpoint.
-Поля OpenViking в MCP настроек помечены read-only. В `mcp.json` нет сервера
+Транспорт настраивается через `connections.openviking` профиля, локальные
+и instance overrides; авторизация задаётся ссылками на environment. Preview/apply
+проверяют ревизии, экспорт не включает локальные подключения и значения секретов.
+В `mcp.json` нет сервера
 OpenViking, маршрутизации поисковых вызовов, индексации и контроля опубликованной
 ревизии. Успешная общая MCP-проба не подтверждает эти возможности.
 Пользовательских команд готовой интеграции пока нет.

@@ -67,7 +67,7 @@ export class RemoteMcp {
     this.options = options;
     this.maxBytes = options.maxBytes || DEFAULT_MAX_BYTES;
     this.url = url;
-    this.timeout = timeout * 1000;
+    this.timeout = Math.max(1, Math.ceil(timeout * 1000));
     this.session = null;
     this.protocol = "2024-11-05";
     this.sequence = 0;

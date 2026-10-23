@@ -4,7 +4,8 @@ import fs from "node:fs";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { fixture, environment, session } from "./helpers.mjs";
-import { settings } from "../scripts/common.mjs";
+import { settings, load } from "../scripts/common.mjs";
+import { instance_file } from "../scripts/project_context.mjs";
 import { validate } from "../scripts/profile.mjs";
 import { knowledge_status, knowledge_gate, WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
@@ -264,7 +265,8 @@ test("inspection, doctor and setup report a conflicting transport without disabl
   const f = fixture(t); environment(t, f.env); f.save();
   const backend = new SettingsBackend();
   await backend.main({ action: "update", set: { openvikingEnabled: true } });
-  const saved = fs.readFileSync(f.env.EDT_AI_SETTINGS, "utf8");
+  const savedFile = instance_file(backend.current(), f.root);
+  const saved = fs.readFileSync(savedFile, "utf8");
   const read = await backend.main({ action: "read" });
   assert.equal(read.knowledge.state, "invalid");
   const snapshot = setup_inspection(read, f.state);
@@ -277,6 +279,6 @@ test("inspection, doctor and setup report a conflicting transport without disabl
   const readiness = save_readiness(f.state, config, f.profile, [], {});
   assert.equal(readiness.state, "blocked");
   assert.equal(readiness.checks.find(item => item.id === "knowledge").state, "error");
-  assert.equal(fs.readFileSync(f.env.EDT_AI_SETTINGS, "utf8"), saved);
-  assert.equal(JSON.parse(saved).mcp.optional.openviking.enabled, true);
+  assert.equal(fs.readFileSync(savedFile, "utf8"), saved);
+  assert.equal(load(savedFile).connections.openviking.enabled, true);
 });

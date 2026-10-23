@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError, sha256 } from "./project_paths.mjs";
-import { check_schema, validate_url, inside, parse } from "./common.mjs";
+import { check_schema, validate_url, validate_openviking_url, inside, parse } from "./common.mjs";
 
 export const WORKFLOW_ACTIONS = Object.freeze(["discovery", "design", "implementation", "review", "runtime"]);
 export const SEARCH_REQUIREMENTS = Object.freeze({ publication: "verified", snapshot: "consistent", access: "read_only",
@@ -130,12 +130,13 @@ export function knowledge_status(profile, config) {
   const { provider, mode = provider === "none" ? "disabled" : null, collections = [], required = false, dependent_actions = [] } = profile?.knowledge || {};
   const transport = config?.mcp?.optional?.openviking;
   const result = { provider, mode, collections: structuredClone(collections), required, dependentActions: structuredClone(dependent_actions),
+    transport: { enabled: transport?.enabled === true, endpointConfigured: typeof transport?.url === "string" && Boolean(transport.url) },
     coverage: "not_verified", coverageScope: "selected_collections", apiExistence: "not_determined",
     workflowScope: mode === "kora" ? "all" : "dependent_actions", koraReady: false };
   try {
     check_schema(profile, "project-profile.schema.json");
     check_schema(config, "plugin-settings.schema.json");
-    if (transport?.url) validate_url(transport.url, "OpenViking");
+    if (transport?.url) validate_openviking_url(transport.url);
   } catch (error) {
     return { ...result, state: "invalid", detail: "Invalid knowledge configuration: " + error.message };
   }
