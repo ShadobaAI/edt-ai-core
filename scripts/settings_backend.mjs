@@ -383,13 +383,14 @@ export class SettingsBackend {
         this.checked(config);
         if (!config.active_project) throw new ConfigError("Выберите папку проекта в Codex.");
         const root = configuration_root(config.active_project);
-        if (action === "create") create_profile(root);
+        const creation = action === "create" ? create_profile(root) : null;
         project_profile(root); // Validate before signalling any bound session.
         record_project_owner(this.STATE, root);
         remember_profile(this.STATE, root, profile_state(root));
         const actual = this.values(config);
         atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
         return { values: actual, profile: profile_state(root), instance: instance_name(),
+          ...(creation ? { projectInstructions: creation.projectInstructions } : {}),
           sessionGuidance: session_guidance, reload: "requested", readiness: "not_checked" };
       });
     }

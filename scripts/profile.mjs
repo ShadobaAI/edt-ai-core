@@ -22,6 +22,7 @@ import {
   resolve,
   contained,
   exists,
+  is_file,
   is_dir,
   locate_project,
   configuration_root,
@@ -200,17 +201,29 @@ export function create_profile(selected) {
   data.project.id = path.basename(root).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "project";
   validate_at(root, data);
   // Resolve every supporting path before the first write (including junctions).
-  for (const name of [".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.md"]) inside(root, name);
+  for (const name of [".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.md", "AGENTS.override.md"]) {
+    const file = inside(root, name);
+    if (fs.lstatSync(path.join(root, name), { throwIfNoEntry: false }) && !is_file(file))
+      throw new ConfigError("Project instructions path must be a regular file: " + name);
+  }
+  const projectInstructions = { created: [], preserved: [], contentValidated: false };
+  const override = inside(root, "AGENTS.override.md");
+  if (exists(override)) {
+    projectInstructions.preserved.push("AGENTS.override.md");
+    if (fs.readFileSync(override, "utf8").trim()) projectInstructions.overrideFile = "AGENTS.override.md";
+  }
   dump(data, target, false);
   for (const [name, text] of Object.entries({
-    ".ai/PROJECT.md": "# Project\n\nDescribe purpose, architecture and sources of truth.\n",
+    ".ai/PROJECT.md": "# Контекст проекта\n\nНазначение, архитектура и источники истины ещё не описаны.\nПри настройке заполни подтверждённые сведения; неизвестное отметь явно.\nМашинные сопоставления хранятся в project.yaml, правила работы — в ../AGENTS.md.\n",
     ".ai/.gitignore": "project.local.yaml\ninstances/*.local.yaml\n",
-    "AGENTS.md": "# 1C project\n\nUse 1c-ai-core. Read .ai/project.yaml and .ai/PROJECT.md.\nUse $1c-routing and its shared action-policy reference before project operations.\nApply the shared policy and reuse actual user authorizations only for their approved scope.\nUse assigned authorities for protected sources.\n",
+    "AGENTS.md": "# Работа с проектом 1С\n\nИспользуй 1c-ai-core. Прочитай .ai/project.yaml и .ai/PROJECT.md.\nПеред операциями с конфигурацией используй $1c-routing и общую action policy.\nДля защищённых исходников используй назначенные профилем инструменты.\nРанее выданные пользователем разрешения применяй только в согласованной области.\n\n## Правила проекта требуют заполнения\n\nПри настройке опиши подтверждённые правила владения объектами, префиксы,\nизменение поставки и маркировку доработок; укажи проверки и тестовый контур.\nНеизвестные правила не придумывай; уточняй их перед зависимой операцией.\nНазначение и архитектуру храни в .ai/PROJECT.md, сопоставления — в профиле.\nНе копируй сюда навыки плагина, endpoints, секреты и статус текущей сессии.\n",
   })) {
     const file = inside(root, name);
-    if (!exists(file)) atomic_write(file, text, false);
+    const preserved = exists(file);
+    if (!preserved) atomic_write(file, text, false);
+    if (name.endsWith(".md")) projectInstructions[preserved ? "preserved" : "created"].push(name);
   }
-  return { status: "created", path: target, profile_id: data.profile_id };
+  return { status: "created", path: target, profile_id: data.profile_id, projectInstructions };
 }
 export async function main() {
   const a = argumentsOf(

@@ -3,8 +3,10 @@
 Resolve the nearest repository's `.ai/project.yaml` from the selected directory;
 stop at another Git repository boundary. If none exists above, the plugin searches
 `**/.ai/project.yaml` below the selected folder. A unique match keeps its own
-profile root; multiple matches require selecting a specific subfolder. Read the
-resolved profile root's `AGENTS.md` and `.ai/PROJECT.md`.
+profile root; multiple matches require selecting a specific subfolder. Reuse
+applicable project instructions already supplied in the chat and read missing
+relevant context from `.ai/PROJECT.md`; obtain current target text before editing.
+Check override precedence and nested scope through [project instructions](project-instructions.md).
 For initial setup with no profile, use the explicitly selected project directory
 and existing project instructions; missing generated `.ai` files are expected.
 Use `settings.inspect` to inspect the current chat's profile and effective scope.
@@ -16,12 +18,17 @@ After create/load/import, relay `sessionGuidance`. An empty selectedDirectory is
 repaired by passing the known chat projectRoot to the relevant core_runtime_status,
 not by restarting chats. Never create a chat or change global selection automatically. A generic template
 still needs repository mappings and connection configuration before project work.
+Creation also reports projectInstructions.created/preserved; contentValidated=false
+is not acceptance of project rules. Optional projectInstructions.overrideFile
+identifies a non-empty root override that takes precedence over AGENTS.md;
+existing overrides remain unchanged. For authoring/review follow
+[project instructions](project-instructions.md), not a second profile creation.
 Apply the shared [action policy](../../1c-routing/references/action-policy.md);
 defaults are loaded from the bundled policy and cannot be weakened by a profile.
 All projects share the profile contract; CRM/Kafka presets do not imply paths,
 prefixes, aliases, ports or a running EDT.
 
-- Project `AGENTS.md` defines supplier-product boundaries, project-owned changes,
+- Applicable project instructions define supplier-product boundaries, project-owned changes,
   prefix/namespace mappings and maintenance rules. A vendor product includes its
   bundled libraries and vendor-added prefixed objects. Reuse the shared ownership
   assessment in $1c-code-change; do not import CRM conventions into other projects.
@@ -39,6 +46,9 @@ prefixes, aliases, ports or a running EDT.
   Obtain their paths from the assigned EDT, then select context per file or
   `workspaceFolder`; no persistent repository choice is required. Each stdio
   session owns its registrations and JVM. Require the native registration API.
+  Shared analyzer settings use one explicit configuration file, not identical
+  copies per folder; follow the configuration paragraph in
+  [$bsl-ls-mcp](../../bsl-ls-mcp/SKILL.md).
   Read/import/export normalize subdirectories to the same profile root.
 - MCP roots bind each session and root changes reload the profile. `EDT_AI_PROJECT_ROOT`
   explicitly pins a CLI/session root. Profile/instance changes invalidate affected
@@ -61,6 +71,14 @@ prefixes, aliases, ports or a running EDT.
   project/instance. Profile inspection/create/load/import never provisions services.
   After that preparation, stdio entrypoints install missing verified artifacts
   and start the scoped service on demand.
+  core_runtime_status also connects prepared managed services and publishes
+  their tools; a host tools/list refresh is not a prerequisite. Hosts that keep
+  their initial catalogue use core_runtime_tools for live schemas and
+  core_runtime_call for native calls, with the same chat projectRoot for empty
+  roots. Short sequential batches preserve session-local registrations; native
+  permissions apply to every call. Inspection and
+  operation polling never open settings forms. Open forms only on an explicit
+  user request about a profile/settings.
   BSL LS is per client session and stops on disconnect; code-index has a
   daemon per canonical profile root with all explicitly mapped configurations.
   Different roots start independently; same-root sessions share indexing and use

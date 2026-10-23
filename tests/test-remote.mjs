@@ -461,7 +461,7 @@ test("lazy relay preserves paginated tools/results, bounded discovery and indepe
     });
   const names = async (c) =>
     (await c.request("tools/list")).tools.map((tool) => tool.name);
-  assert.deepEqual(await names(a), ["core_runtime_status", "inspect", "tail"]);
+  assert.deepEqual(await names(a), ["core_runtime_status", "core_runtime_tools", "core_runtime_call", "inspect", "tail"]);
   assert.ok((await names(b)).includes("tail"));
   const before = e.calls.filter(
     (x) => x.message.method === "tools/list",

@@ -827,6 +827,36 @@ test("profile creation reports restart guidance without preparing services", asy
   assert.equal(ui.elements.get("refreshButton").disabled, false);
   assert.match(ui.elements.get("status").textContent, /новый чат/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
+  assert.match(ui.elements.get("status").textContent, /дополнить правила команды/);
+});
+
+test("profile creation explains starter and preserved instructions and override precedence", async () => {
+  for (const instructions of [
+    { created: [".ai/PROJECT.md", "AGENTS.md"], preserved: [], contentValidated: false },
+    { created: [], preserved: [".ai/PROJECT.md", "AGENTS.md"], contentValidated: false },
+    { created: [".ai/PROJECT.md"], preserved: ["AGENTS.override.md", "AGENTS.md"], contentValidated: false, overrideFile: "AGENTS.override.md" },
+    { created: [".ai/PROJECT.md", "AGENTS.md"], preserved: ["AGENTS.override.md"], contentValidated: false },
+  ]) {
+    let created = false;
+    const ui = screen(async name => {
+      if (name === "settings.read") return { ...read, profile: { status: created ? "loaded" : "missing", repositories: [] } };
+      if (name === "settings.create") { created = true; return { projectInstructions: instructions }; }
+      throw new Error(name);
+    });
+    await ui.flush();
+    await ui.elements.get("createButton").onclick();
+    const text = ui.elements.get("status").textContent;
+    if (instructions.created.length) assert.ok(text.includes("Созданы стартовые инструкции: " + instructions.created.join(", ")));
+    else assert.doesNotMatch(text, /Созданы стартовые инструкции/);
+    if (instructions.preserved.length) assert.ok(text.includes("Сохранены без изменений: " + instructions.preserved.join(", ")));
+    else assert.doesNotMatch(text, /Сохранены без изменений/);
+    if (instructions.overrideFile) assert.match(text, /AGENTS.override.md имеет приоритет над AGENTS.md/);
+    else assert.doesNotMatch(text, /имеет приоритет/);
+    assert.match(text, /действующем файле инструкций/);
+    assert.match(text, /Готовность сервисов не подтверждает полноту/);
+    assert.doesNotMatch(text, /contentValidated|projectInstructions/);
+    assert.equal(ui.calls.filter(call => ["settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
+  }
 });
 
 test("the readiness summary checks once and retains a scoped result across refresh", async () => {

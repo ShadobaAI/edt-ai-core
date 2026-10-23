@@ -121,7 +121,7 @@ try {
   fs.writeFileSync(paramsFile, JSON.stringify({ "ВыполнитьСценарии": true }));
   write({ ...raw, runtime: { ...raw.runtime, paramsFile: "params.json" } });
   assert.throws(() => checkFiles(loadProfile(profileFile)), /interactive/);
-  fs.writeFileSync(paramsFile, JSON.stringify({ "ВыполнитьСценарии": false, "ЗавершитьРаботуСистемы": false, "ИспользоватьКомпонентуVanessaExt": true, "ИспользоватьРедакторVanessaEditor": true }));
+  fs.writeFileSync(paramsFile, JSON.stringify({ "ВыполнитьСценарии": false, "ЗавершитьРаботуСистемы": false, "ИспользоватьКомпонентуVanessaExt": true }));
   checkFiles(loadProfile(profileFile));
   fs.writeFileSync(paramsFile, JSON.stringify({ password: "must-not-persist" }));
   assert.throws(() => interactiveParameters(loadProfile(profileFile)), /credentials/);

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { ROOT, ConfigError, settings, stable, argumentsOf } from "./common.mjs";
+import { ROOT, ConfigError, settings, stable, argumentsOf, object } from "./common.mjs";
 import {
   state_root,
   exists,
@@ -27,6 +27,7 @@ import { launch_selection, roots_selection, explicit_selection } from "./selecti
 import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation } from "./components.mjs";
 import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
+import { Ajv, Ajv2020 } from "../vendor/deps.mjs";
 import { create_diagnostic_logger, register_diagnostic_secrets } from "./diagnostics.mjs";
 
 const component = argumentsOf(undefined, [], ["component"]).component;
@@ -47,6 +48,7 @@ let client = null,
   bindingContext = null,
   connectingClient = null;
 let boundAliases = new Set();
+const nativeValidators = new Map();
 let selection = launch_selection();
 let selected = selection.directory,
   selectionError = null,
@@ -71,6 +73,7 @@ async function disconnect() {
   toolsDirty = false;
   bindingContext = null;
   boundAliases.clear();
+  nativeValidators.clear();
   if (hadTools && !closed) emit({ method: "notifications/tools/list_changed" });
   if (previous) await previous.close();
   if (connecting && connecting !== previous) await connecting.close();
@@ -230,12 +233,60 @@ const statusTool = () => ({
   description:
     component === "v8std"
       ? "Read the selected profile binding and negotiated server instructions/capabilities. Reuse until the binding or contract changes."
-      : "Read the service state for the selected repository profile.",
+      : "Connect the selected repository binding and read its service state and native server contract. Managed services start only with this project's and instance's existing preparation permission; this does not grant permission. If the host keeps its initial catalogue, use core_runtime_tools and core_runtime_call.",
   inputSchema: { type: "object", properties: {
     projectRoot: { type: "string", minLength: 1, description: "Current chat's known local project directory, only when the host supplied no directory. Binds this MCP session without changing other chats. Never substitute another project's directory." },
   }, additionalProperties: false },
-  annotations: { readOnlyHint: true },
+  annotations: { readOnlyHint: COMPONENTS[component].kind === "remote", destructiveHint: false },
 });
+const rootProperty = () => statusTool().inputSchema.properties.projectRoot;
+const controlTools = () => [statusTool(), {
+  name: "core_runtime_tools",
+  title: "Живой API " + component,
+  description: "Read the selected server's live native tool definitions, including full schemas and annotations. Use names to request only needed definitions. Available even when the host caches its initial tool list. Supply this chat's projectRoot when roots are empty; this never overrides a host/session binding.",
+  inputSchema: { type: "object", properties: {
+    projectRoot: rootProperty(),
+    names: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, maxItems: 32, uniqueItems: true },
+  }, additionalProperties: false },
+  annotations: { readOnlyHint: COMPONENTS[component].kind === "remote", destructiveHint: false },
+}, {
+  name: "core_runtime_call",
+  title: "Вызов native API " + component,
+  description: "Call native tools using their live schemas from core_runtime_tools. Calls run sequentially in one project-bound connection, so workspace registration and analysis can share a BSL LS process. Stops at the first failure; completed calls are not rolled back. Apply the native annotations, source workflow and action policy to EVERY call; this wrapper grants no permissions. Supply this chat's projectRoot when roots are empty. Never retry a failed batch blindly.",
+  inputSchema: { type: "object", properties: {
+    projectRoot: rootProperty(),
+    calls: { type: "array", minItems: 1, maxItems: 16, items: {
+      type: "object", properties: { name: { type: "string", minLength: 1 }, arguments: { type: "object", additionalProperties: true } },
+      required: ["name", "arguments"], additionalProperties: false,
+    } },
+  }, required: ["calls"], additionalProperties: false },
+  // Actual effects belong to the selected native operations, not this envelope.
+  annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+}];
+function controlArguments(name, args) {
+  const allowed = name === "core_runtime_tools" ? ["projectRoot", "names"] : name === "core_runtime_call" ? ["projectRoot", "calls"] : ["projectRoot"];
+  if (!object(args) || Object.keys(args).some(key => !allowed.includes(key))) throw new ConfigError("Invalid runtime control arguments");
+  if (args.names !== undefined && (!Array.isArray(args.names) || !args.names.length || args.names.length > 32 || args.names.some(name => typeof name !== "string" || !name) || new Set(args.names).size !== args.names.length))
+    throw new ConfigError("names must contain 1 to 32 unique native tool names");
+  if (name === "core_runtime_call" && (!Array.isArray(args.calls) || !args.calls.length || args.calls.length > 16 || args.calls.some(call => !object(call) || typeof call.name !== "string" || !call.name || !object(call.arguments) || Object.keys(call).some(key => !["name", "arguments"].includes(key)))))
+    throw new ConfigError("calls must contain 1 to 16 native tools with object arguments");
+}
+function checkAlias(params) {
+  if (component === "code-index" && Object.hasOwn(params.arguments || {}, "repo") && !boundAliases.has(params.arguments.repo))
+    throw new ConfigError("code-index alias is outside the selected project profile");
+}
+function validateNative(call) {
+  const tool = tools.find(tool => tool.name === call.name);
+  if (!tool || controlTools().some(tool => tool.name === call.name)) throw new ConfigError("Unknown native tool: " + call.name);
+  const schema = tool.inputSchema, key = stable(schema);
+  if (!nativeValidators.has(key)) {
+    const Compiler = /draft-07/.test(schema?.$schema || "") ? Ajv : Ajv2020;
+    nativeValidators.set(key, new Compiler({ allErrors: true, strict: false, ownProperties: true, validateFormats: false }).compile(schema));
+  }
+  const validate = nativeValidators.get(key);
+  if (!validate(call.arguments)) throw new ConfigError("Invalid native arguments for " + call.name + ": " + validate.errors.map(error => `${error.instancePath || "$"}: ${error.message}`).join("; "));
+  checkAlias(call);
+}
 async function dispatch(message) {
   if (!message || typeof message !== "object") return;
   const id = message.id,
@@ -321,6 +372,7 @@ async function dispatch(message) {
         };
       hostCapabilities = message.params?.capabilities || {};
       result.instructions = "For each new binding read core_runtime_status once for the selected project/instance and the native server instructions/capabilities. If selectedDirectory is empty, pass this chat's known local project directory as projectRoot to core_runtime_status; this binds only this connection. Do not restart chats or spawn substitute relays to repair empty roots. Reuse the contract until binding changes. Native tools and results retain their full schemas. Managed services require initial preparation in settings; profile inspection does not start them.";
+      result.instructions += " If the host catalogue lacks native tools, get their live definitions with core_runtime_tools (names limits the response), then use core_runtime_call with native name/arguments in calls. Pass the same chat projectRoot on these controls when host roots are empty. A short sequential calls batch preserves workspace registration and analysis in one process even on hosts with separate connections. Classify and authorize every native call by its schema/annotations and action policy; the envelope grants no permissions. Batches stop on the first failure, preserve prior results and are never automatically retried.";
       if (component === "bsl-ls")
         result.instructions +=
           "Use the assigned EDT-MCP to discover configuration project names and paths. Register the exact configuration directory with register_workspace_folder, then use file paths or the returned workspaceFolder URI to select its context. Several folders may remain registered; no active configuration is shared. Only directories inside the selected project binding are accepted.";
@@ -337,9 +389,10 @@ async function dispatch(message) {
     if (method === "ping") result = {};
     else {
       const previous = client;
-      if (method === "tools/call" && params.name === "core_runtime_status") {
+      const control = method === "tools/call" && controlTools().some(tool => tool.name === params.name);
+      if (control) {
         const args = params.arguments || {};
-        if (Object.keys(args).some(key => key !== "projectRoot")) throw new ConfigError("Unknown status argument");
+        controlArguments(params.name, args);
         if (rootsPending && args.projectRoot !== undefined) {
           let timer;
           try { await Promise.race([rootsReady, new Promise(resolve => { timer = setTimeout(resolve, 3000); })]); }
@@ -351,16 +404,14 @@ async function dispatch(message) {
         selected = selection.directory;
         if (selected !== previousDirectory) emit({ method: "notifications/tools/list_changed" });
       }
-      await ensureBinding(method !== "tools/list", true, COMPONENTS[component].kind === "remote" || !(method === "tools/call" && params.name === "core_runtime_status"));
+      // Status is the model's bootstrap when only this tool was discovered.
+      // Waiting for a host tools/list refresh here strands prepared services.
+      // bind() still enforces the project/instance preparation permission.
+      await ensureBinding(method !== "tools/list");
       if (pending.cancelled) throw new ConfigError("Request cancelled before dispatch; not executed");
       if (method === "tools/list") {
         if (client && client === previous) await refreshTools();
-        let visible = tools;
-        if (
-          !tools.some((tool) => tool.name === "core_runtime_status")
-        )
-          visible = [statusTool(), ...tools];
-        result = { tools: visible.length ? visible : [statusTool()] };
+        result = { tools: [...controlTools(), ...tools] };
       } else if (
         method === "tools/call" &&
         params.name === "core_runtime_status"
@@ -372,6 +423,8 @@ async function dispatch(message) {
           detail: lastError,
           selectedDirectory: selected,
           selectionSource: selection.source,
+          nativeToolCount: tools.length,
+          toolAccess: "Use core_runtime_tools for live schemas and core_runtime_call if native tools are absent from the host catalogue. Both accept this chat's projectRoot for empty host roots.",
         };
         {
           status.binding = bindingContext;
@@ -392,6 +445,40 @@ async function dispatch(message) {
           ],
           structuredContent: status,
         };
+      } else if (client && control && params.name === "core_runtime_tools") {
+        await refreshTools();
+        const names = params.arguments?.names;
+        if (names?.some(name => !tools.some(tool => tool.name === name))) throw new ConfigError("Requested native tool is not in the live server catalogue");
+        result = { content: [], structuredContent: { binding: bindingContext, tools: names ? tools.filter(tool => names.includes(tool.name)) : tools } };
+      } else if (client && control && params.name === "core_runtime_call") {
+        const owner = client, ownerBinding = bindingContext, epoch = generation, results = [];
+        for (const call of params.arguments.calls) {
+          let dispatched = false;
+          try {
+            if (pending.cancelled || client !== owner || epoch !== generation) throw new ConfigError("Runtime batch interrupted before the next call; completed calls were not rolled back");
+            await refreshNotifiedTools();
+            validateNative(call);
+            pending.client = owner;
+            diagnostic.event("native_request_started", { requestId: id, tool: call.name, projectRoot: selected });
+            dispatched = true;
+            const native = await owner.request("tools/call", { ...call, ...(params._meta ? { _meta: params._meta } : {}) }, { onId: value => { pending.upstreamId = value; } });
+            results.push({ name: call.name, result: native });
+            diagnostic.event("native_request_completed", { requestId: id, tool: call.name, projectRoot: selected, isError: Boolean(native.isError) });
+            if (call.name === "enable_toolset") toolsDirty = true;
+            if (native.isError) break;
+          } catch (error) {
+            diagnostic.event("native_request_failed", { requestId: id, tool: call.name, projectRoot: ownerBinding?.projectRoot, error }, "error");
+            results.push({ name: call.name, error: { message: error.message, outcome: dispatched ? "unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) } });
+            if (error instanceof RemoteSessionExpired) {
+              await disconnect(); currentRevision = null; lastError = error.message;
+            }
+            break;
+          }
+        }
+        const failed = Boolean(results.at(-1)?.error || results.at(-1)?.result?.isError);
+        result = { content: results.flatMap(entry => entry.result ? entry.result.content || [] : [{ type: "text", text: entry.error.message }]),
+          structuredContent: { binding: ownerBinding, results, completed: results.filter(entry => entry.result && !entry.result.isError).length, requested: params.arguments.calls.length },
+          ...(failed ? { isError: true } : {}) };
       } else if (client) {
         const keys = {
             "resources/list": "resources",
@@ -399,10 +486,7 @@ async function dispatch(message) {
             "prompts/list": "prompts",
           },
           key = keys[method];
-        if (component === "code-index" && method === "tools/call" && Object.hasOwn(params.arguments || {}, "repo")) {
-          if (!boundAliases.has(params.arguments.repo))
-            throw new ConfigError("code-index alias is outside the selected project profile");
-        }
+        if (method === "tools/call") checkAlias(params);
         pending.client = client;
         if (key) {
           try {

@@ -59,6 +59,22 @@ test("invalid profile shapes remain inspectable and host selection cannot be ove
   await assert.rejects(locked.call("settings.inspect", { projectRoot: f.state }), /закреплён/);
 });
 
+test("readiness inspection and operation polling return data without settings UI or runtime preparation", async t => {
+  const f = fixture(t); f.save();
+  const client = await unbound(t, f);
+  const tools = (await client.request("tools/list")).tools;
+  for (const name of ["settings.inspect", "settings.check", "settings.probe_connections", "settings.run_check", "settings.operation", "settings.create", "settings.load"])
+    assert.equal(tools.find(tool => tool.name === name)._meta.ui.resourceUri, undefined, name);
+  const checked = (await client.call("settings.check", { projectRoot: f.root })).structuredContent;
+  assert.equal(checked.profile.status, "loaded");
+  assert.deepEqual(checked.nextSteps, ["configure_connections", "prepare_managed_with_authorization"]);
+  assert.equal(checked.mode, undefined);
+  assert.equal((await client.call("settings.operation", {})).structuredContent.status, "idle");
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
+  const other = path.join(f.base, "other"); fs.mkdirSync(other);
+  await assert.rejects(client.call("settings.check", { projectRoot: other }), /закреплён/);
+});
+
 async function endpoint(t, root) {
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -123,7 +139,7 @@ test("explicit managed binding notifies discovery and honors the preparation gat
   const revision = client.tools_revision;
   await client.call("core_runtime_status", { projectRoot: f.root });
   assert.ok(client.tools_revision > revision);
-  assert.deepEqual((await client.request("tools/list")).tools.map(tool => tool.name), ["core_runtime_status"]);
+  assert.deepEqual((await client.request("tools/list")).tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   grant_preparation(f.state, f.root, ["code-index"]);
   assert.ok((await client.request("tools/list")).tools.some(tool => tool.name === "inspect"));

@@ -93,17 +93,16 @@ test("native client callbacks cross the relay while the original call is running
   f.clients.push(c);await c.initialize();
   const result=await c.call("ask_host",{});assert.equal(result.structuredContent.content.text,"callback answered");assert.equal(callbacks,1);
 });
-for (const failure of ["crash","malformed"]) test("a failed child is unavailable and subsequent discovery recovers: "+failure, async t=>{
+for (const failure of ["crash","malformed"]) test("status reconnects a failed prepared child without discovery: "+failure, async t=>{
   const f=fixture(t), c=await managed(t,f), pid=(await c.call("inspect",{})).structuredContent.pid;
   await assert.rejects(c.request("tools/call",{name:failure}),/exited|envelope/);
-  assert.equal((await c.call("core_runtime_status",{})).structuredContent.ready,false);
-  await c.request("tools/list");
+  assert.equal((await c.call("core_runtime_status",{})).structuredContent.ready,true);
   assert.notEqual((await c.call("inspect",{})).structuredContent.pid,pid);
 });
 test("reading a profile cannot provision managed runtimes before initial preparation",async t=>{
   const f=fixture(t),c=await managed(t,f,false);
   assert.equal((await c.call("core_runtime_status",{})).structuredContent.ready,false);
-  assert.deepEqual((await c.request("tools/list")).tools.map(x=>x.name),["core_runtime_status"]);
+  assert.deepEqual((await c.request("tools/list")).tools.map(x=>x.name),["core_runtime_status","core_runtime_tools","core_runtime_call"]);
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   grant_preparation(f.state,f.root,["code-index"]);
   assert.ok((await c.request("tools/list")).tools.some(x=>x.name==="inspect"));
@@ -112,7 +111,7 @@ test("disabled components neither require preparation nor launch a child",async 
   const f=fixture(t);dump({mcp:{managed:{"code-index":{enabled:false}}}},f.env.EDT_AI_SETTINGS);
   const c=await managed(t,f,false);
   assert.match((await c.call("core_runtime_status",{})).structuredContent.detail,/отключён/);
-  assert.deepEqual((await c.request("tools/list")).tools.map(x=>x.name),["core_runtime_status"]);
+  assert.deepEqual((await c.request("tools/list")).tools.map(x=>x.name),["core_runtime_status","core_runtime_tools","core_runtime_call"]);
 });
 test("profile compatibility is checked against core semantics independently of format",t=>{
   const f=fixture(t);f.profile.compatibility.core=">=99.0.0";assert.throws(()=>validate(f.profile),/running/);

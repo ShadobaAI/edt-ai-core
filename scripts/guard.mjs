@@ -14,6 +14,18 @@ export function* strings(value) {
 }
 const escapeRE = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export function reason(event) {
+  if (/(?:^|__|\.)core_runtime_call$/.test(String(event.tool_name || ""))) {
+    const args = event.tool_input;
+    if (!args || !Array.isArray(args.calls) || !args.calls.length || args.calls.length > 16)
+      return "Invalid native runtime call envelope";
+    for (const call of args.calls) {
+      if (!call || typeof call.name !== "string" || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments) || call.name === "core_runtime_call")
+        return "Invalid native runtime call envelope";
+      const denied = reason({ ...event, tool_name: String(event.tool_name).replace(/core_runtime_call$/, call.name), tool_input: call.arguments });
+      if (denied) return denied;
+    }
+    return null;
+  }
   const cwd = resolve(
     event.cwd || process.env.EDT_AI_PROJECT_ROOT || process.cwd(),
   );

@@ -137,14 +137,20 @@ test("chat profile tools discover the selected profile and preserve instructions
   assert.equal((await client.call("settings.profile", {})).structuredContent.profile.status, "missing");
   assert.ok(!fs.existsSync(path.join(f.root, ".ai")));
   fs.writeFileSync(path.join(f.root, "AGENTS.md"), "Existing project rules\n");
+  fs.writeFileSync(path.join(f.root, "AGENTS.override.md"), "Override project rules\n");
   await client.call("settings.update", { set: { edtUrl: "http://localhost:18111/mcp" } });
   const created = (await client.call("settings.create", {})).structuredContent;
   assert.equal(created.profile.status, "loaded");
+  assert.deepEqual(created.projectInstructions, {
+    created: [".ai/PROJECT.md"], preserved: ["AGENTS.override.md", "AGENTS.md"], contentValidated: false,
+    overrideFile: "AGENTS.override.md",
+  });
   assert.equal(created.values.edtUrl, "http://localhost:18111/mcp");
   assert.match(created.sessionGuidance, /сообщите агенту путь к его папке/);
   assert.match(created.sessionGuidance, /«Проверить готовность»/);
   assert.doesNotMatch(created.sessionGuidance, /selectedDirectory|projectRoot|core_runtime_status|roots/);
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), "Existing project rules\n");
+  assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.override.md"), "utf8"), "Override project rules\n");
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
   const profileFile = path.join(f.root, ".ai/project.yaml"), before = fs.readFileSync(profileFile);
   await assert.rejects(client.call("settings.create", {}), /already exists/);
@@ -152,6 +158,7 @@ test("chat profile tools discover the selected profile and preserve instructions
   const token = path.join(f.state, "projects");
   assert.ok(fs.existsSync(token));
   const loaded = (await client.call("settings.load", {})).structuredContent;
+  assert.equal(loaded.projectInstructions, undefined);
   assert.equal(loaded.reload, "requested");
   assert.equal(loaded.readiness, "not_checked");
   assert.deepEqual(fs.readFileSync(profileFile), before);
@@ -159,6 +166,15 @@ test("chat profile tools discover the selected profile and preserve instructions
   for (const name of ["settings.load", "settings.create"])
     await assert.rejects(client.call(name, { projectRoot: other }), /текущим чатом/);
   assert.ok(!fs.existsSync(path.join(other, ".ai")));
+});
+
+test("MCP creation rejects instruction directories without creating a profile or reconnect signal", async (t) => {
+  const f = fixture(t), client = await session(t, "mcp/settings.mjs", [], f);
+  fs.mkdirSync(path.join(f.root, "AGENTS.override.md"));
+  await assert.rejects(client.call("settings.create", {}), /must be a regular file/);
+  assert.ok(!fs.existsSync(path.join(f.root, ".ai")));
+  assert.ok(!fs.existsSync(reconnect_file(f.state, f.root)));
+  assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "missing");
 });
 
 test("existing and invalid profiles are visible without importing or starting services", async (t) => {
@@ -192,6 +208,9 @@ test("SessionStart discovers profile data without writes and stops at nested Git
   const sub = path.join(f.root, "docs");fs.mkdirSync(sub);
   const run = (cwd, env = { ...f.env, EDT_AI_PROJECT_ROOT: "" }) => success(node("hooks/session-start.mjs", [], { env, input: JSON.stringify({ cwd, source: "startup" }) })).hookSpecificOutput.additionalContext;
   assert.match(run(sub), /"status":"loaded"/);
+  assert.match(run(sub), /Use settings\.inspect once/);
+  assert.match(run(sub), /Open settings UI only on an explicit user request/);
+  assert.doesNotMatch(run(sub), /Use settings\.profile|Use settings\.load|restart Codex/);
   assert.ok(!fs.existsSync(f.env.EDT_AI_SETTINGS));
   fs.mkdirSync(path.join(sub, ".git"));
   assert.match(run(sub), /"status":"missing"/);
@@ -269,6 +288,9 @@ test("one global Settings app opens without a duplicate native section, chat or 
   assert.deepEqual(action._meta.ui.visibility, ["app"]);
   assert.deepEqual(tools.find(tool => tool.name === "settings.profile")._meta["openai/ui"].entrypoints, [{ type: "thread" }]);
   assert.deepEqual(action.inputSchema.properties, {});
+  assert.deepEqual(tools.filter(tool => tool._meta?.ui?.resourceUri).map(tool => tool.name).sort(),
+    ["settings.export", "settings.import", "settings.open", "settings.profile"]);
+  assert.match(tools.find(tool => tool.name === "settings.profile").description, /only on an explicit user request/);
   const opened = (await client.call(action.name, {})).structuredContent;
   assert.equal(opened.mode, "profile");
   assert.equal(opened.navigation, "profiles");

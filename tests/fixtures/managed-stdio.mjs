@@ -22,13 +22,17 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     discoveries++;
     const names = params.cursor
       ? ["tail"]
-      : ["inspect", ...(changed ? ["later"] : [])];
+      : ["inspect", ...(process.env.FIXTURE_BSL_WORKSPACES ?
+        ["register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder", "analyze_workspace"] : []),
+        ...(process.env.FIXTURE_RUNTIME_BATCH ? ["fail", "rpc_fail", "slow"] : []), ...(changed ? ["later"] : [])];
     result = {
       tools: names.map((name) => ({
         name,
         inputSchema: {
+          ...(process.env.FIXTURE_RUNTIME_BATCH && name === "inspect" ? { $schema: "http://json-schema.org/draft-07/schema#" } : {}),
           type: "object",
-          properties: { change: { type: "boolean" } },
+          properties: { change: { type: "boolean" }, ...(name === "analyze_workspace" ? { workspaceFolder: { type: "string" } } : {}) },
+          ...(name === "analyze_workspace" ? { required: ["workspaceFolder"] } : {}),
         },
         outputSchema: { type: "object" },
         annotations: { readOnlyHint: true },
@@ -36,6 +40,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       ...(!params.cursor ? { nextCursor: "tail" } : {}),
     };
   } else if (message.method === "tools/call") {
+    if (params.name === "rpc_fail") { emit({ id: message.id, error: { code: -32002, message: "native RPC failure" } }); return; }
+    if (params.name === "fail") { emit({ id: message.id, result: { content: [{ type: "text", text: "native failure" }], structuredContent: { nativeError: true }, isError: true } }); return; }
     if (params.name === "crash") { process.exit(7); return; }
     if (params.name === "malformed") { console.log("null"); return; }
     if (params.name === "ask_host") { callbackRequest=message.id; emit({id:"fixture-host-callback",method:"sampling/createMessage",params:{messages:[],maxTokens:10}}); return; }

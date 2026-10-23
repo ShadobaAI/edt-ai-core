@@ -13,7 +13,7 @@ import {
   operation_lock,
   validate_settings,
 } from "../scripts/common.mjs";
-import { validate, validate_at, project_profile } from "../scripts/profile.mjs";
+import { validate, validate_at, project_profile, create_profile } from "../scripts/profile.mjs";
 import {
   locate_project,
   configuration_root,
@@ -30,6 +30,96 @@ import { casefold } from "../scripts/casefold.mjs";
 
 test("Unicode state-key case folding preserves the former Python contract", () => {
   assert.equal(casefold("Straße ẞ Σς ﬃ İ"), "strasse ss σσ ffi i\u0307");
+});
+
+test("new profile reports starter instructions without claiming content acceptance", (t) => {
+  const f = fixture(t);
+  const created = create_profile(f.root);
+  assert.deepEqual(created.projectInstructions, {
+    created: [".ai/PROJECT.md", "AGENTS.md"], preserved: [], contentValidated: false,
+  });
+  const agents = fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8");
+  assert.match(agents, /\$1c-routing/);
+  assert.match(agents, /Правила проекта требуют заполнения/);
+  assert.match(agents, /Неизвестные правила не придумывай/);
+  assert.deepEqual(project_profile(f.root).repositories, []);
+  assert.deepEqual(fs.readdirSync(f.state), []);
+  assert.deepEqual(fs.readdirSync(f.root).sort(), [".ai", "AGENTS.md", "src"]);
+  assert.throws(() => create_profile(f.root), /already exists/);
+  assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), agents);
+});
+
+test("profile creation preserves existing instructions byte for byte and fills only missing files", (t) => {
+  for (const preserved of [["AGENTS.md"], [".ai/PROJECT.md"], ["AGENTS.md", ".ai/PROJECT.md"]]) {
+    const f = fixture(t);
+    const bytes = Buffer.from("\uFEFF# Собственные правила\r\nНе заменять.\r\n");
+    for (const name of preserved) {
+      fs.mkdirSync(path.dirname(path.join(f.root, name)), { recursive: true });
+      fs.writeFileSync(path.join(f.root, name), bytes);
+    }
+    const result = create_profile(f.root).projectInstructions;
+    assert.deepEqual([...result.preserved].sort(), [...preserved].sort());
+    assert.deepEqual(result.created.sort(), [".ai/PROJECT.md", "AGENTS.md"].filter(name => !preserved.includes(name)).sort());
+    assert.equal(result.contentValidated, false);
+    for (const name of preserved) assert.deepEqual(fs.readFileSync(path.join(f.root, name)), bytes);
+  }
+});
+
+test("unsafe supporting paths reject profile creation before any writes", (t) => {
+  const f = fixture(t), outside = path.join(f.base, "outside");
+  fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(f.root, ".ai"), process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => create_profile(f.root));
+  assert.deepEqual(fs.readdirSync(outside), []);
+  assert.ok(!fs.existsSync(path.join(f.root, "AGENTS.md")));
+});
+
+for (const name of ["AGENTS.md", ".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.override.md"]) {
+  test(`profile creation rejects a directory at ${name} without partial writes`, (t) => {
+    const f = fixture(t), file = path.join(f.root, name);
+    fs.mkdirSync(file, { recursive: true });
+    const before = fs.readdirSync(f.root);
+    assert.throws(() => create_profile(f.root), /must be a regular file/);
+    assert.deepEqual(fs.readdirSync(f.root), before);
+    assert.ok(fs.statSync(file).isDirectory());
+    assert.deepEqual(fs.readdirSync(file), []);
+    assert.ok(!fs.existsSync(path.join(f.root, ".ai/project.yaml")));
+    assert.deepEqual(fs.readdirSync(f.state), []);
+    if (fs.existsSync(path.join(f.root, ".ai")))
+      assert.deepEqual(fs.readdirSync(path.join(f.root, ".ai")), [path.basename(name)]);
+  });
+
+  test(`profile creation rejects an escaping junction at ${name} before writes`, (t) => {
+    const f = fixture(t), outside = path.join(f.base, "outside"), file = path.join(f.root, name);
+    fs.mkdirSync(outside);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.symlinkSync(outside, file, process.platform === "win32" ? "junction" : "dir");
+    assert.throws(() => create_profile(f.root), /escapes project/);
+    assert.deepEqual(fs.readdirSync(outside), []);
+    assert.ok(!fs.existsSync(path.join(f.root, ".ai/project.yaml")));
+  });
+}
+
+test("profile creation preserves overrides and reports precedence only for non-empty ones", (t) => {
+  for (const text of ["\uFEFF# Правила override\r\nСохранить.\r\n", "\uFEFF \r\n"]) {
+    const f = fixture(t), file = path.join(f.root, "AGENTS.override.md"), bytes = Buffer.from(text);
+    fs.writeFileSync(file, bytes);
+    const result = create_profile(f.root).projectInstructions;
+    assert.deepEqual(result.created, [".ai/PROJECT.md", "AGENTS.md"]);
+    assert.deepEqual(result.preserved, ["AGENTS.override.md"]);
+    assert.equal(result.overrideFile, text.trim() ? "AGENTS.override.md" : undefined);
+    assert.equal(result.contentValidated, false);
+    assert.deepEqual(fs.readFileSync(file), bytes);
+    assert.ok(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8").includes("$1c-routing"));
+  }
+});
+
+test("profile creation preserves an existing local ignore file byte for byte", (t) => {
+  const f = fixture(t), file = path.join(f.root, ".ai/.gitignore"), bytes = Buffer.from("\uFEFFcustom-rule\r\n");
+  fs.mkdirSync(path.dirname(file));
+  fs.writeFileSync(file, bytes);
+  create_profile(f.root);
+  assert.deepEqual(fs.readFileSync(file), bytes);
 });
 
 test("profile init/export/import/merge/no-clobber/backups preserve the full profile", (t) => {
@@ -355,12 +445,15 @@ test("guard rejects reads, writes, patches, traversal, broad discovery, shell an
     ["exec_command", { cmd: "node -v", workdir: "." }],
     ["exec", { code: "tools.exec_command(...)" }],
     ["mcp__code_index.search", { repo: "foreign" }],
+    ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: { repo: "product" } }, { name: "search", arguments: { repo: "foreign" } }] }],
+    ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: null }] }],
   ])
     assert.ok(reason({ cwd: f.root, tool_name, tool_input }), tool_name);
   for (const [tool_name, tool_input] of [
     ["Read", { path: "docs/a.md" }],
     ["mcp__edt.read", { path: "src/a.bsl" }],
     ["mcp__code_index.search", { repo: "product" }],
+    ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: { repo: "product" } }] }],
     ["exec_command", { cmd: "node -v", workdir: "docs" }],
   ])
     assert.equal(

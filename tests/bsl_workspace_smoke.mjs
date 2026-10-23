@@ -105,6 +105,14 @@ export async function run(jar, java = "java", node = process.execPath) {
         .length,
       1,
     );
+    const sharedFolders = ["Общие правила А", "Общие правила Б"].map(name => path.join(first, name));
+    for (const folder of sharedFolders) {
+      const file = path.join(folder, "Модуль.bsl");
+      fs.mkdirSync(folder);
+      fs.writeFileSync(file, "Процедура Ошибка(\n");
+      await one.call("register_workspace_folder", { path: folder });
+      assert.ok(body(await one.call("analyze_file", { file })).diagnosticsCount > 0);
+    }
     await one.close();
     await two.call("document_symbols", {
       file: path.join(other, "Модуль.bsl"),
@@ -119,10 +127,17 @@ export async function run(jar, java = "java", node = process.execPath) {
       ).diagnosticsCount,
       0,
     );
+    // One explicit file also covers multiple workspaces without local copies.
+    for (const folder of sharedFolders) {
+      const file = path.join(folder, "Модуль.bsl");
+      await three.call("register_workspace_folder", { path: folder });
+      assert.equal(body(await three.call("analyze_file", { file })).diagnosticsCount, 0);
+      assert.ok(!fs.existsSync(path.join(folder, ".bsl-language-server.json")));
+    }
     return {
       status: "passed",
       scope:
-        "native_registration_switching_unicode_workspace_and_explicit_configuration_parallel_sessions",
+        "native_registration_switching_unicode_workspace_and_shared_configuration_without_copies_parallel_sessions",
     };
   } finally {
     for (const client of clients) await client.close();

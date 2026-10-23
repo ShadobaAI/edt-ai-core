@@ -480,7 +480,17 @@ for(const key of modes){
   });
 }
 for(const[action,button]of [["create","createButton"],["load","loadButton"]])$(button).onclick=()=>busy(action==="create"?"Создаём профиль…":"Загружаем профиль…",async()=>{
-  const result=await tool("settings."+action,{projectRoot:$("projectRoot").value.trim()});await refresh();readinessUnknownRetries=0;readinessPending=true;notice((action==="create"?"Профиль создан. Настройте репозитории в .ai/project.yaml. ":"Профиль загружен. ")+(result.sessionGuidance||""));
+  const result=await tool("settings."+action,{projectRoot:$("projectRoot").value.trim()});await refresh();readinessUnknownRetries=0;readinessPending=true;
+  const messages=[action==="create"?"Профиль создан. Настройте репозитории в .ai/project.yaml.":"Профиль загружен."];
+  if(action==="create"){
+    const instructions=result.projectInstructions;
+    if(instructions?.created?.length)messages.push("Созданы стартовые инструкции: "+instructions.created.join(", ")+".");
+    if(instructions?.preserved?.length)messages.push("Сохранены без изменений: "+instructions.preserved.join(", ")+".");
+    if(instructions?.overrideFile)messages.push("Непустой AGENTS.override.md имеет приоритет над AGENTS.md в этой папке.");
+    messages.push("Попросите агента проверить и дополнить правила команды в действующем файле инструкций. Готовность сервисов не подтверждает полноту этих правил.");
+  }
+  if(result.sessionGuidance)messages.push(result.sessionGuidance);
+  notice(messages.join(" "));
 }).catch(()=>{});
 $("saveButton").onclick=()=>busy("Сохраняем подключения…",async()=>{
   const set={};

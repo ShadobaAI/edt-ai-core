@@ -1,6 +1,6 @@
 ---
 name: edt-ai-core
-description: Guide users through 1C AI Core setup in chat, configure connections, initialize or transfer project profiles, and diagnose managed MCP runtimes.
+description: Guide users through 1C AI Core setup in chat, create or review project AGENTS.md, configure connections, initialize or transfer project profiles, and diagnose managed MCP runtimes.
 ---
 
 # 1C AI Core setup
@@ -9,6 +9,10 @@ description: Guide users through 1C AI Core setup in chat, configure connections
 
 Use settings.inspect as the primary chat setup interface. Native/manual settings
 use the same backend. Do not require a form, YAML knowledge or a technical questionnaire.
+Open a settings form only on an explicit user request about viewing, creating,
+changing, importing or exporting a profile/settings. A request to analyze code,
+test BSL LS or diagnose a runtime does not authorize opening settings UI.
+settings.inspect/check and settings.operation return data without a form.
 Discover this installed plugin's tools first; a loaded skill alone does not prove
 its MCP is connected. If inspect is unavailable but settings.read exists, read once.
 If both are absent, diagnose the local executor/settings-server startup evidence;
@@ -20,7 +24,11 @@ another chat before correcting the actual connection problem.
    the plugin source repository as a 1C project. Ask for a folder only when the
    current chat's directory is genuinely unknown. Ambiguous/error host roots
    must be resolved in Codex; they cannot be overridden by an argument.
-2. Read project AGENTS.md and .ai/PROJECT.md once when present. Reuse the snapshot's
+2. Reuse project instructions already supplied in this chat; read missing relevant
+   context from .ai/PROJECT.md and linked rules once. Before editing, obtain the
+   current text of each target file; do not reread whole documents just for preflight.
+   Check applicable AGENTS.override.md and nested instructions as described in
+   [project instructions](references/project-instructions.md). Reuse the snapshot's
    profile status, coreVersion/compatibility, mappings, detected EDT names/port,
    effective connection sources, preparation authorization and nextSteps.
    An already loaded profile needs no settings.profile or settings.load preflight.
@@ -34,6 +42,11 @@ another chat before correcting the actual connection problem.
 - Create a missing generic profile with settings.create under the user's setup
   request. Never replace an existing profile to repair it. A template still needs
   explicit repository mappings before development.
+- When creating a profile or asked to create/review project AGENTS.md, follow
+  [project instructions](references/project-instructions.md). Creation returns
+  projectInstructions.created/preserved with contentValidated=false; finish the
+  project-specific rules from confirmed facts and preserve existing instructions.
+  A valid profile or ready environment does not prove those rules are complete.
 - For an invalid existing profile, settings.edit returns its repairable document
   and baseRevision. Use that document and the validation detail from inspect;
   do not reverse-engineer scripts or export/read the profile repeatedly.
@@ -51,6 +64,10 @@ another chat before correcting the actual connection problem.
 - Inspect once after the final save to verify effective values and sources.
   Do not reload after apply/update unless the response identifies a real need.
 
+For an analyzer configuration task, read only the configuration paragraph in
+[$bsl-ls-mcp](../bsl-ls-mcp/SKILL.md). Shared workspace settings use one explicit
+file; do not duplicate identical JSON files across configuration directories.
+
 ## Verify without repeated probes
 
 - Call settings.probe_connections once for configured EDT/v8std. It verifies
@@ -66,7 +83,15 @@ another chat before correcting the actual connection problem.
 - Check only necessary chat relays. If their selectedDirectory is empty, pass this
   chat's known projectRoot to each relay's core_runtime_status once. This binds
   only that MCP session and preserves host/environment locks and other chats.
-  Settings-form selection does not bind other MCP sessions. Do not spawn shell
+  For prepared managed services, this call connects the scoped process and
+  publishes its native tools under the existing preparation permission. It does
+  not require a prior tool-list refresh or another full settings.run_check.
+  Settings-form selection does not bind other MCP sessions. If the host keeps
+  the initial catalogue, use core_runtime_tools for
+  live schemas and core_runtime_call for a bounded sequential calls batch.
+  Supply the same chat projectRoot when host roots are empty. Native permissions,
+  source workflow and action policy apply to every call; group BSL registration
+  and file analysis when the host uses separate connections. Do not spawn shell
   relays, change global selection or recommend new chats/restarts for empty roots.
 - Preserve native server instructions/capabilities returned by a new binding and
   reuse them. A project still building needs a later readiness check, not a new

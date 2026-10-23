@@ -118,7 +118,7 @@ export function interactiveParameters(profile, source = profile.runtime.paramsFi
   }
   return { ...source,
     "ВыполнитьСценарии": false, "ЗавершитьРаботуСистемы": false,
-    "ИспользоватьКомпонентуVanessaExt": true, "ИспользоватьРедакторVanessaEditor": true,
+    "ИспользоватьКомпонентуVanessaExt": true,
     "ИскатьЭлементыФормыПоИмени": true, "КаталогПроекта": profile.projectRoot, "КаталогФич": profile.features,
     "КаталогВыгрузкиJUnit": path.join(profile.results, "junit"), "КаталогВыгрузкиAllure": path.join(profile.results, "allure"),
     "КаталогВыгрузкиСкриншотов": path.join(profile.results, "screenshots") };
@@ -149,7 +149,7 @@ export function checkFiles(profile) {
     const params = readJson(profile.runtime.paramsFile);
     // Opt-in interactive settings are supplied separately; CI auto-run/exit is forbidden.
     if (params["ВыполнитьСценарии"] !== false || params["ЗавершитьРаботуСистемы"] !== false ||
-        params["ИспользоватьКомпонентуVanessaExt"] !== true || params["ИспользоватьРедакторVanessaEditor"] !== true) fail("interactive params must explicitly disable run/exit and enable VanessaExt/Editor");
+        params["ИспользоватьКомпонентуVanessaExt"] !== true) fail("interactive params must explicitly disable run/exit and enable VanessaExt");
     interactiveParameters(profile, params);
   }
 }
