@@ -6,6 +6,10 @@ description: Design, review, author, research, record, run or debug Vanessa Gher
 # Vanessa UI tests
 
 ## Binding и знания
+Применяй knowledge mode и source roles из $1c-routing; при выборе новых steps/
+механизмов и проверке diff — общие контроли reuse/достаточности. Authoring,
+review и execution не взаимозаменяемы. Разрешение менять UI-тест не разрешает
+менять product source или framework, а failure run не даёт права исправлять их.
 
 Проверь `testing.vanessa` и `testing.vanessa_config`: test `repository_id`,
 `features`, `results`, `runtime_profile` и `server_name`. Для runtime-операций

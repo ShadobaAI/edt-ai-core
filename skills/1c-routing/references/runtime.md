@@ -1,6 +1,10 @@
 # Runtime launch и breakpoints
+Применяй knowledge mode и доступность capabilities из [routing](../SKILL.md).
+Читай только нужный раздел launch/debug/profiling и живой guide выбранной
+операции; полный обход runtime и специализированных EDT-маршрутов не требуется.
 
-Сверь live guides `launch`, `set_breakpoint`, `set_error_breakpoint`. По общей
+Сверь live guide выбранного действия: `launch` для запуска, `set_breakpoint`
+или `set_error_breakpoint` — только при соответствующей настройке. По общей
 [action policy](action-policy.md) используй уже согласованный target и реальные
 effects; изменение исходника не разрешает запуск/изменение ИБ.
 

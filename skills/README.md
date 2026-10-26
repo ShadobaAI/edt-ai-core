@@ -35,6 +35,36 @@ Review EDT documentation coverage and the planned BSP knowledge/OpenViking
 replacement separately; excluding legacy servers does not establish replacement
 readiness or complete the remaining reconciliation.
 
+## Локальная сверка принятых решений
+
+Сверка универсального поведения ограничена принятыми `migration_decisions`.
+Она подтверждает текущие исходники и изолированные проверки клиента, не полную
+историческую паритетность исходных окружений, реальные JAR/EDT/v8std и развёртывание.
+Поэтому `migration_acceptance` сохраняет отдельный незакрытый detailed-parity scope,
+а `accepted_decisions_local_acceptance` относится только к следующей таблице.
+
+| Принятое решение | Текущий механизм и локальные проверки |
+| --- | --- |
+| project-profiles-outside-plugin | Только generic-профиль; `profile.mjs`, package allowlist; tests/test-profiles.mjs |
+| bsl-native-multi-workspace | Native workspace API, session JVM/registrations, optional config; tests/test-bsl-ls-proxy.mjs |
+| platform-documentation-edt-only | Назначенный EDT и platform-docs, Help исключён из registry/схем/маршрутов |
+| bsp-documentation-without-ssl-mcp | SSL-MCP исключён; selected knowledge и index/live roles, tests/test-knowledge.mjs |
+| project-defined-supplier-maintenance | Общий ownership workflow и project instructions без фиксированных префиксов; tests/test-profiles.mjs |
+| edt-model-gate-recovery | Exact pre-write refusal, bounded recovery и отдельный cleanup scope; ревью инструкций edt-recovery.md, без заявления fixture/live-проверки самого recovery |
+| selected-directory-and-instance-profile | Независимые root/instance/session и overrides; tests/test-profile-settings.mjs, tests/test-setup.mjs |
+| edt-capability-driven-efficiency | Live schemas, toolsets и core_runtime bridge без pinned catalogue; tests/test-remote.mjs |
+| v8std-capability-driven-efficiency | Общий read-only сервер, bounded retrieval, отдельные contexts/ledgers; tests/test-setup.mjs, tests/test-policy.mjs |
+
+Точные правила принадлежат связанным навыкам и runtime, таблица их не дублирует.
+Routing владеет knowledge/source gates, code-index — reuse, code-change — risk,
+sufficiency и writer lifecycle, standards — нормативными фазами, action policy —
+effects/авторизацией. Остальные сценарии применяют эти правила по необходимости,
+а не требуют загрузить все связанные skills/references заново.
+Пути `tests/` указаны от корня dev-checkout; эти dev-проверки не входят в ZIP.
+Проектные mappings, endpoints, credentials, формат маркировки и local exports
+не переносятся из исходных окружений в ядро. Состав готовой поставки и live
+приёмка проверяются отдельно; отсутствие исключённых серверов не является пробелом.
+
 Shared mutation safety is maintained in [1c-code-change](1c-code-change/SKILL.md)
 and its [EDT editing contracts](1c-code-change/references/edt-editing.md):
 scoped pre/post EDT diagnostics, source guards,

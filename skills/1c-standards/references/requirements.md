@@ -95,6 +95,8 @@ query validation и поведенческие tests остаются самос
 живому контракту policy; неизменные подтверждённые контракты и тексты используй
 повторно. Не делай повторный полный обход MCP/корпуса, если нового основания нет.
 
+## YaXUnit
+
 Для YaXUnit authoring дополнительно select_yaxunit_requirements с фактическими
 test mechanisms и применимыми additions → точные v8std patterns → тот же
 ledger/phase контракт через полный validate_compliance. Это отдельный selection

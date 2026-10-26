@@ -21,6 +21,7 @@ active:
   - vanessa-ui-tests
   - 1c-branch-review
 migration_acceptance: pending_detailed_behavior_reconciliation
+accepted_decisions_local_acceptance: source_and_fixture_verified
 migration_decisions:
   project-profiles-outside-plugin:
     status: accepted

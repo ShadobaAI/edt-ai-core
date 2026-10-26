@@ -6,6 +6,10 @@ description: Design, author, review, run and debug YaXUnit tests, registration, 
 # YaXUnit tests
 
 ## Binding и authority
+Применяй knowledge mode/source roles из $1c-routing и общие контроли
+reuse/достаточности. Выбери design/review, authoring либо execution по поручению: результат
+запуска не разрешает правку продукта, тестов или framework. Владение этими тремя
+областями и разрешённые эффекты проверяются отдельно.
 
 Проверь `testing.yaxunit` и `testing.yaxunit_config`. `repository_id` задаёт
 владельца тестового расширения и его `edt_project`; aliases берутся из

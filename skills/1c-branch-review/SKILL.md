@@ -7,6 +7,9 @@ description: Review a 1C branch diff with the assigned EDT authority and profile
 
 Resolve repository and exact base/target refs from the task and selected profile.
 Read [the branch workflow](references/workflow.md), then choose its mode:
+Apply `$1c-routing` knowledge gates and source roles to this review, including
+historical revisions. A current API card/index/live model does not establish
+the reviewed revision; use evidence tied to its exact SHA and context.
 
 - **Read-only** by default: compare existing revisions without changing HEAD,
   saving the model, committing, fetching or deleting refs. No remote is required
@@ -22,6 +25,8 @@ required only for model-dependent calls. Record exact SHAs and evidence limits.
 
 Use $1c-code-change for change-focused analysis and $1c-standards for applicable
 norms. Inspect contracts and affected callers using the profile's index alias.
+Assess reuse and sufficient complexity on the actual diff through the shared
+controls; findings do not authorize modernization or implementation.
 Report actionable defects with precise targets and verification gaps.
 Do not infer that passing tests proves standards compliance.
 
