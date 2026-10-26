@@ -8,7 +8,7 @@ import { sha256 } from "../scripts/project_paths.mjs";
 import { validate, validate_at, project_profile } from "../scripts/profile.mjs";
 import { fixture, environment, node } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { validate_manifest, validate_material, validate_publication_receipt, parse_material, load_manifest, search_requirements, SEARCH_REQUIREMENTS } from "../scripts/knowledge.mjs";
+import { validate_manifest, validate_material, validate_publication_receipt, parse_material, load_manifest, search_requirements, SEARCH_REQUIREMENTS, publication_inventory } from "../scripts/knowledge.mjs";
 
 const manifest = () => ({ schema_version: "0.1", kind: "catalog", provider: "openviking",
   collections: [{ id: "architecture", description: "Architecture" }], materials: [] });
@@ -20,8 +20,11 @@ const card = () => ({ ...material(), kind: "api_card", status: "confirmed", inte
   recommended_api: "ExampleModule.ExampleMethod", recommendation: "use", when_to_use: ["Within the reviewed scope"],
   when_not_to_use: ["Outside the reviewed scope"], contract: "Argument: value; result: value; no persistent effects.",
   context: ["Server; caller has read access"], verification_ref: "https://example.org/reviews/1", verified_at: "2026-10-24" });
-const receipt = () => ({ schema_version: "0.1", provider: "openviking", server: { endpoint: "https://example.org/mcp", scope: "team" },
+const receipt = () => ({ schema_version: "0.2", provider: "openviking", server: { endpoint: "https://example.org/mcp", scope: "team" },
   collections: ["architecture"], publication_revision: "b".repeat(40), manifest_sha256: "a".repeat(64), index_revision: "snapshot-1",
+  collection_snapshots: [{ ...publication_inventory(manifest(), ["architecture"])[0], root: "viking://resources/team/architecture" }],
+  verification: { git_manifest: "matched_committed_bytes", index_contents: "exact_active_manifest", excluded_materials: "absent",
+    deleted_materials: "absent", changed_materials: "matched", delivery: "immutable_endpoint", deployment_id: "fixture-deployment" },
   verified_at: "2026-10-24T08:00:00Z", expires_at: "2026-10-25T08:00:00Z", evidence_ref: "https://example.org/publications/1" });
 const profile = () => {
   const data = load(path.join(ROOT, "profiles/generic-1c/profile.yaml"));
@@ -215,7 +218,7 @@ test("versioned contracts reject missing, legacy, future and incorrectly typed v
     ["version", load(path.join(ROOT, "settings/defaults.json")), validate_settings, "0.1.0"],
     ["schema_version", manifest(), validate_manifest, "0.1"],
     ["schema_version", material(), validate_material, "0.1"],
-    ["schema_version", receipt(), validate_publication_receipt, "0.1"],
+    ["schema_version", receipt(), validate_publication_receipt, "0.2"],
   ];
   for (const [field, data, check, expected] of cases) {
     check(data);
@@ -244,6 +247,34 @@ test("publication receipt is a strict declaration tied to server, scope, manifes
     { collections: ["architecture", "architecture"] }, { index_revision: " " }, { verified_at: "2026-02-29T08:00:00Z" },
     { expires_at: "2026-10-24T08:00:00Z" }, { expires_at: "2026-10-23T08:00:00Z" }, { evidence_ref: "file:///C:/receipt" }])
     assert.throws(() => validate_publication_receipt({ ...receipt(), ...patch }));
+});
+
+test("publication inventory covers exact selected active sets, independently of catalog ordering", () => {
+  const data = manifest(); data.collections.push({ id: "empty", description: "Empty" });
+  data.materials = [entry(), { ...entry(), id: "second", path: "docs/second.md", sha256: "b".repeat(64) }];
+  const inventory = publication_inventory(data, ["empty", "architecture"]);
+  assert.equal(inventory[0].material_count, 2);
+  assert.equal(inventory[1].materials_sha256, sha256("[]"));
+  assert.deepEqual(publication_inventory({ ...data, materials: [...data.materials].reverse() }, ["architecture", "empty"]), inventory);
+  for (const materials of [[], data.materials.slice(0, 1), data.materials.map(item => ({ ...item, sha256: "c".repeat(64) }))])
+    assert.notDeepEqual(publication_inventory({ ...data, materials }, ["architecture", "empty"]), inventory);
+  const valid = receipt();
+  for (const patch of [{ collection_snapshots: [] }, { collection_snapshots: [valid.collection_snapshots[0], valid.collection_snapshots[0]] },
+    { collection_snapshots: [{ ...valid.collection_snapshots[0], root: "viking://resources/team/../private" }] },
+    { verification: { ...valid.verification, index_contents: "partial" } }, { verification: { ...valid.verification, delivery: "mutable_endpoint" } }])
+    assert.throws(() => validate_publication_receipt({ ...valid, ...patch }));
+});
+
+test("plugin release, knowledge Git revision and material edition remain independent", () => {
+  const published = receipt();
+  for (const field of ["publication_revision", "git_commit", "plugin_version", "index_revision"])
+    assert.throws(() => validate_manifest({ ...manifest(), [field]: published.publication_revision }));
+  for (const field of ["plugin_version", "core_version"])
+    assert.throws(() => validate_publication_receipt({ ...published, [field]: "1.2.3" }));
+  validate_material({ ...material(), revision: "independent-document-edition" });
+  validate_publication_receipt({ ...published, publication_revision: "c".repeat(40) });
+  assert.deepEqual(publication_inventory(manifest(), ["architecture"]), publication_inventory(manifest(), published.collections));
+  assert.throws(() => validate_publication_receipt({ ...published, publication_revision: "1.2.3" }));
 });
 
 test("profile CLI and settings preview reject an old contract without changing saved bytes", async t => {

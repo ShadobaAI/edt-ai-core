@@ -6,7 +6,9 @@ import { fixture, session, ROOT, node, success } from "./helpers.mjs";
 import { COMPONENTS, component_settings, managed_components, binding_fingerprint } from "../scripts/components.mjs";
 import { settings, dump, load } from "../scripts/common.mjs";
 import { OpenVikingAdapter, OPENVIKING_LIMITS } from "../scripts/openviking_adapter.mjs";
-import { SEARCH_REQUIREMENTS } from "../scripts/knowledge.mjs";
+import { SEARCH_REQUIREMENTS, publication_inventory } from "../scripts/knowledge.mjs";
+import { sha256 } from "../scripts/project_paths.mjs";
+import { project_profile } from "../scripts/profile.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
@@ -21,6 +23,149 @@ import { credential_binding, surface_fingerprint, operation_fingerprint, access_
 import { stable } from "../scripts/common.mjs";
 
 const accessKeys = generateKeyPairSync("ed25519");
+const publicationKeys = generateKeyPairSync("ed25519");
+function grantPublication(t, f, endpoint = f.config.mcp.optional.openviking.url, { catalog, content = markdown() } = {}) {
+  const names = ["EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY", "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"];
+  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  t.after(() => { for (const name of names) { if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name]; } });
+  f.profile.knowledge.manifest ||= "knowledge/catalog.json";
+  catalog ||= { schema_version: "0.1", kind: "catalog", provider: "openviking", collections: [{ id: "architecture", description: "Design" }],
+    materials: [{ id: "design", collection: "architecture", path: "design.md", sha256: sha256(content) }] };
+  const file = path.join(f.root, f.profile.knowledge.manifest);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(path.join(path.dirname(file), "design.md"), content);
+  dump(catalog, file); f.save();
+  const payload = { schema_version: "0.2", provider: "openviking", server: { endpoint, scope: "viking://resources/team" },
+    collections: [...f.profile.knowledge.collections], publication_revision: "a".repeat(40), manifest_sha256: sha256(fs.readFileSync(file)), index_revision: "snapshot-1",
+    collection_snapshots: publication_inventory(catalog, f.profile.knowledge.collections)
+      .map(item => ({ ...item, root: f.profile.knowledge.collection_uris[item.collection] })),
+    verification: { git_manifest: "matched_committed_bytes", index_contents: "exact_active_manifest", excluded_materials: "absent",
+      deleted_materials: "absent", changed_materials: "matched", delivery: "immutable_endpoint", deployment_id: "fixture-deployment" },
+    verified_at: receiptStart, expires_at: receiptEnd, evidence_ref: "https://example.org/isolated-publication" };
+  const publish = (patch = {}) => {
+    const next = { ...payload, ...patch }, env = { EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY: publicationKeys.publicKey.export({ type: "spki", format: "pem" }),
+      EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS: JSON.stringify([{ payload: next, signature: sign(null, Buffer.from(stable(next)), publicationKeys.privateKey).toString("base64") }]) };
+    Object.assign(process.env, env); Object.assign(f.env, env); return next;
+  };
+  publish();
+  return { payload, publish, file };
+}
+
+test("signed publication binds retrieval to the exact active inventory without rescanning local documents", async t => {
+  const f = adapterFixture(t); grantPublication(t, f);
+  fs.unlinkSync(path.join(f.root, "knowledge/design.md"));
+  assert.throws(() => project_profile(f.root), /missing/); // Source/import validation retains full checks.
+  const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
+  const status = await adapter.connect();
+  assert.equal(status.publication, "verified"); assert.equal(status.ready, false);
+  assert.equal(status.publicationEvidence.snapshot, "snapshot-1");
+  const result = await adapter.search({ query: "design", collection: "architecture" });
+  assert.equal(result.outcome, "published_candidates"); assert.equal(result.metadata, "not_checked");
+  assert.equal(result.expansion, "addressed_read_required");
+  const material = await adapter.read({ uri, collection: "architecture" });
+  assert.equal(material.text, markdown()); assert.equal(material.evidence.publication, "verified");
+  assert.equal(material.evidence.compatibility, "not_verified");
+  assert.deepEqual(f.calls.filter(call => call.method === "tools/call").map(call => call.params.name), ["find", "read"]);
+});
+
+test("a configured publication rejects unsigned, mismatched and stale evidence before native retrieval", async t => {
+  const f = adapterFixture(t), grant = grantPublication(t, f);
+  const original = grant.payload;
+  for (const patch of [{ server: { ...original.server, endpoint: "https://other.example/mcp" } },
+    { server: { ...original.server, scope: "viking://resources/another-team" } },
+    { manifest_sha256: "f".repeat(64) }, { verification: { ...original.verification, deployment_id: "other-deployment" } },
+    { collection_snapshots: original.collection_snapshots.map(item => ({ ...item, root: item.root + "/other" })) },
+    { collection_snapshots: original.collection_snapshots.map(item => ({ ...item, materials_sha256: "f".repeat(64) })) },
+    { expires_at: "2020-01-01T00:00:00Z" }]) {
+    grant.publish(patch);
+    const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
+    assert.equal((await adapter.connect()).publication, "not_verified");
+    await assert.rejects(adapter.read({ uri, collection: "architecture" }), /publication/i);
+    await adapter.close();
+  }
+  for (const value of ["", JSON.stringify([{ payload: original, ready: true }]), JSON.stringify([{ ready: true }])]) {
+    process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = value;
+    const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
+    assert.equal((await adapter.connect()).publication, "not_verified");
+    await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /publication/i);
+  }
+  assert.equal(f.calls.filter(call => call.method === "tools/call").length, 0);
+});
+
+test("published retrieval rejects mixed bytes, partial responses and materials absent from the manifest", async t => {
+  const f = adapterFixture(t); grantPublication(t, f);
+  for (const response of [textResult(markdown(metadata(), "# Changed")), { ...textResult(markdown()), _meta: { partial: true } }]) {
+    const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root); await adapter.connect();
+    f.client.respond = () => response;
+    await assert.rejects(adapter.read({ uri, collection: "architecture" }), /publication snapshot/);
+    assert.equal(adapter.closed, true);
+  }
+  const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root); await adapter.connect();
+  const before = f.calls.length;
+  await assert.rejects(adapter.read({ uri: uri.replace("design.md", "deleted.md"), collection: "architecture" }), /absent/);
+  assert.equal(f.calls.length, before);
+  f.client.respond = () => {
+    const result = `Found 1 item(s):\n\n- [resource 90%] ${uri.replace("design.md", "excluded.md")}\n`;
+    return { ...textResult(result), structuredContent: { result } };
+  };
+  await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /absent/);
+});
+
+test("publication rotation and expiry during reads discard in-flight responses", async t => {
+  const f = adapterFixture(t), grant = grantPublication(t, f);
+  const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root); await adapter.connect();
+  const before = binding_fingerprint(f.config, "openviking", f.root, f.profile);
+  f.client.respond = () => { grant.publish({ index_revision: "snapshot-2" }); return textResult(markdown()); };
+  await assert.rejects(adapter.read({ uri, collection: "architecture" }), /changed/);
+  assert.equal(adapter.closed, true);
+  assert.notEqual(binding_fingerprint(f.config, "openviking", f.root, f.profile), before);
+  f.client.respond = () => textResult(markdown());
+  const restored = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
+  assert.equal((await restored.connect()).publicationEvidence.snapshot, "snapshot-2");
+  assert.equal((await restored.read({ uri, collection: "architecture" })).text, markdown());
+  grant.publish({ expires_at: new Date(Date.now() + 100).toISOString() });
+  const expiring = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root); await expiring.connect();
+  f.client.respond = async () => { await new Promise(resolve => setTimeout(resolve, 150)); return textResult(markdown()); };
+  await assert.rejects(expiring.read({ uri, collection: "architecture" }), /current/);
+  assert.equal(expiring.closed, true);
+});
+
+test("an automatically selected new access receipt cannot retain a publication bound to the old deployment", async t => {
+  const f = adapterFixture(t); grantPublication(t, f);
+  let clock = Date.now(); t.mock.method(Date, "now", () => clock);
+  const previous = process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS;
+  t.after(() => { process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = previous; });
+  const original = JSON.parse(previous).find(envelope => envelope.payload.endpoint === f.config.mcp.optional.openviking.url).payload;
+  const first = { ...original, verified_at: new Date(clock - 10000).toISOString(), expires_at: new Date(clock + 1000).toISOString() };
+  const second = { ...first, verified_at: first.expires_at, expires_at: new Date(clock + 10000).toISOString(),
+    verification: { ...first.verification, deployment_id: "deployment-2" } };
+  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = JSON.stringify([first, second].map(payload => ({ payload,
+    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") })));
+  const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
+  assert.equal((await adapter.connect()).publication, "verified");
+  clock += 1500;
+  await assert.rejects(adapter.read({ uri, collection: "architecture" }), /access confirmation changed/);
+  assert.equal(adapter.closed, true);
+  assert.equal(f.calls.filter(call => call.method === "tools/call").length, 0);
+});
+
+test("MCP returns bound publication evidence and character continuations without borrowing local source acceptance", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f), content = markdown(metadata(), "x".repeat(30000));
+  grantPublication(t, f, remote.url, { content });
+  f.client.respond = () => textResult(content);
+  fs.unlinkSync(path.join(f.root, "knowledge/design.md"));
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  const status = (await client.call("knowledge_status", {})).structuredContent;
+  assert.equal(status.publication, "verified"); assert.equal(status.ready, false);
+  const read = args => client.call("knowledge_read", { uri, collection: "architecture", ...args }).then(result => result.structuredContent);
+  const first = await read({}), next = await read(first.next);
+  assert.equal(first.publication.snapshot, "snapshot-1"); assert.equal(first.evidenceUse, "published_snapshot");
+  assert.equal(first.reusable, true); assert.deepEqual(first.binding, next.binding);
+  assert.equal(first.publication.manifestSha256, sha256(fs.readFileSync(path.join(f.root, f.profile.knowledge.manifest))));
+  assert.equal(first.text + next.text, content);
+  const other = await session(t, "mcp/openviking.mjs", [], f);
+  await assert.rejects(other.call("knowledge_read", { uri, collection: "architecture", ...first.next }), /another knowledge binding or session/);
+});
 const accessEnv = { EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY: accessKeys.publicKey.export({ type: "spki", format: "pem" }),
   EDT_AI_OPENVIKING_ACCESS_BINDING_KEY: "isolated-test-binding-key-32-bytes-minimum", EDT_AI_TEST_SEARCH_TOKEN: "Bearer isolated-search-token" };
 const accessReceipts = new Map();
@@ -332,6 +477,7 @@ test("late connection, status and retrieval responses cannot survive an effectiv
     if (phase === "manifest") {
       f.profile.knowledge.manifest = "knowledge/catalog.yaml";
       dump(catalog, path.join(f.root, f.profile.knowledge.manifest)); f.save();
+      grantPublication(t, f, remote.url, { catalog });
     }
     const client = await session(t, "mcp/openviking.mjs", [], f);
     if (!["connection", "initialize", "discover"].includes(phase)) await client.call("knowledge_status", {});

@@ -176,9 +176,12 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       collections: ["smoke"], required: false, dependent_actions: [] };
     profiles.validate_at(project, candidate);
     const declared = knowledge.load_manifest(project, "knowledge/catalog.json", ["smoke"]);
-    knowledge.validate_publication_receipt({ schema_version: "0.1", provider: "openviking",
+    knowledge.validate_publication_receipt({ schema_version: "0.2", provider: "openviking",
       server: { endpoint: "https://example.org/mcp", scope: "fixture" }, collections: ["smoke"],
       publication_revision: "a".repeat(40), manifest_sha256: declared.sha256, index_revision: "fixture-1",
+      collection_snapshots: [{ ...knowledge.publication_inventory(catalog, ["smoke"])[0], root: "viking://resources/fixture/smoke" }],
+      verification: { git_manifest: "matched_committed_bytes", index_contents: "exact_active_manifest", excluded_materials: "absent",
+        deleted_materials: "absent", changed_materials: "matched", delivery: "immutable_endpoint", deployment_id: "fixture-deployment" },
       verified_at: "2026-10-24T08:00:00Z", expires_at: "2026-10-25T08:00:00Z", evidence_ref: "https://example.org/publication" });
     assert.equal(knowledge.knowledge_status(candidate, common.load(path.join(root, "settings/defaults.json"))).state, "not_configured");
     assert.throws(() => profiles.validate({ ...candidate, schema_version: "0.1" }), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");

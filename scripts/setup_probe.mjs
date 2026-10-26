@@ -19,7 +19,7 @@ export async function probe_connections(config, root, profile) {
     if (name === "openviking") {
       const bounded = structuredClone(config);
       bounded.mcp.optional.openviking.timeout_seconds = Math.min(options.timeout_seconds || 20, 30);
-      const adapter = new OpenVikingAdapter(profile, bounded);
+      const adapter = new OpenVikingAdapter(profile, bounded, null, null, root);
       const result = { configured: true, connected: false, ready: false, access: "not_verified",
         searchReadiness: "not_verified", collections: knowledge.collections, detail: knowledge.detail };
       try { Object.assign(result, await adapter.connect()); }

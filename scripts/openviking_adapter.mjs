@@ -6,7 +6,8 @@ import { sha256 } from "./project_paths.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
 import { verify_search_access, search_credential_headers, verify_search_surface, access_revision, access_error } from "./openviking_access.mjs";
-import { knowledge_status, search_requirements, parse_material, knowledge_material_active, knowledge_material_summary } from "./knowledge.mjs";
+import { knowledge_status, search_requirements, parse_material, knowledge_material_active, knowledge_material_summary, load_manifest_catalog } from "./knowledge.mjs";
+import { PublicationConfirmation } from "./openviking_publication.mjs";
 
 export const OPENVIKING_LIMITS = Object.freeze({ concurrent: 2, queued: 8, candidates: 10, toolPages: 16,
   tools: 256, collections: 64, metadataChars: 8000, resultChars: 32000, contentChars: 24000 });
@@ -38,15 +39,18 @@ const line_count = text => {
   return breaks.length + Number(!last || last.index + last[0].length < text.length);
 };
 export class OpenVikingAdapter {
-  constructor(profile, config, client = null, validateBinding = null) {
+  constructor(profile, config, client = null, validateBinding = null, projectRoot = null) {
     this.profile = structuredClone(profile);
     this.config = structuredClone(config);
     this.options = this.config.mcp.optional.openviking;
     this.requirements = search_requirements(profile);
     this.validateBinding = validateBinding;
+    this.projectRoot = projectRoot;
     this.client = client || new RemoteMcp(this.options.url, this.options.timeout_seconds, {
       credentialHeaders: () => ({ ...this.credentialHeaders }), maxBytes: this.options.max_response_bytes,
-      beforeRequest: payload => { this.validateBinding?.(); this.checkAccess(); this.validateRequest(payload.method, payload.params, true); } });
+      beforeRequest: payload => { this.validateBinding?.(); this.checkAccess();
+        if (payload.method === "tools/call") this.checkPublication();
+        this.validateRequest(payload.method, payload.params, true); } });
     this.connected = false;
     this.active = 0; this.waiters = []; this.closed = false;
   }
@@ -73,16 +77,49 @@ export class OpenVikingAdapter {
       this.validateBinding?.();
       await this.refreshContract();
       if (this.closed) throw new Error("OpenViking adapter closed during connection");
+      this.confirmPublication();
       this.connected = true;
       return this.status();
     } catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders); }
   }
   status() {
+    const publication = this.publicationStatus();
     return { connected: this.connected, ready: false, contract: { search: this.searchTool?.name, read: this.readTool?.name },
-      publication: "not_verified", access: this.connected ? "externally_attested" : "not_verified",
+      publication: publication.state, publicationEvidence: publication,
+      access: this.connected ? "externally_attested" : "not_verified",
       accessEvidence: this.connected ? { source: "operator_signature", deploymentId: this.access.verification.deployment_id,
         policyRevision: this.access.verification.policy_revision, verifiedAt: this.access.verified_at,
         expiresAt: this.access.expires_at, liveTestByPlugin: false } : null };
+  }
+  confirmPublication() {
+    if (!this.profile.knowledge.manifest) return;
+    try {
+      if (!this.projectRoot) throw new Error("Publication requires this binding's project root and manifest");
+      const manifest = load_manifest_catalog(this.projectRoot, this.profile.knowledge.manifest, [...this.collections.keys()]);
+      const scope = this.access.team_roots.filter(root => [...this.collections.values()].every(uri => uri === root || uri.startsWith(root + "/")))
+        .sort((a, b) => b.length - a.length)[0];
+      if (!scope) throw new Error("Publication requires one assigned team area containing the selected collections");
+      this.publication = new PublicationConfirmation({ endpoint: this.options.url, scope,
+        deploymentId: this.access.verification.deployment_id, manifest, collections: this.collections });
+      this.publicationManifestSha256 = manifest.sha256;
+    } catch (error) { this.publicationError = error.message; }
+  }
+  checkPublication() {
+    if (!this.profile.knowledge.manifest) return null; // Setup-only discovery never claims a snapshot.
+    if (!this.publication) throw new Error(this.publicationError || "Publication is not confirmed");
+    const receipt = this.publication.check();
+    const current = load_manifest_catalog(this.projectRoot, this.profile.knowledge.manifest, [...this.collections.keys()]);
+    if (current.sha256 !== this.publicationManifestSha256) throw new Error("Publication manifest changed; reconnect required");
+    return receipt;
+  }
+  publicationStatus() {
+    try {
+      const receipt = this.connected && this.checkPublication();
+      if (receipt) return { state: "verified", snapshot: receipt.index_revision, consistency: "externally_attested",
+        gitRevision: receipt.publication_revision, manifestSha256: receipt.manifest_sha256,
+        scope: receipt.server.scope, expiresAt: receipt.expires_at, source: "publisher_signature", liveTestByPlugin: false };
+    } catch (error) { return { state: "not_verified", snapshot: null, consistency: "not_verified", detail: error.message }; }
+    return { state: "not_verified", snapshot: null, consistency: "not_verified" };
   }
   checkAccess() {
     const access = verify_search_access(this.options, this.collections);
@@ -90,6 +127,8 @@ export class OpenVikingAdapter {
       throw new Error("OpenViking access confirmation or identity changed; reconnect required");
     if (this.access && this.access.credential_binding !== access.credential_binding)
       throw new Error("OpenViking connection credentials changed; reconnect required");
+    if (this.access && stable(this.access) !== stable(access))
+      throw new Error("OpenViking selected access confirmation changed; reconnect required");
     return access;
   }
   async refreshContract() {
@@ -140,10 +179,12 @@ export class OpenVikingAdapter {
       if (this.closed) throw new Error("OpenViking adapter is closed");
       this.validateBinding?.();
       this.checkAccess();
+      if (method === "tools/call") this.checkPublication();
       this.validateRequest(method, params);
       const result = await this.client.request(method, params);
       if (this.closed) throw new Error("OpenViking adapter closed during request");
       this.validateBinding?.(); this.checkAccess();
+      if (method === "tools/call") this.checkPublication();
       return result;
     } catch (error) {
       await this.close(); throw access_error(error, this.options, this.credentialHeaders);
@@ -175,6 +216,7 @@ export class OpenVikingAdapter {
           Object.keys(args).some(key => !["uris", "offset", "limit"].includes(key)))
         throw new Error("OpenViking read must use a selected team material and bounded arguments");
       this.scoped(args.uris, collection);
+      this.publication?.entry(args.uris, collection);
       this.arguments(this.readTool, args);
     } else throw new Error("OpenViking operation is outside the permitted search/read surface");
   }
@@ -247,22 +289,26 @@ export class OpenVikingAdapter {
     const seen = new Set();
     const candidates = hits.map(hit => {
       const uri = this.scoped(hit[2], collection);
+      this.publication?.entry(uri, collection);
       if (seen.has(uri)) throw new Error("Duplicate OpenViking hit");
       seen.add(uri);
       return { uri, collection, score: Number(hit[1]) / 100 };
     });
-    // The native dialect has no verified snapshot contract. Enriching hits with
-    // later reads would mix publications even when all response metadata agrees.
-    // Pointers are not active materials; each must be read as fresh discovery.
+    // Search never expands the corpus. A publisher confirmation pins membership;
+    // addressed reads additionally verify bytes and the material's own metadata.
     return { items: [], discoveryCandidates: candidates, ...completeness, filtered: 0, examined: 0,
       candidates: candidates.length, unexpanded: candidates.length, metadata: "not_checked",
-      expansion: "blocked_until_snapshot_verified", limitReached: candidates.length === effectiveLimit,
-      outcome: candidates.length ? "unverified_candidates" : "no_matches" };
+      expansion: this.publication ? "addressed_read_required" : "blocked_until_snapshot_verified", limitReached: candidates.length === effectiveLimit,
+      outcome: candidates.length ? this.publication ? "published_candidates" : "unverified_candidates" : "no_matches" };
   }
   async material(uri, collection, retrieval = {}, limit = 200) {
     this.scoped(uri, collection);
+    this.checkPublication();
+    this.publication?.entry(uri, collection);
     // A small header/body window for selected hits only, never a corpus walk.
     const reply = await this.invoke("read", { uris: uri, offset: 0, limit }, retrieval), text = reply.text;
+    try { this.publication?.material({ uri, collection, text, partial: reply.partial }); }
+    catch (error) { await this.close(); throw error; }
     const window = text.slice(0, this.requirements.max_material_chars);
     let metadata;
     try { metadata = parse_material(window); }
@@ -288,6 +334,7 @@ export class OpenVikingAdapter {
       throw new Error("Material window changed during continuation; discard this result");
     if (charOffset > text.length) throw new Error("Character offset exceeds the returned material window");
     const summary = knowledge_material_summary(material.metadata);
+    if (this.publication) summary.evidence = { ...summary.evidence, metadata: "published_declaration", publication: "verified" };
     const textBudget = OPENVIKING_LIMITS.contentChars - JSON.stringify({ uri, collection, ...summary }).length - 1024;
     let start = charOffset, end = Math.min(text.length, charOffset + this.requirements.max_material_chars);
     const maximum = end;
@@ -302,12 +349,13 @@ export class OpenVikingAdapter {
     return { uri, collection, ...summary, retrieval: { materialFingerprint, responseContext: retrieval.responseContext, windowFingerprint },
       text: text.slice(charOffset, end), truncated, serverPartial: reply.partial,
       next: truncated ? { offset, limit, charOffset: end } : null,
-      hasMoreLines, lineContinuation: hasMoreLines ? "blocked_until_snapshot_verified" : null,
+      hasMoreLines, lineContinuation: hasMoreLines ? this.publication ? "restart_with_larger_window" : "blocked_until_snapshot_verified" : null,
       offset, limit, charOffset, complete: false };
   }
   async close() {
     if (this.closePromise) return this.closePromise;
     this.connected = false; this.closed = true;
+    this.publication = null;
     this.searchTool = null; this.readTool = null; this.collections?.clear();
     for (const waiter of this.waiters.splice(0)) waiter.reject(new Error("OpenViking adapter closed while queued"));
     this.closePromise = this.client.close();

@@ -31,7 +31,7 @@ import {
 } from "./project_paths.mjs";
 import { effective_policy } from "./action_policy.mjs";
 import { core_version, satisfies_core } from "./compatibility.mjs";
-import { load_manifest } from "./knowledge.mjs";
+import { load_manifest, load_manifest_catalog } from "./knowledge.mjs";
 export function validate(data) {
   check_schema(data, "project-profile.schema.json");
   if (!satisfies_core(data.compatibility.core)) throw new ConfigError(`Profile requires core ${data.compatibility.core}; running ${core_version}. Review the profile contract before changing compatibility.core.`);
@@ -139,10 +139,10 @@ export function scoped_paths(data) {
   if (data.knowledge.manifest) paths.push(data.knowledge.manifest);
   return paths;
 }
-export function validate_at(root, data) {
+export function validate_at(root, data, { knowledgeMaterials = true } = {}) {
   validate(data);
   scoped_paths(data).forEach((relative) => inside(root, relative));
-  if (data.knowledge.manifest) load_manifest(root, data.knowledge.manifest, data.knowledge.collections);
+  if (data.knowledge.manifest) (knowledgeMaterials ? load_manifest : load_manifest_catalog)(root, data.knowledge.manifest, data.knowledge.collections);
   const config = data.testing.vanessa_config;
   if (
     config &&
@@ -159,9 +159,9 @@ export function validate_at(root, data) {
     );
   return data;
 }
-export function project_profile(selected) {
+export function project_profile(selected, options) {
   const root = locate_project(selected);
-  return validate_at(root, load(path.join(root, ".ai/project.yaml")));
+  return validate_at(root, load(path.join(root, ".ai/project.yaml")), options);
 }
 export function profile_target(root) {
   const target = path.join(resolve(root), ".ai/project.yaml");

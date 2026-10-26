@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError, sha256 } from "./project_paths.mjs";
-import { check_schema, validate_url, validate_openviking_url, inside, parse } from "./common.mjs";
+import { check_schema, validate_openviking_url, inside, parse, stable } from "./common.mjs";
 
 export const WORKFLOW_ACTIONS = Object.freeze(["discovery", "design", "implementation", "review", "runtime"]);
 export const SEARCH_REQUIREMENTS = Object.freeze({ publication: "verified", snapshot: "consistent", access: "read_only",
@@ -68,8 +68,17 @@ export function knowledge_material_summary(metadata, { body, maxExcerptChars = 1
 // index completeness, access rights, current binding or readiness.
 export function validate_publication_receipt(data) {
   check_schema(data, "knowledge-publication-receipt.schema.json");
-  validate_url(data.server.endpoint, "Publication");
+  validate_openviking_url(data.server.endpoint);
   reference_path(data.evidence_ref);
+  const ids = data.collection_snapshots.map(item => item.collection);
+  if (new Set(ids).size !== ids.length || stable([...ids].sort()) !== stable([...data.collections].sort()))
+    throw new ConfigError("Publication collection snapshots must match the exact selected collection set");
+  for (const { root } of data.collection_snapshots)
+    if (root.slice("viking://resources/".length).split("/").some(part => !part || part === "." || part === ".."))
+      throw new ConfigError("Publication collection root must be canonical");
+  const roots = data.collection_snapshots.map(item => item.root);
+  if (roots.some((root, index) => roots.some((other, second) => index !== second && (root === other || root.startsWith(other + "/")))))
+    throw new ConfigError("Publication collection roots must not overlap");
   for (const field of ["verified_at", "expires_at"]) {
     const instant = new Date(data[field]);
     const canonical = data[field].includes(".") ? data[field] : data[field].replace(/Z$/, ".000Z");
@@ -79,6 +88,20 @@ export function validate_publication_receipt(data) {
   if (Date.parse(data.expires_at) <= Date.parse(data.verified_at))
     throw new ConfigError("Publication receipt expires_at must follow verified_at");
   return data;
+}
+
+// A digest of the complete active set, including an empty collection. The
+// publisher uses the same canonical JSON; ordering in YAML has no meaning.
+export function publication_inventory(manifest, selectedCollections) {
+  validate_manifest(manifest, selectedCollections);
+  if (manifest.kind !== "catalog" || !selectedCollections.length || new Set(selectedCollections).size !== selectedCollections.length)
+    throw new ConfigError("Publication inventory requires a catalog and unique selected collections");
+  return [...selectedCollections].sort().map(collection => {
+    const entries = manifest.materials.filter(item => item.collection === collection)
+      .map(({ id, collection, path, sha256 }) => ({ id, collection, path, sha256 }))
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    return { collection, material_count: entries.length, materials_sha256: sha256(stable(entries)) };
+  });
 }
 
 // Use one portable spelling. In particular, Windows device names, ADS and
@@ -123,12 +146,21 @@ export function parse_material(text) {
   return validate_material(parse(match[1]));
 }
 
-export function load_manifest(root, relative, selectedCollections = []) {
+// Published retrieval needs the catalog and containment, not a rescan of local
+// source documents. Their remote bytes are checked against this catalog when
+// addressed; imports and source validation still use the full loader below.
+export function load_manifest_catalog(root, relative, selectedCollections = []) {
   portable_path(relative);
   const file = inside(root, relative);
   regular_file(file);
   const bytes = fs.readFileSync(file), data = validate_manifest(parse(bytes.toString("utf8")), selectedCollections);
   if (data.kind !== "catalog") throw new ConfigError("A recommendations manifest cannot be used as a published catalog");
+  for (const entry of data.materials) inside(path.dirname(file), entry.path);
+  return { data, sha256: sha256(bytes) };
+}
+
+export function load_manifest(root, relative, selectedCollections = []) {
+  const catalog = load_manifest_catalog(root, relative, selectedCollections), data = catalog.data, file = inside(root, relative);
   const corpus = path.dirname(file), files = new Set(), materials = [];
   for (const entry of data.materials) {
     const target = inside(corpus, entry.path), stat = regular_file(target), identity = `${stat.dev}:${stat.ino}`;
@@ -146,7 +178,7 @@ export function load_manifest(root, relative, selectedCollections = []) {
     }
     materials.push({ ...entry, metadata });
   }
-  return { data, sha256: sha256(bytes), materials };
+  return { ...catalog, materials };
 }
 
 export function knowledge_status(profile, config) {
