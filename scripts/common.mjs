@@ -120,6 +120,9 @@ export function validate_settings(config) {
     if (entry.url) validate_url(entry.url, name);
   if (config.mcp.optional.openviking?.url)
     validate_openviking_url(config.mcp.optional.openviking.url);
+  // Retain the legacy flag in the contract; only the URL controls transport.
+  if (config.mcp.optional.openviking)
+    config.mcp.optional.openviking.enabled = Boolean(config.mcp.optional.openviking.url);
   return config;
 }
 export function validate_url(value, name = "MCP") {

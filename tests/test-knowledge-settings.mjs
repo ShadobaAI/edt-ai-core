@@ -17,7 +17,7 @@ function enable_knowledge(f) {
 test("OpenViking form/chat transport fields use validated instance overrides", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
-  const set = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
+  const set = { openvikingUrl: "https://knowledge.example/mcp",
     openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
     openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
   const update = await client.call("settings.update", { set });
@@ -25,6 +25,7 @@ test("OpenViking form/chat transport fields use validated instance overrides", a
   const backend = new SettingsBackend();
   const view = await backend.main({ action: "read" });
   for (const [key, value] of Object.entries(set)) assert.deepEqual(view.values[key], value);
+  assert.equal(view.values.openvikingEnabled, true);
   const file = instance_file(backend.current(), f.root), before = fs.readFileSync(file);
   for (const change of [{ openvikingTimeout: 0 }, { openvikingMaxResponseBytes: 2048.5 },
     { openvikingHeadersEnv: { Authorization: "Bearer secret" } }, { openvikingHeadersEnv: null }]) {
@@ -59,7 +60,7 @@ test("OpenViking exposes the effective source of each independently inherited fi
   const explicit = path.join(f.base, "connections.yaml");
   dump({ connections: { openviking: { headers_env: {} } } }, explicit);
   process.env.EDT_AI_CONNECTIONS_FILE = explicit; process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
-  const expected = { openvikingEnabled: "profile", openvikingUrl: "environment:EDT_AI_OPENVIKING_URL",
+  const expected = { openvikingEnabled: "environment:EDT_AI_OPENVIKING_URL", openvikingUrl: "environment:EDT_AI_OPENVIKING_URL",
     openvikingTimeout: "project_local", openvikingMaxResponseBytes: "instance", openvikingHeadersEnv: "connections_file" };
   assert.deepEqual((await backend.main({ action: "read" })).valueSources, expected);
   const client = await session(t, "mcp/settings.mjs", [], f, {
@@ -113,13 +114,15 @@ test("chat onboarding connects an existing knowledge server without guesses or p
 test("unsaved knowledge probe transport is validated without persisting or changing the profile mode", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
   const backend = new SettingsBackend(), before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
-  const draft = { enabled: true, url: "https://draft.example/mcp", timeout_seconds: 1, max_response_bytes: 4096,
+  const draft = { enabled: false, url: "https://draft.example/mcp", timeout_seconds: 1, max_response_bytes: 4096,
     headers_env: { Authorization: "OV_AUTHORIZATION" } };
   const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network without access proof"); });
   const probe = await backend.main({ action: "probe", connections: { openviking: draft } });
   assert.equal(probe.external.openviking.configured, true);
   assert.equal(probe.external.openviking.ready, false);
   assert.equal(probe.knowledge.required, true);
+  const disconnected = await backend.main({ action: "probe", connections: { openviking: { enabled: true, url: "" } } });
+  assert.equal(disconnected.external.openviking.configured, false);
   assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "");
   assert.equal(network.mock.callCount(), 0);
   for (const change of [{ timeout_seconds: 0 }, { headers_env: { Authorization: "Bearer secret" } },
@@ -137,6 +140,11 @@ test("OpenViking settings validate endpoint, environment credentials and bounded
   const valid = { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 2.5,
     max_response_bytes: 4096, headers_env: { Authorization: "OV_AUTHORIZATION" } };
   config.mcp.optional.openviking = valid; validate_settings(config);
+  for (const [enabled, url, expected] of [[false, valid.url, true], [true, "", false]]) {
+    config.mcp.optional.openviking = { ...valid, enabled, url };
+    validate_settings(config);
+    assert.equal(config.mcp.optional.openviking.enabled, expected);
+  }
   for (const change of [{ timeout_seconds: 0 }, { timeout_seconds: 301 }, { max_response_bytes: 1023 },
     { max_response_bytes: 16777217 }, { max_response_bytes: 2048.5 },
     { headers_env: { Authorization: "Bearer secret" } }, { headers: { Authorization: "secret" } },
@@ -326,7 +334,7 @@ for (const source of ["profile", "local", "repository_instance", "instance", "ex
     const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network"); });
     const read = await backend.main({ action: "read" });
     assert.equal(read.values.openvikingUrl, "");
-    assert.equal(read.values.openvikingEnabled, true);
+    assert.equal(read.values.openvikingEnabled, false);
     assert.equal(read.connectionSources.openviking, source === "environment" ? "environment:EDT_AI_OPENVIKING_URL" : source === "local" ? "project_local" : source === "explicit" ? "connections_file" : source);
     const preview = await backend.main({ action: "preview", text: JSON.stringify(f.profile) });
     assert.equal(preview.openviking.url, "");
@@ -338,7 +346,7 @@ for (const source of ["profile", "local", "repository_instance", "instance", "ex
     if (before) assert.deepEqual(fs.readFileSync(files[source]), before);
   });
 
-test("OpenViking false transport flag retains the endpoint and explicit reset removes only this instance URL", async t => {
+test("OpenViking legacy false flag cannot disable the inherited endpoint after resetting only the instance URL", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp" } }; f.save();
   const backend = new SettingsBackend();
@@ -349,7 +357,7 @@ test("OpenViking false transport flag retains the endpoint and explicit reset re
   await client.call("settings.reset_connection", { connection: "openviking" });
   assert.deepEqual(load(file).connections.openviking, retained);
   assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "https://profile.example/mcp");
-  assert.equal((await backend.main({ action: "read" })).values.openvikingEnabled, false);
+  assert.equal((await backend.main({ action: "read" })).values.openvikingEnabled, true);
   const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network"); });
   await backend.main({ action: "probe" });
   assert.equal(network.mock.callCount(), 0);
@@ -374,7 +382,7 @@ for (const mode of ["transitional", "kora"])
       assert.equal(view.knowledge.mode, mode);
       assert.equal(view.knowledge.required, true);
       assert.deepEqual(view.knowledge.dependentActions, required.dependent_actions);
-      assert.equal(view.knowledge.state, "not_configured");
+      assert.equal(view.knowledge.state, set.openvikingUrl ? "not_verified" : "not_configured");
       assert.equal(view.knowledge.koraReady, false);
       assert.deepEqual(view.knowledge.transport, { enabled: view.values.openvikingEnabled, endpointConfigured: Boolean(view.values.openvikingUrl) });
       const config = backend.effective(backend.current());
@@ -396,7 +404,7 @@ for (const mode of ["transitional", "kora"])
       assert.equal(view.knowledge.state, "not_configured");
       assert.equal(view.knowledge.required, true);
       assert.equal(view.knowledge.mode, mode);
-      assert.deepEqual(view.knowledge.transport, { enabled: true, endpointConfigured: false });
+      assert.deepEqual(view.knowledge.transport, { enabled: false, endpointConfigured: false });
     }
   });
 
@@ -405,8 +413,8 @@ test("transport settings cannot implicitly enable a provider disabled by the pro
   const backend = new SettingsBackend(), original = structuredClone(f.profile.knowledge);
   await backend.main({ action: "update", set: { openvikingUrl: "https://saved.example/mcp", openvikingEnabled: false } });
   const view = await backend.main({ action: "read" });
-  assert.equal(view.knowledge.state, "disabled");
-  assert.deepEqual(view.knowledge.transport, { enabled: false, endpointConfigured: true });
+  assert.equal(view.knowledge.state, "invalid");
+  assert.deepEqual(view.knowledge.transport, { enabled: true, endpointConfigured: true });
   await backend.main({ action: "update", set: { openvikingEnabled: true } });
   assert.equal((await backend.main({ action: "read" })).knowledge.state, "invalid");
   const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network"); });

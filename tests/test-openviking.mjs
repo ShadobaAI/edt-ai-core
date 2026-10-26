@@ -496,9 +496,10 @@ test("publication rotation and expiry during reads discard in-flight responses",
   const restored = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
   assert.equal((await restored.connect()).publicationEvidence.snapshot, "snapshot-2");
   assert.equal((await restored.read({ uri, collection: "architecture" })).text, markdown());
-  grant.publish({ expires_at: new Date(Date.now() + 100).toISOString() });
+  let clock = Date.now(); t.mock.method(Date, "now", () => clock);
+  grant.publish({ expires_at: new Date(clock + 100).toISOString() });
   const expiring = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root); await expiring.connect();
-  f.client.respond = async () => { await new Promise(resolve => setTimeout(resolve, 150)); return textResult(markdown()); };
+  f.client.respond = () => { clock += 150; return textResult(markdown()); };
   await assert.rejects(expiring.read({ uri, collection: "architecture" }), /current/);
   assert.equal(expiring.closed, true);
 });
@@ -777,7 +778,7 @@ test("disabled knowledge never opens the configured endpoint, including contradi
     f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
     f.profile.connections.openviking.enabled = enabled; f.save();
     const status = (await client.call("knowledge_status", {})).structuredContent;
-    assert.equal(status.state, enabled ? "invalid" : "disabled");
+    assert.equal(status.state, "invalid");
     assert.equal(status.binding, null);
     for (const [name, args] of [["knowledge_search", { query: "x", collection: "architecture" }], ["knowledge_read", { uri, collection: "architecture" }]])
       await assert.rejects(client.call(name, args), /disabled|provider is none/);
@@ -835,7 +836,7 @@ test("profiles share one external read server with independent collections, cont
   await assert.rejects(search(second, "architecture"), /outside the selected profile/);
   assert.equal(remote.requests.length, before);
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
-  f.profile.connections.openviking.enabled = false; f.save();
+  f.profile.connections.openviking.url = ""; f.save();
   assert.equal((await first.call("knowledge_status", {})).structuredContent.binding, null);
   const stillBound = await search(second, "bsp");
   assert.deepEqual(stillBound.binding, results[1].binding);
@@ -910,7 +911,7 @@ test("disabling knowledge while initialize is pending prevents discovery and ret
   const pending = client.call("knowledge_status", {}), rejected = assert.rejects(pending, /binding changed/);
   await entered.promise;
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
-  f.profile.connections.openviking.enabled = false; f.save();
+  f.profile.connections.openviking.url = ""; f.save();
   assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");
   release.resolve(); await rejected;
   assert.equal(remote.requests.some(value => value.method === "tools/list" || value.method === "tools/call"), false);
@@ -926,7 +927,7 @@ test("a binding invalidated while the old DELETE is pending never opens a stale 
   const rejected = assert.rejects(client.call("knowledge_status", {}), /binding changed/);
   await entered.promise;
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
-  f.profile.connections.openviking.enabled = false; f.save();
+  f.profile.connections.openviking.url = ""; f.save();
   release.resolve(); await rejected;
   assert.equal(remote.requests.filter(value => value.method === "initialize").length, 1);
   assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");

@@ -150,6 +150,8 @@ export function resolved_settings(
     });
   if (Object.hasOwn(openviking || {}, "headers_env"))
     effective.mcp.optional.openviking.headers_env = structuredClone(openviking.headers_env);
+  effective.mcp.optional.openviking.enabled = Boolean(effective.mcp.optional.openviking.url);
+  fieldSources.openviking.enabled = fieldSources.openviking.url;
   return [effective, sources, fieldSources];
 }
 export const effective_settings = (...args) => resolved_settings(...args)[0];

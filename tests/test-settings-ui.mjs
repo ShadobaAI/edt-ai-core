@@ -81,7 +81,8 @@ test("OpenViking editable transport fields save typed values through the shared 
     if (name === "settings.update") { updated = args.set; Object.assign(current.values, args.set); return {}; }
     throw new Error(name);
   }); await ui.flush();
-  const values = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
+  assert.equal(ui.elements.has("openvikingEnabled"), false);
+  const values = { openvikingUrl: "https://knowledge.example/mcp",
     openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
     openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
   for (const [key, value] of Object.entries(values)) {

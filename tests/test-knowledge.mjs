@@ -265,7 +265,7 @@ test("malformed knowledge fields and transports fail closed without network acce
 test("inspection, doctor and setup report a conflicting transport without disabling or repairing it", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const backend = new SettingsBackend();
-  await backend.main({ action: "update", set: { openvikingEnabled: true } });
+  await backend.main({ action: "update", set: { openvikingUrl: "https://knowledge.example/mcp" } });
   const savedFile = instance_file(backend.current(), f.root);
   const saved = fs.readFileSync(savedFile, "utf8");
   const read = await backend.main({ action: "read" });
@@ -281,5 +281,5 @@ test("inspection, doctor and setup report a conflicting transport without disabl
   assert.equal(readiness.state, "blocked");
   assert.equal(readiness.checks.find(item => item.id === "knowledge").state, "error");
   assert.equal(fs.readFileSync(savedFile, "utf8"), saved);
-  assert.equal(load(savedFile).connections.openviking.enabled, true);
+  assert.equal(load(savedFile).connections.openviking.url, "https://knowledge.example/mcp");
 });
