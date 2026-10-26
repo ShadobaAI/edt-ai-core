@@ -32,30 +32,27 @@ test("OpenViking settings validate endpoint, environment credentials and bounded
   }
 });
 
-test("OpenViking probe reads credentials at request time and enforces timeout and response budgets", async t => {
+test("OpenViking setup probe refuses credentials without external access confirmations", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   const config = settings();
   config.mcp.optional.openviking = { enabled: true, url: "https://knowledge.example/mcp",
     timeout_seconds: 0.0015, max_response_bytes: 1024, headers_env: { Authorization: "OV_AUTHORIZATION" } };
   const calls = [];
+  f.profile.knowledge.collection_uris = { team: "viking://resources/team" };
   t.mock.method(globalThis, "fetch", async (_url, options) => {
     calls.push(options);
     return new Response("x".repeat(2048), { headers: { "Content-Type": "application/json" } });
   });
   let result = await probe_connections(config, f.root, f.profile);
   assert.equal(calls.length, 0);
-  assert.match(result.external.openviking.detail, /Missing connection credential environment variable/);
+  assert.match(result.external.openviking.detail, /access|credential/);
   process.env.OV_AUTHORIZATION = "Bearer fixture-secret";
   result = await probe_connections(config, f.root, f.profile);
-  assert.equal(calls[0].headers.Authorization, "Bearer fixture-secret");
-  assert.match(result.external.openviking.detail, /budget exceeded/);
+  assert.equal(calls.length, 0);
+  assert.equal(result.external.openviking.access, "not_verified");
+  assert.equal(result.external.openviking.ready, false);
   assert.equal(JSON.stringify(config).includes("fixture-secret"), false);
-  t.mock.method(globalThis, "fetch", async (_url, options) => new Promise((_, reject) => {
-    options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
-  }));
-  result = await probe_connections(config, f.root, f.profile);
   assert.equal(result.external.openviking.connected, false);
-  assert.match(result.external.openviking.detail, /timeout|aborted/i);
 });
 
 test("OpenViking resolves profile, local, repository instance, state instance, explicit file and environment per field", t => {

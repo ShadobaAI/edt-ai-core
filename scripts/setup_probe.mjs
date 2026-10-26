@@ -3,6 +3,7 @@ import { RemoteMcp } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
 import { resolve } from "./project_paths.mjs";
 import { knowledge_status } from "./knowledge.mjs";
+import { OpenVikingAdapter } from "./openviking_adapter.mjs";
 
 // Read-only external acceptance for setup, without launching managed services,
 // publishing their schemas to the model, or inventing native tool arguments.
@@ -15,6 +16,17 @@ export async function probe_connections(config, root, profile) {
       return [name, { configured: false, connected: false, ready: false, state: knowledge.state, detail: knowledge.detail }];
     const options = config.mcp.required[name] || config.mcp.optional[name];
     if (!options?.url || options.enabled === false) return [name, { configured: false, connected: false, ready: false }];
+    if (name === "openviking") {
+      const bounded = structuredClone(config);
+      bounded.mcp.optional.openviking.timeout_seconds = Math.min(options.timeout_seconds || 20, 30);
+      const adapter = new OpenVikingAdapter(profile, bounded);
+      const result = { configured: true, connected: false, ready: false, access: "not_verified",
+        searchReadiness: "not_verified", collections: knowledge.collections, detail: knowledge.detail };
+      try { Object.assign(result, await adapter.connect()); }
+      catch (error) { result.detail = error.message; }
+      finally { await adapter.close().catch(() => {}); }
+      return [name, result];
+    }
     const client = new RemoteMcp(options.url, Math.min(options.timeout_seconds || 20, 30), { headers_env: options.headers_env, maxBytes: options.max_response_bytes });
     const result = { configured: true, connected: false, ready: false, projectReadiness: "not_verified" };
     try {
@@ -45,12 +57,7 @@ export async function probe_connections(config, root, profile) {
           }
         }
       }
-      result.ready = name === "edt" ? result.projectReadiness === "verified" : name !== "openviking";
-      if (name === "openviking") {
-        result.searchReadiness = "not_verified";
-        result.collections = knowledge.collections;
-        result.detail = knowledge.detail;
-      }
+      result.ready = name === "edt" ? result.projectReadiness === "verified" : true;
     } catch (error) { result.detail = error.message; }
     finally { await client.close().catch(() => {}); }
     return [name, result];

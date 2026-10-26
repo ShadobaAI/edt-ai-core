@@ -45,7 +45,7 @@ test("OpenViking uses explicit nonempty collections without requiring the recomm
   assert.equal(knowledge_status(f.profile, config).apiExistence, "not_determined");
 });
 
-test("a connected MCP with tools does not prove selected-collection search readiness", async t => {
+test("an MCP endpoint without access evidence cannot prove selected-collection search readiness", async t => {
   const f = fixture(t); environment(t, f.env);
   f.profile.knowledge = { mode: "transitional", provider: "openviking", manifest: null, collections: ["architecture"], required: false, dependent_actions: [] };
   const config = settings();
@@ -63,10 +63,11 @@ test("a connected MCP with tools does not prove selected-collection search readi
     return Response.json({ jsonrpc: "2.0", id: message.id, ...body });
   });
   const result = await probe_connections(config, f.root, f.profile);
-  assert.equal(result.external.openviking.connected, true);
+  assert.equal(result.external.openviking.connected, false);
+  assert.equal(result.external.openviking.access, "not_verified");
   assert.equal(result.external.openviking.ready, false);
   assert.deepEqual(result.external.openviking.collections, ["architecture"]);
-  assert.equal(methods.includes("tools/call"), false);
+  assert.deepEqual(methods, []);
   assert.equal(result.knowledge.coverage, "not_verified");
   assert.equal(result.knowledge.apiExistence, "not_determined");
 });

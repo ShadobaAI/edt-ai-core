@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "endpoint", "principal", "purpose", "credential_binding", "team_roots", "permissions", "tools_sha256", "operations", "verification", "verified_at", "expires_at"],
+  "properties": {
+    "schema_version": { "const": "0.1" },
+    "endpoint": { "type": "string", "pattern": "^https?://[^\\s]+$" },
+    "principal": { "type": "string", "pattern": "\\S", "maxLength": 256 },
+    "purpose": { "const": "search_readonly" },
+    "permissions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["search", "read", "write", "delete", "publish", "acl", "session_capture", "personal_areas"],
+      "properties": {
+        "search": { "const": true }, "read": { "const": true },
+        "write": { "const": false }, "delete": { "const": false },
+        "publish": { "const": false }, "acl": { "const": false },
+        "session_capture": { "const": false }, "personal_areas": { "const": false }
+      }
+    },
+    "credential_binding": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "tools_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "operations": {
+      "type": "object", "additionalProperties": false, "required": ["search", "read"],
+      "properties": {
+        "search": { "allOf": [{ "$ref": "#/$defs/operation" }, { "properties": { "purpose": { "const": "scoped_search" } } }] },
+        "read": { "allOf": [{ "$ref": "#/$defs/operation" }, { "properties": { "purpose": { "const": "scoped_read" } } }] }
+      }
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["verifier", "deployment_id", "policy_revision", "checks", "bypass", "negative_test_scope"],
+      "properties": {
+        "verifier": { "$ref": "#/$defs/text" }, "deployment_id": { "$ref": "#/$defs/text" }, "policy_revision": { "$ref": "#/$defs/text" },
+        "negative_test_scope": {
+          "type": "object", "additionalProperties": false, "required": ["kind", "reference"],
+          "properties": { "kind": { "const": "isolated" }, "reference": { "$ref": "#/$defs/text" } }
+        },
+        "bypass": {
+          "type": "object", "additionalProperties": false, "required": ["rest", "cli", "publication_credentials", "direct_endpoint"],
+          "properties": {
+            "rest": { "$ref": "#/$defs/interface_proof" }, "cli": { "$ref": "#/$defs/interface_proof" },
+            "direct_endpoint": { "$ref": "#/$defs/interface_proof" },
+            "publication_credentials": { "allOf": [{ "$ref": "#/$defs/bypass_proof" }, { "properties": { "restriction": { "const": "unavailable" } } }] }
+          }
+        },
+        "checks": {
+          "type": "object", "additionalProperties": false,
+          "required": ["team_read", "search_credentials_only", "write_denied", "delete_denied", "publish_denied", "acl_denied", "session_capture_denied", "personal_areas_denied"],
+          "properties": {
+            "team_read": { "$ref": "#/$defs/confirmation" }, "search_credentials_only": { "$ref": "#/$defs/confirmation" },
+            "write_denied": { "$ref": "#/$defs/confirmation" }, "delete_denied": { "$ref": "#/$defs/confirmation" },
+            "publish_denied": { "$ref": "#/$defs/confirmation" }, "acl_denied": { "$ref": "#/$defs/confirmation" },
+            "session_capture_denied": { "$ref": "#/$defs/confirmation" }, "personal_areas_denied": { "$ref": "#/$defs/confirmation" }
+          }
+        }
+      }
+    },
+    "team_roots": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^viking://resources/[\\p{L}\\p{N}._/-]+$" } },
+    "verified_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "interface_proof": {
+      "allOf": [{ "$ref": "#/$defs/bypass_proof" }, { "properties": { "restriction": { "enum": ["same_readonly_acl", "unreachable"] } } }]
+    },
+    "bypass_proof": {
+      "type": "object", "additionalProperties": false, "required": ["status", "target", "restriction", "evidence_ref"],
+      "properties": {
+        "status": { "const": "confirmed" }, "target": { "$ref": "#/$defs/text" }, "restriction": { "enum": ["same_readonly_acl", "unreachable", "unavailable"] },
+        "evidence_ref": { "$ref": "#/$defs/text" }
+      }
+    },
+    "text": { "type": "string", "pattern": "\\S", "maxLength": 2048 },
+    "confirmation": {
+      "type": "object", "additionalProperties": false, "required": ["status", "evidence_ref"],
+      "properties": { "status": { "const": "confirmed" }, "evidence_ref": { "$ref": "#/$defs/text" } }
+    },
+    "operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "purpose", "descriptor_sha256", "side_effects", "scope_enforced", "evidence_ref"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "purpose": { "enum": ["scoped_search", "scoped_read"] },
+        "descriptor_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "side_effects": { "const": "none" }, "scope_enforced": { "const": true },
+        "evidence_ref": { "type": "string", "pattern": "\\S", "maxLength": 2048 }
+      }
+    }
+  }
+}

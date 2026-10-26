@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fixture, session, ROOT, node, success } from "./helpers.mjs";
-import { COMPONENTS, component_settings, managed_components } from "../scripts/components.mjs";
-import { settings } from "../scripts/common.mjs";
+import { COMPONENTS, component_settings, managed_components, binding_fingerprint } from "../scripts/components.mjs";
+import { settings, dump, load } from "../scripts/common.mjs";
 import { OpenVikingAdapter, OPENVIKING_LIMITS } from "../scripts/openviking_adapter.mjs";
 import { SEARCH_REQUIREMENTS } from "../scripts/knowledge.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
@@ -12,12 +12,55 @@ import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { all_pages } from "../scripts/mcp_pages.mjs";
+import { remember_profile } from "../scripts/profile_history.mjs";
+import { profile_state } from "../scripts/profile.mjs";
+import { probe_connections } from "../scripts/setup_probe.mjs";
+import { RemoteMcp } from "../scripts/remote_client.mjs";
+import { generateKeyPairSync, sign } from "node:crypto";
+import { credential_binding, surface_fingerprint, operation_fingerprint, access_error } from "../scripts/openviking_access.mjs";
+import { stable } from "../scripts/common.mjs";
+
+const accessKeys = generateKeyPairSync("ed25519");
+const accessEnv = { EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY: accessKeys.publicKey.export({ type: "spki", format: "pem" }),
+  EDT_AI_OPENVIKING_ACCESS_BINDING_KEY: "isolated-test-binding-key-32-bytes-minimum", EDT_AI_TEST_SEARCH_TOKEN: "Bearer isolated-search-token" };
+const accessReceipts = new Map();
+const receiptStart = new Date(Date.now() - 60000).toISOString(), receiptEnd = new Date(Date.now() + 3600000).toISOString();
+function operationGrants(tools) {
+  return Object.fromEntries(["search", "read"].map(role => {
+    const tool = tools.find(tool => role === "search" ? ["find", "search"].includes(tool.name) : tool.name === "read");
+    return [role, { name: tool?.name, purpose: "scoped_" + role, descriptor_sha256: operation_fingerprint(tool || {}),
+      side_effects: "none", scope_enforced: true, evidence_ref: "isolated-fixture-reviewed-operation" }];
+  }));
+}
+function grantAccess(f, endpoint = f.config.mcp.optional.openviking.url, change = {}) {
+  Object.assign(process.env, accessEnv);
+  const payload = { schema_version: "0.1", endpoint, principal: "isolated-search", purpose: "search_readonly",
+    permissions: { search: true, read: true, write: false, delete: false, publish: false, acl: false, session_capture: false, personal_areas: false },
+    credential_binding: credential_binding(f.config.mcp.optional.openviking), team_roots: ["viking://resources/team"],
+    tools_sha256: surface_fingerprint(f.client?.tools || nativeTools()),
+    operations: operationGrants(f.client?.tools || nativeTools()),
+    verification: { verifier: "isolated-external-reviewer", deployment_id: "fixture-deployment", policy_revision: "fixture-policy-1",
+      negative_test_scope: { kind: "isolated", reference: "fixture-only-data" },
+      bypass: Object.fromEntries(["rest", "cli", "publication_credentials", "direct_endpoint"].map(name => [name,
+        { status: "confirmed", target: "isolated-fixture-" + name, restriction: name === "publication_credentials" ? "unavailable" : "same_readonly_acl", evidence_ref: "isolated-bypass-review-" + name }])),
+      checks: Object.fromEntries(["team_read", "search_credentials_only", "write_denied", "delete_denied", "publish_denied", "acl_denied", "session_capture_denied", "personal_areas_denied"]
+        .map(name => [name, { status: "confirmed", evidence_ref: "isolated-fixture-" + name }])) },
+    verified_at: receiptStart, expires_at: receiptEnd, ...change };
+  accessReceipts.delete(endpoint);
+  accessReceipts.set(endpoint, { payload, signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") });
+  while (accessReceipts.size > 3) accessReceipts.delete(accessReceipts.keys().next().value);
+  Object.assign(process.env, { EDT_AI_OPENVIKING_ACCESS_RECEIPTS: JSON.stringify([...accessReceipts.values()]) });
+  Object.assign(f.env, accessEnv, { EDT_AI_OPENVIKING_ACCESS_RECEIPTS: process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS });
+  return payload;
+}
 
 test("OpenViking registry uses optional settings and a dedicated bounded MCP entry", async t => {
   const f = fixture(t); f.save();
   const config = settings(f.env.EDT_AI_SETTINGS);
   assert.equal(component_settings(config, "openviking"), config.mcp.optional.openviking);
   assert.equal(managed_components.includes("openviking"), false);
+  const bypass = node("scripts/lazy_mcp.mjs", ["--component", "openviking"], { env: f.env });
+  assert.notEqual(bypass.status, 0); assert.match(bypass.stderr, /dedicated restricted adapter/);
   const entry = JSON.parse(fs.readFileSync(path.join(ROOT, "mcp.json"))).mcpServers.openviking;
   assert.deepEqual(entry.args, ["${PLUGIN_ROOT}/" + COMPONENTS.openviking.adapter]);
   const client = await session(t, COMPONENTS.openviking.adapter, [], f);
@@ -59,7 +102,8 @@ const textResult = text => ({ content: [{ type: "text", text }] });
 function adapterFixture(t) {
   const f = fixture(t), config = settings(f.env.EDT_AI_SETTINGS), calls = [];
   f.profile.knowledge = { provider: "openviking", mode: "transitional", manifest: null, collections: ["architecture"], required: false, dependent_actions: [], collection_uris: { architecture: "viking://resources/team/architecture" } };
-  config.mcp.optional.openviking = { ...config.mcp.optional.openviking, enabled: true, url: "https://example.org/mcp" };
+  config.mcp.optional.openviking = { ...config.mcp.optional.openviking, enabled: true, url: "https://example.org/mcp", headers_env: { Authorization: "EDT_AI_TEST_SEARCH_TOKEN" } };
+  grantAccess({ config, env: f.env });
   const client = { tools: nativeTools(), initialized: 0, closed: 0, tools_revision: 0,
     async initialize() { this.initialized++; }, async close() { this.closed++; },
     async request(method, params) {
@@ -71,10 +115,403 @@ function adapterFixture(t) {
   };
   return { ...f, config, calls, client, adapter: () => new OpenVikingAdapter(f.profile, config, client) };
 }
+async function upstream(t, f) {
+  const requests = [], closed = [];
+  let sequence = 0;
+  const server = createServer(async (req, res) => {
+    if (req.method === "DELETE") { closed.push(req.headers["mcp-session-id"]); await f.client.beforeClose?.(req); return res.writeHead(204).end(); }
+    let text = ""; for await (const chunk of req) text += chunk;
+    const message = JSON.parse(text);
+    requests.push({ ...message, session: req.headers["mcp-session-id"] });
+    await f.client.before?.(message);
+    const rpcError = f.client.error?.(message);
+    if (rpcError) return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: rpcError } }));
+    const reply = result => {
+      const response = { jsonrpc: "2.0", id: message.id, result }, notices = f.client.notifications?.(message) || [];
+      if (notices.length) return res.writeHead(200, { "Content-Type": "text/event-stream" }).end([...notices, response].map(value => "data: " + JSON.stringify(value) + "\n\n").join(""));
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(response));
+    };
+    if (message.method === "server/discover") return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy fixture" } }));
+    if (message.method === "initialize") {
+      res.setHeader("Mcp-Session-Id", "fixture-" + ++sequence);
+      return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "fixture", version: "1" }, capabilities: f.client.capabilities || { tools: {} } });
+    }
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: f.client.tools });
+    reply(await f.client.respond(message.params));
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  const url = "http://127.0.0.1:" + server.address().port + "/mcp";
+  f.profile.connections = { openviking: { enabled: true, url, headers_env: f.config.mcp.optional.openviking.headers_env } }; f.save();
+  grantAccess(f, url);
+  return { requests, closed, url };
+}
+
+test("search credentials require an external scoped grant before any network request", async t => {
+  for (const change of [{ purpose: "publisher" }, { endpoint: "https://other.example/mcp" },
+    { team_roots: ["viking://resources/other"] }, { expires_at: "2020-01-01T00:00:00Z" },
+    { credential_binding: "0".repeat(64) }, { verified_at: "2026-02-30T00:00:00Z" }, { expires_at: "2099" }]) {
+    const f = adapterFixture(t); grantAccess(f, undefined, change);
+    await assert.rejects(f.adapter().connect(), /signed grant/);
+    assert.equal(f.client.initialized, 0); assert.equal(f.calls.length, 0);
+  }
+  for (const headers of [{}, { "Mcp-Session-Id": "EDT_AI_TEST_SEARCH_TOKEN" },
+    { Authorization: "MISSING_SEARCH_CREDENTIAL" }, { Authorization: "EDT_AI_TEST_SEARCH_TOKEN", "X-Api-Key": "EDT_AI_TEST_SEARCH_TOKEN" }]) {
+    const f = adapterFixture(t); f.config.mcp.optional.openviking.headers_env = headers;
+    await assert.rejects(f.adapter().connect(), /credential/); assert.equal(f.client.initialized, 0);
+  }
+  const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
+  process.env.EDT_AI_TEST_SEARCH_TOKEN = "Bearer rotated-token";
+  await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /signed grant/);
+  assert.equal(f.calls.filter(call => call.method === "tools/call").length, 0);
+});
+test("search access is checked between HTTP negotiation requests and cleanup pins its credentials", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  f.config.mcp.optional.openviking.url = remote.url;
+  f.client.before = message => { if (message.method === "server/discover") process.env.EDT_AI_TEST_SEARCH_TOKEN = "Bearer rotated-token"; };
+  await assert.rejects(new OpenVikingAdapter(f.profile, f.config).connect(), /signed grant/);
+  assert.equal(remote.requests.some(value => value.method === "initialize"), false);
+  grantAccess(f, remote.url); f.client.before = null;
+  const adapter = new OpenVikingAdapter(f.profile, f.config); await adapter.connect();
+  let cleanupCredential;
+  f.client.beforeClose = req => { cleanupCredential = req.headers.authorization; };
+  process.env.EDT_AI_TEST_SEARCH_TOKEN = "Bearer rotated-token";
+  await adapter.close();
+  assert.equal(cleanupCredential, accessEnv.EDT_AI_TEST_SEARCH_TOKEN);
+});
+
+test("knowledge denies mutation, session capture and personal access even through direct adapter requests", async t => {
+  for (const permission of ["write", "delete", "publish", "acl", "session_capture", "personal_areas"]) {
+    const f = adapterFixture(t);
+    const permissions = { search: true, read: true, write: false, delete: false, publish: false, acl: false, session_capture: false, personal_areas: false, [permission]: true };
+    grantAccess(f, undefined, { permissions });
+    await assert.rejects(f.adapter().connect(), /signed grant/); assert.equal(f.client.initialized, 0);
+  }
+  const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
+  const before = f.calls.length;
+  for (const method of ["resources/read", "prompts/get", "initialize", "sessions/capture"])
+    await assert.rejects(adapter.request(method, {}), /permitted/);
+  for (const name of ["write", "delete", "publish", "set_acl", "capture_session"])
+    await assert.rejects(adapter.request("tools/call", { name, arguments: {} }), /permitted/);
+  for (const target of ["viking://user/private.md", "viking://resources/other/file.md", uri + "/../secret.md"])
+    await assert.rejects(adapter.request("tools/call", { name: "read", arguments: { uris: target, offset: 0, limit: 1 } }));
+  await assert.rejects(adapter.request("tools/call", { name: "find", arguments: { query: "x", target_uri: "viking://resources", limit: 1 } }));
+  await assert.rejects(adapter.request("tools/call", { name: "find", arguments: { query: "x", target_uri: "viking://resources/team/architecture", limit: 1, capture_session: true } }));
+  assert.equal(f.calls.length, before);
+});
+
+test("knowledge bindings isolate directories, instances and MCP sessions independently", async t => {
+  const f = adapterFixture(t), other = fixture(t);
+  const remote = await upstream(t, f); other.save();
+  dump({ connections: { openviking: { timeout_seconds: 3 } } }, path.join(f.root, ".ai/instances/second.local.yaml"));
+  const first = await session(t, "mcp/openviking.mjs", [], f);
+  const same = await session(t, "mcp/openviking.mjs", [], f);
+  const second = await session(t, "mcp/openviking.mjs", [], f, { EDT_AI_INSTANCE: "second" });
+  const bindings = [];
+  for (const client of [first, same, second]) bindings.push((await client.call("knowledge_status", {})).structuredContent.binding);
+  assert.deepEqual(bindings.map(value => value.projectRoot), [f.root, f.root, f.root]);
+  assert.deepEqual(bindings.map(value => value.instance), ["first", "first", "second"]);
+  assert.equal(new Set(bindings.map(value => value.sessionId)).size, 3);
+  assert.equal(new Set(bindings.map(value => value.connectionId)).size, 3);
+  assert.notEqual(bindings[0].revision, bindings[2].revision);
+  assert.equal(remote.requests.filter(value => value.method === "initialize").length, 3);
+  await assert.rejects(first.call("knowledge_status", { projectRoot: other.root }), /MCP-сессией/);
+  assert.deepEqual((await first.call("knowledge_status", {})).structuredContent.binding, bindings[0]);
+  await same.close();
+  assert.equal((await first.call("knowledge_search", { query: "x", collection: "architecture" })).structuredContent.binding.connectionId, bindings[0].connectionId);
+});
+test("binding changes retire the previous session, discover fresh tools and invalidate continuations", async t => {
+  const f = adapterFixture(t), next = adapterFixture(t);
+  next.client.tools[0].name = "search";
+  const firstServer = await upstream(t, f), secondServer = await upstream(t, next);
+  grantAccess(f, secondServer.url, { tools_sha256: surface_fingerprint(next.client.tools), operations: operationGrants(next.client.tools) });
+  f.client.respond = () => textResult(markdown(metadata(), "x".repeat(30000)));
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  const previous = (await client.call("knowledge_read", { uri, collection: "architecture" })).structuredContent;
+  f.profile.connections.openviking.url = secondServer.url; f.save();
+  const updated = (await client.call("knowledge_status", {})).structuredContent;
+  assert.equal(updated.contract.search, "search");
+  assert.notEqual(updated.binding.connectionId, previous.binding.connectionId);
+  assert.notEqual(updated.binding.revision, previous.binding.revision);
+  assert.equal(updated.binding.sessionId, previous.binding.sessionId);
+  assert.deepEqual(firstServer.closed, ["fixture-1"]);
+  assert.equal(secondServer.requests.filter(value => value.method === "tools/list").length, 1);
+  await assert.rejects(client.call("knowledge_read", { uri, collection: "architecture", ...previous.next }), /another knowledge binding/);
+  next.client.tools = [];
+  const incompatible = (await client.call("knowledge_status", {})).structuredContent;
+  assert.equal(incompatible.connected, false); assert.equal(incompatible.binding, null);
+  assert.deepEqual(secondServer.closed, ["fixture-1"]);
+  next.client.tools = nativeTools(); next.client.tools[0].name = "search";
+  assert.equal((await client.call("knowledge_status", {})).structuredContent.connected, true);
+  fs.writeFileSync(path.join(f.root, ".ai/project.yaml"), "invalid: [");
+  await assert.rejects(client.call("knowledge_status", {}));
+  f.save();
+  const recovered = (await client.call("knowledge_status", {})).structuredContent;
+  assert.equal(recovered.connected, true);
+  assert.notEqual(recovered.binding.connectionId, updated.binding.connectionId);
+  assert.deepEqual(secondServer.closed, ["fixture-1", "fixture-2"]);
+});
+test("disabled knowledge never opens the configured endpoint, including contradictory transport settings", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  for (const enabled of [false, true]) {
+    f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+    f.profile.connections.openviking.enabled = enabled; f.save();
+    const status = (await client.call("knowledge_status", {})).structuredContent;
+    assert.equal(status.state, enabled ? "invalid" : "disabled");
+    assert.equal(status.binding, null);
+    for (const [name, args] of [["knowledge_search", { query: "x", collection: "architecture" }], ["knowledge_read", { uri, collection: "architecture" }]])
+      await assert.rejects(client.call(name, args), /disabled|provider is none/);
+    assert.equal(remote.requests.length, 0);
+    assert.equal(remote.closed.length, 0);
+  }
+});
+test("profile history and active_project never select or switch another knowledge session", async t => {
+  const f = adapterFixture(t), other = fixture(t);
+  await upstream(t, f); other.save();
+  const selected = await session(t, "mcp/openviking.mjs", [], f);
+  const previous = (await selected.call("knowledge_status", {})).structuredContent.binding;
+  dump({ active_project: other.root }, f.env.EDT_AI_SETTINGS);
+  assert.equal(remember_profile(f.state, other.root, profile_state(other.root)), true);
+  const unselected = new McpClient([process.execPath, path.join(ROOT, "mcp/openviking.mjs")], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
+  f.clients.push(unselected); unselected.roots = [];
+  await unselected.initialize();
+  await unselected.request("tools/list");
+  await assert.rejects(unselected.call("knowledge_status", {}), /Select this chat's project directory/);
+  assert.deepEqual((await selected.call("knowledge_status", {})).structuredContent.binding, previous);
+  const explicit = (await unselected.call("knowledge_status", { projectRoot: f.root })).structuredContent.binding;
+  assert.equal(explicit.projectRoot, f.root);
+  assert.notEqual(explicit.sessionId, previous.sessionId);
+  assert.deepEqual((await selected.call("knowledge_status", {})).structuredContent.binding, previous);
+  assert.equal(load(f.env.EDT_AI_SETTINGS).active_project, other.root);
+});
+test("profiles share one external read server with independent collections, contexts and evidence", async t => {
+  const f = adapterFixture(t), other = adapterFixture(t), remote = await upstream(t, f);
+  other.profile.knowledge.collections = ["bsp"];
+  other.profile.knowledge.collection_uris = { bsp: "viking://resources/team/bsp" };
+  other.profile.connections = { openviking: { enabled: true, url: remote.url, headers_env: other.config.mcp.optional.openviking.headers_env } }; other.save();
+  grantAccess(other, remote.url);
+  f.client.respond = params => {
+    if (params.name === "read") return textResult(markdown({ ...metadata(), scope: [params.arguments.uris] }));
+    const text = `Found 1 item(s):\n\n- [resource 90%] ${params.arguments.target_uri}/design.md\n    Summary\n\nUse the read tool to expand a URI.`;
+    return { ...textResult(text), structuredContent: { result: text } };
+  };
+  const first = await session(t, "mcp/openviking.mjs", [], f);
+  const second = await session(t, "mcp/openviking.mjs", [], other, { EDT_AI_STATE_DIR: f.state, EDT_AI_SETTINGS: f.env.EDT_AI_SETTINGS });
+  const search = (client, collection) => client.call("knowledge_search", { query: "x", collection }).then(result => result.structuredContent);
+  const results = await Promise.all([search(first, "architecture"), search(second, "bsp")]);
+  assert.deepEqual(results.map(value => value.binding.projectRoot), [f.root, other.root]);
+  assert.notEqual(results[0].binding.sessionId, results[1].binding.sessionId);
+  for (const [index, collection] of ["architecture", "bsp"].entries()) {
+    assert.deepEqual(results[index].binding.collections, [collection]);
+    assert.equal(results[index].scope.targetUri, `viking://resources/team/${collection}`);
+    assert.equal(results[index].discoveryCandidates[0].collection, collection);
+    const material = (await [first, second][index].call("knowledge_read", { uri: results[index].discoveryCandidates[0].uri, collection })).structuredContent;
+    assert.deepEqual(material.scope, [`viking://resources/team/${collection}/design.md`]);
+    assert.deepEqual(material.binding, results[index].binding);
+    assert.equal(results[index].evidenceUse, "discovery_only"); assert.equal(results[index].reusable, false);
+  }
+  const before = remote.requests.length;
+  await assert.rejects(search(first, "bsp"), /outside the selected profile/);
+  await assert.rejects(search(second, "architecture"), /outside the selected profile/);
+  assert.equal(remote.requests.length, before);
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.connections.openviking.enabled = false; f.save();
+  assert.equal((await first.call("knowledge_status", {})).structuredContent.binding, null);
+  const stillBound = await search(second, "bsp");
+  assert.deepEqual(stillBound.binding, results[1].binding);
+  assert.equal(remote.closed.length, 1);
+  assert.equal(new Set(remote.requests.filter(value => value.method === "tools/call").map(value => value.session)).size, 2);
+});
+test("late connection, status and retrieval responses cannot survive an effective binding change", async t => {
+  for (const phase of ["discover", "initialize", "connection", "status", "retrieval", "manifest"]) await t.test(phase, async t => {
+    const f = adapterFixture(t), remote = await upstream(t, f);
+    const retrieving = ["retrieval", "manifest"].includes(phase);
+    const catalog = { schema_version: "0.1", kind: "catalog", provider: "openviking", collections: [{ id: "architecture", description: "Original" }], materials: [] };
+    if (phase === "manifest") {
+      f.profile.knowledge.manifest = "knowledge/catalog.yaml";
+      dump(catalog, path.join(f.root, f.profile.knowledge.manifest)); f.save();
+    }
+    const client = await session(t, "mcp/openviking.mjs", [], f);
+    if (!["connection", "initialize", "discover"].includes(phase)) await client.call("knowledge_status", {});
+    const entered = Promise.withResolvers(), release = Promise.withResolvers();
+    t.after(() => release.resolve());
+    let held = false;
+    f.client.before = async message => {
+      const method = phase === "discover" ? "server/discover" : phase === "initialize" ? "initialize" : "tools/list";
+      if (!held && message.method === (retrieving ? "tools/call" : method)) {
+        held = true; entered.resolve(); await release.promise;
+      }
+    };
+    const pending = client.call(retrieving ? "knowledge_search" : "knowledge_status", retrieving ? { query: "x", collection: "architecture" } : {});
+    const rejected = assert.rejects(pending, /changed/);
+    await entered.promise;
+    let queuedRejected;
+    if (!retrieving) {
+      queuedRejected = assert.rejects(client.call("knowledge_status", {}), /changed/);
+      await client.request("tools/list");
+    }
+    if (phase === "manifest") {
+      catalog.collections[0].description = "Changed";
+      dump(catalog, path.join(f.root, f.profile.knowledge.manifest));
+    } else { f.profile.connections.openviking.timeout_seconds = 3; f.save(); }
+    release.resolve(); await rejected; await queuedRejected;
+    if (phase === "discover") assert.equal(remote.requests.some(value => value.method === "initialize"), false);
+    assert.equal((await client.call("knowledge_status", {})).structuredContent.connected, true);
+  });
+});
+test("a roots change discards a delayed response without attaching the new chat binding", async t => {
+  const f = adapterFixture(t), other = adapterFixture(t), remote = await upstream(t, f);
+  other.profile.connections = { openviking: { enabled: true, url: remote.url, headers_env: f.config.mcp.optional.openviking.headers_env } }; other.save();
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/openviking.mjs")], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
+  f.clients.push(client); client.roots = [{ uri: pathToFileURL(f.root).href }];
+  await client.initialize(); await client.request("tools/list");
+  const before = (await client.call("knowledge_status", {})).structuredContent.binding;
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(); t.after(() => release.resolve());
+  let held = false;
+  f.client.before = async message => {
+    if (!held && message.method === "tools/call") { held = true; entered.resolve(); await release.promise; }
+  };
+  const pending = client.call("knowledge_search", { query: "x", collection: "architecture" });
+  const rejected = assert.rejects(pending, /changed|closed/);
+  await entered.promise;
+  client.roots = [{ uri: pathToFileURL(other.root).href }]; client.notify("notifications/roots/list_changed");
+  await client.request("tools/list");
+  const after = (await client.call("knowledge_status", {})).structuredContent.binding;
+  assert.equal(after.projectRoot, other.root); assert.notEqual(after.connectionId, before.connectionId);
+  release.resolve(); await rejected;
+  assert.deepEqual((await client.call("knowledge_status", {})).structuredContent.binding, after);
+});
+test("disabling knowledge while initialize is pending prevents discovery and retires its late session", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(); t.after(() => release.resolve());
+  f.client.before = async message => { if (message.method === "initialize") { entered.resolve(); await release.promise; } };
+  const pending = client.call("knowledge_status", {}), rejected = assert.rejects(pending, /binding changed/);
+  await entered.promise;
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.connections.openviking.enabled = false; f.save();
+  assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");
+  release.resolve(); await rejected;
+  assert.equal(remote.requests.some(value => value.method === "tools/list" || value.method === "tools/call"), false);
+  assert.deepEqual(remote.closed, ["fixture-1"]);
+});
+test("a binding invalidated while the old DELETE is pending never opens a stale replacement", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  await client.call("knowledge_status", {});
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(); t.after(() => release.resolve());
+  f.client.beforeClose = async () => { entered.resolve(); await release.promise; };
+  f.profile.connections.openviking.timeout_seconds = 3; f.save();
+  const rejected = assert.rejects(client.call("knowledge_status", {}), /binding changed/);
+  await entered.promise;
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.connections.openviking.enabled = false; f.save();
+  release.resolve(); await rejected;
+  assert.equal(remote.requests.filter(value => value.method === "initialize").length, 1);
+  assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");
+});
+test("native requests waiting in the queue cannot reach a provider disabled while earlier reads run", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  await client.call("knowledge_status", {});
+  const entered = Promise.withResolvers(), release = Promise.withResolvers(); t.after(() => release.resolve());
+  let calls = 0;
+  f.client.before = async message => {
+    if (message.method === "tools/call" && ++calls <= 2) {
+      if (calls === 2) entered.resolve();
+      await release.promise;
+    }
+  };
+  const rejected = Promise.all(Array.from({ length: 5 }, () => assert.rejects(client.call("knowledge_read", { uri, collection: "architecture" }), /changed|closed|disabled/)));
+  await entered.promise; await client.request("tools/list");
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.connections.openviking.enabled = false; f.save();
+  release.resolve(); await rejected;
+  assert.equal(remote.requests.filter(value => value.method === "tools/call").length, 2);
+});
+test("opaque response context changes reject mixed discovery pages without authorizing search expansion", async t => {
+  const f = adapterFixture(t), adapter = f.adapter(), originalRequest = f.client.request;
+  f.client.request = async function(method, params) {
+    if (method === "tools/list") return params.cursor ? { tools: this.tools.slice(1), _meta: { snapshot: "second" } }
+      : { tools: this.tools.slice(0, 1), nextCursor: "tail", _meta: { snapshot: "first" } };
+    return originalRequest.call(this, method, params);
+  };
+  await assert.rejects(adapter.connect(), /context changed.*mixed pages/);
+  const g = adapterFixture(t), connected = g.adapter(); await connected.connect();
+  const respond = g.client.respond;
+  g.client.respond = params => ({ ...respond(params), _meta: { snapshot: params.name === "read" ? "second" : "first" } });
+  const unverified = await connected.search({ query: "x", collection: "architecture" });
+  assert.equal(unverified.items.length, 0); assert.equal(unverified.discoveryCandidates.length, 1);
+  assert.equal(g.calls.filter(value => value.params?.name === "read").length, 0);
+  await assert.rejects(connected.read({ uri, collection: "architecture", offset: 200 }), /verified publication snapshot/);
+  // Neither an absent nor an arbitrary marker authorizes multi-response joins.
+  g.client.respond = params => ({ ...respond(params), ...(params.name === "read" ? {} : { _meta: { snapshot: "first" } }) });
+  assert.equal((await connected.search({ query: "x", collection: "architecture" })).outcome, "unverified_candidates");
+  g.client.respond = params => ({ ...respond(params), _meta: { snapshot: "first" } });
+  assert.equal((await connected.search({ query: "x", collection: "architecture" })).expansion, "blocked_until_snapshot_verified");
+});
+test("MCP resource notifications invalidate an in-flight retrieval without becoming publication evidence", async t => {
+  const f = adapterFixture(t); await upstream(t, f);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  await client.call("knowledge_status", {});
+  f.client.notifications = message => message.method === "tools/call" ? [{ jsonrpc: "2.0", method: "notifications/resources/updated", params: { uri } }] : [];
+  await assert.rejects(client.call("knowledge_search", { query: "x", collection: "architecture" }), /resources changed/);
+  f.client.notifications = () => [];
+  const recovered = (await client.call("knowledge_search", { query: "x", collection: "architecture" })).structuredContent;
+  assert.equal(recovered.publication.snapshot, null); assert.equal(recovered.publication.consistency, "not_verified");
+});
+test("continuations reject changed content and response context even when material revision is unchanged", async t => {
+  const f = adapterFixture(t); await upstream(t, f);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  let body = "a", snapshot = "one";
+  f.client.respond = () => ({ ...textResult(markdown(metadata(), body.repeat(30000))), _meta: { snapshot } });
+  const read = () => client.call("knowledge_read", { uri, collection: "architecture" }).then(value => value.structuredContent);
+  const first = await read();
+  body = "b";
+  await assert.rejects(client.call("knowledge_read", { uri, collection: "architecture", ...first.next }), /revision changed|context changed/);
+  const second = await read(); snapshot = "two";
+  await assert.rejects(client.call("knowledge_read", { uri, collection: "architecture", ...second.next }), /context changed/);
+  const third = await read();
+  assert.equal((await client.call("knowledge_read", { uri, collection: "architecture", ...third.next })).structuredContent.revision, "edition-1");
+});
+test("unversioned line pages are blocked even when the first window would remain unchanged", async t => {
+  const f = adapterFixture(t); await upstream(t, f);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  let body = "a";
+  f.client.respond = params => textResult(params.arguments.offset === 0 ? markdown(metadata(), "row\n".repeat(197)) : body.repeat(30000));
+  const header = (await client.call("knowledge_read", { uri, collection: "architecture" })).structuredContent;
+  assert.equal(header.next, null); assert.equal(header.hasMoreLines, true);
+  assert.equal(header.lineContinuation, "blocked_until_snapshot_verified");
+  body = "b";
+  await assert.rejects(client.call("knowledge_read", { uri, collection: "architecture", offset: 200 }), /verified publication snapshot/);
+  const larger = (await client.call("knowledge_read", { uri, collection: "architecture", limit: 1000 })).structuredContent;
+  assert.equal(larger.limit, 1000);
+});
+test("an unversioned publication switch cannot mix search materials or metadata with another read window", async t => {
+  const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
+  let reads = 0;
+  f.client.respond = params => {
+    if (params.name === "read") {
+      reads++;
+      return textResult(markdown({ ...metadata(), revision: "publication-" + reads }, "# Publication " + reads));
+    }
+    const text = `Found 2 item(s):\n\n- [resource 90%] ${uri}\n    First\n- [resource 80%] viking://resources/team/architecture/second.md\n    Second\n\nUse the read tool to expand a URI.`;
+    return { ...textResult(text), structuredContent: { result: text } };
+  };
+  const found = await adapter.search({ query: "x", collection: "architecture" });
+  assert.equal(found.outcome, "unverified_candidates"); assert.equal(found.items.length, 0);
+  assert.equal(found.discoveryCandidates.length, 2); assert.equal(found.unexpanded, 2); assert.equal(reads, 0);
+  const addressed = await adapter.read({ uri, collection: "architecture", limit: 1000 });
+  assert.equal(reads, 1); assert.equal(addressed.revision, "publication-1");
+  assert.ok(addressed.text.endsWith("# Publication 1"));
+  assert.deepEqual(f.calls.filter(value => value.params?.name === "read").map(value => value.params.arguments), [{ uris: uri, offset: 0, limit: 1000 }]);
+});
 test("OpenViking negotiates live schemas and calls only scoped search/read", async t => {
   const f = adapterFixture(t), adapter = f.adapter();
   const status = await adapter.connect(); assert.equal(status.ready, false);
-  assert.equal((await adapter.search({ query: "design", collection: "architecture" })).items[0].uri, uri);
+  assert.equal((await adapter.search({ query: "design", collection: "architecture" })).discoveryCandidates[0].uri, uri);
   assert.equal((await adapter.read({ uri, collection: "architecture" })).text, markdown());
   const before = f.calls.length;
   for (const request of [{ query: "", collection: "architecture" }, { query: "x", collection: "other" }, { query: "x", collection: "architecture", limit: 500 }])
@@ -88,11 +525,10 @@ test("OpenViking returns compact sourced editions and expands only addressed mat
   const native = f.client.respond;
   f.client.respond = params => params.name === "read" ? textResult(markdown(metadata(), "x".repeat(1500))) : native(params);
   const result = await adapter.search({ query: "x", collection: "architecture" });
-  assert.equal(result.items[0].source, metadata().provenance.source);
-  assert.equal(result.items[0].revision, "edition-1");
-  assert.equal(result.items[0].excerpt.length, 1000);
-  assert.equal(result.items[0].excerptTruncated, true);
-  assert.equal(f.calls.filter(call => call.params?.name === "read").length, 1);
+  assert.equal(result.items.length, 0); assert.equal(result.discoveryCandidates[0].uri, uri);
+  assert.equal(f.calls.filter(call => call.params?.name === "read").length, 0);
+  const addressed = await adapter.read({ uri, collection: "architecture" });
+  assert.equal(addressed.source, metadata().provenance.source); assert.equal(addressed.revision, "edition-1");
   f.client.respond = params => params.name === "read" ? textResult(markdown(metadata(), "x".repeat(21000))) : native(params);
   const expanded = await adapter.read({ uri, collection: "architecture" });
   assert.equal(expanded.text.length, 20000); assert.equal(expanded.truncated, true);
@@ -128,9 +564,8 @@ test("material continuation uses OpenViking splitlines semantics for CR and Unic
     const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
     f.client.respond = params => textResult(params.arguments.offset === 0 ? markdown(metadata(), ("row" + separator).repeat(197)) : "tail" + separator);
     const first = await adapter.read({ uri, collection: "architecture" });
-    assert.equal(first.next.offset, 200);
-    const tail = await adapter.read({ uri, collection: "architecture", ...first.next });
-    assert.equal(tail.text, "tail" + separator); assert.equal(tail.next, null);
+    assert.equal(first.hasMoreLines, true); assert.equal(first.next, null);
+    await assert.rejects(adapter.read({ uri, collection: "architecture", offset: 200 }), /verified publication snapshot/);
   }
 });
 test("API statuses remain scoped, review pointers require verification and obsolete cards are filtered", async t => {
@@ -140,17 +575,18 @@ test("API statuses remain scoped, review pointers require verification and obsol
     f.client.respond = params => params.name === "read" ? textResult(markdown({ ...card(), status })) : original(params);
     const result = await adapter.search({ query: "x", collection: "architecture" });
     if (status === "obsolete") {
-      assert.equal(result.items.length, 0); assert.equal(result.filtered, 1); assert.equal(result.complete, false);
+      assert.equal(result.items.length, 0); assert.equal(result.metadata, "not_checked"); assert.equal(result.complete, false);
       assert.equal(result.apiExistence, "not_determined");
       await assert.rejects(adapter.read({ uri, collection: "architecture" }), /Inactive/);
     } else {
-      assert.deepEqual(result.items[0].scope, card().scope);
-      assert.equal(result.items[0].apiPolicy.applicabilityToCurrentTask, "not_verified");
-      assert.equal(result.items[0].apiPolicy.evidenceRole, status === "confirmed" ? "declared_scoped_confirmation" : "verification_pointer");
-      assert.equal(result.items[0].evidence.metadata, "unverified_declaration");
-      assert.equal(result.items[0].evidence.publication, "not_verified");
-      assert.equal(result.items[0].apiPolicy.newCall, status === "confirmed" ? "candidate_after_scope_verification" : "requires_reverification");
-      assert.equal((await adapter.read({ uri, collection: "architecture" })).apiPolicy.verificationRef, card().verification_ref);
+      const addressed = await adapter.read({ uri, collection: "architecture" });
+      assert.deepEqual(addressed.scope, card().scope);
+      assert.equal(addressed.apiPolicy.applicabilityToCurrentTask, "not_verified");
+      assert.equal(addressed.apiPolicy.evidenceRole, status === "confirmed" ? "declared_scoped_confirmation" : "verification_pointer");
+      assert.equal(addressed.evidence.metadata, "unverified_declaration");
+      assert.equal(addressed.evidence.publication, "not_verified");
+      assert.equal(addressed.apiPolicy.newCall, status === "confirmed" ? "candidate_after_scope_verification" : "requires_reverification");
+      assert.equal(addressed.apiPolicy.verificationRef, card().verification_ref);
     }
   }
 });
@@ -159,17 +595,15 @@ test("avoid API cards produce an avoidance warning for both confirmed and review
   const original = f.client.respond;
   for (const status of ["confirmed", "review_required"]) {
     f.client.respond = params => params.name === "read" ? textResult(markdown({ ...card(), status, recommendation: "avoid", avoid_reason: "Use the maintained wrapper" }, "Old example: Example.Method()")) : original(params);
-    const result = await adapter.search({ query: "x", collection: "architecture" });
-    assert.equal(result.items[0].apiPolicy.newCall, "not_recommended");
-    assert.equal(result.items[0].apiPolicy.evidenceRole, "avoidance_warning");
-    assert.equal(result.items[0].excerpt, "Use the maintained wrapper");
-    assert.equal((await adapter.read({ uri, collection: "architecture" })).apiPolicy.newCall, "not_recommended");
+    const addressed = await adapter.read({ uri, collection: "architecture" });
+    assert.equal(addressed.apiPolicy.newCall, "not_recommended");
+    assert.equal(addressed.apiPolicy.evidenceRole, "avoidance_warning");
+    assert.equal(addressed.apiPolicy.avoidReason, "Use the maintained wrapper");
   }
 });
 test("published documents retain their own metadata without becoming API evidence", async t => {
   const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
-  const result = await adapter.search({ query: "architecture", collection: "architecture" });
-  const item = result.items[0];
+  const item = await adapter.read({ uri, collection: "architecture" });
   assert.equal(item.status, "published"); assert.equal(item.kind, "document"); assert.equal(item.apiPolicy, undefined);
   assert.equal(item.documentPolicy.apiApplicability, "not_proven");
   assert.equal(item.evidence.publication, "not_verified");
@@ -177,12 +611,12 @@ test("published documents retain their own metadata without becoming API evidenc
   for (const status of ["draft", "obsolete"]) {
     f.client.respond = params => params.name === "read" ? textResult(markdown({ ...metadata(), status })) : original(params);
     const filtered = await adapter.search({ query: "x", collection: "architecture" });
-    assert.equal(filtered.outcome, "filtered_empty"); assert.equal(filtered.filtered, 1); assert.equal(filtered.complete, false);
+    assert.equal(filtered.outcome, "unverified_candidates"); assert.equal(filtered.items.length, 0); assert.equal(filtered.complete, false);
     await assert.rejects(adapter.read({ uri, collection: "architecture" }), /Inactive/);
   }
   for (const data of [{ ...metadata(), status: "confirmed" }, { ...metadata(), recommended_api: "Example.Method" }, { ...metadata(), revision: "" }, { ...metadata(), provenance: {} }]) {
     f.client.respond = params => params.name === "read" ? textResult(markdown(data)) : original(params);
-    await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /metadata/);
+    await assert.rejects(adapter.read({ uri, collection: "architecture" }), /metadata/);
   }
 });
 test("OpenViking bounds parallel traffic and rejects excess queued work", async t => {
@@ -211,9 +645,9 @@ test("OpenViking caps selected hits and serialized output without a corpus walk"
   };
   const result = await adapter.search({ query: "x", collection: "architecture", limit: 100 });
   assert.equal(result.effectiveLimit, 10); assert.equal(result.budgetLimited, true);
-  assert.ok(result.items.length < 10); assert.ok(result.unexpanded > 0);
+  assert.equal(result.items.length, 0); assert.equal(result.discoveryCandidates.length, 10); assert.equal(result.unexpanded, 10);
   assert.ok(JSON.stringify(result).length < OPENVIKING_LIMITS.resultChars);
-  assert.ok(f.calls.filter(call => call.params?.name === "read").length < 10);
+  assert.equal(f.calls.filter(call => call.params?.name === "read").length, 0);
   const read = await adapter.read({ uri, collection: "architecture" });
   assert.ok(JSON.stringify(read).length < OPENVIKING_LIMITS.resultChars);
   f.client.respond = () => textResult(markdown(metadata(), "Body" + "\t".repeat(15000)));
@@ -221,34 +655,118 @@ test("OpenViking caps selected hits and serialized output without a corpus walk"
   assert.equal(escaped.truncated, true); assert.ok(escaped.next.charOffset > 0);
   assert.ok(JSON.stringify(escaped).length < OPENVIKING_LIMITS.resultChars);
 });
-test("OpenViking revalidates live changes without pinning a native catalogue or health probing", async t => {
+test("OpenViking refuses changed surfaces, including servers without list_changed notifications", async t => {
   const f = adapterFixture(t), adapter = f.adapter();
-  // Extra and unknown native tools remain outside the adapter surface.
-  f.client.tools.push({ name: "future_write", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } });
   await adapter.connect();
   await adapter.search({ query: "x", collection: "architecture" });
   await adapter.search({ query: "y", collection: "architecture" });
-  assert.equal(f.calls.filter(call => call.method === "tools/list").length, 1);
-  const descriptor = f.client.tools[0]; descriptor.name = "search";
-  descriptor.inputSchema.properties.mode = { const: "list" }; descriptor.inputSchema.required.push("mode");
-  const original = f.client.respond;
-  f.client.respond = params => original({ ...params, name: params.name === "search" ? "find" : params.name });
-  f.client.tools_revision++;
-  await adapter.search({ query: "z", collection: "architecture" });
-  const call = f.calls.findLast(call => call.params?.name === "search");
-  assert.equal(call.params.arguments.mode, "list");
-  assert.equal(f.calls.filter(call => call.method === "tools/list").length, 2);
-  f.client.tools[0].inputSchema.required.push("new_required"); f.client.tools_revision++;
+  assert.equal(f.calls.filter(call => call.method === "tools/list").length, 3);
+  f.client.tools.push({ name: "future_write", inputSchema: { type: "object" }, annotations: { readOnlyHint: true } });
   const count = f.calls.filter(call => call.method === "tools/call").length;
-  await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /Incompatible live arguments/);
+  await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /externally approved/);
   assert.equal(f.calls.filter(call => call.method === "tools/call").length, count);
   assert.equal(adapter.connected, false);
   assert.equal(f.calls.some(call => call.params?.name === "health" || call.params?.name === "future_write"), false);
+  for (const change of [tools => tools.push({ name: "delete", inputSchema: { type: "object" } }),
+    tools => { tools[0].description = "changed semantics"; }, tools => { tools[0].inputSchema.properties.write = { type: "boolean" }; }]) {
+    const denied = adapterFixture(t); change(denied.client.tools);
+    await assert.rejects(denied.adapter().connect(), /externally approved/);
+    assert.equal(denied.calls.some(call => call.method === "tools/call"), false);
+  }
 });
+test("tool names and readOnlyHint cannot replace external operation review", async t => {
+  for (const change of [approval => { delete approval.read; }, approval => { approval.search.side_effects = "session_capture"; },
+    approval => { approval.read.scope_enforced = false; }, approval => { approval.search.evidence_ref = ""; }]) {
+    const f = adapterFixture(t), operations = operationGrants(f.client.tools); change(operations);
+    grantAccess(f, undefined, { operations });
+    await assert.rejects(f.adapter().connect(), /signed grant/); assert.equal(f.client.initialized, 0);
+  }
+  const f = adapterFixture(t);
+  f.client.tools[0].annotations = { readOnlyHint: true, destructiveHint: false };
+  f.client.tools[0].description = "Search and capture a personal session";
+  grantAccess(f, undefined, { operations: operationGrants(nativeTools()) });
+  await assert.rejects(f.adapter().connect(), /operation lacks external approval/);
+  assert.equal(f.calls.some(value => value.method === "tools/call"), false);
+});
+
+test("external access verification is mandatory, signed, bounded and tied to connection identity", async t => {
+  for (const field of ["team_read", "search_credentials_only", "write_denied", "delete_denied", "publish_denied", "acl_denied", "session_capture_denied", "personal_areas_denied"]) {
+    const f = adapterFixture(t), payload = grantAccess(f);
+    delete payload.verification.checks[field]; grantAccess(f, undefined, { verification: payload.verification });
+    await assert.rejects(f.adapter().connect(), /signed grant/); assert.equal(f.client.initialized, 0);
+  }
+  const f = adapterFixture(t);
+  grantAccess(f, undefined, { expires_at: new Date(Date.now() + 2 * 86400000).toISOString() });
+  await assert.rejects(f.adapter().connect(), /signed grant/);
+  grantAccess(f);
+  const forged = JSON.parse(process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS);
+  forged.find(item => item.payload.endpoint === f.config.mcp.optional.openviking.url).payload.principal = "forged-principal";
+  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = JSON.stringify(forged);
+  await assert.rejects(f.adapter().connect(), /signed grant/); assert.equal(f.client.initialized, 0);
+  grantAccess(f);
+  const adapter = f.adapter(), status = await adapter.connect();
+  assert.equal(status.access, "externally_attested"); assert.equal(status.accessEvidence.liveTestByPlugin, false); assert.equal(status.ready, false);
+  const before = binding_fingerprint(f.config, "openviking", f.root, f.profile);
+  const payload = grantAccess(f); payload.verification.policy_revision = "fixture-policy-2";
+  grantAccess(f, undefined, { verification: payload.verification });
+  assert.notEqual(binding_fingerprint(f.config, "openviking", f.root, f.profile), before);
+  await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /confirmation or identity changed/);
+  assert.equal(adapter.connected, false);
+  const encoded = JSON.stringify(status) + before;
+  assert.equal(encoded.includes(accessEnv.EDT_AI_TEST_SEARCH_TOKEN), false);
+  assert.equal(encoded.includes(accessEnv.EDT_AI_OPENVIKING_ACCESS_BINDING_KEY), false);
+});
+
+test("all external bypass proofs are required before calling even a read-only server", async t => {
+  for (const route of ["rest", "cli", "publication_credentials", "direct_endpoint"]) {
+    for (const failure of ["missing", "unknown", "unsafe", "empty_evidence"]) {
+      const f = adapterFixture(t), payload = grantAccess(f), proof = payload.verification.bypass[route];
+      if (failure === "missing") delete payload.verification.bypass[route];
+      if (failure === "unknown") proof.status = "not_checked";
+      if (failure === "unsafe") proof.restriction = "unrestricted";
+      if (failure === "empty_evidence") proof.evidence_ref = " ";
+      grantAccess(f, undefined, { verification: payload.verification });
+      await assert.rejects(f.adapter().connect(), /signed grant/);
+      assert.equal(f.client.initialized, 0); assert.equal(f.calls.length, 0);
+    }
+  }
+  const f = adapterFixture(t), payload = grantAccess(f);
+  payload.verification.negative_test_scope.kind = "production";
+  grantAccess(f, undefined, { verification: payload.verification });
+  await assert.rejects(f.adapter().connect(), /signed grant/);
+  grantAccess(f);
+  const adapter = f.adapter(), status = await adapter.connect();
+  assert.equal(status.access, "externally_attested"); assert.equal(status.ready, false);
+  // Updating another endpoint's evidence must not invalidate this connection.
+  grantAccess(f, "https://other.example/mcp");
+  assert.equal((await adapter.search({ query: "x", collection: "architecture" })).outcome, "unverified_candidates");
+});
+
+test("access expiration during a read discards its response and retires the connection", async t => {
+  const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
+  f.client.respond = () => { t.mock.method(Date, "now", () => Date.parse(receiptEnd)); return textResult(markdown()); };
+  await assert.rejects(adapter.read({ uri, collection: "architecture" }), /signed grant/);
+  assert.equal(adapter.connected, false); assert.ok(f.client.closed);
+});
+
+test("queued native calls cannot use a contract invalidated before dispatch", async t => {
+  const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
+  const release = Promise.withResolvers(); t.after(() => release.resolve());
+  const native = f.client.respond;
+  f.client.respond = async params => { await release.promise; return native(params); };
+  const call = () => adapter.request("tools/call", { name: "read", arguments: { uris: uri, offset: 0, limit: 1 } });
+  const first = call(), second = call(), queued = call();
+  const rejected = assert.rejects(queued, /contract changed/);
+  assert.equal(adapter.waiters.length, 1);
+  f.client.tools_revision++;
+  release.resolve(); await Promise.all([first, second, rejected]);
+  assert.equal(f.calls.filter(value => value.method === "tools/call").length, 2);
+});
+
 test("OpenViking rejects incompatible contracts, arguments, output and disabled configurations", async t => {
   for (const change of [tools => tools.pop(), tools => { tools[0].inputSchema.required.push("unprovided"); }, tools => { tools[1].inputSchema.properties.uris = { type: "integer" }; }]) {
     const f = adapterFixture(t); change(f.client.tools);
-    await assert.rejects(f.adapter().connect(), /contract|arguments/); assert.ok(f.client.closed);
+    await assert.rejects(f.adapter().connect(), /contract|arguments|surface/); assert.ok(f.client.closed);
   }
   const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
   for (const response of [{ content: [] }, { ...textResult("x"), isError: true }, { ...textResult("x"), structuredContent: { result: 1 } }, { ...textResult("x"), structuredContent: { result: "different" } }]) {
@@ -259,6 +777,106 @@ test("OpenViking rejects incompatible contracts, arguments, output and disabled 
   const unmapped = adapterFixture(t); delete unmapped.profile.knowledge.collection_uris;
   await assert.rejects(unmapped.adapter().connect(), /mapping required/); assert.equal(unmapped.client.initialized, 0);
 });
+test("isolated unsafe HTTP contracts are rejected by both MCP status and settings diagnostics", async t => {
+  for (const fault of ["mutation", "changed_semantics", "resources", "duplicate", "unscoped_read"]) {
+    await t.test(fault, async t => {
+      const f = adapterFixture(t), remote = await upstream(t, f);
+      if (fault === "mutation") f.client.tools.push({ name: "publish", annotations: { readOnlyHint: true }, inputSchema: { type: "object" } });
+      if (fault === "changed_semantics") f.client.tools[0].description = "Search and write memory";
+      if (fault === "resources") f.client.capabilities = { tools: {}, resources: {} };
+      if (fault === "duplicate") f.client.tools.push(f.client.tools[0]);
+      if (fault === "unscoped_read") delete f.client.tools[1].inputSchema.properties.uris;
+      const client = await session(t, "mcp/openviking.mjs", [], f);
+      const status = (await client.call("knowledge_status", {})).structuredContent;
+      assert.equal(status.connected, false); assert.equal(status.ready, false); assert.equal(status.access, "not_verified");
+      assert.equal(status.binding, null); assert.equal(status.accessEvidence, null);
+      assert.match(status.detail, /surface|capability|duplicate/);
+      await assert.rejects(client.call("knowledge_search", { query: "x", collection: "architecture" }), /surface|capability|duplicate/);
+      f.config.mcp.optional.openviking.url = remote.url;
+      const probed = (await probe_connections(f.config, f.root, f.profile)).external.openviking;
+      assert.equal(probed.connected, false); assert.equal(probed.ready, false); assert.equal(probed.access, "not_verified");
+      assert.match(probed.detail, /surface|capability|duplicate/);
+      assert.equal(remote.requests.some(value => value.method === "tools/call"), false);
+      f.client.tools = nativeTools(); f.client.capabilities = { tools: {} };
+      assert.equal((await client.call("knowledge_status", {})).structuredContent.connected, true);
+      assert.equal((await client.call("knowledge_status", {})).structuredContent.ready, false);
+    });
+  }
+});
+
+test("upstream errors cannot echo search credentials in MCP or settings diagnostics", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  f.config.mcp.optional.openviking.url = remote.url;
+  f.client.error = message => message.method === "tools/list" ? "denied " + accessEnv.EDT_AI_TEST_SEARCH_TOKEN : null;
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  const status = (await client.call("knowledge_status", {})).structuredContent;
+  const probe = (await probe_connections(f.config, f.root, f.profile)).external.openviking;
+  for (const result of [status, probe]) {
+    assert.equal(result.connected, false); assert.equal(result.ready, false);
+    assert.match(result.detail, /upstream rejected.*RPC -32000.*remote error text omitted/);
+    assert.equal(JSON.stringify(result).includes("isolated-search-token"), false);
+  }
+  f.client.error = message => message.method === "tools/call" ? "denied isolated-search-token" : null;
+  await assert.rejects(client.call("knowledge_search", { query: "x", collection: "architecture" }), error =>
+    /upstream rejected.*remote error text omitted/.test(error.message) && !error.message.includes("isolated-search-token"));
+});
+
+test("invalid material metadata never echoes remote parser excerpts", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  f.client.respond = () => textResult("---\nisolated-secret-from-header: [\n---\nbody");
+  const adapter = f.adapter(); await adapter.connect();
+  const safeFailure = error => /^(?:MCP tools\/call: )?Invalid or over-budget material metadata; parser excerpt omitted$/.test(error.message);
+  await assert.rejects(adapter.material(uri, "architecture"), safeFailure);
+  const client = await session(t, "mcp/openviking.mjs", [], f);
+  await assert.rejects(client.call("knowledge_read", { uri, collection: "architecture" }), safeFailure);
+  assert.equal(remote.requests.filter(value => value.method === "tools/call").every(value => value.params.name === "read"), true);
+});
+
+test("local errors redact JSON-escaped current and pinned API keys", () => {
+  const current = 'review"credential\\value', pinned = 'previous"key\\value';
+  process.env.EDT_AI_TEST_ESCAPED_KEY = current;
+  try {
+    const options = { headers_env: { "X-Api-Key": "EDT_AI_TEST_ESCAPED_KEY" } };
+    for (const secret of [current, pinned]) {
+      const diagnostic = access_error(new Error(JSON.stringify({ "x-api-key": secret })), options, { "x-api-key": pinned }).message;
+      assert.equal(JSON.parse(diagnostic)["x-api-key"], "[redacted]");
+      assert.equal(diagnostic.includes(JSON.stringify(secret).slice(1, -1)), false);
+    }
+    assert.equal(access_error(new SyntaxError("Invalid JSON near " + current.slice(0, 12)), options).message,
+      "OpenViking returned invalid JSON; response excerpt omitted");
+    const remote = new RemoteMcp("https://example.org/mcp");
+    assert.throws(() => remote.result({ result: { resultType: Buffer.from(current).toString("base64") } }), error =>
+      access_error(error, options).message === "Unsupported MCP result type; operation is not confirmed complete");
+  } finally { delete process.env.EDT_AI_TEST_ESCAPED_KEY; }
+});
+
+test("invalid negotiated protocol never reflects a remote value in access diagnostics", async t => {
+  const f = adapterFixture(t), encodedSecret = Buffer.from(accessEnv.EDT_AI_TEST_SEARCH_TOKEN).toString("base64");
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    const message = JSON.parse(options.body);
+    const payload = message.method === "server/discover" ? { error: { code: -32601, message: "legacy" } }
+      : { result: { protocolVersion: encodedSecret } };
+    return Response.json({ jsonrpc: "2.0", id: message.id, ...payload });
+  });
+  await assert.rejects(new OpenVikingAdapter(f.profile, f.config).connect(), error =>
+    error.message === "Invalid legacy MCP negotiated version" && !error.message.includes(encodedSecret));
+});
+
+test("guarded HTTP reads still enforce response and timeout budgets", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  f.config.mcp.optional.openviking.url = remote.url;
+  f.config.mcp.optional.openviking.max_response_bytes = 2048;
+  const adapter = new OpenVikingAdapter(f.profile, f.config); await adapter.connect();
+  f.client.respond = () => textResult(markdown(metadata(), "x".repeat(4096)));
+  await assert.rejects(adapter.read({ uri, collection: "architecture" }), /budget exceeded/);
+  assert.equal(adapter.connected, false);
+  const timed = new OpenVikingAdapter(f.profile, f.config); await timed.connect(); timed.client.timeout = 20;
+  const release = Promise.withResolvers(); t.after(() => release.resolve());
+  f.client.before = message => message.method === "tools/call" ? release.promise : undefined;
+  await assert.rejects(timed.read({ uri, collection: "architecture" }), /timeout|aborted/i);
+  assert.equal(timed.connected, false); release.resolve();
+});
+
 test("OpenViking MCP entry reaches an isolated HTTP server using effective settings", async t => {
   const f = adapterFixture(t);
   let descriptors = nativeTools();
@@ -274,11 +892,12 @@ test("OpenViking MCP entry reaches an isolated HTTP server using effective setti
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
-  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:" + server.address().port + "/mcp" } }; f.save();
+  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:" + server.address().port + "/mcp", headers_env: f.config.mcp.optional.openviking.headers_env } }; f.save();
+  grantAccess(f, f.profile.connections.openviking.url);
   const client = await session(t, "mcp/openviking.mjs", [], f);
   assert.equal((await client.call("knowledge_status", {})).structuredContent.connected, true);
   const retrieved = (await client.call("knowledge_search", { query: "x", collection: "architecture" })).structuredContent;
-  assert.equal(retrieved.items.length, 1);
+  assert.equal(retrieved.items.length, 0); assert.equal(retrieved.discoveryCandidates.length, 1);
   assert.deepEqual(retrieved.binding.collections, ["architecture"]);
   assert.equal(retrieved.binding.projectRoot, f.root);
   assert.equal(retrieved.publication.snapshot, null); assert.equal(retrieved.reusable, false);

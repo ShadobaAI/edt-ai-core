@@ -32,8 +32,10 @@ import { create_diagnostic_logger, register_diagnostic_secrets } from "./diagnos
 import { knowledge_status, require_workflow_knowledge } from "./knowledge.mjs";
 
 const component = argumentsOf(undefined, [], ["component"]).component;
-if (!Object.hasOwn(COMPONENTS, component) || COMPONENTS[component].adapter)
+if (!Object.hasOwn(COMPONENTS, component))
   throw new ConfigError("Invalid --component");
+if (COMPONENTS[component].adapter)
+  throw new ConfigError(component + " requires its dedicated restricted adapter; native relay disclosure is not permitted");
 const state = state_root(),
   configuration =
     process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");

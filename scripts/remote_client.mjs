@@ -72,6 +72,7 @@ export class RemoteMcp {
     this.protocol = "2024-11-05";
     this.sequence = 0;
     this.tools_revision = 0;
+    this.resources_revision = 0;
     this.initialization = {};
     this.tool_headers = new Map();
   }
@@ -80,18 +81,19 @@ export class RemoteMcp {
     if (!object(message.result)) throw new Error("Invalid MCP result");
     if ((message.result.resultType || "complete") !== "complete")
       throw new Error(
-        "Unsupported MCP result type; operation is not confirmed complete: " +
-          message.result.resultType,
+        "Unsupported MCP result type; operation is not confirmed complete",
       );
     return message.result;
   }
   credential_headers() {
+    if (this.options.credentialHeaders) return this.options.credentialHeaders();
     return Object.fromEntries(Object.entries(this.options.headers_env || {}).map(([name, variable]) => {
       if (!process.env[variable]) throw new Error("Missing connection credential environment variable: " + variable);
       return [name, process.env[variable]];
     }));
   }
   async send(payload, expect_reply = true) {
+    this.options.beforeRequest?.(payload);
     const modern = this.protocol === RemoteMcp.MODERN_PROTOCOL;
     const headers = {
       ...this.credential_headers(),
@@ -199,6 +201,8 @@ export class RemoteMcp {
             event = [];
             if (message.method === "notifications/tools/list_changed")
               this.tools_revision++;
+            if (["notifications/resources/updated", "notifications/resources/list_changed"].includes(message.method))
+              this.resources_revision++;
             if (message.id === payload.id && !message.method)
               return this.result(message);
             if (message.method && Object.hasOwn(message, "id")) {
@@ -285,7 +289,7 @@ export class RemoteMcp {
       });
       if (!RemoteMcp.LEGACY_PROTOCOLS.includes(result.protocolVersion))
         throw new Error(
-          "Invalid legacy MCP negotiated version: " + result.protocolVersion,
+          "Invalid legacy MCP negotiated version",
         );
       this.protocol = result.protocolVersion;
       await this.notify("notifications/initialized");
