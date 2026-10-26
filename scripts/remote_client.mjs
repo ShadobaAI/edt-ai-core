@@ -5,7 +5,8 @@ export class RemoteRpcError extends Error {
   constructor(error) {
     super(error?.message || "MCP RPC error");
     this.error = error;
-    this.code = error?.code;
+    this.code = Number.isInteger(error?.code) ? error.code : undefined;
+    this.remote = true;
   }
 }
 export class RemoteHttpError extends RemoteRpcError {
@@ -16,6 +17,9 @@ export class RemoteHttpError extends RemoteRpcError {
   }
 }
 export class RemoteSessionExpired extends Error {}
+export class RemoteContractError extends Error {
+  category = "server_contract";
+}
 export function header_value(value) {
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return /[^\x20-\x7e]/.test(text) ||
@@ -78,9 +82,9 @@ export class RemoteMcp {
   }
   result(message) {
     if (message.error) throw new RemoteRpcError(message.error);
-    if (!object(message.result)) throw new Error("Invalid MCP result");
+    if (!object(message.result)) throw new RemoteContractError("Invalid MCP result");
     if ((message.result.resultType || "complete") !== "complete")
-      throw new Error(
+      throw new RemoteContractError(
         "Unsupported MCP result type; operation is not confirmed complete",
       );
     return message.result;
@@ -176,7 +180,7 @@ export class RemoteMcp {
     if (!response.headers.get("Content-Type")?.includes("text/event-stream")) {
       const message = await response_json(response, this.maxBytes);
       if (message.id !== payload.id)
-        throw new Error("MCP response ID mismatch; outcome unknown");
+        throw new RemoteContractError("MCP response ID mismatch; outcome unknown");
       return this.result(message);
     }
     const reader = response.body.getReader(),
@@ -262,7 +266,7 @@ export class RemoteMcp {
         !Array.isArray(result.supportedVersions) ||
         !result.supportedVersions.includes(this.protocol)
       )
-        throw new Error(
+        throw new RemoteContractError(
           "server/discover did not advertise the modern MCP protocol",
         );
       this.session = null;
@@ -288,7 +292,7 @@ export class RemoteMcp {
         capabilities: this.options.capabilities || {},
       });
       if (!RemoteMcp.LEGACY_PROTOCOLS.includes(result.protocolVersion))
-        throw new Error(
+        throw new RemoteContractError(
           "Invalid legacy MCP negotiated version",
         );
       this.protocol = result.protocolVersion;

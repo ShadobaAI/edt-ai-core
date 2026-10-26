@@ -9,7 +9,7 @@ import { core_version } from "../scripts/compatibility.mjs";
 import { SettingsOperations } from "./settings-operations.mjs";
 import { plugin_icons, component_icons } from "../scripts/icons.mjs";
 import { folder_action } from "../scripts/settings_folder.mjs";
-import { create_diagnostic_logger, register_diagnostic_secrets, diagnostic_journal, sanitize_diagnostics } from "../scripts/diagnostics.mjs";
+import { create_diagnostic_logger, register_diagnostic_secrets, diagnostic_journal, sanitize_diagnostics, safe_error_message } from "../scripts/diagnostics.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const state = process.env.EDT_AI_STATE_DIR || path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "1c-ai-core");
@@ -124,6 +124,7 @@ function readSettings(actual) {
     edtPortSuggestion: actual.edtPortSuggestion,
     readiness: actual.readiness,
     knowledge: actual.knowledge,
+    environmentCompatibility: actual.environmentCompatibility,
     legacyState: actual.legacyState,
     profileHistory: actual.profileHistory || [], summary: actual.summary,
     configurationError: actual.configurationError,
@@ -220,6 +221,7 @@ const tools = [
 ];
 
 function backend(action, args, context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }, readDeadline = 0) {
+  register_diagnostic_secrets(args);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath,
       [path.join(root, "scripts", "settings_backend.mjs")], {
@@ -234,7 +236,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
     }, readDeadline) : null;
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { output += chunk; });
-    child.stderr.on("data", chunk => { errors = (errors + chunk).slice(-4000); process.stderr.write(chunk); });
+    child.stderr.on("data", () => { errors = "Backend stderr omitted."; });
     child.once("error", error => { clearTimeout(timer); reject(error); });
     child.stdin.on("error", () => {}); // close/output below owns the operation outcome
     child.once("close", code => {
@@ -252,7 +254,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
         const error = new Error("Сервис настроек вернул некорректный ответ. Исход операции неизвестен; проверьте сохранённые настройки и состояние сервисов перед повтором.");
         error.outcomeUnknown = true; reject(error); return;
       }
-      if (data.ok !== true) { const error = new Error(data.error || "Сервис настроек сообщил об ошибке."); error.code = data.errorCode; error.outcomeUnknown = data.outcomeUnknown === true; reject(error); return; }
+      if (data.ok !== true) { const error = new Error(safe_error_message({ message: data.error || "Сервис настроек сообщил об ошибке.", code: data.errorCode })); error.code = data.errorCode; error.outcomeUnknown = data.outcomeUnknown === true; reject(error); return; }
       if (code !== 0) {
         const error = new Error("Сервис настроек вернул результат, но завершился с ошибкой. Проверьте сохранённые настройки и состояние сервисов перед повтором.");
         error.outcomeUnknown = true; reject(error); return;
@@ -562,7 +564,7 @@ async function dispatch(message) {
     else if (message.method === "tools/list") data = { tools };
     else if (message.method === "tools/call") {
       try { data = await call(message.params.name, message.params.arguments || {}, message.params._meta); }
-      catch (error) { diagnostic.event("request_failed", { tool: message.params?.name, projectRoot: selectedRoot, error }, "error"); data = { isError: true, content: [{ type: "text", text: error.message }] }; }
+      catch (error) { diagnostic.event("request_failed", { tool: message.params?.name, projectRoot: selectedRoot, error }, "error"); data = { isError: true, content: [{ type: "text", text: safe_error_message(error) }] }; }
     } else if (message.method === "resources/list") {
       data = { resources: [{ uri: resource, name: "Настройки 1C AI Core", mimeType: "text/html;profile=mcp-app" }] };
     } else if (message.method === "resources/read" && message.params?.uri === resource) {
@@ -576,7 +578,7 @@ async function dispatch(message) {
     }
     write({ id: message.id, result: data });
     if (message.method === "initialize" && !process.env.EDT_AI_PROJECT_ROOT && message.params?.capabilities?.roots) requestRoots();
-  } catch (error) { write({ id: message.id, error: { code: -32000, message: error.message } }); }
+  } catch (error) { write({ id: message.id, error: { code: -32000, message: safe_error_message(error) } }); }
 }
 readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", line => {
   try { const msg = JSON.parse(line); void dispatch(msg); }

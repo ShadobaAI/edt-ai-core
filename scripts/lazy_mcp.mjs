@@ -28,7 +28,7 @@ import { COMPONENTS, component_settings, component_enabled, binding_fingerprint,
 import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
 import { Ajv, Ajv2020 } from "../vendor/deps.mjs";
-import { create_diagnostic_logger, register_diagnostic_secrets } from "./diagnostics.mjs";
+import { create_diagnostic_logger, register_diagnostic_secrets, safe_error_message } from "./diagnostics.mjs";
 import { knowledge_status, WORKFLOW_ACTIONS } from "./knowledge.mjs";
 import { WorkflowKnowledge } from "./openviking_adapter.mjs";
 
@@ -172,7 +172,7 @@ async function bind(refreshSurface, retryFailed, connect) {
     const transportOptions = { capabilities: { ...hostCapabilities, roots: { listChanged: false } },
       onRequest: message => message.method === "roots/list" ? { roots: component === "v8std" ? [] : [{ uri: pathToFileURL(root).href, name: path.basename(root) }] } : callback(message),
       maxBytes: options.max_response_bytes,
-      onStderr: chunk => diagnostic.event("runtime_stderr", { projectRoot: root, message: String(chunk) }, "warning"),
+      onStderr: chunk => diagnostic.event("runtime_stderr", { projectRoot: root, bytes: chunk.length, content: "omitted" }, "warning"),
       onNotification: message => {
         if (message.method === "notifications/tools/list_changed") toolsDirty = true;
         else if (client && !closed) emit(message);
@@ -239,8 +239,8 @@ async function bind(refreshSurface, retryFailed, connect) {
     await disconnect();
     failedRevision = revision;
     if (revision === null) currentRevision = null;
-    if (lastError !== error.message) diagnostic.event("connection_failed", { projectRoot: selected, error }, "error");
-    lastError = error.message;
+    if (lastError !== safe_error_message(error)) diagnostic.event("connection_failed", { projectRoot: selected, error }, "error");
+    lastError = safe_error_message(error);
   }
 }
 const statusTool = () => ({
@@ -320,7 +320,7 @@ async function dispatch(message) {
         selectionError = null;
       } catch (error) {
         selected = null;
-        selectionError = error.message;
+        selectionError = safe_error_message(error);
       }
     }
     finishRoots?.(); finishRoots = null;
@@ -496,11 +496,11 @@ async function dispatch(message) {
             if (native.isError) break;
           } catch (error) {
             diagnostic.event("native_request_failed", { requestId: id, tool: call.name, projectRoot: ownerBinding?.projectRoot, error }, "error");
-            const detail = { message: error.message, outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) };
+            const detail = { message: safe_error_message(error), outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) };
             if (received) results.at(-1).error = detail;
             else results.push({ name: call.name, error: detail });
             if (error instanceof RemoteSessionExpired) {
-              await disconnect(); currentRevision = null; lastError = error.message;
+              await disconnect(); currentRevision = null; lastError = safe_error_message(error);
             }
             break;
           }
@@ -540,8 +540,8 @@ async function dispatch(message) {
         try { recheckKnowledge(); }
         catch (error) {
           if (method !== "tools/call") throw error;
-          result = { ...result, isError: true, content: [...(result.content || []), { type: "text", text: error.message }],
-            structuredContent: { ...result.structuredContent, workflowStopped: { reason: error.message, action: params.name,
+          result = { ...result, isError: true, content: [...(result.content || []), { type: "text", text: safe_error_message(error) }],
+            structuredContent: { ...result.structuredContent, workflowStopped: { reason: safe_error_message(error), action: params.name,
               outcome: "response_received", rollback: "not_performed", instruction: "Stop dependent work and report the received result before revalidating readiness." } } };
         }
       } else
@@ -560,9 +560,9 @@ async function dispatch(message) {
     if (error instanceof RemoteSessionExpired) {
       await disconnect();
       currentRevision = null;
-      lastError = error.message;
+      lastError = safe_error_message(error);
     }
-    emit({ id, error: { code: -32000, message: error.message } });
+    emit({ id, error: { code: -32000, message: safe_error_message(error) } });
   } finally {
     requests.delete(requestKey(id));
   }
@@ -572,13 +572,13 @@ let queue = Promise.resolve(),
   idleQueued = false;
 const enqueue = (action) => {
   queue = queue.then(action).catch((error) => {
-    process.stderr.write(error.message + "\n");
+    process.stderr.write(safe_error_message(error) + "\n");
   });
 };
 read_lines(process.stdin, message => {
   if (!message.method && callbacks.has(message.id)) { callbacks.get(message.id)(message); callbacks.delete(message.id); return; }
-  void dispatch(message).catch(error => process.stderr.write(error.message + "\n"));
-}, error => { process.stderr.write(error.message + "\n"); shutdown(); });
+  void dispatch(message).catch(error => process.stderr.write(safe_error_message(error) + "\n"));
+}, error => { process.stderr.write(safe_error_message(error) + "\n"); shutdown(); });
 const timer = setInterval(() => {
   if (initialized && !closed && !idleQueued) {
     idleQueued = true;

@@ -2,6 +2,7 @@ import { createHmac, createPublicKey, randomBytes, verify } from "node:crypto";
 import { check_schema, stable } from "./common.mjs";
 import { sha256 } from "./project_paths.mjs";
 import { RemoteRpcError } from "./remote_client.mjs";
+import { connection_failure } from "./diagnostics.mjs";
 
 // These operator-supplied process variables are never read from a project,
 // upstream MCP response, profile export or settings form.
@@ -59,15 +60,16 @@ function credentials(options) {
 export function search_credential_headers(options) {
   return Object.fromEntries(credentials(options).map(([name, , value]) => [name, value]));
 }
-export function access_error(error, options, pinnedHeaders = {}) {
+export function access_error(error, options, pinnedHeaders = {}, phase = "server_contract") {
+  const classification = connection_failure(error, phase);
   if (error instanceof SyntaxError)
-    return new Error("OpenViking returned invalid JSON; response excerpt omitted");
+    return Object.assign(new Error("OpenViking returned invalid JSON; response excerpt omitted"), classification);
   // Upstream text is untrusted and can encode a credential arbitrarily. Keep
   // numeric transport evidence; never forward that text as a diagnostic.
   if (error instanceof RemoteRpcError) {
     const codes = [Number.isInteger(error.status) ? "HTTP " + error.status : null,
       Number.isInteger(error.code) ? "RPC " + error.code : null].filter(Boolean).join(", ");
-    return new Error("OpenViking upstream rejected the request" + (codes ? " (" + codes + ")" : "") + "; remote error text omitted");
+    return Object.assign(new Error("OpenViking upstream rejected the request" + (codes ? " (" + codes + ")" : "") + "; remote error text omitted"), classification);
   }
   const values = [process.env[BINDING_KEY], ...Object.values(pinnedHeaders),
     ...Object.values(options.headers_env || {}).map(variable => process.env[variable])].filter(Boolean);
@@ -77,7 +79,7 @@ export function access_error(error, options, pinnedHeaders = {}) {
   }))].sort((a, b) => b.length - a.length);
   let message = String(error?.message || "OpenViking connection failed");
   for (const secret of secrets) message = message.split(secret).join("[redacted]");
-  return new Error(message.slice(0, 2000));
+  return Object.assign(new Error(message.slice(0, 2000)), classification);
 }
 export const surface_fingerprint = tools => sha256(stable([...tools].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
 export const operation_fingerprint = tool => sha256(stable(tool));

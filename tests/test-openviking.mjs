@@ -26,9 +26,55 @@ import { knowledge_gate } from "../scripts/knowledge.mjs";
 import { guard } from "../scripts/guard.mjs";
 import { save_readiness, read_readiness, readiness_fingerprint } from "../scripts/setup_readiness.mjs";
 import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
+import { inspect as doctor } from "../scripts/doctor.mjs";
+import { RemoteHttpError } from "../scripts/remote_client.mjs";
 
 const accessKeys = generateKeyPairSync("ed25519");
 const publicationKeys = generateKeyPairSync("ed25519");
+
+test("knowledge failures distinguish authorization, access scope, transport, contract and index", async t => {
+  for (const category of ["authorization", "access_scope", "transport", "server_contract", "index"]) {
+    const f = adapterFixture(t);
+    if (category === "authorization") f.config.mcp.optional.openviking.headers_env = { Authorization: "ABSENT_TEST_CREDENTIAL" };
+    if (category === "access_scope") f.config.mcp.optional.openviking.url = "https://unapproved.example/mcp";
+    if (category === "transport") f.client.initialize = async () => { throw new RemoteHttpError(503, "unavailable"); };
+    if (category === "server_contract") f.client.tools = [];
+    const adapter = f.adapter();
+    if (category === "index") await adapter.connect();
+    await assert.rejects(category === "index" ? adapter.verifyReadiness() : adapter.connect(), error => error.category === category);
+  }
+});
+
+test("readiness preserves live output contract and foreign collection failure categories", async t => {
+  for (const scenario of ["schema", "foreign", "dialect"]) {
+    const f = adapterFixture(t); grantPublication(t, f);
+    f.client.respond = () => {
+      const text = scenario === "dialect" ? "Unsupported response dialect" : "Found 1 item(s):\n\n- [resource 90%] viking://resources/foreign/design.md\n";
+      return scenario !== "schema" ? { ...textResult(text), structuredContent: { result: text } }
+        : { structuredContent: { result: 42 }, content: [{ type: "text", text: "invalid schema" }] };
+    };
+    const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root); await adapter.connect();
+    await assert.rejects(adapter.verifyReadiness(), error => error.category === (scenario === "foreign" ? "access_scope" : "server_contract"));
+  }
+});
+
+test("doctor probes selected KORA knowledge without claiming workflow or deployment acceptance", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);
+  f.profile.knowledge.mode = "kora"; f.profile.knowledge.required = true;
+  f.profile.knowledge.dependent_actions = [...WORKFLOW_ACTIONS]; f.save();
+  const report = await doctor(f.root, f.config, f.state, true);
+  assert.equal(report.external.openviking.ready, true);
+  assert.equal(report.knowledge.state, "ready");
+  assert.equal(report.knowledge.readinessScope, "setup");
+  assert.equal(report.knowledge.koraReady, false);
+  assert.equal(report.verificationLimits.serverReadBoundary, "externally_attested");
+  assert.equal(report.verificationLimits.serverEnforcementByPlugin, "not_verified");
+  assert.equal(report.verificationLimits.hostHookActivation, "not_verified");
+  assert.equal(report.full_development_readiness, "not_verified");
+  assert.ok(report.errors.some(item => item.startsWith("Set user-started MCP URL")));
+  assert.ok(!report.errors.some(item => item.startsWith("knowledge:")));
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
 
 test("a delayed knowledge setup probe has one session operation and bounded polling never restarts it", { timeout: 15000 }, async t => {
   const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);

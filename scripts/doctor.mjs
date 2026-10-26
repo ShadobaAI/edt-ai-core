@@ -15,6 +15,8 @@ import { effective_policy } from "./action_policy.mjs";
 import { smoke as policySmoke } from "./policy_runtime.mjs";
 import { managed_components, component_enabled } from "./components.mjs";
 import { knowledge_status } from "./knowledge.mjs";
+import { probe_connections } from "./setup_probe.mjs";
+import { environment_compatibility, verification_limits, safe_error_message, register_diagnostic_secrets } from "./diagnostics.mjs";
 export async function inspect(
   selected,
   config,
@@ -25,6 +27,7 @@ export async function inspect(
   const root = locate_project(selected),
     data = project_profile(root);
   config = effective_settings(config, root, data, null, state);
+  register_diagnostic_secrets(config);
   const report = {
     status: "configured",
     project_root: root,
@@ -36,6 +39,8 @@ export async function inspect(
     profile_id: data.profile_id,
     knowledge: knowledge_status(data, config),
     action_policy: effective_policy(data.policy),
+    environmentCompatibility: environment_compatibility({ projectRoot: root }),
+    verificationLimits: verification_limits(),
     source_guard: {
       packaged: exists(path.join(ROOT, "hooks/hooks.json")),
       host_trust: "not_verified",
@@ -55,16 +60,25 @@ export async function inspect(
   report.warnings.push(
     "EDT/v8std live acceptance requires the user's running servers",
   );
-  if (report.knowledge.state === "invalid" || report.knowledge.mode === "kora")
+  if (live && !managed_only) {
+    const probe = await probe_connections(config, root, data);
+    report.external = probe.external;
+    report.knowledge = probe.knowledge;
+    report.verificationLimits = probe.verificationLimits;
+    report.setup_scope = probe.scope;
+    for (const [name, result] of Object.entries(probe.external))
+      if (!result.ready) report.errors.push(name + ": " + (result.detail || "External readiness not verified"));
+  }
+  if (report.knowledge.state === "invalid" || report.knowledge.mode === "kora" && !report.knowledge.ready)
     report.errors.push("knowledge: " + report.knowledge.detail);
-  else if (report.knowledge.provider === "openviking")
+  else if (report.knowledge.provider === "openviking" && !report.knowledge.ready)
     report.warnings.push("knowledge: " + report.knowledge.detail);
   if (live && !report.errors.length) {
     project(root, config);
     try {
       report.policy = await policySmoke(config);
     } catch (error) {
-      report.errors.push("policy: " + error.message);
+      report.errors.push("policy: " + safe_error_message(error));
     }
     for (const component of managed_components.filter(id => component_enabled(config, id))) {
       try {
@@ -75,7 +89,7 @@ export async function inspect(
             "code-index: repository index readiness was not confirmed; check index health and repository coverage",
           );
       } catch (error) {
-        report.errors.push(component + ": " + error.message);
+        report.errors.push(component + ": " + safe_error_message(error));
       }
     }
     report.status = "managed_mcp_ready";

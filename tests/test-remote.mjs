@@ -111,7 +111,8 @@ test("external code-index preparation checks scoped health without installing a 
   assert.equal(result.server.name, "external-index");
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   unhealthy = true;
-  await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), /health failed.*health unavailable/);
+  await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), error =>
+    error.remote === true && /health failed.*remote error text omitted/.test(error.message) && !error.message.includes("health unavailable"));
 });
 test("environment credential references apply to authenticated calls and session cleanup",async t=>{
   const previous=process.env.CORE_TEST_AUTH_HEADER;process.env.CORE_TEST_AUTH_HEADER="Bearer fixture";

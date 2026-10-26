@@ -102,8 +102,9 @@ prefixes, aliases, ports or a running EDT.
 - The bundled read-only `policy` MCP runs through Node without external setup.
   It selects applicable requirements and validates proposal/result ledgers;
   normative text still comes from v8std through $1c-standards.
-- Run `node <PLUGIN_ROOT>/scripts/doctor.mjs PROJECT --live` for managed MCP probes plus external
-  configuration checks. `--managed-only` is for isolated tests; its success does
+- Run `node <PLUGIN_ROOT>/scripts/doctor.mjs PROJECT --live` for managed MCP probes
+  and read-only external setup acceptance, including selected OpenViking search.
+  Without --live it reports configuration only. `--managed-only` is for isolated tests; its success does
   not establish development readiness.
   A static profile transfer/validation does not require starting all services.
   Report full-environment readiness separately from readiness of a chosen route.

@@ -54,6 +54,7 @@ import { directory_context, edt_connection, edt_port_suggestion } from "./direct
 import { profile_history, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness } from "./setup_readiness.mjs";
 import { knowledge_status } from "./knowledge.mjs";
+import { environment_compatibility, safe_error_message, sanitize_setup_result } from "./diagnostics.mjs";
 
 export const FIELDS = {
   projectRoot: ["active_project"],
@@ -371,6 +372,7 @@ export class SettingsBackend {
       const profileDirectoryContext = config.active_project && directoryContext?.directory !== config.active_project
         ? directory_context(config.active_project) : directoryContext;
       const readiness = await read_readiness(this.STATE, effective, profile);
+      const knowledge = profile.status === "loaded" ? knowledge_status(project_profile(config.active_project), effective) : null;
       return {
         values: actual,
         installedVersions: installed_versions(this.STATE, config.active_project),
@@ -379,7 +381,8 @@ export class SettingsBackend {
         profileDirectoryContext,
         edtPortSuggestion: edt_port_suggestion(actual.edtUrl, profileDirectoryContext?.edt?.connection),
         readiness,
-        knowledge: profile.status === "loaded" ? knowledge_status(project_profile(config.active_project), effective) : null,
+        knowledge,
+        environmentCompatibility: environment_compatibility({ projectRoot: config.active_project }),
         sessionGuidance: session_guidance,
         instance: instance_name(),
         connectionSources: sources,
@@ -388,7 +391,7 @@ export class SettingsBackend {
         preparationScope: preparation_scope(actual.projectRoot),
         legacyState: legacy,
         profileHistory: profile_history(this.STATE, actual.projectRoot),
-        summary: await profile_summary(this.STATE, effective, profile, readiness),
+        summary: await profile_summary(this.STATE, effective, profile, readiness, knowledge),
       };
     }
     if (["create", "load"].includes(action)) {
@@ -646,7 +649,7 @@ export class SettingsBackend {
       if (Object.hasOwn(request, "version") && request.operation !== "install") throw new ConfigError("Версия задаётся только для установки.");
       if (request.operation === "check") return { components: await Promise.all((component ? [component] : managed_components).map(async id => {
         try { return await runtime.check_updates(this.STATE, config, id); }
-        catch (error) { return { component: id, state: "error", detail: error.message }; }
+        catch (error) { return { component: id, state: "error", detail: safe_error_message(error) }; }
       })), projectRoot: config.active_project };
       if (!managed_components.includes(component)) throw new ConfigError("Выберите компонент.");
       let projectRoot;
@@ -726,12 +729,12 @@ export class SettingsBackend {
             version: item.server?.version,
           };
         } catch (error) {
-          const busy = error.message.includes("Another runtime operation");
+          const busy = error.remote !== true && error.message.includes("Another runtime operation");
           return {
             name: component,
             ready: false,
             state: busy ? "preparing" : "error",
-            detail: busy ? "Подготовка окружения выполняется…" : error.message,
+            detail: busy ? "Подготовка окружения выполняется…" : safe_error_message(error),
           };
         }
       };
@@ -748,7 +751,7 @@ export class SettingsBackend {
           name: "policy",
           ready: false,
           state: "error",
-          detail: error.message,
+          detail: safe_error_message(error),
         };
       } };
       const { probe_connections } = await import("./setup_probe.mjs");
@@ -769,7 +772,7 @@ export class SettingsBackend {
         ({ external } = await probe_connections(config, root, data));
       }
       const readiness = save_readiness(this.STATE, config, data, managed, external);
-      return {
+      return sanitize_setup_result({
         managed,
         projectRoot: root,
         instance: instance_name(),
@@ -779,7 +782,7 @@ export class SettingsBackend {
         fullReadiness: readiness.state === "ready" ? "verified" : "not_ready",
         readinessScope: "setup",
         workflowReadiness: readiness.workflowReadiness,
-      };
+      });
     }
     throw new ConfigError("Неизвестная операция.");
   }
@@ -795,7 +798,7 @@ if (entrypoint(import.meta.url)) {
     const result = await new SettingsBackend().main(JSON.parse(input));
     console.log(JSON.stringify({ ok: true, result }));
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: error.message, ...(error.code ? { errorCode: error.code } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
+    console.log(JSON.stringify({ ok: false, error: safe_error_message(error), ...(error.code ? { errorCode: error.code } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
     process.exitCode = 1;
   }
 }

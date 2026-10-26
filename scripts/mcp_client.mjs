@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { launch, stop_child } from "./processes.mjs";
 import { core_version } from "./compatibility.mjs";
+const localFailure = Symbol("local MCP failure");
 export class McpClient {
   constructor(command, cwd, env = process.env, timeout = 60, options = {}) {
     this.options = options;
@@ -12,6 +13,7 @@ export class McpClient {
       { uri: pathToFileURL(this.root).href, name: path.basename(this.root) },
     ];
     this.stderr = "";
+    this.stderrBytes = 0;
     this.sequence = 0;
     this.tools_revision = 0;
     this.pending = new Map();
@@ -21,13 +23,14 @@ export class McpClient {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.process.stderr.on("data", (chunk) => {
-      this.stderr = (this.stderr + chunk).slice(-16000);
+      this.stderr = "[stderr omitted]";
+      this.stderrBytes += chunk.length;
       this.options.onStderr?.(chunk);
     });
     this.process.stdin.on("error", () => {});
     this.process.once("error", (error) => this.fail(error));
-    this.process.once("close", () =>
-      this.fail(new Error("MCP exited: " + this.stderr.slice(-4000))),
+    this.process.once("close", code =>
+      this.fail(Object.assign(new Error("MCP exited (code " + code + "); stderr omitted; pending operation outcome unknown"), { outcomeUnknown: true })),
     );
     read_lines(this.process.stdout, (message) => {
         if (message.method === "notifications/tools/list_changed")
@@ -52,7 +55,7 @@ export class McpClient {
     if (this.error) return;
     this.error = error;
     for (const done of this.pending.values())
-      done({ error: { message: error.message } });
+      done({ [localFailure]: error });
     this.pending.clear();
     this.options.onClose?.(error);
   }
@@ -70,16 +73,16 @@ export class McpClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(
-          new Error(
-            `MCP ${method} timed out; outcome unknown: ${this.stderr.slice(-2000)}`,
-          ),
+          Object.assign(new Error(`MCP ${method} timed out; outcome unknown; stderr omitted`), { outcomeUnknown: true }),
         );
       }, this.timeout);
       this.pending.set(id, (message) => {
         clearTimeout(timer);
+        if (message[localFailure]) { reject(message[localFailure]); return; }
         if (message.error) {
           const error = new Error(`MCP ${method}: ${message.error.message}`);
-          error.code = message.error.code;
+          error.code = Number.isInteger(message.error.code) ? message.error.code : undefined;
+          error.remote = true;
           reject(error);
         } else resolve(message.result);
       });
@@ -103,11 +106,11 @@ export class McpClient {
   async call(name, args) {
     const result = await this.request("tools/call", { name, arguments: args });
     if (result.isError)
-      throw new Error(`${name}: ${JSON.stringify(result).slice(0, 4000)}`);
+      throw Object.assign(new Error(`${name}: ${JSON.stringify(result).slice(0, 4000)}`), { remote: true });
     return result;
   }
   async close() {
-    this.fail(new Error("MCP connection closed; pending operation outcome unknown"));
+    this.fail(Object.assign(new Error("MCP connection closed; pending operation outcome unknown"), { outcomeUnknown: true }));
     await stop_child(this.process);
   }
 }

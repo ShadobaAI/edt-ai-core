@@ -13,11 +13,12 @@ import { instance_directory } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 
 async function ready_fixture(t) {
-  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false;
+  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null;
   const server=createServer(async(req,res)=>{
     let text="";for await(const part of req)text+=part;
     if(!text){res.writeHead(202).end();return;}const message=JSON.parse(text);calls++;
     const reply=result=>res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:message.id,result}));
+    if (req.url === "/index" && indexFailure) return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: indexFailure } }));
     if(message.method==="server/discover")return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:message.id,error:{code:-32601,message:"legacy"}}));
     if(message.method==="initialize")return reply({protocolVersion:"2025-11-25",serverInfo:{name:"fixture",version:"1"},capabilities:{tools:{}}});
     if(message.method.startsWith("notifications/"))return res.writeHead(202).end();
@@ -32,8 +33,34 @@ async function ready_fixture(t) {
   });server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>{server.closeAllConnections();return new Promise(done=>server.close(done));});
   const backend=new SettingsBackend(),url="http://127.0.0.1:"+server.address().port;
   await backend.main({action:"update",set:{codeIndexEnabled:false,bslLsEnabled:false,edtUrl:url+"/edt",v8stdUrl:url+"/v8std"}});
-  return {f,backend,url,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks};
+  return {f,backend,url,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;}};
 }
+
+test("managed probe errors omit arbitrary upstream credential encodings before readiness caching", async t => {
+  const { f, backend, url, failIndex } = await ready_fixture(t);
+  const encoded = [..."private-search-5839"].join("."); failIndex(encoded);
+  const config = backend.current();
+  Object.assign(config.mcp.managed["code-index"], { mode: "external", url: url + "/index" });
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(config));
+  await backend.main({ action: "update", set: { codeIndexEnabled: true } });
+  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.match(result.managed.find(item => item.name === "code-index").detail, /RPC -32000.*remote error text omitted/);
+  const cache = fs.readFileSync(path.join(instance_directory(f.state, f.root), "first.readiness.json"), "utf8");
+  assert.equal((JSON.stringify(result) + cache).includes(encoded), false);
+});
+
+test("old readiness receipts cannot reintroduce untrusted diagnostic messages", async t => {
+  const { f, backend, authorization } = await ready_fixture(t);
+  await backend.main({ action: "check", authorization });
+  const file = path.join(instance_directory(f.state, f.root), "first.readiness.json");
+  const receipt = JSON.parse(fs.readFileSync(file, "utf8")); assert.equal(receipt.version, 3);
+  receipt.version = 2; receipt.result.checks[0].detail = "legacy-untrusted-5731";
+  fs.writeFileSync(file, JSON.stringify(receipt));
+  const current = await backend.main({ action: "read" });
+  assert.equal(current.readiness.state, "not_checked");
+  assert.match(current.readiness.reason, /Несовместимая версия/);
+  assert.equal(JSON.stringify(current).includes("legacy-untrusted-5731"), false);
+});
 
 test("one readiness check verifies externals, policy and skills, and passive reads reuse scoped evidence",async t=>{
   const {f,backend,authorization,count}=await ready_fixture(t);
@@ -41,6 +68,9 @@ test("one readiness check verifies externals, policy and skills, and passive rea
   await assert.rejects(backend.main({action:"check"}),/разрешения/);
   const result=await backend.main({action:"check",authorization});assert.equal(result.fullReadiness,"verified");assert.equal(result.readiness.state,"ready");
   for(const id of ["edt","v8std","policy","skills","source-guard","node","profile"])assert.equal(result.readiness.checks.find(check=>check.id===id).state,"ready",id);
+  assert.equal(result.readiness.verificationLimits.hostHookTrust,"not_verified");
+  assert.equal(result.readiness.verificationLimits.hostHookActivation,"not_verified");
+  assert.equal(result.readiness.verificationLimits.deploymentLiveAcceptance,"not_verified");
   assert.equal(result.readiness.checks.find(check=>check.id==="code-index").state,"disabled");
   const contacted=count();assert.equal((await new SettingsBackend().main({action:"status"})).readiness.state,"ready");assert.equal(count(),contacted);
   process.env.EDT_AI_INSTANCE="another";assert.equal((await backend.main({action:"read"})).readiness.state,"not_checked");process.env.EDT_AI_INSTANCE="first";

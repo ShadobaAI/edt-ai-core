@@ -1,15 +1,16 @@
 // Transport budgets protect memory, independently of model response budgets.
 export const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
+const contract_error = message => Object.assign(new Error(message), { category: "server_contract", outcomeUnknown: true });
 export function envelope(message) {
   if (!message || typeof message !== "object" || Array.isArray(message) || message.jsonrpc !== "2.0")
-    throw new Error("Invalid MCP envelope; outcome unknown");
+    throw contract_error("Invalid MCP envelope; outcome unknown");
   const hasId = Object.hasOwn(message, "id");
   if (hasId && !(typeof message.id === "string" || Number.isSafeInteger(message.id)))
-    throw new Error("Invalid MCP id; outcome unknown");
+    throw contract_error("Invalid MCP id; outcome unknown");
   if (Object.hasOwn(message, "method")) {
-    if (typeof message.method !== "string" || !message.method) throw new Error("Invalid MCP method");
+    if (typeof message.method !== "string" || !message.method) throw contract_error("Invalid MCP method");
   } else if (!hasId || Object.hasOwn(message, "result") === Object.hasOwn(message, "error"))
-    throw new Error("Invalid MCP response; outcome unknown");
+    throw contract_error("Invalid MCP response; outcome unknown");
   return message;
 }
 export function json_message(text, maxBytes = DEFAULT_MAX_BYTES) {

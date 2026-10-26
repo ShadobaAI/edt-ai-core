@@ -29,9 +29,11 @@ export function parse(text) {
   });
   if (doc.errors.length || doc.warnings.length)
     throw Object.assign(new ConfigError(
-      [...doc.errors, ...doc.warnings].map((error) => error.message).join("; "),
+      "Invalid YAML document (" + [...doc.errors, ...doc.warnings].map(error => error.code || "YAML_ERROR").join(", ") + "); source excerpt omitted",
     ), { code: "INVALID_DOCUMENT" });
-  const value = doc.toJS({ maxAliasCount: 100 });
+  let value;
+  try { value = doc.toJS({ maxAliasCount: 100 }); }
+  catch { throw Object.assign(new ConfigError("Invalid YAML document; source excerpt omitted"), { code: "INVALID_DOCUMENT" }); }
   if (!object(value)) throw new ConfigError("Expected an object");
   return value;
 }
@@ -54,7 +56,7 @@ export function check_schema(data, name) {
   if (versionField && (versionRequired || object(data) && Object.hasOwn(data, versionField)) && data?.[versionField] !== version) {
     const received = data?.[versionField];
     throw Object.assign(new ConfigError(
-      `Unsupported contract version for ${name}: ${versionField}=${typeof received === "string" ? JSON.stringify(received) : received === undefined ? "missing" : typeof received}; expected ${JSON.stringify(version)}. Review the document contract before explicitly updating it; automatic migration is not performed.`,
+      `Unsupported contract version for ${name}: ${versionField}=${typeof received === "string" ? /^\d+\.\d+(?:\.\d+)?$/.test(received) ? JSON.stringify(received) : "invalid" : received === undefined ? "missing" : typeof received}; expected ${JSON.stringify(version)}. Review the document contract before explicitly updating it; automatic migration is not performed.`,
     ), { code: "UNSUPPORTED_CONTRACT_VERSION", contract: name, expectedVersion: version });
   }
   if (!validate(data))
@@ -196,7 +198,7 @@ export const stable = (value) =>
 export const entrypoint = (url) =>
   process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === url;
 export async function cli(main) {
-  const { create_diagnostic_logger } = await import("./diagnostics.mjs");
+  const { create_diagnostic_logger, safe_error_message } = await import("./diagnostics.mjs");
   const diagnostic = create_diagnostic_logger("cli");
   const executable = path.basename(process.argv[1] || "");
   diagnostic.event("command_started", { executable });
@@ -205,7 +207,7 @@ export async function cli(main) {
     diagnostic.event("command_completed", { executable, exitCode: process.exitCode });
   } catch (error) {
     diagnostic.event("command_failed", { executable, error }, "error");
-    console.log(JSON.stringify({ status: "error", error: error.message }));
+    console.log(JSON.stringify({ status: "error", error: safe_error_message(error) }));
     process.exitCode = 1;
   }
 }

@@ -64,6 +64,7 @@ export function setup_inspection(read, state) {
     values, connectionSources, valueSources: read.valueSources, repositories, managed, preparationScope, projectSelection, operation,
     detected: { edt: detected || null, projects, ...(directoryContext?.edt?.errors ? { errors: directoryContext.edt.errors } : {}) },
     issues, nextSteps: next, readiness: read.readiness, knowledge: read.knowledge, knowledgeSetup,
+    environmentCompatibility: read.environmentCompatibility,
     bindingGuidance: "When a runtime's selectedDirectory is empty, call its core_runtime_status with this projectRoot once. A new chat/restart does not supply missing roots. Do not spawn substitute relays or inspect plugin source for setup.",
   };
 }

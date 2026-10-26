@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
-import { LOG_POLICY, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets } from "./diagnostics.mjs";
+import { LOG_POLICY, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, environment_compatibility, verification_limits } from "./diagnostics.mjs";
 
 const FILE_LIMIT = 256 * 1024, SECTION_LIMIT = 128 * 1024;
 const REPORT_NAME = "1c-ai-core-diagnostics.json";
@@ -76,10 +76,17 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
     environmentOverrides: Object.keys(process.env).filter(key => /^(?:EDT_AI_|CODEX_HOME$|JAVA_HOME$)/.test(key)).sort() }));
   await capture("settings", () => document(configPath));
   await capture("runtimeArtifacts", () => document(path.join(state, "runtime-lock.json")));
+  await capture("environmentCompatibility", () => environment_compatibility({ projectRoot: selectedRoot }));
+  await capture("verificationLimits", () => verification_limits());
   if (selectedRoot) {
     await capture("current", async () => {
       return readCurrent ? readCurrent() : { unavailable: true };
     });
+    await capture("knowledge", () => ({ configuration: snapshot.current?.knowledge || null,
+      setup: snapshot.current?.summary?.knowledge || null,
+      valueSources: snapshot.current?.valueSources || {},
+      workflowReadiness: snapshot.current?.readiness?.workflowReadiness || { state: "not_checked" },
+      liveAcceptance: "not_verified", corpusContents: "not_collected" }));
     await capture("project", async () => {
       const { configuration_root, project_directory, instance_name } = await import("./project_paths.mjs");
       const root = configuration_root(snapshot.current?.values?.projectRoot || selectedRoot, { recursive: false }), home = project_directory(state, root), instance = instance_name();
@@ -95,8 +102,8 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
         owner: await document(path.join(home, "code-index/owner.json")),
         maintenance: await document(path.join(home, "code-index/maintenance.json")) };
     });
-    // Existing native daemon files are never copied wholesale or followed via
-    // a symlink. Only a bounded recent tail is useful to support.
+    // Native logs are untrusted text and can echo credentials in arbitrary
+    // encodings. Collect file metadata only, never their contents.
     for (const name of ["stdout", "stderr"]) await capture("codeIndex_" + name, async () => {
       const home = snapshot.project?.home;
       if (!home) return { unavailable: true };
@@ -105,12 +112,7 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
       try { stat = fs.lstatSync(file); } catch (error) { if (error.code === "ENOENT") return { exists: false }; throw error; }
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Unsupported diagnostic file");
       if (stat.mtimeMs < Date.now() - LOG_POLICY.days * 86400000) return { omitted: "expired" };
-      const fd = fs.openSync(file, "r");
-      try {
-        const tail = Buffer.alloc(Math.min(stat.size, 64 * 1024));
-        fs.readSync(fd, tail, 0, tail.length, Math.max(0, stat.size - tail.length));
-        return { bytes: stat.size, truncated: stat.size > tail.length, tail: tail.toString("utf8") };
-      } finally { fs.closeSync(fd); }
+      return { bytes: stat.size, modified: stat.mtime.toISOString(), omitted: "untrusted_runtime_log_content" };
     });
   }
   let logs;
@@ -126,7 +128,7 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
   const report = { format: "1c-ai-core-diagnostics", version: 1, createdAt,
     collection: { policy: LOG_POLICY, readOnly: true, networkRequests: false,
       includes: ["Operational events across recent plugin sessions", "Current selected project configuration and local runtime records"],
-      excludes: ["Chat history", "Source files", "Environment values", "MCP arguments and results", "Full external service logs"],
+      excludes: ["Chat history", "Source files", "Environment values", "MCP arguments and results", "External service log contents"],
       redaction: "Known credentials, secret fields, URL credentials/query/fragment and command/environment payloads are removed. Project paths and endpoint hosts remain for diagnosis.",
       issues: sanitize_diagnostics([...issues, ...logs.issues]) },
     snapshot: safe, events: logs.events };

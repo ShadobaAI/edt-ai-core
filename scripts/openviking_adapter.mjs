@@ -3,7 +3,7 @@
 import { Ajv, Ajv2020 } from "../vendor/deps.mjs";
 import { object, stable } from "./common.mjs";
 import { sha256 } from "./project_paths.mjs";
-import { RemoteMcp } from "./remote_client.mjs";
+import { RemoteMcp, RemoteContractError } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
 import { verify_search_access, search_credential_headers, verify_search_surface, access_revision, access_error } from "./openviking_access.mjs";
 import { knowledge_status, knowledge_gate, knowledge_confirmation, require_workflow_knowledge, search_requirements, parse_material, knowledge_material_active, knowledge_material_summary, load_manifest_catalog } from "./knowledge.mjs";
@@ -21,16 +21,16 @@ function compiler(schema) {
 export function knowledge_uri(uri) {
   if (typeof uri !== "string" || uri.length > 2048 || !/^viking:\/\/resources\/[\p{L}\p{N}._/-]+$/u.test(uri) ||
       uri.slice("viking://resources/".length).split("/").some(part => !part || part === "." || part === ".."))
-    throw new Error("Knowledge URI must be a canonical shared resources path");
+    throw Object.assign(new Error("Knowledge URI must be a canonical shared resources path"), { category: "access_scope" });
   return uri;
 }
 function result_text(result) {
   if (!object(result) || result.isError || !Array.isArray(result.content) ||
       result.content.length !== 1 || result.content[0]?.type !== "text" || typeof result.content[0].text !== "string")
-    throw new Error("Invalid or failed OpenViking text response");
+    throw new RemoteContractError("Invalid or failed OpenViking text response");
   const text = result.content[0].text;
   if (result.structuredContent !== undefined && (!object(result.structuredContent) || result.structuredContent.result !== text))
-    throw new Error("Inconsistent OpenViking structured/text response");
+    throw new RemoteContractError("Inconsistent OpenViking structured/text response");
   return text;
 }
 // Same separators as the server's Python str.splitlines(keepends=True).
@@ -65,10 +65,13 @@ export class OpenVikingAdapter {
       if (!map[id]) throw new Error("Explicit knowledge.collection_uris mapping required: " + id);
       return [id, knowledge_uri(map[id])];
     }));
+    let phase = "authorization";
     try {
+      this.credentialHeaders = search_credential_headers(this.options);
+      phase = "access_scope";
       this.access = verify_search_access(this.options, this.collections);
       this.accessRevision = access_revision(this.options);
-      this.credentialHeaders = search_credential_headers(this.options);
+      phase = "transport";
       await this.client.initialize();
       if (this.closed) {
         // A late initialize may assign a remote session after close() ran.
@@ -76,12 +79,13 @@ export class OpenVikingAdapter {
         throw new Error("OpenViking adapter closed during connection");
       }
       this.validateBinding?.();
+      phase = "server_contract";
       await this.refreshContract();
       if (this.closed) throw new Error("OpenViking adapter closed during connection");
       this.confirmPublication();
       this.connected = true;
       return this.status();
-    } catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders); }
+    } catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders, phase); }
   }
   status() {
     const publication = this.publicationStatus();
@@ -133,7 +137,7 @@ export class OpenVikingAdapter {
       return status;
     })();
     try { return await this.readinessPromise; }
-    catch (error) { this.readiness = null; throw access_error(error, this.options, this.credentialHeaders); }
+    catch (error) { this.readiness = null; throw access_error(error, this.options, this.credentialHeaders, "index"); }
     finally { this.readinessPromise = null; }
   }
   confirmPublication() {
@@ -150,12 +154,14 @@ export class OpenVikingAdapter {
     } catch (error) { this.publicationError = error.message; }
   }
   checkPublication() {
+    try {
     if (!this.profile.knowledge.manifest) return null; // Setup-only discovery never claims a snapshot.
     if (!this.publication) throw new Error(this.publicationError || "Publication is not confirmed");
     const receipt = this.publication.check();
     const current = load_manifest_catalog(this.projectRoot, this.profile.knowledge.manifest, [...this.collections.keys()]);
     if (current.sha256 !== this.publicationManifestSha256) throw new Error("Publication manifest changed; reconnect required");
     return receipt;
+    } catch (error) { throw Object.assign(error, { category: "index" }); }
   }
   publicationStatus() {
     try {
@@ -167,6 +173,7 @@ export class OpenVikingAdapter {
     return { state: "not_verified", snapshot: null, consistency: "not_verified" };
   }
   checkAccess() {
+    try {
     const access = verify_search_access(this.options, this.collections);
     if (this.accessRevision && this.accessRevision !== access_revision(this.options))
       throw new Error("OpenViking access confirmation or identity changed; reconnect required");
@@ -175,6 +182,7 @@ export class OpenVikingAdapter {
     if (this.access && stable(this.access) !== stable(access))
       throw new Error("OpenViking selected access confirmation changed; reconnect required");
     return access;
+    } catch (error) { throw Object.assign(error, { category: "access_scope" }); }
   }
   async refreshContract() {
     if (this.refreshPromise) return this.refreshPromise;
@@ -205,7 +213,7 @@ export class OpenVikingAdapter {
       this.contractRevision = revision;
     })();
     try { await this.refreshPromise; }
-    catch (error) { await this.close(); throw error; }
+    catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders, "server_contract"); }
     finally { this.refreshPromise = null; }
   }
   async ensureContract(force = false) {
@@ -232,7 +240,7 @@ export class OpenVikingAdapter {
       if (method === "tools/call") this.checkPublication();
       return result;
     } catch (error) {
-      await this.close(); throw access_error(error, this.options, this.credentialHeaders);
+      await this.close(); throw access_error(error, this.options, this.credentialHeaders, "transport");
     } finally {
       const next = this.waiters.shift();
       if (next) next.resolve(); else this.active--;
@@ -266,7 +274,7 @@ export class OpenVikingAdapter {
     } else throw new Error("OpenViking operation is outside the permitted search/read surface");
   }
   arguments(tool, args) {
-    if (!tool.input(args)) throw new Error("Incompatible live arguments for " + tool.name);
+    if (!tool.input(args)) throw new RemoteContractError("Incompatible live arguments for " + tool.name);
     return args;
   }
   searchArgs(query, target, limit) {
@@ -298,22 +306,22 @@ export class OpenVikingAdapter {
     if (retrieval.responseContext !== undefined && retrieval.responseContext !== responseContext)
       throw new Error("OpenViking response context changed during retrieval; discard mixed results");
     retrieval.responseContext = responseContext;
-    if (tool.output && !tool.output(result.structuredContent)) throw new Error("Invalid live output for " + tool.name);
+    if (tool.output && !tool.output(result.structuredContent)) throw new RemoteContractError("Invalid live output for " + tool.name);
     const text = result_text(result);
     if (result.nextCursor != null || result._meta?.nextCursor != null)
-      throw new Error("Unsupported OpenViking pagination contract; results are incomplete");
+      throw new RemoteContractError("Unsupported OpenViking pagination contract; results are incomplete");
     const partial = [result, result._meta].some(value => value &&
       (value.truncated === true || value.partial === true || value.complete === false || value.hasMore === true));
     return { text, partial };
   }
   collection(id) {
     const uri = this.collections?.get(id);
-    if (!uri) throw new Error("Collection is outside the selected profile");
+    if (!uri) throw Object.assign(new Error("Collection is outside the selected profile"), { category: "access_scope" });
     return uri;
   }
   scoped(uri, collection) {
     knowledge_uri(uri);
-    if (!uri.startsWith(this.collection(collection) + "/") || !uri.endsWith(".md")) throw new Error("Material is outside the selected collection");
+    if (!uri.startsWith(this.collection(collection) + "/") || !uri.endsWith(".md")) throw Object.assign(new Error("Material is outside the selected collection"), { category: "access_scope" });
     return uri;
   }
   async search({ query, collection, limit = this.requirements.max_results }, retrieval = {}) {
@@ -333,12 +341,12 @@ export class OpenVikingAdapter {
     if (text === "No matching context found.") return { items: [], ...completeness, outcome: "no_matches" };
     const count = /^Found (\d+) item\(s\):\n\n/.exec(text);
     const hits = [...text.matchAll(/^- \[resource (\d+)%\] (viking:\/\/[^\s]+)\r?\n/gm)];
-    if (!count || Number(count[1]) !== hits.length || hits.length > effectiveLimit) throw new Error("Unsupported or incomplete OpenViking search response");
+    if (!count || Number(count[1]) !== hits.length || hits.length > effectiveLimit) throw new RemoteContractError("Unsupported or incomplete OpenViking search response");
     const seen = new Set();
     const candidates = hits.map(hit => {
       const uri = this.scoped(hit[2], collection);
       this.publication?.entry(uri, collection);
-      if (seen.has(uri)) throw new Error("Duplicate OpenViking hit");
+      if (seen.has(uri)) throw new RemoteContractError("Duplicate OpenViking hit");
       seen.add(uri);
       return { uri, collection, score: Number(hit[1]) / 100 };
     });

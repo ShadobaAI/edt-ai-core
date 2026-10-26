@@ -12,6 +12,7 @@ import { launch_selection, explicit_selection, roots_selection } from "../script
 import { knowledge_status } from "../scripts/knowledge.mjs";
 import { core_version } from "../scripts/compatibility.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";
+import { safe_error_message } from "../scripts/diagnostics.mjs";
 
 const state = state_root(), configuration = process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");
 const sessionId = randomUUID();
@@ -171,8 +172,8 @@ async function dispatch(message) {
       result = { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
     } else throw new Error("Unsupported knowledge MCP method");
     emit({ id: message.id, result });
-  } catch (error) { emit({ id: message.id, error: { code: -32000, message: error.message, data: { outcome: "error" } } }); }
+  } catch (error) { emit({ id: message.id, error: { code: -32000, message: safe_error_message(error), data: { outcome: "error" } } }); }
   finally { if (admitted) activeOperations--; }
 }
-read_lines(process.stdin, message => { void dispatch(message).catch(error => process.stderr.write(error.message + "\n")); }, error => process.stderr.write(error.message + "\n"));
+read_lines(process.stdin, message => { void dispatch(message).catch(error => process.stderr.write(safe_error_message(error) + "\n")); }, error => process.stderr.write(safe_error_message(error) + "\n"));
 process.stdin.once("end", () => { void detach(); });

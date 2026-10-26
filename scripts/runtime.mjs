@@ -31,6 +31,7 @@ import {
 } from "./project_paths.mjs";
 import { project_profile } from "./profile.mjs";
 import { effective_settings } from "./project_context.mjs";
+import { safe_error_message } from "./diagnostics.mjs";
 import { launch, alive, which, run_sync } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
@@ -423,7 +424,7 @@ export async function update_component(state, config, root, data, component, act
       for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
       if (active_readers(state, root).length) throw new ConfigError("Code-index has active readers. Finish current operations or close their chats, then apply the downloaded candidate.");
       try { await (io.stop || stop_daemon)(state, root); }
-      catch (error) { leaveMaintenance = true; throw uncertain_update("Daemon stop not confirmed; inspect its actual state before retrying: " + error.message); }
+      catch (error) { leaveMaintenance = true; throw uncertain_update("Daemon stop not confirmed; inspect its actual state before retrying: " + safe_error_message(error)); }
     }
     try {
       const checked = await (io.smoke || smoke)(state, config, root, data, component, 90, false, candidate);
@@ -443,13 +444,13 @@ export async function update_component(state, config, root, data, component, act
     } catch (error) {
       if (component === "code-index") {
         try { await (io.stop || stop_daemon)(state, root); }
-        catch (stopError) { leaveMaintenance = true; throw uncertain_update("Candidate failed: " + error.message + "; candidate stop unconfirmed: " + stopError.message); }
+        catch (stopError) { leaveMaintenance = true; throw uncertain_update("Candidate failed: " + safe_error_message(error) + "; candidate stop unconfirmed: " + safe_error_message(stopError)); }
         const old = artifact(state, component);
         if (old) try { await (io.restart || ensure_daemon)(state, root, data, old); }
         catch (restartError) { leaveMaintenance = true; throw uncertain_update("Candidate failed; restoration needs attention: " + restartError.message); }
       }
       if (error.outcomeUnknown) throw error;
-      throw new ConfigError("Candidate rejected; active artifact retained: " + error.message);
+      throw new ConfigError("Candidate rejected; active artifact retained: " + safe_error_message(error));
     }
     } finally {
       if (component === "code-index" && !leaveMaintenance && read_json(maintenance)?.pid === process.pid) fs.rmSync(maintenance, { force: true });
@@ -780,14 +781,14 @@ export async function rebuild_index(state, config, root, data, repositoryId, io 
       for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
       if (active_readers(state, root).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите пересоздание.");
       try { await (io.stop || stop_daemon)(state, root); stopped = true; }
-      catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + error.message); }
+      catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + safe_error_message(error)); }
       await (io.run || run_index)(exe, directory, home);
       await (io.restart || ensure_daemon)(state, root, data, exe); stopped = false;
       const checked = await (io.smoke || smoke)(state, config, root, data, "code-index", 90, false, exe);
       return { projectRoot: root, repository: repo.id, edtProject: repo.edt_project, state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
     } finally {
       if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe); }
-      catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + error.message); }
+      catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }
       if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
       signal_component(state, root, "code-index", true);
     }
@@ -848,7 +849,7 @@ export async function smoke(
       const deadline = Date.now() + 4000;
       do {
         const health = await client.request("tools/call", { name: "health", arguments: {} });
-        if (health.isError) throw new ConfigError("code-index health failed: " + JSON.stringify(health).slice(0, 4000));
+        if (health.isError) throw Object.assign(new ConfigError("code-index health failed; remote error text omitted"), { remote: true });
         const body = health.structuredContent || JSON.parse(health.content.find(part => part.type === "text").text);
         result.index = index_status(body, root, data);
         if ((result.index.state !== "indexing" && !result.index.retryable) || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;

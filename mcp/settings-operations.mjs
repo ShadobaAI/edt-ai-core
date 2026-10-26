@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sanitize_setup_result, safe_error_message } from "../scripts/diagnostics.mjs";
 
 // A transport deadline is not cancellation. Keep ownership and the eventual
 // result of a running mutation; status polling never starts another backend.
@@ -22,6 +23,7 @@ export class SettingsOperations {
     while (this.jobs.size > 16) this.jobs.delete(this.jobs.keys().next().value);
     job.finished = Promise.resolve().then(() => this.run(action, args, context)).then(
       result => {
+        if (["probe", "check", "refresh_readiness"].includes(action)) result = sanitize_setup_result(result);
         if (result?.values && Object.hasOwn(result.values, "projectRoot")) job.projectRoot = result.values.projectRoot || null;
         else if (typeof result?.projectRoot === "string") job.projectRoot = result.projectRoot;
         job.status = "completed"; job.result = result;
@@ -31,7 +33,7 @@ export class SettingsOperations {
       },
       error => {
         job.status = error.outcomeUnknown ? "outcome_unknown" : "failed";
-        job.error = error.message;
+        job.error = safe_error_message(error);
         job.completedAt = new Date().toISOString();
         this.observe("operation_" + job.status, { id: job.id, action, projectRoot: job.projectRoot, error }, "error");
       },

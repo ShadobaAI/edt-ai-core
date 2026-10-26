@@ -6,6 +6,7 @@ import { knowledge_status } from "./knowledge.mjs";
 import { OpenVikingAdapter } from "./openviking_adapter.mjs";
 import { stable } from "./common.mjs";
 import { knowledge_evidence_revision } from "./components.mjs";
+import { connection_failure, verification_limits, safe_error_message, register_diagnostic_secrets, sanitize_diagnostics } from "./diagnostics.mjs";
 
 const observations = new WeakMap();
 // Setup evidence is a bounded observation of a closed probe, never a workflow
@@ -23,15 +24,16 @@ export function setup_knowledge_status(profile, config, root, observation) {
 // Read-only external acceptance for setup, without launching managed services,
 // publishing their schemas to the model, or inventing native tool arguments.
 export async function probe_connections(config, root, profile) {
+  register_diagnostic_secrets(config);
   const observationKey = stable([resolve(root), profile, config]);
   const knowledge = knowledge_status(profile, config);
   const names = ["edt", "v8std"];
   if (knowledge.state !== "disabled") names.push("openviking");
   const external = Object.fromEntries(await Promise.all(names.map(async name => {
     if (name === "openviking" && ["invalid", "not_configured"].includes(knowledge.state))
-      return [name, { configured: false, connected: false, ready: false, state: knowledge.state, detail: knowledge.detail }];
+      return [name, { configured: false, connected: false, ready: false, state: knowledge.state, failure: { category: "configuration" }, detail: knowledge.detail }];
     const options = config.mcp.required[name] || config.mcp.optional[name];
-    if (!options?.url || options.enabled === false) return [name, { configured: false, connected: false, ready: false }];
+    if (!options?.url || options.enabled === false) return [name, { configured: false, connected: false, ready: false, failure: { category: "configuration" } }];
     if (name === "openviking") {
       const bounded = structuredClone(config);
       bounded.mcp.optional.openviking.timeout_seconds = Math.min(options.timeout_seconds || 20, 30);
@@ -45,16 +47,20 @@ export async function probe_connections(config, root, profile) {
         observations.set(result, { key: observationKey, evidence, status: structuredClone(result) });
       }
       catch (error) { Object.assign(result, adapter.status(), { ready: false, lifecycle: adapter.connected ? "connected" : "configured",
-        searchReadiness: "not_verified", readiness: { state: "not_verified" }, detail: error.message }); }
+        searchReadiness: "not_verified", readiness: { state: "not_verified" }, failure: connection_failure(error, adapter.connected ? "index" : "configuration"), detail: safe_error_message(error) }); }
       finally { await adapter.close().catch(() => {}); }
       return [name, result];
     }
     const client = new RemoteMcp(options.url, Math.min(options.timeout_seconds || 20, 30), { headers_env: options.headers_env, maxBytes: options.max_response_bytes });
     const result = { configured: true, connected: false, ready: false, projectReadiness: "not_verified" };
+    let phase = "authorization";
     try {
+      client.credential_headers();
+      phase = "transport";
       const init = await client.initialize();
       result.connected = true;
-      result.server = { name: init.serverInfo?.name, version: init.serverInfo?.version };
+      result.server = sanitize_diagnostics({ name: init.serverInfo?.name, version: init.serverInfo?.version });
+      phase = "server_contract";
       const tools = (await all_pages(client, "tools/list", "tools")).tools;
       if (!tools.length) throw new Error("MCP не предоставляет инструментов.");
       result.toolsVerified = true;
@@ -80,10 +86,12 @@ export async function probe_connections(config, root, profile) {
         }
       }
       result.ready = name === "edt" ? result.projectReadiness === "verified" : true;
-    } catch (error) { result.detail = error.message; }
+      if (!result.ready) result.failure = { category: "access_scope" };
+    } catch (error) { result.detail = safe_error_message(error); result.failure = connection_failure(error, phase); }
     finally { await client.close().catch(() => {}); }
     return [name, result];
   })));
-  return { projectRoot: root, external, knowledge: setup_knowledge_status(profile, config, root, external.openviking),
+  const status = setup_knowledge_status(profile, config, root, external.openviking);
+  return { projectRoot: root, external, knowledge: status, verificationLimits: verification_limits(status.ready),
     scope: "setup_probe", fullReadiness: "not_verified" };
 }
