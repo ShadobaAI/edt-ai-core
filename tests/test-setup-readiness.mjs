@@ -54,12 +54,16 @@ test("old readiness receipts cannot reintroduce untrusted diagnostic messages", 
   await backend.main({ action: "check", authorization });
   const file = path.join(instance_directory(f.state, f.root), "first.readiness.json");
   const receipt = JSON.parse(fs.readFileSync(file, "utf8")); assert.equal(receipt.version, 3);
-  receipt.version = 2; receipt.result.checks[0].detail = "legacy-untrusted-5731";
-  fs.writeFileSync(file, JSON.stringify(receipt));
-  const current = await backend.main({ action: "read" });
-  assert.equal(current.readiness.state, "not_checked");
-  assert.match(current.readiness.reason, /Несовместимая версия/);
-  assert.equal(JSON.stringify(current).includes("legacy-untrusted-5731"), false);
+  receipt.result.checks[0].detail = "legacy-untrusted-5731";
+  for (const version of [undefined, 2, 99]) {
+    receipt.version = version;
+    const bytes = JSON.stringify(receipt); fs.writeFileSync(file, bytes);
+    const current = await backend.main({ action: "read" });
+    assert.equal(current.readiness.state, "not_checked");
+    assert.match(current.readiness.reason, /Несовместимая версия/);
+    assert.equal(JSON.stringify(current).includes("legacy-untrusted-5731"), false);
+    assert.equal(fs.readFileSync(file, "utf8"), bytes);
+  }
 });
 
 test("one readiness check verifies externals, policy and skills, and passive reads reuse scoped evidence",async t=>{

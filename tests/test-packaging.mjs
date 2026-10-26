@@ -7,6 +7,7 @@ import { fixture, environment, ROOT } from "./helpers.mjs";
 import { package_plugin } from "../tools/package-plugin.mjs";
 import { verify } from "../tools/verify-package.mjs";
 import { check } from "../tools/check-plugin.mjs";
+import { source_files } from "../scripts/package_layout.mjs";
 import {
   compare_version,
   version_key,
@@ -52,11 +53,25 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
   const extracted = path.join(f.base, "extracted plugin"),
     info = verify(path.join(ROOT, ".build"), extracted);
   assert.equal(info.plugin, "1c-ai-core");
+  const installed = path.join(extracted, "plugins/1c-ai-core");
+  for (const file of source_files(ROOT)) {
+    if (file === "plugin.json") {
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(installed, file))), {
+        ...JSON.parse(manifest), version: info.version,
+      });
+    } else {
+      assert.deepEqual(fs.readFileSync(path.join(installed, file)),
+        fs.readFileSync(path.join(ROOT, file)), `Extracted source differs: ${file}`);
+    }
+  }
   const ambient = path.join(f.base, "unrelated-settings.json");
   fs.writeFileSync(ambient, JSON.stringify({ version: "99.0" }));
   environment(t, { ...f.env, EDT_AI_SETTINGS: ambient });
   const result = await check(path.join(extracted, "plugins/1c-ai-core"));
   assert.equal(result.runtime, "node-only");
+  assert.deepEqual(result.sourceGuard, {
+    registration: "verified", directExecution: "verified", hostActivation: "not_verified",
+  });
   const download = path.join(f.base, "download");
   fs.mkdirSync(download);
   for (const name of [
@@ -91,6 +106,25 @@ test("build validates all inputs before removing a previous build and refuses es
   } finally {
     fs.renameSync(saved, file);
   }
+});
+
+test("release data allowlist excludes project bindings, private corpora and local runtime state", t => {
+  const f = fixture(t), checkout = path.join(f.base, "checkout");
+  const expected = source_files(ROOT);
+  for (const name of expected) {
+    const target = path.join(checkout, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(ROOT, name), target);
+  }
+  const contaminants = ["profiles/customer/profile.yaml", "profiles/generic-1c/instance.local.yaml",
+    "knowledge/private-corpus.yaml", "runtime/owner.yaml", "settings/local.yaml",
+    ".ai/project.yaml", ".codex/config.toml", "hooks/runtime.local.json"];
+  for (const name of contaminants) {
+    const target = path.join(checkout, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "credential-and-local-endpoint-sentinel");
+  }
+  assert.deepEqual(source_files(checkout).sort(), expected.sort());
 });
 test("stable version ordering, untagged initial checkout and release-tag override protection", (t) => {
   const f = fixture(t);
@@ -345,6 +379,30 @@ test("prepared local marketplace preserves legacy YAML and runs with Node alone"
   f.clients.push(client);
   await client.initialize();
   assert.equal((await client.request("tools/list")).tools.length, 8);
+});
+
+test("switching fresh plugin copies preserves external user settings, bindings and project bytes", t => {
+  const f = fixture(t); f.save();
+  const config = JSON.parse(fs.readFileSync(path.join(ROOT, "settings/defaults.json")));
+  Object.assign(config, { state_dir: f.state, active_project: f.root });
+  config.mcp.required.edt.url = "http://localhost:18201/mcp";
+  config.mcp.optional.openviking.headers_env = { Authorization: "USER_KNOWLEDGE_AUTH" };
+  const settingsFile = path.join(f.state, "settings.json");
+  fs.writeFileSync(settingsFile, JSON.stringify(config));
+  const sentinels = [path.join(f.root, ".ai/project.local.yaml"),
+    path.join(f.root, ".ai/instances/first.local.yaml"), path.join(f.root, "src/Module.bsl"),
+    path.join(f.state, "publication.json"), path.join(f.state, "runtime-lock.json")];
+  for (const file of sentinels) {
+    fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, "user-state-sentinel");
+  }
+  const profileFile = path.join(f.root, ".ai/project.yaml");
+  const before = [profileFile, ...sentinels].map(file => fs.readFileSync(file));
+  const first = prepare(path.join(f.base, "first-copy"), f.state);
+  const second = prepare(path.join(f.base, "second-copy"), f.state);
+  assert.notEqual(first.marketplace, second.marketplace);
+  assert.equal(first.settings, second.settings);
+  assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile)), config);
+  [profileFile, ...sentinels].forEach((file, index) => assert.deepEqual(fs.readFileSync(file), before[index]));
 });
 test("owned process tree termination leaves unrelated processes alive", async (t) => {
   const f = fixture(t),

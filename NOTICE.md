@@ -11,7 +11,7 @@ under MPL 2.0. See [LICENSE](LICENSE) for the full terms.
 Third-party material retains its applicable copyright notices and licenses.
 
 Bundled Node dependencies (YAML, Ajv and its dependencies, fflate, Koffi) retain
-their MIT licenses and author notices in `vendor/NOTICE.txt`. Koffi's prebuilt
+their respective licenses and author notices in `vendor/NOTICE.txt`. Koffi's prebuilt
 Windows N-API addons are included for x64 and arm64; no compiler or install script
 runs on the user's machine. Source: https://github.com/Koromix/koffi.
 The bundle is reproducible from package-lock.json and tools/vendor.mjs.

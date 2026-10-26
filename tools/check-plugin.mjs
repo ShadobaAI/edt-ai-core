@@ -36,6 +36,8 @@ async function check_worker(selected) {
   assert.equal(universal.author.name, "ShadobaAI");
   const hooks = json("hooks/hooks.json");
   assert.match(hooks.hooks.SessionStart[0].hooks[0].command, /session-start\.mjs/);
+  assert.equal(hooks.hooks.PreToolUse[0].matcher, ".*");
+  assert.match(hooks.hooks.PreToolUse[0].hooks[0].command, /hooks\/guard\.mjs/);
   assert.match(
     fs.readFileSync(path.join(root, "LICENSE"), "utf8"),
     /^Mozilla Public License Version 2.0/,
@@ -44,6 +46,11 @@ async function check_worker(selected) {
     fs.readFileSync(path.join(root, "NOTICE.md"), "utf8"),
     /ShadobaAI/,
   );
+  assert.match(fs.readFileSync(path.join(root, "UNICODE-LICENSE.txt"), "utf8"), /^UNICODE LICENSE V3/);
+  assert.deepEqual(fs.readdirSync(path.join(root, "profiles")), ["generic-1c"]);
+  assert.deepEqual(fs.readdirSync(path.join(root, "profiles/generic-1c")), ["profile.yaml"]);
+  assert.deepEqual(fs.readdirSync(path.join(root, "knowledge")), ["recommended-manifest.yaml"]);
+  assert.deepEqual(fs.readdirSync(path.join(root, "runtime")), ["runtime-manifest.yaml"]);
   const source = fs.readFileSync(path.join(root, "SOURCE.md"), "utf8");
   assert.ok(source.includes(`1C AI Core ${build.version}`));
   if (build.revision) assert.ok(source.includes("/tree/" + build.revision));
@@ -279,6 +286,16 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       JSON.parse(run("hooks/guard.mjs", [], JSON.stringify({ cwd: temp }))),
       {},
     );
+    // Direct execution verifies the shipped guard, not host hook activation.
+    const guarded = common.parse(yaml);
+    guarded.roots.source = ["src"]; guarded.roots.protected = ["src"];
+    fs.mkdirSync(path.join(project, "src"));
+    common.dump(guarded, profile);
+    const denied = JSON.parse(run("hooks/guard.mjs", [], JSON.stringify({
+      cwd: project, tool_name: "Write", tool_input: { path: "src/Denied.bsl", content: "fixture" },
+    })));
+    assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(fs.existsSync(path.join(project, "src/Denied.bsl")), false);
     assert.ok(!fs.existsSync(path.join(env.EDT_AI_STATE_DIR, "python")));
     const processes = fs.existsSync(trace)
       ? fs
@@ -302,6 +319,7 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       supervisedLaunches: processes.length,
       runtime: "node-only",
       liveExternal: "not_verified",
+      sourceGuard: { registration: "verified", directExecution: "verified", hostActivation: "not_verified" },
     };
   } finally {
     // Windows may retain executable/stdio handles briefly after child close.

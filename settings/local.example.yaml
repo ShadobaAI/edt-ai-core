@@ -17,6 +17,17 @@ mcp:
       mode: auto
       version: latest
       allow_prerelease: false
+  optional:
+    openviking:
+      enabled: false
+      url: ''
+      headers_env: {}
+      timeout_seconds: 20
+      max_response_bytes: 8388608
+# OpenViking also needs an explicitly selected project knowledge mode/provider
+# and collections. Enabling transport alone does not change provider: none.
+# Credential mappings contain environment names, never values:
+# headers_env: { Authorization: TEAM_KNOWLEDGE_AUTH }
 # latest selects stable releases unless allow_prerelease is true.
 # Set version to an exact tag (including a prerelease) to pin a release.
 # For external mode set mode: external and url. Advanced connection fields:
