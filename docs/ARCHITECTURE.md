@@ -25,14 +25,14 @@ flowchart TD
     Runtime --> BSL
 ```
 
-Для OpenViking реализованы режимы знаний и workflow gates; поисковый адаптер
-и MCP ИБ планируются. Их место в потоке данных и границы описаны
+Для OpenViking реализованы режимы знаний, workflow gates и клиентский адаптер;
+подтверждение публикации/прав и MCP ИБ остаются отдельными этапами. Их место в потоке данных и границы описаны
 в [INTEGRATIONS.md](INTEGRATIONS.md).
 
 | Модуль | Ответственность |
 | --- | --- |
 | `plugin.json` | Метаданные, требование локального исполнителя, onboarding skill и hooks |
-| `mcp.json` | Шесть stdio-входов: policy, настройки, code-index, bsl-ls, edt, v8std |
+| `mcp.json` | Семь stdio-входов: policy, настройки, code-index, bsl-ls, edt, v8std, openviking |
 | `skills/` | Настройка, routing, изменение кода, поиск, нормы, диагностика, ревью и тесты |
 | `scripts/profile.mjs`, `schemas/` | Загрузка, валидация, создание и перенос профиля |
 | `scripts/selection.mjs`, `project_paths.mjs` | Выбранный каталог, поиск профиля, containment, namespace проекта/экземпляра |

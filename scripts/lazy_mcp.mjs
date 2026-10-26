@@ -32,7 +32,7 @@ import { create_diagnostic_logger, register_diagnostic_secrets } from "./diagnos
 import { knowledge_status, require_workflow_knowledge } from "./knowledge.mjs";
 
 const component = argumentsOf(undefined, [], ["component"]).component;
-if (!Object.hasOwn(COMPONENTS, component))
+if (!Object.hasOwn(COMPONENTS, component) || COMPONENTS[component].adapter)
   throw new ConfigError("Invalid --component");
 const state = state_root(),
   configuration =

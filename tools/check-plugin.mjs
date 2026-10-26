@@ -266,6 +266,8 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
               .ready,
             false,
           );
+        if (name === "openviking")
+          assert.equal((await client.call("knowledge_status", { projectRoot: project })).structuredContent.ready, false);
       } finally {
         await client.close();
       }

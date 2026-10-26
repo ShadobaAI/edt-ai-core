@@ -61,7 +61,7 @@ const primitive = {
   codeIndexAllowPrerelease: { type: "boolean", title: "Предварительные релизы индекса кода", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   bslLsVersion: { type: "string", title: "Версия BSL LS", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
   bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
-  openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Override текущего каталога и экземпляра. Не изменяет режим и обязательность знаний; поисковый адаптер пока не реализован." },
+  openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Override текущего каталога и экземпляра. Не изменяет режим и обязательность знаний; соединение не подтверждает готовность публикации и права." },
   openvikingUrl: { type: "string", title: "URL OpenViking", description: "Override текущего каталога и экземпляра. Пустое значение отключает транспорт; окружение имеет высший приоритет." },
 };
 const versionCatalogs = new Map();

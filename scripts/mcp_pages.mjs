@@ -1,9 +1,10 @@
-export async function all_pages(client, method, key) {
+export async function all_pages(client, method, key, { maxPages = 128, maxItems = 2000 } = {}) {
   const items = [],
     seen = new Set(),
     cursors = new Set();
-  let cursor;
+  let cursor, pages = 0;
   while (true) {
+    if (++pages > maxPages) throw new Error(`${method} page limit exceeded`);
     let result;
     try {
       result = await client.request(
@@ -17,6 +18,8 @@ export async function all_pages(client, method, key) {
     }
     if (!Array.isArray(result?.[key]))
       throw new Error(`Invalid ${method} page`);
+    if (result.truncated === true || result.partial === true || result.complete === false || result.hasMore === true && result.nextCursor == null)
+      throw new Error(`Incomplete ${method} page`);
     for (const item of result[key]) {
       const identity =
         item?.[
@@ -31,7 +34,7 @@ export async function all_pages(client, method, key) {
       seen.add(identity);
       items.push(item);
     }
-    if (items.length > 2000) throw new Error(`${method} item limit exceeded`);
+    if (items.length > maxItems) throw new Error(`${method} item limit exceeded`);
     cursor = result.nextCursor;
     if (cursor == null) return { [key]: items };
     if (typeof cursor !== "string" || !cursor || cursors.has(cursor))

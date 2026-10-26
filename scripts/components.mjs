@@ -6,15 +6,16 @@ import fs from "node:fs";
 export const COMPONENTS = Object.freeze({
   edt: { kind: "remote", title: "EDT" },
   v8std: { kind: "remote", title: "Стандарты" },
+  openviking: { kind: "remote", optional: true, adapter: "mcp/openviking.mjs", title: "Знания" },
   "code-index": { kind: "managed", repository: "Regsorm/code-index-mcp", title: "Индекс кода" },
   "bsl-ls": { kind: "managed", repository: "1c-syntax/bsl-language-server", title: "BSL LS" },
 });
 export const managed_components = Object.keys(COMPONENTS).filter(id => COMPONENTS[id].kind === "managed");
-export const component_settings = (config, id) => config.mcp[COMPONENTS[id].kind === "managed" ? "managed" : "required"][id];
+export const component_settings = (config, id) => config.mcp[COMPONENTS[id].optional ? "optional" : COMPONENTS[id].kind === "managed" ? "managed" : "required"][id];
 export const component_enabled = (config, id) => component_settings(config, id).enabled !== false;
 export function binding_fingerprint(config, id, root, profile, reconnect = "") {
   return stable([root, instance_name(), component_settings(config, id),
-    id === "code-index" ? profile.repositories : null, reconnect]);
+    id === "code-index" ? profile.repositories : id === "openviking" ? profile.knowledge : null, reconnect]);
 }
 const preparation_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".preparation.json");
 export function grant_preparation(state, root, components) {

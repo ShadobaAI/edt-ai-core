@@ -41,6 +41,29 @@ export function validate_material(data) {
   return data;
 }
 
+// Provider-independent retrieval policy. Metadata is a declaration; neither a
+// valid shape nor a declared status authenticates publication or applicability.
+export function knowledge_material_active(metadata) {
+  validate_material(metadata);
+  return metadata.kind === "document" ? metadata.status === "published" : metadata.status !== "obsolete";
+}
+export function knowledge_material_summary(metadata, { body, maxExcerptChars = 1000, partial = false } = {}) {
+  validate_material(metadata);
+  const excerpt = metadata.kind === "api_card" && metadata.recommendation === "avoid" ? metadata.avoid_reason : body;
+  return { id: metadata.id, kind: metadata.kind, title: metadata.title, source: metadata.provenance.source,
+    revision: metadata.revision, scope: metadata.scope, compatibility: metadata.compatibility, status: metadata.status,
+    evidence: { metadata: "unverified_declaration", publication: "not_verified", compatibility: "not_verified" },
+    ...(metadata.kind === "api_card" ? { apiPolicy: {
+      apiReference: metadata.recommended_api, recommendation: metadata.recommendation,
+      evidenceRole: metadata.recommendation === "avoid" ? "avoidance_warning" : metadata.status === "confirmed" ? "declared_scoped_confirmation" : "verification_pointer",
+      newCall: metadata.recommendation === "avoid" ? "not_recommended" : metadata.status === "confirmed" ? "candidate_after_scope_verification" : "requires_reverification",
+      applicabilityToCurrentTask: "not_verified", verificationRef: metadata.verification_ref, verifiedAt: metadata.verified_at,
+      ...(metadata.recommendation === "avoid" ? { avoidReason: metadata.avoid_reason } : {})
+    } } : { documentPolicy: { publicationStatus: metadata.status, evidenceRole: "publication_declaration", apiApplicability: "not_proven" } }),
+    ...(body !== undefined ? { excerpt: excerpt.slice(0, maxExcerptChars),
+      excerptTruncated: excerpt.length > maxExcerptChars || excerpt === body && partial } : {}) };
+}
+
 // Validating this declaration does not authenticate the publisher or prove
 // index completeness, access rights, current binding or readiness.
 export function validate_publication_receipt(data) {

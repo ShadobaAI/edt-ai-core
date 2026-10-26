@@ -444,6 +444,11 @@
           },
           "uniqueItems": true
         },
+        "collection_uris": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+          "additionalProperties": { "type": "string", "pattern": "^viking://resources/[^\\s%?#\\\\]+$" }
+        },
         "search": {
           "type": "object",
           "additionalProperties": false,
@@ -485,7 +490,8 @@
           "then": { "properties": {
             "mode": { "const": "disabled" }, "required": { "const": false },
             "manifest": { "type": "null" },
-            "collections": { "maxItems": 0 }, "dependent_actions": { "maxItems": 0 }
+            "collections": { "maxItems": 0 }, "dependent_actions": { "maxItems": 0 },
+            "collection_uris": { "maxProperties": 0 }
           }, "not": { "required": ["search"] } }
         },
         {

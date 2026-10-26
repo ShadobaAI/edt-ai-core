@@ -982,7 +982,7 @@ export async function main() {
         servers[c] = {
           type: "stdio",
           command: process.execPath,
-          args: [
+          args: COMPONENTS[c].adapter ? [path.join(ROOT, COMPONENTS[c].adapter)] : [
             path.join(ROOT, "scripts/lazy_mcp.mjs"),
             "--component",
             c,
