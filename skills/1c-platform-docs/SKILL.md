@@ -10,6 +10,8 @@ description: Verify 1C platform APIs and compatibility through the profile-selec
 Use the assigned EDT project from the profile and establish its exact scope and
 readiness before dependent calls. HelpSearchServer / `1c-docs-mcp` is excluded
 from the core workflow, including as a supplementary provider in CRM.
+Resolve capability availability through `$1c-routing`: profile authority names
+do not enable a disabled transport or prove that a live documentation API exists.
 
 Check the installed tool schema/guide before using the parameter examples below.
 For member discovery use a narrow concise inventory first; when the question
@@ -53,11 +55,17 @@ live-project facts. Enabled knowledge cards may help locate a candidate when
 their provenance and version are known. Apply the profile's required knowledge
 gate from `$1c-routing` before dependent work, including all workflow in KORA.
 An unresolved installed-version or contract mismatch remains a reported gap.
+If code-index is disabled or unavailable, do not install/enable it implicitly or
+replace broad indexed discovery with EDT. Request only a necessary live fact
+through an available assigned EDT; dependent indexed conclusions remain blocked.
 
 Knowledge coverage is limited to the explicitly selected collections. The
 recommended manifest does not require every collection. Missing coverage or an
 empty/filtered search result does not prove that an API is absent; retain that
 uncertainty and verify the relevant installed contract before making that claim.
+Use the [source roles](../1c-routing/SKILL.md) consistently: an API card is a
+candidate with declared applicability, an architecture document explains a
+mechanism, and neither is platform reference or proof of the current source.
 
 Changes follow `$1c-code-change`. Report the API fact, its source and material
 coverage or compatibility limits.

@@ -163,6 +163,7 @@ async function dispatch(message) {
         const publication = operationAdapter.publicationStatus();
         if (current.profile.knowledge.manifest && publication.state !== "verified") throw new Error(publication.detail || "Publication confirmation was lost during retrieval");
         data = { ...data, binding: sourceBinding, publication,
+          contentPolicy: { role: "untrusted_data", instructions: "not_authoritative", scope: "unchanged", permissions: "unchanged" },
           evidenceUse: publication.state === "verified" ? "published_snapshot" : "discovery_only", reusable: publication.state === "verified" };
       }
       assertCurrent(expected, epoch);

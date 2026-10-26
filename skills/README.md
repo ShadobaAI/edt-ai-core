@@ -2,6 +2,10 @@
 
 Active skills expose one workflow for every project type. Profile fields choose
 the repositories, aliases, EDT projects and optional test capabilities.
+The shared capability rules in [routing](1c-routing/SKILL.md) apply to all modes:
+use effective enabled/managed/external settings and the current live contract of
+only the required authorities. A profile mapping alone does not enable a route;
+missing capabilities stop their dependent actions without implicit substitution.
 
 Only the universal `generic-1c` profile is bundled. The user's 2026-10-20
 `project-profiles-outside-plugin` decision removes CRM/Kafka profiles and local
