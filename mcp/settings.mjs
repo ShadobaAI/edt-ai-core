@@ -63,8 +63,16 @@ const primitive = {
   bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Override текущего каталога и экземпляра. Не изменяет режим и обязательность знаний; соединение не подтверждает готовность публикации и права." },
   openvikingUrl: { type: "string", title: "URL OpenViking", description: "Override текущего каталога и экземпляра. Пустое значение отключает транспорт; окружение имеет высший приоритет." },
+  openvikingTimeout: { type: "number", title: "Таймаут OpenViking, с", exclusiveMinimum: 0, maximum: 300 },
+  openvikingMaxResponseBytes: { type: "integer", title: "Лимит ответа OpenViking, байт", minimum: 1024, maximum: 16777216 },
+  openvikingHeadersEnv: { type: "object", title: "Заголовки → переменные окружения", additionalProperties: { type: "string" }, description: "Только имена переменных, без значений credentials." },
 };
 const versionCatalogs = new Map();
+const openvikingTransport = { type: "object", additionalProperties: false, properties: {
+  enabled: primitive.openvikingEnabled, url: primitive.openvikingUrl,
+  timeout_seconds: primitive.openvikingTimeout, max_response_bytes: primitive.openvikingMaxResponseBytes,
+  headers_env: primitive.openvikingHeadersEnv,
+} };
 
 function values(c) {
   return {
@@ -75,6 +83,9 @@ function values(c) {
     bslLsVersion: c.mcp.managed["bsl-ls"].version, bslLsAllowPrerelease: Boolean(c.mcp.managed["bsl-ls"].allow_prerelease),
     openvikingEnabled: Boolean(c.mcp.optional?.openviking?.enabled),
     openvikingUrl: c.mcp.optional?.openviking?.url || "",
+    openvikingTimeout: c.mcp.optional?.openviking?.timeout_seconds,
+    openvikingMaxResponseBytes: c.mcp.optional?.openviking?.max_response_bytes,
+    openvikingHeadersEnv: c.mcp.optional?.openviking?.headers_env || {},
   };
 }
 async function readValues(remember = false) {
@@ -98,9 +109,14 @@ async function readValues(remember = false) {
   return { values: { ...values(defaults), projectRoot: "" }, profile: { status: "unselected", path: null }, instance: process.env.EDT_AI_INSTANCE || "default", preparationScope: null };
 }
 function readSettings(actual) {
+  const properties = structuredClone(primitive);
+  for (const [field, source] of Object.entries(actual.valueSources || {}))
+    if (properties[field] && (source.startsWith("environment:") || source === "connections_file"))
+      properties[field].readOnly = true;
   return {
-    schema: { type: "object", properties: structuredClone(primitive) },
+    schema: { type: "object", properties },
     values: actual.values, instance: actual.instance, connectionSources: actual.connectionSources,
+    valueSources: actual.valueSources,
     installedVersions: actual.installedVersions,
     preparationScope: actual.preparationScope,
     profile: actual.profile, directoryContext: actual.directoryContext, sessionGuidance: actual.sessionGuidance,
@@ -142,12 +158,12 @@ const tools = [
     inputSchema: empty, annotations: annotations(), _meta: { ui: { resourceUri: resource, visibility: ["app"] }, "openai/ui": { entrypoints: [{ type: "global" }] } } },
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
     inputSchema: inspectInput, annotations: annotations(), _meta: shared },
-  { name: "settings.probe_connections", title: "Проверить EDT и v8std", description: "One read-only external connection test, including exact EDT repository paths/readiness when list_projects is exposed. Does not download or launch services. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
-    inputSchema: { type: "object", properties: { connections: { type: "object", properties: { edt: { type: "string" }, v8std: { type: "string" } }, additionalProperties: false, description: "Optional unsaved URLs to test without persisting them. An empty string tests a disabled connection." } }, additionalProperties: false }, annotations: { ...annotations(), openWorldHint: true }, _meta: shared },
-  { name: "settings.profile", title: "Настройки проекта", description: "Open the settings form for this chat's selected profile only on an explicit user request to view, create or change profile/settings. Code analysis and runtime troubleshooting do not authorize opening a form; use settings.inspect instead. Always supply this chat's known projectRoot so the form retains its directory across MCP connections; {} uses host roots when available. Does not reload profiles or borrow another chat's directory.",
+  { name: "settings.probe_connections", title: "Проверить внешние подключения", description: "One read-only test of EDT/v8std and enabled OpenViking, including exact EDT repository paths/readiness and selected knowledge search. Does not download or launch services. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
+    inputSchema: { type: "object", properties: { connections: { type: "object", properties: { edt: { type: "string" }, v8std: { type: "string" }, openviking: openvikingTransport }, additionalProperties: false, description: "Optional unsaved transport fields to test without persisting them. Empty URLs disconnect transport without changing knowledge requirements." } }, additionalProperties: false }, annotations: { ...annotations(), openWorldHint: true }, _meta: shared },
+  { name: "settings.profile", title: "Настройки проекта", description: "Open the settings form for this chat's selected profile only on an explicit user request to open/show this form. Chat configuration, code analysis and runtime troubleshooting do not authorize opening a form; use settings.inspect instead. Always supply this chat's known projectRoot so the form retains its directory across MCP connections; {} uses host roots when available. Does not reload profiles or borrow another chat's directory.",
     inputSchema: inspectInput, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "thread" }] } } },
   ...[["settings.create", "Создать профиль", "Create the generic .ai/project.yaml and missing project instructions in this chat's selected repository, only when the user requests creation. Never overwrites a profile or existing instructions. Returns projectInstructions.created/preserved; optional overrideFile reports a non-empty AGENTS.override.md that takes precedence over the adjacent AGENTS.md. contentValidated=false means project rules still need review. Follow the setup skill's project-instructions reference to complete them from confirmed facts. Repository mappings still need configuration."],
-      ["settings.load", "Загрузить профиль", "Validate and reload the existing .ai/project.yaml for this chat's selected repository. Does not import a file or launch services. Report sessionGuidance; if the host does not refresh tools, ask the user to open a new chat in the same directory or restart Codex."]].map(([name, title, description]) => ({
+      ["settings.load", "Загрузить профиль", "Validate and reload the existing .ai/project.yaml for this chat's selected repository. Does not import a file or launch services. Report sessionGuidance. If the host keeps its initial tool catalogue, use the assigned relay's core_runtime_tools/core_runtime_call with this chat's projectRoot."]].map(([name, title, description]) => ({
     name, title, description, inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1, description: "Only for an unbound settings screen. A chat's selected root cannot be changed." } }, additionalProperties: false },
     annotations: annotations(false), _meta: shared,
   })),
@@ -166,7 +182,7 @@ const tools = [
     outputSchema: { type: "object", required: ["values"], properties: { values: { type: "object" } } },
     annotations: annotations(false), _meta: shared },
   ...[["settings.import", "Открыть импорт"], ["settings.export", "Открыть экспорт"]].map(([name, title]) => ({
-    name, title, description: `${title}. Open the form only on an explicit user request to import/export profile settings. This does not import or export by itself.`,
+    name, title, description: `${title}. Open the form only on an explicit user request for the import/export form. Chat configuration uses preview/apply or export_data without opening UI. This does not import or export by itself.`,
     inputSchema: inspectInput, annotations: annotations(), _meta: appTool,
   })),
   { name: "settings.preview", title: "Проверить файл", description: "Preview settings import without writing.",
@@ -535,7 +551,7 @@ async function dispatch(message) {
     let data;
     if (message.method === "initialize") {
       data = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0],
-        instructions: "Start chat setup with settings.inspect once; include this chat's known local projectRoot when the host supplied no directory. Reuse its validation, connection sources and nextSteps. Open settings forms only on an explicit user request about viewing, creating, editing, importing or exporting profile/settings. Code analysis or runtime diagnostics does not authorize opening a form. Inspection, checks and operation polling return data without UI. Do not reload an already loaded profile, inspect plugin source, spawn substitute relays or restart chats for empty roots. Create only a missing profile on user request. Preparation needs scoped user authorization. Never select another chat's root.",
+        instructions: "Start chat setup with settings.inspect once; include this chat's known local projectRoot when the host supplied no directory. Reuse its validation, connection sources, valueSources and nextSteps. Open settings forms only on an explicit user request to open/show the form or from plugin app navigation. Chat configuration, code analysis and runtime diagnostics do not authorize opening a form. Inspection, checks and operation polling return data without UI. Do not reload an already loaded profile, inspect plugin source, spawn substitute relays or restart chats for empty roots. Create only a missing profile on user request. Preparation needs scoped user authorization. Never select another chat's root.",
         serverInfo: { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version, icons: plugin_icons() },
         capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "server/discover") {

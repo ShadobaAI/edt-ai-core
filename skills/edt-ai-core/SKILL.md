@@ -9,8 +9,9 @@ description: Guide users through 1C AI Core setup in chat, create or review proj
 
 Use settings.inspect as the primary chat setup interface. Native/manual settings
 use the same backend. Do not require a form, YAML knowledge or a technical questionnaire.
-Open a settings form only on an explicit user request about viewing, creating,
-changing, importing or exporting a profile/settings. A request to analyze code,
+Open a settings form only when the user asks to open/show the form or chooses
+the plugin's settings UI. A request to configure settings in chat stays in chat.
+A request to analyze code,
 test BSL LS or diagnose a runtime does not authorize opening settings UI.
 settings.inspect/check and settings.operation return data without a form.
 Discover this installed plugin's tools first; a loaded skill alone does not prove
@@ -58,9 +59,15 @@ another chat before correcting the actual connection problem.
 - For supplied portable files use preview/apply import semantics. settings.import
   only opens the form. For a simple connection/component change use settings.update
   with changed fields only; respect read-only/environment/connection-file sources.
+  Both form entrypoints, chat tools and the Node CLI use SettingsBackend with
+  the same selected root, instance and precedence. OpenViking transport fields
+  are openvikingEnabled/Url/Timeout/MaxResponseBytes/HeadersEnv; HeadersEnv is a
+  complete map of header names to environment variable names, never secrets.
+  Read valueSources per field: a URL source does not describe all transport fields.
 - Detection never overrides an explicit URL. If inspect reports a conflicting
   EDT port, verify the assigned endpoint/projects before proposing an override.
-  Do not guess endpoints. OpenViking is reserved configuration, not a connection.
+  Do not guess endpoints. OpenViking uses the dedicated knowledge adapter;
+  changing transport never changes profile knowledge mode or requirements.
 - Inspect once after the final save to verify effective values and sources.
   Do not reload after apply/update unless the response identifies a real need.
 
@@ -68,11 +75,29 @@ For an analyzer configuration task, read only the configuration paragraph in
 [$bsl-ls-mcp](../bsl-ls-mcp/SKILL.md). Shared workspace settings use one explicit
 file; do not duplicate identical JSON files across configuration directories.
 
+## Connect existing knowledge
+
+Keep the profile's explicit knowledge choice: disabled (`provider: none`),
+transitional with selected collections, or KORA with mandatory knowledge for
+the whole workflow. Change that choice only under the user's settings request.
+Use inspect.knowledge/knowledgeSetup and valueSources. For OpenViking obtain
+the assigned MCP endpoint, collection IDs/URIs, environment variable names for
+search credentials and external access/publication confirmations from the team.
+Connect that existing server; do not install OpenViking, create a corpus, index,
+publish, guess a URL or substitute another authority when readiness fails.
+Use edit/preview/apply to set the project knowledge contract and update for
+instance transport. Preserve unrelated fields and existing overrides. Missing
+inputs remain explicit blockers; an empty endpoint never disables requirements.
+If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
+
 ## Verify without repeated probes
 
-- Call settings.probe_connections once for configured EDT/v8std. It verifies
+- Call settings.probe_connections once for configured EDT/v8std and enabled
+  OpenViking. It verifies
   protocol connections and, when exposed, exact EDT names/paths/open/readiness.
   A connected server with unverified/mismatched projects is not ready for writes.
+  OpenViking setup acceptance covers the selected collections and snapshot;
+  each workflow must establish readiness in its own bound knowledge session.
 - Preparation may download and launch managed services. Use settings.run_check
   only with the user's actual authorization and current preparationScope. Prior
   scoped permission persists; do not ask again. Profile inspection never launches

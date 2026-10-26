@@ -29,6 +29,32 @@ import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 
 const accessKeys = generateKeyPairSync("ed25519");
 const publicationKeys = generateKeyPairSync("ed25519");
+
+test("a delayed knowledge setup probe has one session operation and bounded polling never restarts it", { timeout: 15000 }, async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);
+  let release, entered;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; }); t.after(release);
+  f.client.before = async message => {
+    if (message.method === "tools/call" && message.params.name === "find") { entered(); await gate; }
+  };
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const started = (await client.call("settings.probe_connections", {})).structuredContent;
+  assert.equal(started.status, "running"); assert.ok(started.id);
+  await waiting;
+  for (let i = 0; i < 2; i++) {
+    const pending = (await client.call("settings.operation", { operationId: started.id, waitMs: 1 })).structuredContent;
+    assert.equal(pending.status, "running"); assert.equal(pending.id, started.id);
+  }
+  await assert.rejects(client.call("settings.probe_connections", {}), /ещё выполняется/);
+  assert.equal(remote.requests.filter(item => item.method === "tools/call" && item.params.name === "find").length, 1);
+  release();
+  const done = (await client.call("settings.operation", { operationId: started.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "completed"); assert.equal(done.result.knowledge.ready, true);
+  const count = remote.requests.length;
+  await client.call("settings.operation", { operationId: started.id, waitMs: 1000 });
+  assert.equal(remote.requests.length, count);
+});
 test("overlapping access receipts cannot retain readiness across a new identity or policy activation", async t => {
   const f = adapterFixture(t); grantPublication(t, f);
   const original = JSON.parse(process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS).find(item => item.payload.endpoint === f.config.mcp.optional.openviking.url).payload;

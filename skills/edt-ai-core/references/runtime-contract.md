@@ -78,7 +78,12 @@ prefixes, aliases, ports or a running EDT.
   roots. Short sequential batches preserve session-local registrations; native
   permissions apply to every call. Inspection and
   operation polling never open settings forms. Open forms only on an explicit
-  user request about a profile/settings.
+  user request to open/show the settings form. Chat configuration uses the same
+  backend without opening UI. For CLI access, pass a JSON request on stdin to
+  `node <PLUGIN_ROOT>/scripts/settings_backend.mjs` with EDT_AI_PROJECT_ROOT,
+  EDT_AI_INSTANCE, EDT_AI_STATE_DIR and EDT_AI_SETTINGS set for this invocation.
+  Actions read/status/update/edit/preview/apply/export share MCP validation and
+  revision checks; update writes transport fields to the selected instance.
   BSL LS is per client session and stops on disconnect; code-index has a
   daemon per canonical profile root with all explicitly mapped configurations.
   Different roots start independently; same-root sessions share indexing and use
@@ -107,7 +112,11 @@ prefixes, aliases, ports or a running EDT.
 - The bundled source/alias guard is registered as a plugin PreToolUse hook. Its
   actual host trust/enabling must be checked separately; packaged is not active.
   Never edit user trust/settings to bypass it. Hooks complement the host sandbox.
-- OpenViking is optional. BSP descriptions, project descriptions, documentation,
+- OpenViking is selected explicitly by knowledge mode. Connect an existing
+  external team server with its assigned endpoint, selected collection URIs,
+  search credential environment names and access/publication confirmations.
+  The plugin never installs the server or creates/indexes/publishes knowledge.
+  `provider: none` performs no OpenViking network access. BSP descriptions, project descriptions, documentation,
   and other approved team collections use the dedicated knowledge adapter.
   Native relay disclosure rules do not authorize exposing upstream knowledge
   operations. Only externally approved scoped search/read may be called;

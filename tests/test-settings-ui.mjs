@@ -71,6 +71,48 @@ const read = { values: { projectRoot: "C:/fixture/project" }, preparationScope: 
   profile: { status: "loaded", projectId: "Project", profileId: "generic-1c", repositories: [] },
   schema: { properties: { projectRoot: { readOnly: true } } } };
 
+test("OpenViking editable transport fields save typed values through the shared backend", async () => {
+  let updated;
+  const current = structuredClone(read);
+  current.values = { ...current.values, openvikingEnabled: false, openvikingUrl: "",
+    openvikingTimeout: 20, openvikingMaxResponseBytes: 2097152, openvikingHeadersEnv: {} };
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.update") { updated = args.set; Object.assign(current.values, args.set); return {}; }
+    throw new Error(name);
+  }); await ui.flush();
+  const values = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
+    openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
+    openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
+  for (const [key, value] of Object.entries(values)) {
+    const field = ui.elements.get(key); assert.equal(field.disabled, false);
+    if (typeof value === "boolean") { field.checked = value; field.events.change(); }
+    else { field.value = typeof value === "object" ? JSON.stringify(value) : String(value); field.events.input(); }
+  }
+  await ui.elements.get("saveButton").onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(updated)), values);
+});
+
+test("knowledge UI shows scoped setup publication and drops stale readiness without losing draft fields", async () => {
+  const current = structuredClone(read);
+  current.knowledge = { mode: "transitional", provider: "openviking", collections: ["team", "api"], required: true,
+    workflowScope: "dependent_actions", dependentActions: ["implementation"], state: "not_verified", detail: "Search not verified" };
+  current.valueSources = { openvikingTimeout: "project_local", openvikingHeadersEnv: "connections_file" };
+  current.readiness = { state: "blocked", checks: [], knowledge: { ready: true,
+    readiness: { publication: { state: "verified", gitRevision: "revision-fixture", snapshot: "index-fixture" } } } };
+  const ui = screen(async name => { if (["settings.read", "settings.status"].includes(name)) return current; throw new Error(name); });
+  await ui.flush();
+  assert.match(ui.elements.get("knowledgeDetails").textContent, /team, api/);
+  assert.match(ui.elements.get("knowledgeDetails").textContent, /revision-fixture · индекс index-fixture/);
+  assert.match(ui.elements.get("openvikingTimeoutSource").textContent, /локальных настроек проекта/);
+  const field = ui.elements.get("openvikingUrl"); field.value = "https://draft.example/mcp"; field.events.input();
+  current.readiness.state = "stale"; current.readiness.reason = "Изменились полномочия";
+  await ui.tick(8000);
+  assert.doesNotMatch(ui.elements.get("knowledgeDetails").textContent, /revision-fixture/);
+  assert.match(ui.elements.get("knowledgeDetails").textContent, /Изменились полномочия/);
+  assert.equal(field.value, "https://draft.example/mcp");
+});
+
 function treeInputs(ui){const inputs=[];const visit=node=>{if(node.tag==="input")inputs.push(node);for(const child of node.children||[])visit(child);};visit(ui.elements.get("jsonTree"));return inputs;}
 
 test("opening the HTML directly allows every preview tab without a host or profile", async () => {
@@ -542,7 +584,7 @@ test("external connection button polls one read-only probe and displays project 
   const ui = screen(async (name) => {
     if (name === "settings.read") return read;
     if (name === "settings.probe_connections") { probes++; return { id: "probe", status: "running" }; }
-    if (name === "settings.operation") return { id: "probe", status: "completed", action: "probe", result: { external: { edt: { configured: true, connected: true, repositories: [{ id: "product", matched: true, ready: false, state: "building" }] }, v8std: { configured: true, connected: true } } } };
+    if (name === "settings.operation") return { projectRoot: read.values.projectRoot, instance: read.instance, id: "probe", status: "completed", action: "probe", result: { external: { edt: { configured: true, connected: true, repositories: [{ id: "product", matched: true, ready: false, state: "building" }] }, v8std: { configured: true, connected: true } } } };
     throw new Error(name);
   });
   await ui.flush(); await ui.elements.get("probeButton").onclick();
@@ -934,7 +976,7 @@ test("connection checks use unsaved fields without saving and preserve drafts", 
   const ui=screen(async(name,args)=>{
     if(name==="settings.read")return {...read,values:{...read.values,edtUrl:"http://localhost:4000/mcp",v8stdUrl:"http://localhost:8000/mcp"}};
     if(name==="settings.probe_connections"){checked=args.connections;return {id:"draft-probe",status:"running"};}
-    if(name==="settings.operation")return {id:"draft-probe",status:"completed",action:"probe",result:{external:{edt:{configured:true,connected:true},v8std:{configured:false,connected:false}}}};
+    if(name==="settings.operation")return {projectRoot:read.values.projectRoot,instance:read.instance,id:"draft-probe",status:"completed",action:"probe",result:{external:{edt:{configured:true,connected:true},v8std:{configured:false,connected:false}}}};
     throw new Error(name);
   });await ui.flush();
   ui.elements.get("edtUrl").value="http://localhost:4001/mcp";ui.elements.get("edtUrl").events.input();
@@ -944,6 +986,51 @@ test("connection checks use unsaved fields without saving and preserve drafts", 
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
   assert.equal(ui.elements.get("edtUrl").value,"http://localhost:4001/mcp");
   assert.equal(ui.elements.get("unsavedHint").hidden,false);
+});
+
+test("a long OpenViking draft probe is polled by ID and preserves transport and editor drafts", async () => {
+  const current = { ...read, values: { ...read.values, openvikingEnabled: true, openvikingUrl: "https://saved.example/mcp" } };
+  let finished = false, checked;
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.probe_connections") { checked = args.connections.openviking; return { id: "knowledge-probe", status: "running" }; }
+    if (name === "settings.operation") {
+      assert.equal(args.operationId, "knowledge-probe"); assert.equal(args.waitMs, 1000);
+      return { projectRoot: read.values.projectRoot, instance: read.instance, id: "knowledge-probe", action: "probe", status: finished ? "completed" : "running",
+        ...(finished ? { result: { external: { openviking: { configured: true, connected: true, ready: false, detail: "publication missing" } } } } : {}) };
+    }
+    throw new Error(name);
+  }); await ui.flush();
+  const field = ui.elements.get("openvikingUrl"); field.value = "https://draft.example/mcp"; field.events.input();
+  ui.elements.get("settingsText").value = "draft document"; ui.elements.get("settingsText").events.input();
+  await ui.elements.get("probeButton").onclick(); await ui.tick(1000);
+  finished = true; await ui.tick(1000);
+  assert.equal(checked.url, "https://draft.example/mcp");
+  assert.equal(field.value, "https://draft.example/mcp");
+  assert.equal(ui.elements.get("settingsText").value, "draft document");
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.update").length, 0);
+  assert.match(ui.elements.get("probeResult").textContent, /publication missing/);
+});
+
+for (const changed of ["root", "instance"]) test(`late probe from another ${changed} never appears in the current profile`, async () => {
+  const first = { ...read, instance: "first" }; let finish;
+  const ui = screen(async name => {
+    if (["settings.read", "settings.status"].includes(name)) return first;
+    if (name === "settings.probe_connections") return { id: "old-probe", status: "running" };
+    if (name === "settings.operation") {
+      await new Promise(resolve => { finish = resolve; });
+      return { id: "old-probe", projectRoot: first.values.projectRoot, instance: "first", action: "probe", status: "completed",
+        result: { external: { openviking: { configured: true, connected: true, detail: "old server" } } } };
+    }
+    throw new Error(name);
+  }); await ui.flush();
+  const checking = ui.elements.get("probeButton").onclick(); await ui.flush();
+  ui.context.renderCurrent({ ...first, ...(changed === "root" ? { values: { projectRoot: "C:/other" } } : { instance: "second" }) });
+  finish(); await checking;
+  assert.equal(ui.elements.get("probeResult").hidden, true);
+  assert.match(ui.elements.get("status").textContent, /другого каталога или экземпляра/);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
 });
 
 test("editing connections saves only writable changes for the bound project", async () => {
@@ -1035,7 +1122,7 @@ test("opening an operation result refreshes its completed load without repeating
   const ui = screen(async (name, args) => {
     if (name === "settings.read") return { ...read, profile: { status: "loaded", profileId: ++reads === 1 ? "old" : "reloaded" }, operation: { id: "previous", action: "update", status: "completed" } };
     if (name === "settings.operation") {
-      assert.equal(JSON.stringify(args), '{"operationId":"latest"}');
+      assert.equal(JSON.stringify(args), '{"operationId":"latest","waitMs":1000}');
       return { id: "latest", action: "load", status: "completed", result: { sessionGuidance: "Профиль доступен в новом чате." } };
     }
     throw new Error(name);

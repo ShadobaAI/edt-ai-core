@@ -67,6 +67,9 @@ export const FIELDS = {
   bslLsAllowPrerelease: ["mcp", "managed", "bsl-ls", "allow_prerelease"],
   openvikingEnabled: ["mcp", "optional", "openviking", "enabled"],
   openvikingUrl: ["mcp", "optional", "openviking", "url"],
+  openvikingTimeout: ["mcp", "optional", "openviking", "timeout_seconds"],
+  openvikingMaxResponseBytes: ["mcp", "optional", "openviking", "max_response_bytes"],
+  openvikingHeadersEnv: ["mcp", "optional", "openviking", "headers_env"],
 };
 const bytes = (file) => (file && exists(file) ? fs.readFileSync(file) : null);
 const restore = (file, previous) => {
@@ -128,6 +131,7 @@ export class SettingsBackend {
     return config;
   }
   effective(config, override = null, profile = null, with_sources = false) {
+    let fieldSources = {};
     let sources = Object.fromEntries(
       Object.entries(config.mcp.required).map(([name, item]) => [
         name,
@@ -145,9 +149,9 @@ export class SettingsBackend {
         if (!(error instanceof ProfileNotFound)) throw error;
         root = configuration_root(config.active_project);
       }
-      [config, sources] = resolved_settings(config, root, data, override);
+      [config, sources, fieldSources] = resolved_settings(config, root, data, override);
     }
-    return with_sources ? [config, sources] : config;
+    return with_sources ? [config, sources, fieldSources] : config;
   }
   values(config, applyEffective = true) {
     if (applyEffective) config = this.effective(config);
@@ -155,7 +159,7 @@ export class SettingsBackend {
       Object.entries(FIELDS).map(([name, parts]) => {
         let item = config;
         for (const part of parts) item = object(item) ? item[part] : null;
-        return [name, ["string", "boolean"].includes(typeof item) ? item : ""];
+        return [name, item == null ? "" : structuredClone(item)];
       }),
     );
   }
@@ -333,9 +337,15 @@ export class SettingsBackend {
       const config = this.effective(this.current()), root = config.active_project;
       if (!root) throw new ConfigError("Выберите папку проекта.");
       if (request.connections !== undefined) {
-        if (!object(request.connections) || Object.keys(request.connections).some(name => !["edt", "v8std"].includes(name)))
+        if (!object(request.connections) || Object.keys(request.connections).some(name => !["edt", "v8std", "openviking"].includes(name)))
           throw new ConfigError("Некорректные подключения для проверки.");
         for (const [name, url] of Object.entries(request.connections)) {
+          if (name === "openviking") {
+            check_schema({ connections: { openviking: url } }, "project-local.schema.json");
+            config.mcp.optional.openviking = { ...config.mcp.optional.openviking, ...structuredClone(url) };
+            validate_settings(config);
+            continue;
+          }
           if (typeof url !== "string") throw new ConfigError("Адрес подключения должен быть строкой.");
           config.mcp.required[name].url = url ? validate_url(url, name) : "";
         }
@@ -347,7 +357,7 @@ export class SettingsBackend {
       const { installed_versions } = await import("./runtime.mjs");
       const config = this.current(true), profile = profile_state(config.active_project);
       // A broken profile must not prevent opening its repair/import screen.
-      const [effective, sources] = ["invalid", "ambiguous"].includes(profile.status)
+      const [effective, sources, fieldSources = {}] = ["invalid", "ambiguous"].includes(profile.status)
         ? [config, {}] : this.effective(config, null, null, true);
       const actual = this.values(effective, false);
       if (request.remember) remember_profile(this.STATE, config.active_project, profile);
@@ -373,6 +383,8 @@ export class SettingsBackend {
         sessionGuidance: session_guidance,
         instance: instance_name(),
         connectionSources: sources,
+        valueSources: Object.fromEntries(Object.entries(FIELDS).filter(([key]) => key.startsWith("openviking"))
+          .map(([key, parts]) => [key, fieldSources.openviking?.[parts.at(-1)] || "settings"])),
         preparationScope: preparation_scope(actual.projectRoot),
         legacyState: legacy,
         profileHistory: profile_history(this.STATE, actual.projectRoot),
@@ -433,7 +445,9 @@ export class SettingsBackend {
         throw new ConfigError("Некорректное изменение настроек.");
       for (const [key, value] of Object.entries(changes))
         if (
-          typeof value !== (key.endsWith("Enabled") || key.endsWith("AllowPrerelease") ? "boolean" : "string")
+          typeof value !== (key.endsWith("Enabled") || key.endsWith("AllowPrerelease") ? "boolean"
+            : ["openvikingTimeout", "openvikingMaxResponseBytes"].includes(key) ? "number"
+            : key === "openvikingHeadersEnv" ? "object" : "string")
         )
           throw new ConfigError("Некорректный тип настройки: " + key);
       const selected = this.lockedRoot();
@@ -463,7 +477,7 @@ export class SettingsBackend {
             config.active_project = value;
             continue;
           }
-          if (["edtUrl", "v8stdUrl", "openvikingUrl", "openvikingEnabled"].includes(key)) {
+          if (["edtUrl", "v8stdUrl"].includes(key) || key.startsWith("openviking")) {
             if (!config.active_project)
               throw new ConfigError(
                 "Для настройки подключений выберите папку проекта.",
@@ -471,8 +485,9 @@ export class SettingsBackend {
             root = configuration_root(config.active_project);
             const name = key.startsWith("openviking") ? "openviking" : key === "edtUrl" ? "edt" : "v8std";
             const connections = instanceChanges.connections ||= {};
+            const member = FIELDS[key].at(-1);
             connections[name] = { ...connections[name],
-              ...(key === "openvikingEnabled" ? { enabled: value } : { url: value ? validate_url(value) : "" }) };
+              [member]: member === "url" ? value ? validate_url(value) : "" : value };
             continue;
           }
           if (["codeIndexEnabled", "bslLsEnabled"].includes(key)) {
@@ -495,6 +510,8 @@ export class SettingsBackend {
           overrides = exists(file) ? load(file) : { connections: {} };
           check_schema(overrides, "project-local.schema.json");
           overrides = deep_merge(overrides, instanceChanges);
+          if (Object.hasOwn(changes, "openvikingHeadersEnv"))
+            overrides.connections.openviking.headers_env = structuredClone(changes.openvikingHeadersEnv);
           check_schema(overrides, "project-local.schema.json");
           effective_settings(
             config,

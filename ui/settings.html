@@ -84,6 +84,17 @@ details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer
 <details id="legacyState" hidden><summary>Проверьте прежние подключения</summary><p>Старое состояние сохранено. Его владелец не записан, поэтому адреса требуют проверки для этой папки.</p><pre id="legacyConnections"></pre><button id="migrateConnectionsButton">Использовать эти подключения</button></details>
 <div class="connection-field"><label class="field" for="edtUrl">EDT<small>Проект и платформа 1С</small></label><input id="edtUrl" type="text" placeholder="URL сервера EDT MCP" autocomplete="off"><div id="edtSource" class="source-line"></div><div id="edtPortHint" class="source-line" role="status" hidden><span id="edtPortText"></span> <button id="useEdtPortButton" class="text-button">Обновить порт</button></div></div>
 <div class="connection-field"><label class="field" for="v8stdUrl">v8std<small>Стандарты разработки</small></label><input id="v8stdUrl" type="text" placeholder="URL сервера v8std MCP" autocomplete="off"><div id="v8stdSource" class="source-line"></div></div>
+<div class="connection-field"><label class="field" for="openvikingUrl">OpenViking<small>Существующий сервер знаний</small></label><input id="openvikingUrl" type="text" placeholder="URL внешнего сервера MCP" autocomplete="off"><div id="openvikingSource" class="source-line"></div></div>
+<label class="component-choice"><input id="openvikingEnabled" type="checkbox"><span>Включить транспорт OpenViking</span></label>
+<div id="openvikingEnabledSource" class="muted"></div>
+<p>Режим знаний и выбранные коллекции задаются в профиле на вкладке «Профиль и среда выполнения». Отключение транспорта сохраняет требования знаний.</p>
+<label class="field" for="openvikingTimeout">Таймаут, секунды (до 300)</label><input id="openvikingTimeout" type="text" inputmode="decimal">
+<div id="openvikingTimeoutSource" class="muted"></div>
+<label class="field" for="openvikingMaxResponseBytes">Лимит ответа, байт (1024–16777216)</label><input id="openvikingMaxResponseBytes" type="text" inputmode="numeric">
+<div id="openvikingMaxResponseBytesSource" class="muted"></div>
+<label class="field" for="openvikingHeadersEnv">Заголовки → имена переменных окружения (JSON)</label><input id="openvikingHeadersEnv" type="text" placeholder='{"Authorization":"OV_AUTHORIZATION"}' autocomplete="off"><p>Укажите имена переменных. Значения credentials задаются вне формы.</p>
+<div id="openvikingHeadersEnvSource" class="muted"></div>
+<div class="notice-box" id="knowledgeSummary" role="status" aria-live="polite"><pre id="knowledgeDetails"></pre></div>
 <div class="actions"><button id="saveButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button><button id="probeButton"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>Проверить подключения</button></div><p class="muted">Проверяются адреса из полей выше. Для дальнейшей работы с изменёнными адресами нажмите «Сохранить».</p><pre id="probeResult" hidden></pre></div>
 </section>
 <section id="editorPanel" role="tabpanel" aria-labelledby="editorTab" hidden><h2>EDT-проекты</h2><p>Проекты, обнаруженные по файлам .project.</p><table class="repository-table"><thead><tr><th scope="col">EDT-проект</th><th scope="col">Каталог</th></tr></thead><tbody id="profileEdtProjects"></tbody></table><p id="profileGitRoot" class="path"></p><h2>Профиль и среда выполнения</h2><p>Правила проекта, версии компонентов и параметры запуска.</p><div class="editor-scopes"><div><h3>Для проекта</h3><p>Секция profile — содержимое .ai/project.yaml. Изменение профиля сохраняет резервную копию.</p></div><div><h3>Для всех профилей</h3><p>Секция settings — версии и транспорт компонентов, Java, Node и конфигурация BSL LS.</p></div></div><div class="editor-toolbar"><button id="editSettingsButton"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>Загрузить документ</button><button id="loadButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Перечитать профиль</button><label for="editorMode">Вид</label><select id="editorMode"><option value="tree">Дерево JSON</option><option value="text">Текст JSON / YAML</option></select><button id="formatJsonButton">Форматировать JSON</button></div><p class="muted">В дереве значения вводятся как JSON: строки в кавычках, числа, true, false или null. Добавляйте поля и меняйте структуру в текстовом режиме.</p><div id="jsonTree" class="json-tree" aria-label="Дерево настроек JSON" hidden></div><textarea id="settingsText" spellcheck="false" aria-label="Редактор настроек JSON или YAML" placeholder="Загрузите текущий документ для редактирования"></textarea><p id="editorValidation" class="editor-validation" role="status" aria-live="polite"></p><div class="actions"><button id="reviewEditButton"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>Проверить изменения</button></div><div id="editorReview"></div><details id="directoryInfo" hidden><summary>Сведения об EDT и Git</summary><pre id="directoryInfoText"></pre></details></section>
@@ -142,7 +153,10 @@ const selectedVersions=new Map();
 const versionCatalogs=new Map();let versionOpen=false,versionLimit=50,versionIndex=-1,visibleVersions=[];
 const versionField=component=>component==="bsl-ls"?"bslLsVersion":"codeIndexVersion";
 const checkboxField=field=>field.endsWith("Enabled")||field.endsWith("AllowPrerelease");
-const savedField=(values,field)=>checkboxField(field)?Boolean(values?.[field]):values?.[field]||(field.endsWith("Version")?"latest":"");
+const openvikingFields=["openvikingEnabled","openvikingUrl","openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"];
+const openvikingMembers=["enabled","url","timeout_seconds","max_response_bytes","headers_env"];
+const transportValue=key=>checkboxField(key)?$(key).checked:key==="openvikingHeadersEnv"?JSON.parse($(key).value):["openvikingTimeout","openvikingMaxResponseBytes"].includes(key)?Number($(key).value):$(key).value.trim();
+const savedField=(values,field)=>checkboxField(field)?Boolean(values?.[field]):field==="openvikingHeadersEnv"?JSON.stringify(values?.[field]||{}):String(values?.[field]??(field.endsWith("Version")?"latest":""));
 const selectedVersion=component=>selectedVersions.get(component)||savedField(currentData?.values,versionField(component));
 function resize(){
   if(resizeTimer!==null)clearTimeout(resizeTimer);
@@ -278,13 +292,19 @@ function renderReadiness(){
 }
 function renderCurrent(current,{preserveDraft=false}={}){
   current.viewOnly=Boolean(current.viewOnly);
-  const changedRoot=currentData&&currentData.values?.projectRoot!==current.values?.projectRoot;
-  if(changedRoot){cancelReadinessRetry();dirtyFields.clear();invalidate();$("settingsText").value="";editorOriginal="";editBaseRevision=null;resetJsonEditor();$("probeResult").hidden=true;$("connections").hidden=true;$("exportSaved").hidden=true;updateResults.clear();selectedVersions.clear();renderUpdates();}
+  const changedScope=currentData&&(currentData.values?.projectRoot!==current.values?.projectRoot||currentData.instance!==current.instance);
+  if(changedScope){cancelReadinessRetry();dirtyFields.clear();invalidate();$("settingsText").value="";editorOriginal="";editBaseRevision=null;resetJsonEditor();$("probeResult").hidden=true;$("connections").hidden=true;$("exportSaved").hidden=true;updateResults.clear();selectedVersions.clear();renderUpdates();}
   $("legacyState").hidden=current.legacyState?.status!=="owner_unknown"||!Object.keys(current.legacyState?.connections||{}).length;
   $("legacyConnections").textContent=Object.entries(current.legacyState?.connections||{}).map(([name,item])=>name+": "+(item.url||"отключён")).join("\n");
-  for(const field of ["codeIndexEnabled","bslLsEnabled"])if(!preserveDraft||!dirtyFields.has(field))$(field).checked=Boolean(current.values?.[field]);
+  for(const field of ["codeIndexEnabled","bslLsEnabled","openvikingEnabled"])if(!preserveDraft||!dirtyFields.has(field))$(field).checked=Boolean(current.values?.[field]);
+  for(const field of ["openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"])if(!preserveDraft||!dirtyFields.has(field))$(field).value=savedField(current.values,field);
+  for(const field of openvikingFields){
+    $(field).readOnly=Boolean(current.schema?.properties?.[field]?.readOnly)||current.viewOnly;
+    if(field!=="openvikingUrl")$(field+"Source").textContent="Источник: "+sourceLabel(current.valueSources?.[field]||"settings");
+  }
+  renderKnowledge(current);
   currentData=current;if(!preserveDraft||!dirtyFields.has("projectRoot"))$("projectRoot").value=current.values?.projectRoot||"";$("projectRoot").readOnly=navigationMode==="project";$("instance").textContent=current.instance||"default";
-  if(changedRoot)closeVersionPicker(false);renderVersion();
+  if(changedScope)closeVersionPicker(false);renderVersion();
   const locked=Boolean(current.schema?.properties?.projectRoot?.readOnly);
   $("selectProfileButton").hidden=navigationMode==="project";$("selectionHint").textContent="Введите путь и нажмите «Открыть профиль»"+(!locked&&current.folderActions?.supported!==false?" или нажмите «Выбрать папку…».":".")+(locked?" Другой каталог откроется в режиме просмотра. Проект чата сохранится.":" Если профиля ещё нет, его можно создать после выбора папки.");
   $("pickDirectoryButton").hidden=navigationMode==="project"||locked||current.folderActions?.supported===false;$("openDirectoryButton").hidden=!current.values?.projectRoot||current.folderActions?.supported===false||current.viewOnly;
@@ -317,10 +337,10 @@ function renderCurrent(current,{preserveDraft=false}={}){
   $("directoryInfo").hidden=!context;$("directoryInfoText").textContent=info.join("\n");
   $("createButton").hidden=profile.status!=="missing"||!current.values?.projectRoot||current.viewOnly;$("profileActions").hidden=$("createButton").hidden;$("loadButton").hidden=!loaded||current.viewOnly;$("exportProfile").textContent=loaded?profile.profileId:"Без профиля";
   $("sessionHintText").textContent=current.sessionGuidance||"";$("sessionHint").hidden=!current.sessionGuidance;
-  for(const key of ["edt","v8std"]){
+  for(const key of ["edt","v8std","openviking"]){
     const field=key+"Url",source=current.connectionSources?.[key]||"unconfigured";
     if(!preserveDraft||!dirtyFields.has(field))$(field).value=current.values?.[field]||"";$(field).readOnly=Boolean(current.schema?.properties?.[field]?.readOnly)||current.viewOnly;
-    $(key+"Source").textContent=source.startsWith("environment:")?"Задано окружением: "+source.slice(12):source==="connections_file"?"Задано файлом подключений":source==="profile"?"Унаследовано из .ai/project.yaml":source==="edt_workspace"?"Из настроек EDT":source==="project_local"?"Из локальных настроек проекта":source==="repository_instance"?"Из файла экземпляра в проекте":source==="instance"?"Сохранено для этого каталога и экземпляра":source==="unconfigured"?"Адрес не указан. Пустое значение отключает подключение.":"Из прежних настроек пользователя";
+    $(key+"Source").textContent=sourceLabel(source);
     if(source==="instance"&&!current.viewOnly){const reset=document.createElement("button");reset.settingsMutation=true;reset.textContent="Вернуть унаследованное значение";reset.onclick=()=>busy("Возвращаем наследование…",async()=>{await tool("settings.reset_connection",{connection:key});dirtyFields.delete(field);await refresh();notice("Локальный адрес удалён. Значение снова наследуется.");}).catch(()=>{});$(key+"Source").append(reset);}
   }
   if(current.operation)activeOperation=current.operation;
@@ -336,6 +356,21 @@ function renderCurrent(current,{preserveDraft=false}={}){
   else if(current.readiness&&current.preparationScope&&current.preparationScope!==readinessScope){readinessScope=current.preparationScope;readinessUnknownRetries=0;readinessPending=true;}
   if(current.operation?.status==="running"&&operationMatchesProfile(current.operation)&&["check","refresh_readiness"].includes(current.operation.action))readinessPending=false;
   refreshReadinessAutomatically();
+}
+function sourceLabel(source){return source.startsWith("environment:")?"Задано окружением: "+source.slice(12):({connections_file:"Задано файлом подключений",profile:"Унаследовано из .ai/project.yaml",edt_workspace:"Из настроек EDT",project_local:"Из локальных настроек проекта",repository_instance:"Из файла экземпляра в проекте",instance:"Сохранено для этого каталога и экземпляра",settings:"Из общих настроек и defaults",unconfigured:"Адрес не указан. Пустое значение отключает подключение."}[source]||"Из прежних настроек пользователя");}
+function renderKnowledge(current){
+  const config=current.knowledge;$("knowledgeSummary").hidden=!config;if(!config)return;
+  const fresh=["ready","blocked"].includes(current.readiness?.state),setup=fresh?current.readiness.knowledge:null;
+  const publication=setup?.readiness?.publication,lines=["Режим знаний: "+config.mode+" · "+config.provider+(config.required?" · обязательный источник":""),
+    "Выбранные коллекции: "+(config.collections?.join(", ")||"нет"),
+    "Покрытие: только выбранные коллекции; наличие API и полнота содержания не подтверждены.",
+    "Редакция публикации: "+(publication?.state==="verified"?publication.gitRevision+" · индекс "+publication.snapshot:"не подтверждена"),
+    "Готовность setup: "+(setup?.ready?"подтверждена для выбранных коллекций; workflow проверяет свою сессию":"не подтверждена")];
+  if(current.readiness?.state==="stale")lines.push(current.readiness.reason||"Проверка устарела.");
+  const reasons=(fresh?current.readiness.checks||[]:[]).filter(item=>["knowledge","openviking"].includes(item.id)&&!["ready","disabled"].includes(item.state)).map(item=>item.detail);
+  if(!setup?.ready)lines.push("Причина: "+(reasons.filter(Boolean).join("; ")||config.detail||"Требуется проверка готовности."));
+  lines.push("Область блокировки: "+(config.state==="disabled"?"нет":config.state==="invalid"||config.workflowScope==="all"?"весь workflow":config.required?config.dependentActions?.join(", "):"поиск знаний"));
+  $("knowledgeDetails").textContent=lines.join("\n");
 }
 async function refresh(){const revision=viewRevision,current=currentData?.viewOnly?await tool("settings.status",{projectRoot:currentData.values.projectRoot}):await tool("settings.read");if(disposed||revision!==viewRevision)return currentData;renderCurrent(current,{preserveDraft:true});return current;}
 async function selectProfile(projectRoot){
@@ -386,7 +421,8 @@ function syncControls(){
   $("openDiagnosticsButton").disabled=!connected||diagnosticsBusy||$("diagnosticsSaved").hidden;
   $("openExportButton").disabled||=$("exportSaved").hidden;
   const loaded=currentData?.profile?.status==="loaded",draftRoot=dirtyFields.has("projectRoot"),blocked=currentData?.viewOnly||draftRoot;
-  for(const id of ["saveButton","probeButton","saveComponentsButton","updateComponent","versionButton","versionSearch","moreVersionsButton","refreshVersionsButton","checkButton","readinessButton","installUpdateButton","downloadButton","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled"])$(id).disabled||=!loaded||blocked;
+  for(const id of ["saveButton","probeButton","saveComponentsButton","updateComponent","versionButton","versionSearch","moreVersionsButton","refreshVersionsButton","checkButton","readinessButton","installUpdateButton","downloadButton","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled",...openvikingFields])$(id).disabled||=!loaded||blocked;
+  $("openvikingEnabled").disabled||=$("openvikingEnabled").readOnly;
   $("refreshVersionsButton").disabled||=!connected||Boolean(versionCatalogs.get($("updateComponent").value)?.loading);
   syncInstallControl();
   for(const id of ["indexRepository","rebuildIndexButton"])$(id).disabled||=!loaded||blocked||currentData?.values?.codeIndexEnabled===false||!$("indexRepository").value;
@@ -459,7 +495,7 @@ $("formatJsonButton").onclick=()=>{
   catch(error){editorFeedback("Не удалось форматировать JSON: "+error.message,true);}
 };
 function hasProfileDraft(){return [...dirtyFields].some(field=>field!=="projectRoot")||editorChanged()||lastPreview;}
-for(const field of ["projectRoot","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled"])$(field).addEventListener(checkboxField(field)?"change":"input",()=>{interacted=true;const changed=(checkboxField(field)?$(field).checked:$(field).value.trim())!==savedField(currentData?.values,field);changed?dirtyFields.add(field):dirtyFields.delete(field);if(field==="projectRoot")invalidate();syncControls();});
+for(const field of ["projectRoot","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled",...openvikingFields])$(field).addEventListener(checkboxField(field)?"change":"input",()=>{interacted=true;const changed=(checkboxField(field)?$(field).checked:$(field).value.trim())!==savedField(currentData?.values,field);changed?dirtyFields.add(field):dirtyFields.delete(field);if(field==="projectRoot")invalidate();syncControls();});
 $("selectProfileButton").onclick=()=>selectProfile($("projectRoot").value.trim());
 $("projectRoot").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();selectProfile($("projectRoot").value.trim());}});
 $("addProfileButton").onclick=()=>{if(navigationMode!=="profiles")return;$("directoryChooser").open=true;$("projectRoot").focus();};
@@ -495,9 +531,12 @@ for(const[action,button]of [["create","createButton"],["load","loadButton"]])$(b
 }).catch(()=>{});
 $("saveButton").onclick=()=>busy("Сохраняем подключения…",async()=>{
   const set={};
-  for(const key of ["edtUrl","v8stdUrl"])if(!$(key).readOnly&&$(key).value.trim()!==currentData?.values?.[key])set[key]=$(key).value.trim();
+  const fields=["edtUrl","v8stdUrl",...openvikingFields];
+  for(const key of fields)if(!$(key).readOnly&&(checkboxField(key)?$(key).checked:$(key).value.trim())!==savedField(currentData?.values,key)){
+    set[key]=transportValue(key);
+  }
   if(!Object.keys(set).length){notice("Изменений нет.");return;}
-  await tool("settings.update",{set});dirtyFields.delete("edtUrl");dirtyFields.delete("v8stdUrl");await refresh();notice("Подключения сохранены для этой папки и экземпляра.");
+  await tool("settings.update",{set});for(const field of fields)dirtyFields.delete(field);await refresh();notice("Подключения сохранены для этой папки и экземпляра.");
 }).catch(()=>{});
 $("useEdtPortButton").onclick=()=>busy("Обновляем локальный порт EDT…",async()=>{
   const expected=currentData?.edtPortSuggestion,current=await refresh(),suggestion=current.edtPortSuggestion;
@@ -672,7 +711,7 @@ $("openDiagnosticsButton").onclick=async()=>{
 async function pollOperation(operationId){
   if(polling||disposed)return;polling=true;
   try{
-    if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}const operation=await tool("settings.operation",operationId?{operationId}:{});if(disposed)return;activeOperation=operation;
+    if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}const operation=await tool("settings.operation",{...(operationId?{operationId}:{}),waitMs:1000});if(disposed)return;activeOperation=operation;
     if(["check","refresh_readiness"].includes(operation.action)&&operationMatchesProfile(operation))readinessPending=false;
     if(operation.status==="running"){notice(operation.action==="pick_directory"?"Открыт системный выбор папки. Выберите папку или нажмите «Отмена» в этом окне. После закрытия выбор обновится автоматически.":"Операция выполняется · "+(operation.projectRoot||"без папки")+" · "+operation.instance+". Ожидаем результат.");checkTimer=setTimeout(()=>pollOperation(operation.id).catch(error=>notice(error.message,true)),1000);return;}
     if(operation.status==="idle"){notice("В этом сеансе ещё нет операций.");return;}
@@ -684,6 +723,7 @@ async function pollOperation(operationId){
       const data=operation.result;for(const item of data.components||[data]){updateResults.set(item.component,item);if(item.state==="applied"&&selectedVersions.get(item.component)===item.requested)selectedVersions.delete(item.component);if(item.state==="applied"&&item.requested==="latest"){const catalog=versionCatalogs.get(item.component)||{versions:[],expires:0};catalog.latest=item.release;versionCatalogs.set(item.component,catalog);}}renderUpdates();await refresh();notice("Операция обновления завершена.");return;
     }
     if(operation.action==="probe"){
+      if(!operationMatchesProfile(operation)){notice("Проверка завершена для другого каталога или экземпляра. Результат не применяется к текущему профилю.");return;}
       const result=operation.result;$("probeResult").hidden=false;
       $("probeResult").textContent=Object.entries(result.external).map(([name,item])=>name+": "+(!item.configured?"адрес не указан":item.connected?"подключение проверено":"ошибка подключения")+(item.detail?"\n"+item.detail:"")+(item.repositories?"\n"+item.repositories.map(repository=>repository.id+": "+(!repository.matched?"путь или имя не совпадают":repository.ready?"готов":repository.state||"не готов")).join("\n"):"")).join("\n\n");
       notice("Проверка внешних подключений завершена. Привязка инструментов чата проверяется отдельно.");return;
@@ -741,7 +781,7 @@ async function performCheck(){
 $("checkButton").onclick=()=>busy("Проверяем подключения…",performCheck).catch(()=>{});
 $("readinessButton").onclick=()=>busy("Проверяем готовность к работе…",performCheck).catch(()=>{});
 $("rebuildIndexButton").onclick=()=>busy("Пересоздаём индекс выбранного EDT-проекта…",async()=>{const current=await refresh();if(!current.preparationScope)throw new Error("Выберите папку проекта.");const job=await tool("settings.rebuild_index",{repository:$("indexRepository").value,authorization:{scope:current.preparationScope,effects:["launch"],evidence:"Пользователь нажал «Пересоздать индекс» для выбранного EDT-проекта."}});activeOperation=job;await pollOperation(job.id);}).catch(()=>{});
-$("probeButton").onclick=()=>busy("Проверяем EDT и v8std…",async()=>{const current=await refresh();if(current.operation?.status==="running"){await pollOperation(current.operation.id);return;}const connections={};for(const name of ["edt","v8std"])if(!$(name+"Url").readOnly)connections[name]=$(name+"Url").value.trim();const operation=await tool("settings.probe_connections",{connections});await pollOperation(operation.id);}).catch(()=>{});
+$("probeButton").onclick=()=>busy("Проверяем внешние подключения…",async()=>{const current=await refresh();if(current.operation?.status==="running"){await pollOperation(current.operation.id);return;}const connections={};for(const name of ["edt","v8std"])if(!$(name+"Url").readOnly)connections[name]=$(name+"Url").value.trim();const draft={};for(const [index,field]of openvikingFields.entries())if(!$(field).readOnly&&dirtyFields.has(field))draft[openvikingMembers[index]]=transportValue(field);if(Object.keys(draft).length)connections.openviking=draft;const operation=await tool("settings.probe_connections",{connections});await pollOperation(operation.id);}).catch(()=>{});
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(resize).observe(document.querySelector("main"));
 document.addEventListener("visibilitychange",()=>{if(document.hidden){if(statusTimer)clearTimeout(statusTimer);statusTimer=null;}else if(connected){if(!busyActive&&activeOperation?.status!=="running"){readinessUnknownRetries=0;readinessPending=true;}refreshStatus();}});
 window.addEventListener("pagehide",()=>{disposed=true;cancelReadinessRetry();if(statusTimer)clearTimeout(statusTimer);if(checkTimer)clearTimeout(checkTimer);for(const item of waiting.values())clearTimeout(item.timer);waiting.clear();});

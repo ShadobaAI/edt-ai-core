@@ -51,11 +51,19 @@ export function setup_inspection(read, state) {
   }));
   if (profile.status === "loaded" && Object.values(managed).some(item => item.enabled && !item.preparationAuthorized)) next.push("prepare_managed_with_authorization");
   if (profile.status === "loaded" && values.edtUrl && values.v8stdUrl) next.push("probe_connections");
+  const knowledgeSetup = read.knowledge?.provider === "openviking" ? {
+    serverManagement: "external", createsKnowledge: false, guessesEndpoint: false,
+    requiredInputs: ["assigned_mcp_endpoint", "selected_collection_uris", "search_credentials_environment",
+      "access_attestation", "manifest_and_publication_confirmation"],
+    guidance: "Connect the existing team search server using administrator-supplied values. Do not install OpenViking, create/index/publish knowledge or infer an endpoint. Preserve the selected knowledge mode and requirements; missing evidence blocks dependent work.",
+  } : null;
+  if (knowledgeSetup && read.knowledge.configured &&
+      !(["ready", "blocked"].includes(read.readiness?.state) && read.readiness.knowledge?.ready)) next.push("verify_knowledge_readiness");
   return {
     coreVersion: core_version, projectRoot: values.projectRoot, instance, profile: { ...profile, ...(document?.compatibility ? { compatibility: document.compatibility } : {}) },
-    values, connectionSources, repositories, managed, preparationScope, projectSelection, operation,
+    values, connectionSources, valueSources: read.valueSources, repositories, managed, preparationScope, projectSelection, operation,
     detected: { edt: detected || null, projects, ...(directoryContext?.edt?.errors ? { errors: directoryContext.edt.errors } : {}) },
-    issues, nextSteps: next, readiness: read.readiness, knowledge: read.knowledge,
+    issues, nextSteps: next, readiness: read.readiness, knowledge: read.knowledge, knowledgeSetup,
     bindingGuidance: "When a runtime's selectedDirectory is empty, call its core_runtime_status with this projectRoot once. A new chat/restart does not supply missing roots. Do not spawn substitute relays or inspect plugin source for setup.",
   };
 }

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { fixture, environment, session } from "./helpers.mjs";
+import { fixture, environment, session, node, success } from "./helpers.mjs";
 import { settings, validate_settings, dump, load } from "../scripts/common.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
 import { resolved_settings, instance_file } from "../scripts/project_context.mjs";
@@ -13,6 +13,121 @@ function enable_knowledge(f) {
   f.profile.knowledge = { mode: "transitional", provider: "openviking", manifest: null,
     collections: ["team"], required: true, dependent_actions: ["implementation"] };
 }
+
+test("OpenViking form/chat transport fields use validated instance overrides", async t => {
+  const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const set = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
+    openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
+    openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
+  const update = await client.call("settings.update", { set });
+  assert.equal(update.isError, undefined);
+  const backend = new SettingsBackend();
+  const view = await backend.main({ action: "read" });
+  for (const [key, value] of Object.entries(set)) assert.deepEqual(view.values[key], value);
+  const file = instance_file(backend.current(), f.root), before = fs.readFileSync(file);
+  for (const change of [{ openvikingTimeout: 0 }, { openvikingMaxResponseBytes: 2048.5 },
+    { openvikingHeadersEnv: { Authorization: "Bearer secret" } }, { openvikingHeadersEnv: null }]) {
+    await assert.rejects(backend.main({ action: "update", set: change }));
+    assert.deepEqual(fs.readFileSync(file), before);
+  }
+  process.env.EDT_AI_INSTANCE = "second";
+  assert.equal((await backend.main({ action: "read" })).values.openvikingTimeout, 20);
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+});
+
+test("OpenViking credential maps replace and clear inherited and saved header identities", async t => {
+  const f = fixture(t); environment(t, f.env); enable_knowledge(f);
+  f.profile.connections = { openviking: { headers_env: { Authorization: "OLD_AUTH", "X-Key": "OLD_KEY" } } }; f.save();
+  const backend = new SettingsBackend();
+  for (const headers of [{ Authorization: "NEW_AUTH", "X-Key": "NEW_KEY" }, { Authorization: "NEW_AUTH" }, {}]) {
+    await backend.main({ action: "update", set: { openvikingHeadersEnv: headers } });
+    assert.deepEqual((await backend.main({ action: "read" })).values.openvikingHeadersEnv, headers);
+    assert.deepEqual(load(instance_file(backend.current(), f.root)).connections.openviking.headers_env, headers);
+  }
+  process.env.EDT_AI_INSTANCE = "second";
+  assert.deepEqual((await backend.main({ action: "read" })).values.openvikingHeadersEnv,
+    { Authorization: "OLD_AUTH", "X-Key": "OLD_KEY" });
+});
+
+test("OpenViking exposes the effective source of each independently inherited field", async t => {
+  const f = fixture(t); environment(t, f.env); enable_knowledge(f);
+  f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp", headers_env: { Authorization: "PROFILE_AUTH" } } }; f.save();
+  dump({ connections: { openviking: { timeout_seconds: 3 } } }, path.join(f.root, ".ai/project.local.yaml"));
+  const backend = new SettingsBackend();
+  await backend.main({ action: "update", set: { openvikingMaxResponseBytes: 4096 } });
+  const explicit = path.join(f.base, "connections.yaml");
+  dump({ connections: { openviking: { headers_env: {} } } }, explicit);
+  process.env.EDT_AI_CONNECTIONS_FILE = explicit; process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
+  const expected = { openvikingEnabled: "profile", openvikingUrl: "environment:EDT_AI_OPENVIKING_URL",
+    openvikingTimeout: "project_local", openvikingMaxResponseBytes: "instance", openvikingHeadersEnv: "connections_file" };
+  assert.deepEqual((await backend.main({ action: "read" })).valueSources, expected);
+  const client = await session(t, "mcp/settings.mjs", [], f, {
+    EDT_AI_CONNECTIONS_FILE: explicit, EDT_AI_OPENVIKING_URL: process.env.EDT_AI_OPENVIKING_URL });
+  for (const name of ["settings.read", "settings.status", "settings.inspect"]) {
+    const view = (await client.call(name, {})).structuredContent;
+    assert.deepEqual(view.valueSources, expected);
+    if (view.schema) {
+      assert.equal(view.schema.properties.openvikingHeadersEnv.readOnly, true);
+      assert.equal(view.schema.properties.openvikingTimeout.readOnly, undefined);
+    }
+  }
+});
+
+test("both form entries, chat and CLI share OpenViking values, sources and instance scope", async t => {
+  const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
+  const cli = request => success(node("scripts/settings_backend.mjs", [], { env: f.env, input: JSON.stringify(request) })).result;
+  cli({ action: "update", set: { openvikingEnabled: true, openvikingUrl: "https://instance.example/mcp", openvikingTimeout: 4 } });
+  const snapshot = cli({ action: "read" });
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  for (const name of ["settings.profile", "settings.open", "settings.inspect", "settings.read"]) {
+    const response = await client.call(name, { ...(["settings.profile", "settings.inspect"].includes(name) ? { projectRoot: f.root } : {}) });
+    const view = response.structuredContent;
+    assert.deepEqual(view.values, snapshot.values, name);
+    assert.deepEqual(view.valueSources, snapshot.valueSources, name);
+    assert.equal(view.instance, snapshot.instance);
+    if (name === "settings.inspect" || name === "settings.read")
+      assert.equal(response._meta?.ui, undefined);
+  }
+  await client.call("settings.update", { set: { openvikingTimeout: 5 } });
+  assert.equal(cli({ action: "read" }).values.openvikingTimeout, 5);
+});
+
+test("chat onboarding connects an existing knowledge server without guesses or preparation", async t => {
+  const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const inspect = async () => (await client.call("settings.inspect", {})).structuredContent;
+  const initial = await inspect();
+  assert.equal(initial.knowledgeSetup.serverManagement, "external");
+  assert.equal(initial.knowledgeSetup.createsKnowledge, false);
+  assert.equal(initial.knowledgeSetup.guessesEndpoint, false);
+  assert.ok(initial.nextSteps.includes("configure_knowledge_connection"));
+  await client.call("settings.update", { set: { openvikingEnabled: true, openvikingUrl: "https://assigned.example/mcp" } });
+  const configured = await inspect();
+  assert.ok(configured.nextSteps.includes("verify_knowledge_readiness"));
+  assert.equal(configured.knowledge.ready, false);
+  assert.deepEqual(load(path.join(f.root, ".ai/project.yaml")).knowledge, f.profile.knowledge);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
+
+test("unsaved knowledge probe transport is validated without persisting or changing the profile mode", async t => {
+  const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
+  const backend = new SettingsBackend(), before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
+  const draft = { enabled: true, url: "https://draft.example/mcp", timeout_seconds: 1, max_response_bytes: 4096,
+    headers_env: { Authorization: "OV_AUTHORIZATION" } };
+  const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network without access proof"); });
+  const probe = await backend.main({ action: "probe", connections: { openviking: draft } });
+  assert.equal(probe.external.openviking.configured, true);
+  assert.equal(probe.external.openviking.ready, false);
+  assert.equal(probe.knowledge.required, true);
+  assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "");
+  assert.equal(network.mock.callCount(), 0);
+  for (const change of [{ timeout_seconds: 0 }, { headers_env: { Authorization: "Bearer secret" } },
+    { url: "https://draft.example/mcp?token=secret" }])
+    await assert.rejects(backend.main({ action: "probe", connections: { openviking: { ...draft, ...change } } }));
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
+  assert.equal(fs.existsSync(instance_file(backend.current(), f.root)), false);
+});
 
 test("OpenViking settings validate endpoint, environment credentials and bounded transport budgets", t => {
   const f = fixture(t); environment(t, f.env);

@@ -29,6 +29,13 @@ live project facts, not to write Markdown.
 4. Put architecture and purpose in .ai/PROJECT.md and machine mappings in
    .ai/project.yaml. Reuse the plugin's routing, diagnostics and action policy;
    do not paste skills or current session readiness into permanent project rules.
+   Include the two controls briefly: verify applicable reuse for a new semantic
+   operation, then justify sufficient complexity at design and diff review.
+   Record mandatory project API/settings and applicability constraints when known.
+   Link the profile's knowledge mode and selected scope: none claims no coverage;
+   an unavailable selected source blocks dependent work, KORA blocks all normal
+   workflow. Do not duplicate the plugin's detailed search/review procedures or
+   turn retrieved material into instructions. Preserve stricter project rules.
    Analyzer limits belong in analyzer config; retain only project intent, a link
    and any justified normative exception. Shared BSL LS settings use one file as
    described in [$bsl-ls-mcp](../../bsl-ls-mcp/SKILL.md).
