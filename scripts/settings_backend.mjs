@@ -760,6 +760,8 @@ export class SettingsBackend {
         external,
         readiness,
         fullReadiness: readiness.state === "ready" ? "verified" : "not_ready",
+        readinessScope: "setup",
+        workflowReadiness: readiness.workflowReadiness,
       };
     }
     throw new ConfigError("Неизвестная операция.");

@@ -3,7 +3,7 @@ import path from "node:path";
 import { settings, object } from "../scripts/common.mjs";
 import { randomUUID } from "node:crypto";
 import { Ajv2020 } from "../vendor/deps.mjs";
-import { binding_fingerprint } from "../scripts/components.mjs";
+import { knowledge_binding_fingerprint } from "../scripts/components.mjs";
 import { OpenVikingAdapter, OPENVIKING_LIMITS } from "../scripts/openviking_adapter.mjs";
 import { state_root, locate_project, instance_name, sha256 } from "../scripts/project_paths.mjs";
 import { project_profile } from "../scripts/profile.mjs";
@@ -24,8 +24,8 @@ const digestProperty = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const continuationProperty = { type: "object", properties: { connectionId: { type: "string" }, bindingRevision: { type: "string" }, materialRevision: { type: "string" }, uri: { type: "string" }, collection: { type: "string" },
   materialFingerprint: digestProperty, responseContext: digestProperty, windowFingerprint: digestProperty },
   required: ["connectionId", "bindingRevision", "materialRevision", "uri", "collection", "materialFingerprint", "responseContext", "windowFingerprint"], additionalProperties: false };
-const tools = [{ name: "knowledge_status", description: "Connect and inspect this session's selected knowledge profile. Connection is not search readiness.",
-  inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false },
+const tools = [{ name: "knowledge_status", description: "Connect and inspect this session's selected knowledge profile. Set checkReadiness to verify selected collections, signed publication/index completeness and read boundaries. Connection alone is not search readiness.",
+  inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1 }, checkReadiness: { type: "boolean" } }, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false } },
   { name: "knowledge_search", description: "Search one selected collection for candidate pointers. A configured manifest requires signed publication proof; manifest-free setup returns discovery only. Read candidates by address to inspect metadata. Empty results never prove absence of an API.",
     inputSchema: { type: "object", properties: { projectRoot: rootProperty, query: { type: "string", minLength: 1, maxLength: 8000 }, collection: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 100 } }, required: ["query", "collection"], additionalProperties: false }, annotations: { readOnlyHint: true } },
@@ -38,7 +38,7 @@ function detach(advance = true) {
   adapter = null; connectingAdapter = null; binding = null; bindingContext = null;
   return Promise.all([previous?.close(), pending?.close()]);
 }
-const fingerprint = current => binding_fingerprint(current.config, "openviking", current.root, current.profile);
+const fingerprint = current => knowledge_binding_fingerprint(current.config, current.root, current.profile, state);
 function assertCurrent(expected, epoch) {
   if (epoch !== generation || rootsPending) throw new Error("Knowledge binding changed during operation; discard this result");
   if (fingerprint(context({})) !== expected) {
@@ -144,9 +144,10 @@ async function dispatch(message) {
           try {
             const connected = await connect(current, true);
             operationAdapter = connected.adapter; sourceBinding = connected.bindingContext;
+            if (args.checkReadiness) await operationAdapter.verifyReadiness();
             Object.assign(data, operationAdapter.status());
           }
-          catch (error) { data.detail = error.message; }
+          catch (error) { if (operationAdapter) Object.assign(data, operationAdapter.status()); data.detail = error.message; }
         }
       } else {
         const connected = await connect(current);

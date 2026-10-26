@@ -6,11 +6,12 @@ import { sha256 } from "./project_paths.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
 import { verify_search_access, search_credential_headers, verify_search_surface, access_revision, access_error } from "./openviking_access.mjs";
-import { knowledge_status, search_requirements, parse_material, knowledge_material_active, knowledge_material_summary, load_manifest_catalog } from "./knowledge.mjs";
+import { knowledge_status, knowledge_gate, knowledge_confirmation, require_workflow_knowledge, search_requirements, parse_material, knowledge_material_active, knowledge_material_summary, load_manifest_catalog } from "./knowledge.mjs";
 import { PublicationConfirmation } from "./openviking_publication.mjs";
+import { knowledge_binding_fingerprint } from "./components.mjs";
 
 export const OPENVIKING_LIMITS = Object.freeze({ concurrent: 2, queued: 8, candidates: 10, toolPages: 16,
-  tools: 256, collections: 64, metadataChars: 8000, resultChars: 32000, contentChars: 24000 });
+  tools: 256, collections: 64, metadataChars: 8000, resultChars: 32000, contentChars: 24000, readinessMs: 15 * 60 * 1000 });
 
 function compiler(schema) {
   if (!object(schema)) throw new Error("Missing live MCP schema");
@@ -84,12 +85,56 @@ export class OpenVikingAdapter {
   }
   status() {
     const publication = this.publicationStatus();
-    return { connected: this.connected, ready: false, contract: { search: this.searchTool?.name, read: this.readTool?.name },
+    const readiness = this.readinessStatus();
+    return { connected: this.connected, ready: readiness.state === "ready",
+      lifecycle: readiness.state === "ready" ? "ready" : this.connected ? "connected" : "configured", searchReadiness: readiness.state,
+      readiness,
+      contract: { search: this.searchTool?.name, read: this.readTool?.name },
       publication: publication.state, publicationEvidence: publication,
       access: this.connected ? "externally_attested" : "not_verified",
       accessEvidence: this.connected ? { source: "operator_signature", deploymentId: this.access.verification.deployment_id,
         policyRevision: this.access.verification.policy_revision, verifiedAt: this.access.verified_at,
         expiresAt: this.access.expires_at, liveTestByPlugin: false } : null };
+  }
+  readinessStatus() {
+    if (!this.readiness) return { state: "not_verified" };
+    try {
+      this.validateBinding?.(); this.checkAccess();
+      if (!this.connected || this.closed || this.readiness.epoch !== this.retrievalEpoch() ||
+          Date.now() < Date.parse(this.readiness.checkedAt) || Date.now() >= Date.parse(this.readiness.expiresAt))
+        throw new Error("Search readiness expired or connection context changed; repeat the readiness check");
+      if (!this.checkPublication()) throw new Error("Search readiness requires a confirmed publication snapshot");
+      return { ...structuredClone(this.readiness), state: "ready" };
+    } catch (error) { return { state: "not_verified", detail: access_error(error, this.options, this.credentialHeaders).message }; }
+  }
+  async verifyReadiness() {
+    if (this.readinessPromise) return this.readinessPromise;
+    this.readinessPromise = (async () => {
+      this.readiness = null;
+      const receipt = this.checkPublication();
+      if (!receipt) throw new Error("Search readiness requires a confirmed publication snapshot");
+      const manifest = load_manifest_catalog(this.projectRoot, this.profile.knowledge.manifest, [...this.collections.keys()]);
+      const retrieval = {}, checked = [];
+      for (const [collection, root] of this.collections) {
+        const found = await this.search({ query: "readiness", collection, limit: 1 }, retrieval);
+        if (found.serverPartial) throw new Error("Readiness search returned a partial response");
+        const sample = manifest.data.materials.find(item => item.collection === collection);
+        if (sample) await this.material(root + "/" + sample.id + ".md", collection, retrieval, 1000);
+        checked.push({ collection, search: "verified", read: sample ? "sample_verified" : "empty_published_collection" });
+      }
+      this.validateBinding?.(); this.checkAccess(); this.checkPublication(); this.assertRetrieval(retrieval);
+      const now = Date.now();
+      this.readiness = { checkedAt: new Date(now).toISOString(),
+        expiresAt: new Date(Math.min(now + OPENVIKING_LIMITS.readinessMs, Date.parse(this.access.expires_at), Date.parse(receipt.expires_at))).toISOString(),
+        epoch: retrieval.epoch, collections: checked, indexCompleteness: "externally_attested",
+        publication: this.publicationStatus(), readBoundary: "externally_attested", liveTestByPlugin: "scoped_search_and_sample_read" };
+      const status = this.status();
+      if (!status.ready) throw new Error(status.readiness.detail || "Search readiness could not be confirmed");
+      return status;
+    })();
+    try { return await this.readinessPromise; }
+    catch (error) { this.readiness = null; throw access_error(error, this.options, this.credentialHeaders); }
+    finally { this.readinessPromise = null; }
   }
   confirmPublication() {
     if (!this.profile.knowledge.manifest) return;
@@ -271,12 +316,15 @@ export class OpenVikingAdapter {
     if (!uri.startsWith(this.collection(collection) + "/") || !uri.endsWith(".md")) throw new Error("Material is outside the selected collection");
     return uri;
   }
-  async search({ query, collection, limit = this.requirements.max_results }) {
+  async search({ query, collection, limit = this.requirements.max_results }, retrieval = {}) {
+    try { return await this.searchResults({ query, collection, limit }, retrieval); }
+    catch (error) { this.readiness = null; throw error; }
+  }
+  async searchResults({ query, collection, limit }, retrieval) {
     if (typeof query !== "string" || !query.trim() || query.length > 8000 || !Number.isInteger(limit) || limit < 1 || limit > this.requirements.max_results)
       throw new Error("Invalid knowledge search arguments");
     const effectiveLimit = Math.min(limit, OPENVIKING_LIMITS.candidates);
     const target = this.collection(collection);
-    const retrieval = {};
     const reply = await this.invoke("search", () => this.searchArgs(query, target, effectiveLimit), retrieval), text = reply.text;
     const completeness = { complete: false, apiExistence: "not_determined", coverage: "not_verified",
       pagination: "unsupported_by_dialect", serverPartial: reply.partial, limitReached: false,
@@ -318,6 +366,10 @@ export class OpenVikingAdapter {
     return { metadata, body, text, serverPartial: reply.partial, partial: reply.partial || line_count(text) >= limit || window.length < text.length };
   }
   async read({ uri, collection, offset = 0, limit = 200, charOffset = 0, continuation }) {
+    try { return await this.readResult({ uri, collection, offset, limit, charOffset, continuation }); }
+    catch (error) { this.readiness = null; throw error; }
+  }
+  async readResult({ uri, collection, offset, limit, charOffset, continuation }) {
     this.scoped(uri, collection);
     if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000 || !Number.isSafeInteger(charOffset) || charOffset < 0) throw new Error("Invalid material line/character range");
     if (offset !== 0) throw new Error("Line offsets require a verified publication snapshot; restart at offset 0 with a larger line limit");
@@ -355,10 +407,65 @@ export class OpenVikingAdapter {
   async close() {
     if (this.closePromise) return this.closePromise;
     this.connected = false; this.closed = true;
+    this.readiness = null;
     this.publication = null;
     this.searchTool = null; this.readTool = null; this.collections?.clear();
     for (const waiter of this.waiters.splice(0)) waiter.reject(new Error("OpenViking adapter closed while queued"));
     this.closePromise = this.client.close();
     await this.closePromise;
   }
+}
+
+// Each relay/CLI owns its own knowledge connection. Setup results and another
+// MCP session's status never grant workflow access to this owner.
+export class WorkflowKnowledge {
+  constructor() { this.adapter = null; this.confirmation = null; this.key = null; this.generation = 0; this.pending = null; }
+  async require(profile, config, root, action = "workflow", validateBinding = null) {
+    const epoch = this.generation;
+    const next = (this.pending || Promise.resolve()).catch(() => {}).then(() => {
+      if (epoch !== this.generation) throw new Error("Knowledge workflow binding changed before readiness");
+      return this.bind(profile, config, root, action, validateBinding, epoch);
+    });
+    this.pending = next;
+    try { return await next; } finally { if (this.pending === next) this.pending = null; }
+  }
+  async bind(profile, config, root, action, validateBinding, epoch) {
+    const gate = knowledge_gate(profile, config, action);
+    const context = stable([root, profile, config]);
+    if (gate.allowed) {
+      if (this.context !== context) await this.retire();
+      if (epoch !== this.generation) throw new Error("Knowledge workflow binding changed before dispatch");
+      validateBinding?.();
+      return gate;
+    }
+    if (gate.knowledge.state !== "not_verified") {
+      await this.retire(); return require_workflow_knowledge(profile, config, action);
+    }
+    const key = stable([context, knowledge_binding_fingerprint(config, root, profile)]);
+    if (key !== this.key || !this.adapter?.status().ready) {
+      await this.retire();
+      const validate = () => {
+        if (epoch !== this.generation) throw new Error("Knowledge workflow binding changed during readiness");
+        validateBinding?.();
+        if (key !== stable([context, knowledge_binding_fingerprint(config, root, profile)])) throw new Error("Knowledge workflow evidence changed; repeat readiness");
+      };
+      validate();
+      const owner = new OpenVikingAdapter(profile, config, null, validate, root);
+      this.adapter = owner;
+      try { await owner.connect(); await owner.verifyReadiness(); validate(); }
+      catch (error) { if (this.adapter === owner) await this.retire(); else await owner.close(); throw new Error("Knowledge workflow blocked: " + error.message); }
+      this.key = key; this.context = context;
+      this.confirmation = knowledge_confirmation(profile, config, () => owner.status());
+    }
+    return require_workflow_knowledge(profile, config, action, this.confirmation);
+  }
+  check(profile, config, action = "workflow") {
+    return require_workflow_knowledge(profile, config, action, this.confirmation);
+  }
+  async retire() {
+    const previous = this.adapter;
+    this.adapter = null; this.confirmation = null; this.key = null; this.context = null;
+    await previous?.close();
+  }
+  async close() { this.generation++; await this.retire(); }
 }

@@ -4,10 +4,26 @@ import { all_pages } from "./mcp_pages.mjs";
 import { resolve } from "./project_paths.mjs";
 import { knowledge_status } from "./knowledge.mjs";
 import { OpenVikingAdapter } from "./openviking_adapter.mjs";
+import { stable } from "./common.mjs";
+import { knowledge_evidence_revision } from "./components.mjs";
+
+const observations = new WeakMap();
+// Setup evidence is a bounded observation of a closed probe, never a workflow
+// capability. Caller-supplied ready flags and deserialized JSON prove nothing.
+export function setup_knowledge_status(profile, config, root, observation) {
+  const knowledge = { ...knowledge_status(profile, config), readinessScope: "setup", koraReady: false };
+  const proof = observation && observations.get(observation);
+  if (knowledge.state !== "not_verified" || !proof || proof.key !== stable([resolve(root), profile, config]) ||
+      proof.evidence !== knowledge_evidence_revision(config, root, profile) ||
+      Date.now() < Date.parse(proof.status.readiness.checkedAt) || Date.now() >= Date.parse(proof.status.readiness.expiresAt)) return knowledge;
+  return { ...knowledge, state: "ready", ready: true, lifecycle: "ready", searchReadiness: "ready",
+    readiness: structuredClone(proof.status.readiness), detail: "Selected search verified by the setup probe; workflow must verify its own session." };
+}
 
 // Read-only external acceptance for setup, without launching managed services,
 // publishing their schemas to the model, or inventing native tool arguments.
 export async function probe_connections(config, root, profile) {
+  const observationKey = stable([resolve(root), profile, config]);
   const knowledge = knowledge_status(profile, config);
   const names = ["edt", "v8std"];
   if (knowledge.state !== "disabled") names.push("openviking");
@@ -22,8 +38,14 @@ export async function probe_connections(config, root, profile) {
       const adapter = new OpenVikingAdapter(profile, bounded, null, null, root);
       const result = { configured: true, connected: false, ready: false, access: "not_verified",
         searchReadiness: "not_verified", collections: knowledge.collections, detail: knowledge.detail };
-      try { Object.assign(result, await adapter.connect()); }
-      catch (error) { result.detail = error.message; }
+      try {
+        const evidence = knowledge_evidence_revision(config, root, profile);
+        Object.assign(result, await adapter.connect()); Object.assign(result, await adapter.verifyReadiness());
+        if (evidence !== knowledge_evidence_revision(config, root, profile)) throw new Error("Knowledge evidence changed during the setup probe; repeat readiness");
+        observations.set(result, { key: observationKey, evidence, status: structuredClone(result) });
+      }
+      catch (error) { Object.assign(result, adapter.status(), { ready: false, lifecycle: adapter.connected ? "connected" : "configured",
+        searchReadiness: "not_verified", readiness: { state: "not_verified" }, detail: error.message }); }
       finally { await adapter.close().catch(() => {}); }
       return [name, result];
     }
@@ -62,5 +84,6 @@ export async function probe_connections(config, root, profile) {
     finally { await client.close().catch(() => {}); }
     return [name, result];
   })));
-  return { projectRoot: root, external, knowledge, fullReadiness: "not_verified" };
+  return { projectRoot: root, external, knowledge: setup_knowledge_status(profile, config, root, external.openviking),
+    scope: "setup_probe", fullReadiness: "not_verified" };
 }

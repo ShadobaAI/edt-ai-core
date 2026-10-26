@@ -9,6 +9,28 @@ const RECEIPTS = "EDT_AI_OPENVIKING_ACCESS_RECEIPTS";
 const PUBLIC_KEY = "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY";
 const BINDING_KEY = "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY";
 const revisionKey = randomBytes(32);
+function relevant_receipts(options) {
+  const raw = process.env[RECEIPTS] || "";
+  try { const all = JSON.parse(raw); if (Array.isArray(all)) return all.filter(entry => entry?.payload?.endpoint === options.url); } catch {}
+  return raw;
+}
+// Stable between processes for saved setup receipts. The operator's private
+// binding key prevents a public fingerprint from becoming a credential oracle.
+export function persisted_access_revision(options) {
+  const key = process.env[BINDING_KEY];
+  const state = [relevant_receipts(options), process.env[PUBLIC_KEY] || "",
+    Object.entries(options.headers_env || {}).map(([name, variable]) => [name, variable, process.env[variable]])];
+  return key && Buffer.byteLength(key) >= 32
+    ? createHmac("sha256", key).update("1c-ai-core/setup-readiness/v1\0").update(stable(state)).digest("hex")
+    : "binding_key_unavailable";
+}
+export function access_receipt_epoch(options, now = Date.now()) {
+  const entries = relevant_receipts(options);
+  return Array.isArray(entries) ? entries.map(entry => {
+    const start = instant(entry?.payload?.verified_at), end = instant(entry?.payload?.expires_at);
+    return !Number.isFinite(start) || !Number.isFinite(end) ? "invalid" : now < start ? "future" : now >= end ? "expired" : "current";
+  }) : "invalid";
+}
 export function access_revision(options) {
   const raw = process.env[RECEIPTS] || "";
   let relevant = raw;
@@ -17,7 +39,7 @@ export function access_revision(options) {
     if (Array.isArray(all)) relevant = all.filter(entry => entry?.payload?.endpoint === options.url);
   } catch { /* Invalid operator state must also invalidate the connection. */ }
   return createHmac("sha256", revisionKey).update(stable([relevant, process.env[PUBLIC_KEY], process.env[BINDING_KEY],
-    Object.entries(options.headers_env || {}).map(([name, variable]) => [name, variable, process.env[variable]])])).digest("hex");
+    Object.entries(options.headers_env || {}).map(([name, variable]) => [name, variable, process.env[variable]]), access_receipt_epoch(options)])).digest("hex");
 }
 function instant(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return NaN;
@@ -88,18 +110,30 @@ export function verify_search_access(options, collections, now = Date.now()) {
     key = createPublicKey(process.env[PUBLIC_KEY] || "");
     if (key.asymmetricKeyType !== "ed25519") throw new Error();
   } catch { throw new Error("OpenViking requires external signed search-access receipts and an operator trust key"); }
+  const grants = [];
+  let incompatible = false;
   for (const envelope of receipts) {
     try {
       const { payload, signature } = envelope;
-      check_schema(payload, "knowledge-access-receipt.schema.json");
-      if (payload.team_roots.some(root => root.slice("viking://resources/".length).split("/").some(part => !part || part === "." || part === ".."))) continue;
       if (typeof signature !== "string" || !verify(null, Buffer.from(stable(payload)), key, Buffer.from(signature, "base64"))) continue;
       if (payload.endpoint !== options.url || payload.credential_binding !== binding) continue;
       const start = instant(payload.verified_at), end = instant(payload.expires_at);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || start > now || end <= now || end <= start || end - start > 86400000) continue;
-      if (![...collections.values()].every(uri => payload.team_roots.some(root => uri === root || uri.startsWith(root + "/")))) continue;
-      return payload;
+      if (!Number.isFinite(start) || !Number.isFinite(end)) { incompatible = true; continue; }
+      if (start > now || end <= now) continue;
+      try {
+        check_schema(payload, "knowledge-access-receipt.schema.json");
+        if (end <= start || end - start > 86400000 || payload.team_roots.some(root => root.slice("viking://resources/".length).split("/").some(part => !part || part === "." || part === ".."))) throw new Error();
+      } catch { incompatible = true; continue; }
+      grants.push(payload);
     } catch { /* A malformed or unrelated receipt grants nothing. */ }
+  }
+  if (incompatible) throw new Error("OpenViking search credentials lack a consistent current signed grant with read-only permissions");
+  if (grants.length) {
+    const contract = ({ verified_at, expires_at, ...payload }) => stable(payload);
+    if (grants.some(grant => contract(grant) !== contract(grants[0])))
+      throw new Error("OpenViking has conflicting signed access confirmations for this connection identity");
+    const selected = grants.sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at))[0];
+    if ([...collections.values()].every(uri => selected.team_roots.some(root => uri === root || uri.startsWith(root + "/")))) return selected;
   }
   throw new Error("OpenViking search credentials lack a current signed grant for this endpoint and team area");
 }

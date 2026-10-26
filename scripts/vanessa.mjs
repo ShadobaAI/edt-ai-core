@@ -23,7 +23,7 @@ import { McpClient } from "./mcp_client.mjs";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { effective_settings } from "./project_context.mjs";
-import { require_workflow_knowledge } from "./knowledge.mjs";
+import { WorkflowKnowledge } from "./openviking_adapter.mjs";
 export function runtime_profile(selected, with_digest = false) {
   const root = locate_project(selected),
     data = project_profile(root);
@@ -87,8 +87,16 @@ export async function main() {
       true,
     ),
     action = command === "describe" ? a.for_action || "run" : command;
-  if (!["describe", "configure", "doctor"].includes(command))
-    require_workflow_knowledge(data, effective_settings(settings(a.settings), root, data));
+  const knowledge = new WorkflowKnowledge(), usesKnowledge = !["describe", "configure", "doctor"].includes(command);
+  const workflowConfig = usesKnowledge ? effective_settings(settings(a.settings), root, data) : null;
+  const validateKnowledge = () => {
+    if (!usesKnowledge) return;
+    const current = project_profile(root), effective = effective_settings(settings(a.settings), root, current);
+    if (stable([data, workflowConfig]) !== stable([current, effective])) throw new ConfigError("Knowledge workflow binding changed; repeat readiness");
+    knowledge.check(current, effective, "runtime");
+  };
+  try {
+  if (usesKnowledge) await knowledge.require(data, workflowConfig, root, "runtime");
   const infobase = (value) =>
     value.type === "file"
       ? {
@@ -191,6 +199,7 @@ export async function main() {
       argumentsHash,
     );
   if (a.editor_transition) args.push("--editor-transition");
+  validateKnowledge();
   const child = spawn(entry.command, args, {
     cwd: root,
     stdio: "inherit",
@@ -198,6 +207,9 @@ export async function main() {
     shell: false,
   });
   const [code] = await once(child, "close");
+  try { validateKnowledge(); }
+  catch (error) { throw new ConfigError(`Vanessa ${command} returned exit ${code}; dependent work stopped: ${error.message}. Preserve the child output and inspect actual effects; no rollback or automatic retry was performed.`); }
   return code ?? 1;
+  } finally { await knowledge.close(); }
 }
 if (entrypoint(import.meta.url)) await cli(main);

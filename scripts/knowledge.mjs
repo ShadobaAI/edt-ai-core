@@ -7,6 +7,14 @@ import { check_schema, validate_openviking_url, inside, parse, stable } from "./
 export const WORKFLOW_ACTIONS = Object.freeze(["discovery", "design", "implementation", "review", "runtime"]);
 export const SEARCH_REQUIREMENTS = Object.freeze({ publication: "verified", snapshot: "consistent", access: "read_only",
   max_results: 10, max_excerpt_chars: 1000, max_material_chars: 20000 });
+const confirmations = new WeakMap();
+// Process-local capability: a JSON status/receipt supplied by a caller cannot
+// authorize workflow. The owner must keep checking its original connection.
+export function knowledge_confirmation(profile, config, check) {
+  const token = Object.freeze({});
+  confirmations.set(token, { profile: stable(profile), config: stable(config), check });
+  return token;
+}
 
 export function search_requirements(profile) {
   check_schema(profile, "project-profile.schema.json");
@@ -185,6 +193,7 @@ export function knowledge_status(profile, config) {
   const { provider, mode = provider === "none" ? "disabled" : null, collections = [], required = false, dependent_actions = [] } = profile?.knowledge || {};
   const transport = config?.mcp?.optional?.openviking;
   const result = { provider, mode, collections: structuredClone(collections), required, dependentActions: structuredClone(dependent_actions),
+    configured: false, connected: false, ready: false, lifecycle: "saved", searchReadiness: "not_verified", readinessScope: "configuration",
     transport: { enabled: transport?.enabled === true, endpointConfigured: typeof transport?.url === "string" && Boolean(transport.url) },
     coverage: "not_verified", coverageScope: "selected_collections", apiExistence: "not_determined",
     workflowScope: mode === "kora" ? "all" : "dependent_actions", koraReady: false };
@@ -193,28 +202,37 @@ export function knowledge_status(profile, config) {
     check_schema(config, "plugin-settings.schema.json");
     if (transport?.url) validate_openviking_url(transport.url);
   } catch (error) {
-    return { ...result, state: "invalid", detail: "Invalid knowledge configuration: " + error.message };
+    return { ...result, state: "invalid", lifecycle: "invalid", detail: "Invalid knowledge configuration: " + error.message };
   }
-  if (provider === "none") return { ...result, state: transport?.enabled ? "invalid" : "disabled",
+  if (provider === "none") return { ...result, state: transport?.enabled ? "invalid" : "disabled", lifecycle: transport?.enabled ? "invalid" : "disabled",
     detail: transport?.enabled ? "OpenViking transport is enabled but knowledge.provider is none." : "Knowledge is explicitly disabled; no knowledge coverage is claimed." };
   const configured = transport?.enabled === true && Boolean(transport.url);
-  return { ...result, state: configured ? "not_verified" : "not_configured",
+  return { ...result, configured, lifecycle: configured ? "configured" : "saved", state: configured ? "not_verified" : "not_configured",
     detail: configured ? "Search readiness for the selected collections has not been verified."
       : "OpenViking transport is disabled or its URL is empty; the profile's knowledge requirements remain in force." };
 }
 
 // This decision only constrains knowledge dependencies; it grants no authority
 // or permission and cannot replace the shared action policy.
-export function knowledge_gate(profile, config, action) {
-  const knowledge = knowledge_status(profile, config);
-  const dependent = knowledge.mode === "kora" || action === "knowledge_search" || knowledge.required && Array.isArray(knowledge.dependentActions) && knowledge.dependentActions.includes(action);
+export function knowledge_gate(profile, config, action, confirmation = null) {
+  let knowledge = knowledge_status(profile, config);
+  const proof = confirmation && confirmations.get(confirmation);
+  if (knowledge.state === "not_verified" && proof?.profile === stable(profile) && proof.config === stable(config)) {
+    const observation = proof.check();
+    if (observation?.ready === true) knowledge = { ...knowledge, state: "ready", lifecycle: "ready", connected: true, ready: true,
+      searchReadiness: "ready", readiness: observation.readiness, koraReady: knowledge.mode === "kora",
+      readinessScope: "workflow",
+      detail: "Selected-collection search readiness verified for this connection." };
+  }
+  const dependent = knowledge.mode === "kora" || action === "knowledge_search" || knowledge.required && Array.isArray(knowledge.dependentActions) &&
+    (action === "workflow" || knowledge.dependentActions.includes(action));
   const blocked = knowledge.state === "invalid" || dependent && knowledge.state !== "ready";
-  return { allowed: !blocked, action, dependent, knowledge,
+  return { allowed: !blocked, scope: "workflow", action, dependent, knowledge,
     ...(blocked ? { reason: knowledge.detail } : {}) };
 }
 
-export function require_workflow_knowledge(profile, config) {
-  const gate = knowledge_gate(profile, config, "workflow");
+export function require_workflow_knowledge(profile, config, action = "workflow", confirmation = null) {
+  const gate = knowledge_gate(profile, config, action, confirmation);
   if (!gate.allowed) throw new ConfigError("Knowledge workflow blocked: " + gate.reason);
   return gate;
 }

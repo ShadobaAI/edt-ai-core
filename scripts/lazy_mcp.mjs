@@ -29,7 +29,8 @@ import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
 import { Ajv, Ajv2020 } from "../vendor/deps.mjs";
 import { create_diagnostic_logger, register_diagnostic_secrets } from "./diagnostics.mjs";
-import { knowledge_status, require_workflow_knowledge } from "./knowledge.mjs";
+import { knowledge_status, WORKFLOW_ACTIONS } from "./knowledge.mjs";
+import { WorkflowKnowledge } from "./openviking_adapter.mjs";
 
 const component = argumentsOf(undefined, [], ["component"]).component;
 if (!Object.hasOwn(COMPONENTS, component))
@@ -40,6 +41,7 @@ const state = state_root(),
   configuration =
     process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");
 const diagnostic = create_diagnostic_logger(component, state);
+const workflowKnowledge = new WorkflowKnowledge();
 diagnostic.event("session_started", { version: core_version, projectRoot: process.env.EDT_AI_PROJECT_ROOT || null, node: process.version });
 process.on("uncaughtExceptionMonitor", error => diagnostic.event("uncaught_exception", { error }, "error"));
 let client = null,
@@ -65,6 +67,7 @@ const emit = (message) =>
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
 async function disconnect() {
   generation++;
+  const knowledgeClosing = workflowKnowledge.close();
   const previous = client;
   if (previous) diagnostic.event("disconnected", { projectRoot: selected, binding: bindingContext });
   const connecting = connectingClient;
@@ -80,6 +83,7 @@ async function disconnect() {
   if (hadTools && !closed) emit({ method: "notifications/tools/list_changed" });
   if (previous) await previous.close();
   if (connecting && connecting !== previous) await connecting.close();
+  await knowledgeClosing;
 }
 async function requestRoots() {
   finishRoots?.();
@@ -105,9 +109,15 @@ function configContext() {
     data,
   ];
 }
-function checkKnowledgeWorkflow() {
-  const [, config, profile] = configContext();
-  require_workflow_knowledge(profile, config);
+async function checkKnowledgeWorkflow(action = "workflow") {
+  const [root, config, profile] = configContext(), epoch = generation;
+  const expected = stable([root, config, profile]);
+  const validate = () => {
+    if (epoch !== generation || expected !== stable(configContext())) throw new ConfigError("Knowledge workflow binding changed; repeat readiness");
+  };
+  await workflowKnowledge.require(profile, config, root, action, validate);
+  validate();
+  return () => { validate(); return workflowKnowledge.check(profile, config, action); };
 }
 async function refreshTools() {
   const revision = client.tools_revision,
@@ -266,13 +276,15 @@ const controlTools = () => [statusTool(), {
       type: "object", properties: { name: { type: "string", minLength: 1 }, arguments: { type: "object", additionalProperties: true } },
       required: ["name", "arguments"], additionalProperties: false,
     } },
+    workflowAction: { type: "string", enum: WORKFLOW_ACTIONS, description: "Current task phase; omission conservatively checks all mandatory knowledge dependencies. Does not grant action permission." },
   }, required: ["calls"], additionalProperties: false },
   // Actual effects belong to the selected native operations, not this envelope.
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 }];
 function controlArguments(name, args) {
-  const allowed = name === "core_runtime_tools" ? ["projectRoot", "names"] : name === "core_runtime_call" ? ["projectRoot", "calls"] : ["projectRoot"];
+  const allowed = name === "core_runtime_tools" ? ["projectRoot", "names"] : name === "core_runtime_call" ? ["projectRoot", "calls", "workflowAction"] : ["projectRoot"];
   if (!object(args) || Object.keys(args).some(key => !allowed.includes(key))) throw new ConfigError("Invalid runtime control arguments");
+  if (args.workflowAction !== undefined && !WORKFLOW_ACTIONS.includes(args.workflowAction)) throw new ConfigError("Invalid workflow action");
   if (args.names !== undefined && (!Array.isArray(args.names) || !args.names.length || args.names.length > 32 || args.names.some(name => typeof name !== "string" || !name) || new Set(args.names).size !== args.names.length))
     throw new ConfigError("names must contain 1 to 32 unique native tool names");
   if (name === "core_runtime_call" && (!Array.isArray(args.calls) || !args.calls.length || args.calls.length > 16 || args.calls.some(call => !object(call) || typeof call.name !== "string" || !call.name || !object(call.arguments) || Object.keys(call).some(key => !["name", "arguments"].includes(key)))))
@@ -425,6 +437,8 @@ async function dispatch(message) {
       ) {
         const status = {
           ready: !!client && !client.error,
+          readinessScope: "native_connection",
+          workflowReadiness: { state: "not_checked", scope: "workflow", detail: "Each native action must satisfy its knowledge dependency, source authority and action policy." },
           state: client?.error ? "error" : client ? "connected" : "disconnected",
           component,
           detail: lastError,
@@ -461,23 +475,30 @@ async function dispatch(message) {
       } else if (client && control && params.name === "core_runtime_call") {
         const owner = client, ownerBinding = bindingContext, epoch = generation, results = [];
         for (const call of params.arguments.calls) {
-          let dispatched = false;
+          let dispatched = false, received = false;
           try {
             if (pending.cancelled || client !== owner || epoch !== generation) throw new ConfigError("Runtime batch interrupted before the next call; completed calls were not rolled back");
             await refreshNotifiedTools();
             validateNative(call);
-            checkKnowledgeWorkflow();
+            const nativeTool = tools.find(tool => tool.name === call.name);
+            const declaredRead = nativeTool.annotations?.readOnlyHint === true && nativeTool.annotations?.destructiveHint !== true;
+            // A phase assertion cannot downgrade a writer or an unknown effect.
+            const recheckKnowledge = await checkKnowledgeWorkflow(declaredRead ? params.arguments.workflowAction : "workflow");
             pending.client = owner;
             diagnostic.event("native_request_started", { requestId: id, tool: call.name, projectRoot: selected });
             dispatched = true;
             const native = await owner.request("tools/call", { ...call, ...(params._meta ? { _meta: params._meta } : {}) }, { onId: value => { pending.upstreamId = value; } });
+            received = true;
             results.push({ name: call.name, result: native });
             diagnostic.event("native_request_completed", { requestId: id, tool: call.name, projectRoot: selected, isError: Boolean(native.isError) });
             if (call.name === "enable_toolset") toolsDirty = true;
+            recheckKnowledge();
             if (native.isError) break;
           } catch (error) {
             diagnostic.event("native_request_failed", { requestId: id, tool: call.name, projectRoot: ownerBinding?.projectRoot, error }, "error");
-            results.push({ name: call.name, error: { message: error.message, outcome: dispatched ? "unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) } });
+            const detail = { message: error.message, outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) };
+            if (received) results.at(-1).error = detail;
+            else results.push({ name: call.name, error: detail });
             if (error instanceof RemoteSessionExpired) {
               await disconnect(); currentRevision = null; lastError = error.message;
             }
@@ -485,13 +506,17 @@ async function dispatch(message) {
           }
         }
         const failed = Boolean(results.at(-1)?.error || results.at(-1)?.result?.isError);
-        result = { content: results.flatMap(entry => entry.result ? entry.result.content || [] : [{ type: "text", text: entry.error.message }]),
-          structuredContent: { binding: ownerBinding, results, completed: results.filter(entry => entry.result && !entry.result.isError).length, requested: params.arguments.calls.length },
+        result = { content: results.flatMap(entry => [...(entry.result?.content || []), ...(entry.error ? [{ type: "text", text: entry.error.message }] : [])]),
+          structuredContent: { binding: ownerBinding, results, completed: results.filter(entry => entry.result && !entry.result.isError).length, requested: params.arguments.calls.length,
+            ...(failed ? { stopped: { completedActions: results.filter(entry => entry.result && !entry.result.isError).map(entry => entry.name),
+              notStarted: [...results.filter(entry => entry.error?.outcome === "not_executed").map(entry => entry.name), ...params.arguments.calls.slice(results.length).map(entry => entry.name)],
+              unknownActions: results.filter(entry => entry.error?.outcome === "unknown").map(entry => entry.name), rollback: "not_performed",
+              instruction: "Stop dependent work. Report completed actions and unknown outcomes; revalidate readiness before continuing. Do not retry mutations blindly." } } : {}) },
           ...(failed ? { isError: true } : {}) };
       } else if (client) {
         // Discovery/status controls remain available to repair setup. Native
         // workflow calls, resources and prompts cannot bypass mandatory KORA.
-        checkKnowledgeWorkflow();
+        const recheckKnowledge = await checkKnowledgeWorkflow();
         const keys = {
             "resources/list": "resources",
             "resources/templates/list": "resourceTemplates",
@@ -511,6 +536,13 @@ async function dispatch(message) {
         } else {
           pending.client = client;
           result = await client.request(method, params, { onId: value => { pending.upstreamId = value; } });
+        }
+        try { recheckKnowledge(); }
+        catch (error) {
+          if (method !== "tools/call") throw error;
+          result = { ...result, isError: true, content: [...(result.content || []), { type: "text", text: error.message }],
+            structuredContent: { ...result.structuredContent, workflowStopped: { reason: error.message, action: params.name,
+              outcome: "response_received", rollback: "not_performed", instruction: "Stop dependent work and report the received result before revalidating readiness." } } };
         }
       } else
         throw new ConfigError(

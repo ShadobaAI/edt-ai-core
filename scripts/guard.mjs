@@ -30,17 +30,20 @@ function setup_control(name) {
   }
   if (["edt", "v8std", "code-index", "bsl-ls"].includes(server))
     return ["core_runtime_status", "core_runtime_tools"].includes(method);
+  if (server === "openviking") return ["knowledge_status", "knowledge_search", "knowledge_read"].includes(method);
   return server === "policy" && ["get_action_policy", "check_action"].includes(method);
 }
-export function reason(event) {
+export function reason(event, delegatedKnowledge = false) {
   if (/(?:^|__|\.)core_runtime_call$/.test(String(event.tool_name || ""))) {
     const args = event.tool_input;
     if (!args || !Array.isArray(args.calls) || !args.calls.length || args.calls.length > 16)
       return "Invalid native runtime call envelope";
+    const ownedRelay = /^mcp__(?:edt|v8std|code[_-]index|bsl[_-]ls)__core_runtime_call$/.test(String(event.tool_name));
     for (const call of args.calls) {
       if (!call || typeof call.name !== "string" || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments) || call.name === "core_runtime_call")
         return "Invalid native runtime call envelope";
-      const denied = reason({ ...event, tool_name: String(event.tool_name).replace(/core_runtime_call$/, call.name), tool_input: call.arguments });
+      // The owned relay checks its own knowledge connection before each call.
+      const denied = reason({ ...event, tool_name: String(event.tool_name).replace(/core_runtime_call$/, call.name), tool_input: call.arguments }, ownedRelay);
       if (denied) return denied;
     }
     return null;
@@ -66,7 +69,7 @@ export function reason(event) {
   const data = project_profile(root);
   const config = effective_settings(settings(process.env.EDT_AI_SETTINGS || path.join(state_root(), "settings.json")), root, data);
   const gate = knowledge_gate(data, config, "workflow");
-  if (!gate.allowed) return "Knowledge workflow blocked: " + gate.reason;
+  if (!gate.allowed && !delegatedKnowledge) return "Knowledge workflow blocked: " + gate.reason + ". Use the project-bound core_runtime_call for authority work; it verifies knowledge readiness before dispatch.";
   let args = event.tool_input || {};
   if (typeof args !== "object" || Array.isArray(args))
     args = { command: String(args) };

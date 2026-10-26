@@ -7,6 +7,16 @@ import { validate_publication_receipt, publication_inventory, parse_material, kn
 // document, MCP ready flag or project-owned public key.
 const RECEIPTS = "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS";
 const PUBLIC_KEY = "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY";
+export function publication_receipt_epoch(options, now = Date.now()) {
+  try {
+    const entries = JSON.parse(process.env[RECEIPTS] || "");
+    if (Array.isArray(entries)) return entries.filter(entry => entry?.payload?.server?.endpoint === options.url).map(entry => {
+      const start = Date.parse(entry?.payload?.verified_at), end = Date.parse(entry?.payload?.expires_at);
+      return !Number.isFinite(start) || !Number.isFinite(end) ? "invalid" : now < start ? "future" : now >= end ? "expired" : "current";
+    });
+  } catch {}
+  return "invalid";
+}
 export function publication_revision(options) {
   const raw = process.env[RECEIPTS] || "";
   let relevant = raw;

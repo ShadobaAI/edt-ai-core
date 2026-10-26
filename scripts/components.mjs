@@ -1,10 +1,10 @@
 // Trusted providers live in the plugin, never in imported project commands.
 import path from "node:path";
 import { stable, atomic_write, ConfigError, inside } from "./common.mjs";
-import { instance_directory, instance_name, exists, resolve, record_project_owner, sha256 } from "./project_paths.mjs";
+import { instance_directory, instance_name, exists, resolve, record_project_owner, sha256, state_root, reconnect_file } from "./project_paths.mjs";
 import fs from "node:fs";
-import { access_revision } from "./openviking_access.mjs";
-import { publication_revision } from "./openviking_publication.mjs";
+import { access_revision, persisted_access_revision, access_receipt_epoch } from "./openviking_access.mjs";
+import { publication_revision, publication_receipt_epoch } from "./openviking_publication.mjs";
 export const COMPONENTS = Object.freeze({
   edt: { kind: "remote", title: "EDT" },
   v8std: { kind: "remote", title: "Стандарты" },
@@ -20,6 +20,17 @@ export function binding_fingerprint(config, id, root, profile, reconnect = "") {
     id === "code-index" ? profile.repositories : id === "openviking" ? [profile.knowledge,
       profile.knowledge.manifest ? sha256(fs.readFileSync(inside(root, profile.knowledge.manifest))) : null,
       access_revision(component_settings(config, id)), publication_revision(component_settings(config, id))] : null, reconnect]);
+}
+export function knowledge_binding_fingerprint(config, root, profile, state = state_root()) {
+  const file = reconnect_file(state, root), reconnect = exists(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+  return binding_fingerprint(config, "openviking", root, profile, reconnect.openviking || reconnect.id || "");
+}
+export function knowledge_evidence_revision(config, root, profile) {
+  if (profile.knowledge.provider === "none") return "disabled";
+  const options = component_settings(config, "openviking");
+  return sha256(stable([root, instance_name(), profile.knowledge, options,
+    profile.knowledge.manifest ? sha256(fs.readFileSync(inside(root, profile.knowledge.manifest))) : null,
+    persisted_access_revision(options), access_receipt_epoch(options), publication_revision(options), publication_receipt_epoch(options)]));
 }
 const preparation_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".preparation.json");
 export function grant_preparation(state, root, components) {
