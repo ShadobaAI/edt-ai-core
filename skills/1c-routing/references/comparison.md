@@ -1,17 +1,19 @@
-# Comparison и decision files
+# Comparison and decision files
 
-Сверь guides `compare_configurations`, `get_comparison_node`, `merge_rules`.
-Comparison/rules authoring не выполняет merge. Точно установи project,
-other/ancestor revisions и bounded scope; current side включает uncommitted model.
+Check guides for `compare_configurations`, `get_comparison_node`, `merge_rules`.
+Comparison/rules authoring does not perform a merge. Establish exact project,
+other/ancestor revisions and bounded scope; the current side includes the
+uncommitted model.
 
-Начни comparison один раз, сохрани job/comparison IDs, дождись finished tree и
-читай только нужные nodes. Неполный tree не доказывает отсутствие различий.
-Чтение rules не разрешает их запись. Для validation передай finished comparison ID;
-`NOT VALIDATED` не является принятым планом. Сохраняй прежние decisions через
-`basedOn`; overwrite требует scope на тот же файл. Следуй текущему guide для ZIP
-addressing, не переноси decisions на другие revisions по совпадению entry names.
+Start comparison once, retain job/comparison IDs, wait for the finished tree and
+read only needed nodes. An incomplete tree does not prove no differences.
+Reading rules does not authorize writing them. Pass a finished comparison ID
+for validation; `NOT VALIDATED` is not an accepted plan. Preserve prior decisions
+through `basedOn`; overwrite requires scope for the same file. Follow the current
+guide for ZIP addressing; matching entry names do not allow transferring decisions
+to other revisions.
 
-EDT имеет общий comparison slot: освободи только finished comparison этой задачи
-по сохранённому ID после нужной validation. Не закрывай чужую сессию. Отчитайся
-отдельно о comparison, rules validation и фактически выполненном merge, если он
-вообще был отдельно разрешён и выполнен.
+EDT has a shared comparison slot: release only this task's finished comparison
+by retained ID after required validation. Do not close another session.
+Report comparison, rules validation and any actually performed merge separately,
+provided the merge was separately authorized and performed.

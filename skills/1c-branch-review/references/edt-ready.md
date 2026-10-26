@@ -1,28 +1,28 @@
-# Readiness после изменения HEAD
+# Readiness after changing HEAD
 
-Это bounded read-only ожидание последствий собственных разрешённых checkout/
-pull/fast-forward. Исходная infrastructure failure не превращается в ожидание
-сборки. До Git-подготовки маршрут уже должен быть проверен.
+This is bounded read-only waiting for consequences of your own authorized
+checkout/pull/fast-forward. An initial infrastructure failure does not become a
+build wait. The route must already be checked before Git preparation.
 
-Для каждого этапа сохрани уникальный stage, HEAD SHA, exact repository/EDT URL
-текущего экземпляра и список `{projectName, expectedPath}` только затронутых
-проектов. Один managed poller на stage; прежний заверши до следующей смены HEAD.
-Используй существующий MCP, live schema `list_projects` и structured results,
-не запускай новый EDT или альтернативный HTTP process ради ожидания.
+For each stage retain a unique stage, HEAD SHA, exact repository/EDT URL of the
+current instance and a `{projectName, expectedPath}` list containing only affected
+projects. One managed poller per stage; stop the old one before the next HEAD
+change. Use the existing MCP, live `list_projects` schema and structured results;
+do not launch another EDT or alternative HTTP process merely to wait.
 
-Каждый успешный полный ответ должен подтвердить единственное совпадение имени,
-нормализованный абсолютный path, `open=true` и EDT nature. `building` и переходный
-`unknown` допустимы только для продолжения этого опроса, не для source reads.
-Только все `ready` для текущего stage/HEAD разрешают зависимый анализ.
-Missing/duplicate project, path/nature mismatch, закрытый проект, транспортная
-ошибка, неполный response или иной unusable state немедленно блокируют stage.
+Every successful complete response must confirm a unique name match, normalized
+absolute path, `open=true` and EDT nature. `building` and transitional `unknown`
+allow only continuing this poll, not source reads. Only all projects being
+`ready` for the current stage/HEAD allows dependent analysis.
+Missing/duplicate projects, path/nature mismatches, closed projects, transport
+errors, incomplete responses or other unusable states immediately block the stage.
 
-Задай конечный deadline (по умолчанию 15 минут, если проект не определяет иной).
-Опрос не чаще раз в 10 секунд; сообщай изменения состояния, сохраняй последний
-полный ответ. Running exec cell продолжай тем же `wait`/ID без новых pollers;
-короткие waits позволяют сообщения пользователю. Timeout/отмена — не ready;
-старый ready после смены HEAD, instance URL или stage не переиспользуется.
-При blocker сообщи инструмент, route/stage/HEAD, последнее состояние и причину.
+Set a finite deadline (15 minutes by default unless the project specifies another).
+Poll at most once every 10 seconds; report state changes and retain the last
+complete response. Resume running exec cells with the same `wait`/ID, without new
+pollers; short waits allow user updates. Timeout/cancellation is not ready;
+do not reuse old readiness after HEAD, instance URL or stage changes.
+For blockers report tool, route/stage/HEAD, last state and reason.
 
-Независимую read-only работу можно продолжать во время building, когда она не
-требует новой модели. Ready не доказывает write readiness и не разрешает запись.
+Independent read-only work may continue during building if it needs no new model.
+Ready does not prove write readiness or authorize writes.

@@ -1,99 +1,99 @@
-# v8std: подключение, выбор ответа и бюджет
+# v8std: connection, response selection and budget
 
-## Живой контракт и общий сервер
+## Live contract and shared server
 
-Профиль выбранного каталога и его instance/environment overrides определяют
-назначенный endpoint. Не записывай в навык адрес, checkout, версию сервера или
-каталог имён операций. Для нового binding прочитай `core_runtime_status`:
-`binding` задаёт проект/экземпляр/endpoint, `serverContract` передаёт инструкции
-и capabilities согласованного подключения. Это доступность MCP, не доказательство
-наличия статьи или полноты корпуса. Возможность выбирай по назначению, описанию
-и живой schema; не угадывай имя. Серверный контракт чтения не заменяет инструкции
-проекта и полномочия пользователя.
+The selected directory's profile and instance/environment overrides determine the
+assigned endpoint. Do not embed addresses, checkouts, server versions or operation
+catalogues in the skill. For a new binding read `core_runtime_status`:
+`binding` identifies project/instance/endpoint; `serverContract` supplies negotiated
+connection instructions and capabilities. This establishes MCP availability, not
+article presence or corpus completeness. Choose capabilities by purpose, description
+and live schema; do not guess names. The server's read contract does not replace
+project instructions or user authority.
 
-Переиспользуй discovery в текущем binding. Обновляй его после смены endpoint,
-переподключения, уведомления о смене поверхности, несовместимого ответа либо
-явного аудита обновления. Proxy передаёт новые schema без статического allowlist;
-обычное чтение не запускает повторный discovery. Не запрашивай необъявленные
-resources/prompts и не опрашивай пустые каталоги на каждом ходе. Проверяй только
-нужный маршрут; не вызывай все операции ради подтверждения полноты интеграции.
+Reuse discovery in the current binding. Refresh after endpoint changes,
+reconnection, capability-change notifications, incompatible responses or explicit
+update audits. The proxy forwards new schemas without static allowlists;
+ordinary reads do not repeat discovery. Do not request undeclared resources/prompts
+or poll empty catalogues every turn. Check only the needed route; do not call
+every operation to demonstrate integration completeness.
 
-Один read-only справочник может обслуживать разные проекты параллельно: он не
-выбирает их конфигурацию, не читает репозитории и не выполняет анализаторы.
-Отдельный сервер на проект не требуется. Клиентское подключение, selected root,
-instance и контекст задачи остаются своими; не переключай настройки другого
-проекта и не перезапускай общий сервис ради локального запроса. Завершение клиента
-освобождает лишь его MCP-сессию, если сервер её выдал; при stateless подключении
-серверная сессия не создаётся и DELETE не отправляется.
+One read-only reference server may serve multiple projects concurrently: it does
+not select their configurations, read repositories or execute analyzers.
+No server per project is required. Client connection, selected root, instance
+and task context remain separate; do not switch another project's settings or
+restart the shared service for a local query. Client termination releases only
+its own MCP session if issued; stateless connections create no server session
+and send no DELETE.
 
-## Минимальный достаточный ответ
+## Smallest sufficient response
 
-Известный canonical ID/ref читай сразу, без повторного поиска. Передавай внутреннюю
-ссылку из ответа целиком в совместимую операцию MCP; не преобразуй её в URL сайта
-и не трактуй URL примера кода как переход. При неоднозначности используй
-возвращённые candidates/headings и уточняй только недостающий факт; первый hit
-не становится выбранным документом автоматически.
+Read known canonical IDs/refs directly, without searching again. Pass internal
+references from responses intact to compatible MCP operations; do not convert them
+to website URLs or treat code-example URLs as navigation. When ambiguous, use
+returned candidates/headings and resolve only the missing fact; the first hit
+does not automatically become the selected document.
 
-Для короткого документа выбирай компактный текст; для точного условия — раздел;
-для метода framework — карточку нужного API member. Карточку pattern используй
-только для поддерживаемых ею corpus/type по живому контракту. Неподдерживаемая
-коллекция читается обычным документом/разделом, без повторных неудачных вызовов.
-Полная статья нужна, когда условие требует её контекста или отдельные разделы
-дадут больший объём и больше вызовов. Для обхода связей предпочитай компактные
-IDs; описания получай лишь для неоднозначного выбора. Уже возвращённые явные
-связи переиспользуй, не запрашивай их повторно.
+For short documents choose compact text; for exact conditions choose sections;
+for framework methods choose the needed API member card. Use pattern cards only
+for corpus/type combinations supported by the live contract. Read unsupported
+collections as ordinary documents/sections, without repeated failed calls.
+Full articles are needed when conditions require their context or separate sections
+would cost more volume and calls. Prefer compact IDs for relationship traversal;
+obtain descriptions only for ambiguous choices. Reuse returned explicit
+relationships rather than requesting them again.
 
-Для неизвестной темы начни с небольшого числа кандидатов, ограничь типы и
-коллекции по задаче. Для известного диагностического ID используй пакетную
-расшифровку, для кода — подбор по смысловому фрагменту, для design/Gherkin — по
-контексту. Это разные входы, а не обязательная цепочка всех способов поиска.
-Context-ответ может уже содержать достаточный полный нормативный текст: не
-перечитывай его, если identity, полнота и применимость подтверждены. Бюджет body
-кандидата задавай отдельно от их числа, когда поддержано; небольшой shortlist
-не требует полных статей для всех строк.
+For unknown topics start with a small candidate set and bound types/collections
+to the task. For known diagnostic IDs use batch decoding; for code use semantic
+fragment selection; for design/Gherkin use context. These are different inputs,
+not a mandatory chain of all search methods.
+Context responses may already contain sufficient full normative text: do not reread
+when identity, completeness and applicability are confirmed. Set candidate body
+budget separately from count when supported; small shortlists do not require
+full articles for every row.
 
-Сначала используй обычное ранжирование. Точный/лексический/семантический поиск
-выбирай по причине: идентификатор, конкретные термины или смысловая переформулировка.
-Не запускай все режимы для одного вопроса. Пустая выдача, низкий score или
-`unknown_codes` описывают корпус, а не корректность кода. При существенном пробеле
-уточни вход или возьми другую подходящую возможность, сохранив gap.
+Start with ordinary ranking. Choose exact/lexical/semantic search for a reason:
+an identifier, specific terms or semantic reformulation. Do not run every mode for
+one question. Empty results, low scores or `unknown_codes` describe the corpus,
+not code correctness. For substantial gaps refine input or choose another suitable
+capability while retaining the gap.
 
-Продолжай поиск по cursor только ради недостающего нужного факта. Сохраняй все
-исходные фильтры, режим и размер страницы. Отклонённый cursor после изменения
-ранжирования требует нового ограниченного поиска, а не смешивания страниц.
-Не проходи весь корпус и не увеличивай top-N как доказательство coverage.
+Follow search cursors only for needed missing facts. Preserve all original filters,
+mode and page size. A rejected cursor after ranking changes requires a new bounded
+search rather than mixed pages. Do not traverse the entire corpus or increase
+top-N as proof of coverage.
 
-Проверяй `found`, canonical identity, точный heading/member, `body_truncated` и
-маркеры неполноты в фактическом объекте: body бывает внутри `page`, в разделе
-или в элементе `requirements`. Поисковое описание и metadata не равны тексту
-нормы. Усечение дочитывай адресно по разделам либо большим body в пределах
-действующего ограничения. Не повторяй тот же обрезанный ответ и не превышай
-server clamp; schema, descriptions и адресная ошибка важнее старых чисел навыка.
-Не все ограничения объявлены JSON Schema: отсутствие maximum не означает
-неограниченный ответ. Если полный текст получить нельзя, сохрани unverified.
+Check `found`, canonical identity, exact heading/member, `body_truncated` and
+incompleteness markers in the actual object: body may be inside `page`, a section
+or a `requirements` item. Search descriptions and metadata are not normative text.
+Finish truncated text through targeted sections or larger bodies within the current
+limit. Do not repeat the same truncated answer or exceed server clamps;
+schema, descriptions and targeted errors outweigh old skill numbers.
+Not all limits are declared in JSON Schema: no maximum does not mean unlimited
+output. If complete text cannot be obtained, retain unverified status.
 
-## Повторное использование evidence
+<a id="повторное-использование-evidence"></a>
+## Evidence reuse
 
-В пределах задачи сохраняй компактную запись: endpoint и доступную identity
-корпуса, canonical ID/heading/member, полноту текста и использованные условия.
-Не подставляй версию SDK вместо редакции корпуса. Если сервер не сообщает
-редакцию документа/корпуса, укажи её как неизвестную; hash текста подтверждает
-конкретные bytes, но не свежесть сервера. Тогда reuse ограничен текущей задачей
-при неизменном подключении и отсутствии противоречий; новая задача или
-переподключение требует актуального чтения нужных selectors. При подтверждённой
-смене corpus обновляй зависящие от него подбор и тексты.
+Within the task retain a compact record: endpoint and available corpus identity,
+canonical ID/heading/member, text completeness and conditions used.
+Do not substitute SDK version for corpus revision. If the server does not report
+document/corpus revision, mark it unknown; a text hash confirms specific bytes,
+not server freshness. Reuse is then limited to the current task with unchanged
+connection and no contradictions; a new task or reconnection requires current
+reads of needed selectors. Confirmed corpus changes require refreshing dependent
+selection and text.
 
-Общий неизменный текст допустимо переиспользовать между scopes только при
-подтверждённых endpoint, corpus identity и редакции. Ответы по snippets/context,
-sourceRef, проектные исключения, selection/digest и ledger принадлежат конкретным
-проекту, target, фазе и ревизии. Совпавшие имена объектов, alias или ID стандарта
-не разрешают переносить оценки между проектами. Новый sourceRef требует своего
-compliance evidence, даже если нормативный текст тот же. В relay нет общего
-кэша результатов вызовов между клиентами.
+Shared unchanged text may be reused across scopes only with confirmed endpoint,
+corpus identity and revision. Snippet/context responses, sourceRef, project
+exceptions, selection/digest and ledger belong to a specific project, target,
+phase and revision. Matching object names, aliases or standard IDs do not authorize
+cross-project assessment transfer. New sourceRef needs its own compliance evidence
+even when normative text is unchanged. The relay has no cross-client call-result cache.
 
-Используй одно представление результата: structured data, либо text JSON, если
-структурированного ответа нет. Не пересказывай оба дубля и не копируй весь body
-в ledger/ответ пользователю. Достаточны selector, проверенное условие, факт
-артефакта и результат. Ответ может содержать нормализованный исходник; передавай
-только нужный фрагмент без секретов и сохраняй его в контексте своего проекта.
-Это экономия чтения и контекста; размер payload не равен расходу лимита модели.
+Use one result representation: structured data, or text JSON when no structured
+response exists. Do not repeat both copies or copy whole bodies into ledgers/user
+responses. Selector, checked condition, artifact fact and result suffice.
+Responses may contain normalized source; submit only the needed fragment without
+secrets and retain it in the current project's context.
+This saves reading and context; payload size does not equal model limit consumption.

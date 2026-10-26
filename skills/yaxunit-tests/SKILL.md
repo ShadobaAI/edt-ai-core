@@ -5,82 +5,82 @@ description: Design, author, review, run and debug YaXUnit tests, registration, 
 
 # YaXUnit tests
 
-## Binding и authority
-Применяй knowledge mode/source roles из $1c-routing и общие контроли
-reuse/достаточности. Выбери design/review, authoring либо execution по поручению: результат
-запуска не разрешает правку продукта, тестов или framework. Владение этими тремя
-областями и разрешённые эффекты проверяются отдельно.
+## Binding and authority
 
-Проверь `testing.yaxunit` и `testing.yaxunit_config`. `repository_id` задаёт
-владельца тестового расширения и его `edt_project`; aliases берутся из
-`repositories`. `framework_repository_id` — read-only YaXUnit core,
-`product_repository_ids` задают доступные для исследования зависимости, а не
-разрешение на изменение production. Не выводи
-ownership из имени каталога; отсутствие binding блокирует зависимый маршрут.
-Не включай возможность и не меняй production/core ради удобства теста.
+Apply knowledge mode/source roles from $1c-routing and shared reuse/sufficiency
+checks. Choose design/review, authoring or execution from the assignment:
+run results do not authorize product, test or framework changes. Check ownership
+of these three areas and authorized effects separately.
 
-`code-index` ищет определения и реальные usages; EDT подтверждает live state,
-неизвестную установленную сигнатуру, выполняет все записи, primary diagnostics
-и `run_yaxunit_tests`. BSL LS нужен только для отдельного focused analyzer-вопроса.
-`v8std` даёт известные pattern/API contracts; не дублируй достаточную справку
-проверкой каждой сигнатуры в EDT. Противоречие версий сначала разреши.
+Check `testing.yaxunit` and `testing.yaxunit_config`. `repository_id` identifies
+the test extension owner and its `edt_project`; aliases come from `repositories`.
+`framework_repository_id` is read-only YaXUnit core; `product_repository_ids`
+identifies dependencies available for research, not permission to modify production.
+Do not infer ownership from directory names; missing binding blocks the dependent
+route. Do not enable capabilities or change production/core for test convenience.
 
-## Normative и authoring gates
+`code-index` finds definitions and real usages; EDT confirms live state, unknown
+installed signatures, performs all writes, primary diagnostics and
+`run_yaxunit_tests`. BSL LS is needed only for a separate focused analyzer question.
+`v8std` supplies known pattern/API contracts; do not duplicate sufficient reference
+by checking every signature in EDT. Resolve version contradictions first.
 
-Для design/create/change/review и анализа тестового кода при debug/migrate следуй общему
-[requirements workflow](../1c-standards/references/requirements.md#yaxunit):
-`select_yaxunit_requirements`, точные полные patterns и ledger применимой фазы:
-design — proposal, review — result, изменение — обе.
+## Normative and authoring gates
 
-Подбирай test patterns по контексту в коллекции `yaxunit`, применимые рабочие
-правила — отдельно в `corporate`, если они поддержаны назначенным v8std.
-BSL snippet дополняет этот маршрут; справочная API card требует чтения контракта
-и не становится нормой автоматически. Для известного module/member выбирай
-адресную API card по [живому контракту](../1c-standards/references/mcp.md),
-переиспользуй полный текст из подбора; неизвестный установленный API проверяй
-через index/EDT. Для environment/runner-only
-диагностики authoring patterns не нужны. Изменения BSL проходят и общий oneC gate
-через $1c-code-change. Повторно
-нормы не загружай без изменения применимости. Run/report-only не требует
-authoring patterns и не разрешает изменение кода.
+For design/create/change/review and test-code analysis during debug/migrate follow
+the shared [requirements workflow](../1c-standards/references/requirements.md#yaxunit):
+`select_yaxunit_requirements`, exact complete patterns and the applicable phase's
+ledger: design — proposal, review — result, change — both.
 
-До записи установи наблюдаемое поведение, test owner, client/server context,
-setup/cleanup, стратегию данных, isolation, assertions и границу mock. Тест
-проверяет поведение, не внутреннее устройство реализации. Reuse подходящей
-semantic fixture предпочтительнее новой; иначе используй узкий публичный
-`ЮТест.Данные()` API. Значения определяй по смыслу полей, форматам, единицам и
-связям; подходящий `ЮТПодражатель`/платформенный генератор лучше случайного literal.
-Mock изолирует внешнюю границу, а не поведение под проверкой.
+Select test patterns by context in `yaxunit`, and applicable work rules separately
+in `corporate`, when supported by the assigned v8std. BSL snippets supplement this
+route; reference API cards require contract reading and do not automatically become
+requirements. For known modules/members choose targeted API cards under the
+[live contract](../1c-standards/references/mcp.md), reusing full text from selection;
+verify unknown installed APIs through index/EDT. Environment/runner-only diagnostics
+need no authoring patterns. BSL changes also pass the general oneC gate through
+$1c-code-change. Do not reload requirements without changed applicability.
+Run/report-only needs no authoring patterns and does not authorize code changes.
 
-Проверь declarative registration, export/context зарегистрированных методов,
-placement/naming, deterministic setup и соответствие assertions полному pattern.
-Данные не должны зависеть от произвольных существующих записей или портить их.
-Сохраняй cleanup/isolation при ошибке теста по применимому контракту.
+Before writing establish observable behavior, test owner, client/server context,
+setup/cleanup, data strategy, isolation, assertions and mock boundary. Tests verify
+behavior rather than implementation internals. Prefer reusing suitable semantic
+fixtures; otherwise use the narrow public `ЮТест.Данные()` API.
+Choose values by field meaning, formats, units and relationships; a suitable
+`ЮТПодражатель`/platform generator is preferable to random literals.
+Mocks isolate external boundaries rather than the behavior under test.
+
+Check declarative registration, registered method export/context, placement/naming,
+deterministic setup and assertion correspondence to the full pattern.
+Data must not depend on or damage arbitrary existing records.
+Preserve cleanup/isolation on test failure under the applicable contract.
 
 ## Fluent chains
 
-Отступ многострочной цепочки определяется логическим владением по pattern/API,
-а не одинаковым типом возвращаемого значения или физическим receiver:
+Multiline-chain indentation follows logical ownership under pattern/API rather
+than identical return types or physical receivers:
 
-- siblings начинаются в одной колонке;
-- child и его настройки на один tab глубже владельца;
-- возврат к ancestor/следующему sibling возвращает соответствующий уровень.
+- siblings start in the same column;
+- children and their settings are one tab deeper than the owner;
+- returning to an ancestor/next sibling restores its corresponding level.
 
-Для регистрации: module → set → test → test settings; следующий test — sibling.
-Не угадывай иерархию по названию метода; неизвестное владение уточни в pattern.
+For registration: module → set → test → test settings; the next test is a sibling.
+Do not guess hierarchy from method names; resolve unknown ownership in the pattern.
 
-## Выполнение и приёмка
+## Execution and acceptance
 
-Прочитай [workflows](references/workflows.md) для текущей операции;
-[testability](references/testability.md) — только при конкретном препятствии.
-Согласования фактических эффектов следуют общей
-[action policy](../1c-routing/references/action-policy.md). Сохраняй уже данное
-разрешение для того же тестового окружения; source edit не разрешает запуск ИБ.
+Read [workflows](references/workflows.md) for the current operation;
+read [testability](references/testability.md) only for a specific obstacle.
+Agreement for actual effects follows the shared
+[action policy](../1c-routing/references/action-policy.md).
+Retain existing permission for the same test environment; source editing does not
+authorize infobase launch.
 
-Для изменения требуются focused EDT diagnostics, result compliance, authoring
-gate; поведенческую проверку выполняй самым узким нужным запуском с разрешёнными
-runtime effects. Если runtime недоступен/не разрешён, сообщи отдельно результат
-authoring и невыполненную проверку, не объявляя test pass. Неожиданные `0`
-найденных/выполненных тестов — сбой, а не pass. Read-only design/review не требует runtime лишь ради
-заключения и не разрешает fixes. Отчёт связывает scope, job/run, counts и результаты;
-syntax-only, неполный/чужой отчёт или skipped check не выдай за успешный тест.
+Changes require focused EDT diagnostics, result compliance and the authoring gate;
+verify behavior with the narrowest necessary run under authorized runtime effects.
+If runtime is unavailable/unauthorized, report authoring results and unperformed
+verification separately, without claiming test pass.
+Unexpected `0` discovered/executed tests is failure, not pass.
+Read-only design/review needs no runtime merely for a conclusion and authorizes
+no fixes. Reports bind scope, job/run, counts and results; do not present
+syntax-only checks, incomplete/unrelated reports or skipped checks as passing tests.

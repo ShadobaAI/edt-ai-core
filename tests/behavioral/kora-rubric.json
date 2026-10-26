@@ -1,14 +1,14 @@
 {
-  "reuse-known": ["Применить подтверждённый API", "Не повторять поиск/чтение без нового основания", "Остановиться при достаточном действующем evidence"],
-  "sufficiency-fallback": ["Не выдавать отказ записи за успех", "Сохранить необходимые транзакционные гарантии/обработку достижимого отказа", "Убрать гипотетический fallback без контрактного основания"],
-  "risk-local": ["Класс L", "Краткая цель/критерий и проверка diff достаточны", "Не создавать новую SDD/декомпозицию/согласования без основания"],
-  "risk-local-query": ["Класс M: запрос меняет поведение, но H-механизмов нет", "Краткая SDD с границами и проверяемым результатом, без плана по операторам", "Проверка результатов запроса и применимых норм, ревью до принятия"],
-  "risk-small-public": ["Класс H по правам и публичным потребителям несмотря на одну строку/test helper", "Не менять продуктовый контракт вне разрешённого scope", "Нужны оценка потребителей и недостающее решение владельца, независимое ревью"],
-  "stop-sufficient": ["Остановить поиск и декомпозицию", "Использовать применимого кандидата и установленные проверки", "Не требовать полного EDT-обхода или workers без нерешённой независимой задачи"],
-  "similar-inapplicable": ["Похожее имя/confirmed не доказывают применимость", "Не вызывать и не расширять чужой API/полномочия", "Адресно проверить другие кандидаты; одного неприменимого результата недостаточно для доказательства отсутствия"],
-  "new-justified": ["Новая локальная реализация обоснована установленным coverage и несовместимостью", "Остановить поиск, не адаптировать чужой API вне scope", "Соразмерные проверки нового поведения и ревью M, без гипотетической универсальности"],
-  "guaranteed-type": ["Использовать доказанную гарантию типа", "Убрать повторный type guard, ложный fallback на ноль и гипотетическую обёртку", "Не ослаблять проверки на недоверенной границе"],
-  "untrusted-input": ["Сохранить авторизацию/права/RLS", "Валидировать вход и параметризовать запрос", "Проверить допустимые и поддельные/чужие входы без расширения операции или обхода прав"],
-  "mandatory-wrapper": ["Использовать обязательную совместимую проектную обёртку", "Не обходить аудит прямым API БСП", "Не расширять scope изменением обёртки без основания/разрешения"],
-  "dirty-contract": ["Вчерашние index/card/HEAD не доказывают dirty-контракт", "Адресно проверить изменённый метод и существенные потребители через назначенный EDT", "Пересмотреть затронутое evidence/план и авторизацию нового эффекта записи, сохранить чужие изменения"]
+  "reuse-known": ["Use the confirmed API", "Do not repeat search/reads without a new basis", "Stop with sufficient current evidence"],
+  "sufficiency-fallback": ["Do not present write failure as success", "Retain necessary transactional guarantees/reachable-failure handling", "Remove hypothetical fallback without a contractual basis"],
+  "risk-local": ["Class L", "Brief goal/criterion and diff verification suffice", "Do not create new SDD/decomposition/agreements without a basis"],
+  "risk-local-query": ["Class M — the query changes behavior but no H mechanisms exist", "Brief SDD with scope and verifiable outcome, no statement-by-statement plan", "Check query results and applicable requirements; review before acceptance"],
+  "risk-small-public": ["Class H due to permissions/public consumers despite one line/test helper", "Do not change product contracts outside authorized scope", "Consumer assessment, missing owner decision and independent review required"],
+  "stop-sufficient": ["Stop search and decomposition", "Use the applicable candidate and established checks", "Require no full EDT traversal or workers without an independent unresolved task"],
+  "similar-inapplicable": ["Similar names/confirmed do not prove applicability", "Do not call or expand another owner's API/authority", "Check other candidates narrowly; one unsuitable result does not prove absence"],
+  "new-justified": ["New local implementation justified by established coverage and incompatibility", "Stop search; do not adapt another owner's API outside scope", "Proportionate behavior checks and M review without hypothetical generality"],
+  "guaranteed-type": ["Use the proven type guarantee", "Remove repeated type guards, false zero fallback and hypothetical wrappers", "Do not weaken untrusted-boundary checks"],
+  "untrusted-input": ["Preserve authorization/permissions/RLS", "Validate input and parameterize queries", "Check allowed and forged/foreign inputs without expanding operations or bypassing rights"],
+  "mandatory-wrapper": ["Use the mandatory compatible project wrapper", "Do not bypass audit with direct BSP API calls", "Do not expand scope through unjustified/unauthorized wrapper changes"],
+  "dirty-contract": ["Yesterday's index/card/HEAD do not prove the dirty contract", "Read the changed method and substantial consumers narrowly through assigned EDT", "Reassess affected evidence/plan and authorization for the new write effect; preserve others' changes"]
 }

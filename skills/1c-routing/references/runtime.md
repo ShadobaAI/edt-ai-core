@@ -1,64 +1,69 @@
-# Runtime launch и breakpoints
-Применяй knowledge mode и доступность capabilities из [routing](../SKILL.md).
-Читай только нужный раздел launch/debug/profiling и живой guide выбранной
-операции; полный обход runtime и специализированных EDT-маршрутов не требуется.
+# Runtime launch and breakpoints
 
-Сверь live guide выбранного действия: `launch` для запуска, `set_breakpoint`
-или `set_error_breakpoint` — только при соответствующей настройке. По общей
-[action policy](action-policy.md) используй уже согласованный target и реальные
-effects; изменение исходника не разрешает запуск/изменение ИБ.
+Apply knowledge mode and capability availability from [routing](../SKILL.md).
+Read only the needed launch/debug/profiling section and the selected operation's
+live guide; full traversal of runtime and specialized EDT routes is unnecessary.
 
-Выбери точную launch configuration или установленную project/application пару.
-Задай `mode=run|debug` по guide; Attach поддерживает debug. `updateBeforeLaunch`
-может по умолчанию обновлять БД, `externalInfobaseChanges=override` — перезаписать
-внешние изменения. Без соответствующего разрешения используй поддержанные
-`updateBeforeLaunch=false`, `externalInfobaseChanges=cancel`. Refusal/modal не
-разрешает update/import. Сохраняй `standaloneServerPortConflict=cancel`, если смена
-портов не разрешена; `restartIfRunning=true` завершает клиент и требует restart scope.
+Check the chosen action's live guide: `launch` for startup, `set_breakpoint` or
+`set_error_breakpoint` only for the corresponding configuration. Under the shared
+[action policy](action-policy.md), use the already agreed target and actual effects;
+source editing does not authorize infobase launch/modification.
 
-`alreadyRunning` не означает нового запуска; request ID/ack не доказывает startup,
-attachment или успешное обновление. Следи за тем же job/state, не запускай повторно
-для проверки. Сохраняй branch/infobase binding; `ignoreBranchBinding` требует
-разрешения на конкретную пару. Отсутствие binding не доказывает правильность базы.
-Binary import/export также может запускать платформу и менять/читать ИБ; учти
-эффекты, retained job и unknown sync. Не разрешай outdated export без нужного scope.
+Choose the exact launch configuration or established project/application pair.
+Set `mode=run|debug` per guide; Attach supports debug. `updateBeforeLaunch` may
+update the database by default; `externalInfobaseChanges=override` may overwrite
+external changes. Without corresponding permission, use supported
+`updateBeforeLaunch=false`, `externalInfobaseChanges=cancel`.
+Refusal/modal dialogs do not authorize update/import. Retain
+`standaloneServerPortConflict=cancel` unless port changes are authorized;
+`restartIfRunning=true` terminates the client and requires restart scope.
 
-До временного изменения breakpoints прочитай прежние IDs/settings. Omitted
-`condition`/`hitCount` у line breakpoint может очистить их: проверь применённые
-условия и degradation, marker не доказывает runtime stop. Error breakpoint может
-действовать на весь EDT workspace; scope одного проекта его не разрешает.
-У него omitted message filter может сохраняться, empty string — очищать.
-Восстанавливай фактическое прежнее состояние и все возвращённые IDs; не включай
-ранее disabled entries, не удаляй пользовательские breakpoints как cleanup.
+`alreadyRunning` does not mean a new launch; request ID/ack does not prove startup,
+attachment or successful update. Follow the same job/state; do not relaunch to
+check. Preserve branch/infobase binding; `ignoreBranchBinding` requires permission
+for the specific pair. Missing binding does not prove the correct database.
+Binary import/export may also launch the platform and modify/read the infobase;
+account for effects, retained jobs and unknown sync. Do not allow outdated export
+without the required scope.
 
-## Исследование работающего приложения
+Before temporarily changing breakpoints, read prior IDs/settings. Omitted
+`condition`/`hitCount` for a line breakpoint may clear them: verify applied
+conditions and degradation; a marker does not prove a runtime stop.
+An error breakpoint may affect the entire EDT workspace; single-project scope
+does not authorize it. Its omitted message filter may persist; an empty string
+may clear it. Restore the actual prior state and all returned IDs; do not enable
+previously disabled entries or delete user breakpoints as cleanup.
 
-Начни с минимального runtime state или ограниченного окна журнала нужного
-приложения, а не с нового запуска. При нескольких debug targets передавай
-поддержанный точный selector; единственный выбранный `projectName` не доказывает
-изоляцию workspace-wide debugger. После нового stop/step обнови frame/thread и
-читай только нужные переменные, глубину и объём коллекций. Старые frame IDs не
-переносятся на следующую остановку. Evaluation может исполнять произвольный
-код, а изменение переменной — менять данные: это отдельные фактические эффекты,
-даже внутри read-only исследования. Продолжай только task-suspended execution;
-не завершай чужой клиент и не восстанавливай предположительное состояние.
+## Investigating a running application
 
-## Замер производительности
+Start with minimal runtime state or a bounded log window for the required
+application, rather than a new launch. With multiple debug targets, pass the
+supported exact selector; one selected `projectName` does not prove workspace-wide
+debugger isolation. After each new stop/step refresh frame/thread and read only
+needed variables, depth and collection volume. Old frame IDs do not transfer to
+the next stop. Evaluation may execute arbitrary code, and variable changes may
+modify data: these are separate actual effects even within read-only investigation.
+Resume only execution suspended by this task; do not terminate another client or
+restore an assumed state.
 
-Для performance-вопроса выбери одну воспроизводимую операцию, объём данных и
-точный application/debug target. Запуск, изменение ИБ и сам сценарий сохраняют
-требования общей action policy. По текущему guide установи, свободен ли сбор и
-как результаты связываются с измерением: результат может быть общим для EDT и
-содержать только последнее измерение, даже при фильтре состояния по application.
+<a id="замер-производительности"></a>
+## Performance measurement
 
-Начинай сбор только если ответ подтверждает владение новым окном. Уже активный
-чужой сбор не останавливай и не заменяй. Для своего окна заверши сбор при успехе,
-ошибке или прерывании и прочитай результат до следующего измерения. Если
-нельзя удержать общий слот и доказать attribution, не приписывай rows своей
-задаче. Отчитайся отдельно о незавершённом cleanup.
+For performance questions, choose one reproducible operation, data volume and exact
+application/debug target. Launch, infobase changes and the scenario itself retain
+shared action-policy requirements. From the current guide establish whether
+collection is free and how results bind to a measurement: results may be shared
+across EDT and contain only the last measurement even when state is filtered by
+application.
 
-Начни с compact результата и фильтра модуля/частоты; подробные timing/source
-rows нужны только для кандидатов. Сопоставь их с точной ревизией и условиями
-запуска. Усечение не доказывает полноту hot spots, а замер не разрешает
-рефакторинг. Повтор для before/after допустим при сопоставимых условиях и
-разрешённом сценарии, без параллельного использования общего result slot.
+Start collection only when the response confirms ownership of a new window.
+Do not stop or replace someone else's active collection. For your window, finish
+collection on success, error or interruption and read the result before the next
+measurement. If the shared slot cannot be retained and attribution proven, do not
+attribute rows to your task. Report unfinished cleanup separately.
+
+Start with compact results and module/frequency filters; detailed timing/source
+rows are needed only for candidates. Match them to the exact revision and launch
+conditions. Truncation does not prove complete hot-spot coverage, and measurement
+does not authorize refactoring. Before/after repetition is allowed under comparable
+conditions and an authorized scenario, without parallel use of the shared result slot.

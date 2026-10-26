@@ -1,107 +1,111 @@
 # Requirements workflow
 
-Проверяй содержательную применимость и точный текст норм через v8std; bundled
-policy — baseline и проверка согласованности оценок, а не анализатор source.
-Полный набор функций доступен в живых schemas. Сохраняй достаточные факты и тексты
-в рамках задачи, обновляя только то, что изменилось.
-Связывай подтверждённые контракты, применимые требования и результаты проверок
-с их source/authority, target, контекстом и подтверждённой ревизией/binding.
-Между фазами переиспользуй действующие факты и достаточный нормативный текст,
-если их условия и границы не изменились. Для новой фазы укажи, что именно они
-подтверждают: baseline-проверка не доказывает изменённый result, а selection/ledger
-и session refs не переносятся как готовое заключение. Применяй правила reuse
-корпуса из [MCP-контракта](mcp.md#повторное-использование-evidence), без нового
-полного поиска уже подтверждённого контракта.
-При смене ревизии, binding/identity, затронутого кода, публикации/корпуса,
-ошибке или противоречии установи, какие факты от этого зависят. Обновляй только
-их: неизменный текст нормы не требует повторного получения из-за локальной правки,
-а изменение платформенного контекста не инвалидирует несвязанные факты другого
-артефакта. Истёкший session ref получи заново в текущей сессии; это не повод
-повторять всё исследование. Не сохраняй устаревшую проверку затронутого target
-под видом экономии; обязательные readiness, guards и post-validation остаются.
-Держи bounded evidence в контексте задачи и штатных session refs, без отдельной
-постоянной базы рассуждений, transcript или копии нормативного корпуса. Принятое
-решение можно сохранить в существующем owning SDD/ADR по проектным правилам;
-это результат работы, а не дублирующее хранилище норм или истории поиска.
-Штатные технические receipts состояния не превращай в доказательство reasoning
-или истинности нормативной оценки.
+Verify substantive applicability and exact normative text through v8std; bundled
+policy supplies a baseline and assessment-consistency checks, not source analysis.
+The full function set is available in live schemas. Retain sufficient facts and
+text within the task, refreshing only what changed.
+Bind confirmed contracts, applicable requirements and check results to their
+source/authority, target, context and confirmed revision/binding.
+Reuse current facts and sufficient normative text across phases when their
+conditions and boundaries are unchanged. For each new phase state what they
+confirm: baseline checks do not prove changed results, and selection/ledger and
+session refs do not transfer as completed conclusions. Apply corpus reuse rules
+from the [MCP contract](mcp.md#повторное-использование-evidence), without a new full
+search for an already confirmed contract.
+On revision, binding/identity, affected-code, publication/corpus changes, errors
+or contradictions, establish which facts depend on them. Refresh only those:
+unchanged normative text does not need retrieval after a local edit, and changed
+platform context does not invalidate unrelated facts of another artifact.
+Renew expired session refs in the current session; do not repeat the whole
+investigation for that reason. Do not retain stale target verification as
+economy; mandatory readiness, guards and post-validation remain.
+Keep bounded evidence in task context and native session refs, without a separate
+persistent reasoning database, transcript or normative-corpus copy. Accepted
+decisions may be recorded in existing owning SDD/ADR under project rules;
+these are work results, not duplicate normative or search-history storage.
+Do not treat native technical state receipts as proof of reasoning or normative
+assessment truth.
 
-| Поручение | Операция policy | Фазы |
+| Assignment | Policy operation | Phases |
 | --- | --- | --- |
-| Проектирование без записи | design | proposal |
-| Создание/изменение | create/change | proposal до записи, result после неё |
-| Ревью точной ревизии | review | result |
-| Только запуск/отчёт тестов | run/report | authoring workflow не нужен |
+| Design without writes | design | proposal |
+| Creation/change | create/change | proposal before writing, result afterward |
+| Exact revision review | review | result |
+| Test execution/report only | run/report | authoring workflow not needed |
 
-Запрос ревью/запуска не разрешает исправления. Proposal — конкретное предложение
-в памяти вместе с разрешёнными baseline facts, а не выполненная запись в EDT.
-Result — фактический результат либо точная ревизия ревью. Target включает owning
-проект/компонент; sourceRef связывает baseline, фазу и ревизию/hash. Текущая модель
-не заменяет историческую ревизию. Защищённый source читается через назначенные
-authorities, без generic filesystem.
+Review/execution requests do not authorize fixes. Proposal is a specific
+in-memory proposal with authorized baseline facts, not a completed EDT write.
+Result is the actual outcome or exact reviewed revision. Target includes the
+owning project/component; sourceRef binds baseline, phase and revision/hash.
+The current model does not replace historical revision. Read protected source
+through assigned authorities, not generic filesystem.
 
-1. Получи минимальное достаточное source/context evidence. Оцени механизмы
-   перехода baseline → proposal/result, включая добавляемое, удаляемое и enclosing
-   invariants. Первый планируемый запрос уже query_text: present; удаление и rename
-   остаются механизмами перехода после записи. Не включай посторонний код модуля.
-2. Выполни [подбор через v8std](discovery.md) по затронутому коду/контексту.
-   Проверь точные условия найденных норм, corporate rules и framework patterns.
-   Применимые нормы за пределами baseline передай в additionalRequirements
-   [{selector,strength,basis}]. Реестр не доказывает полноту corpus; оценка агента
-   не заменяет текст нормы. Достаточные ранее полученные тексты не перечитывай.
-3. Предпочитай **policy.assess_1c_requirements**: один вызов с target, artifact
-   (bsl/query/metadata), operation, mechanisms, sourceRef и assessments всех critical
-   mechanisms из живой schema. Present/absent требуют evidence; неизвестное остаётся
-   unknown и блокирует selection. Комментарий/имя/строка не доказывают семантику.
-   Ответ содержит selection, selectionRef и detectionRef текущей MCP-сессии.
-   Для клиента без этого инструмента доступны detect_1c_mechanisms → полный
-   compact-v1 detection → select_1c_requirements. Не обрезай coverage.
-4. Получи ещё не прочитанный точный текст каждого selector (document#heading —
-   точный раздел) через v8std. Проверь found, идентичность, truncation и необходимые
-   исключения. Один selector проверяется один раз; mandatory имеет приоритет.
-   Additional requirements не ослабляют baseline и не закрывают missing mappings.
-5. Оцени предложение/результат и передай **policy.validate_compliance_ref**:
-   selectionRef, phase, явный current {target,artifact,operation,sourceRef,
-   mechanisms,detectionRef,additionalRequirements} и rows
-   [[selector,status,evidence,reason?]]. Каждая строка связывает конкретное условие
-   нормы с текущим target. Passed требует содержательной проверки; допускаются
-   failed/unverified, а deviated с reason — только для recommended. Отсутствующая
-   строка, противоречие, иной target/механизмы/registry/sourceRef отклоняются.
-   Полный эквивалентный validate_compliance остаётся доступен; форматы — в schema.
+1. Obtain minimal sufficient source/context evidence. Assess baseline →
+   proposal/result transition mechanisms, including additions, deletions and
+   enclosing invariants. The first planned query already means query_text: present;
+   deletion and rename remain transition mechanisms after writing. Exclude
+   unrelated module code.
+2. Perform [v8std selection](discovery.md) for affected code/context.
+   Check exact conditions of discovered requirements, corporate rules and framework
+   patterns. Pass applicable requirements beyond baseline in additionalRequirements
+   [{selector,strength,basis}]. The registry does not prove corpus completeness;
+   agent assessment does not replace normative text. Do not reread sufficient text
+   already obtained.
+3. Prefer **policy.assess_1c_requirements**: one call with target, artifact
+   (bsl/query/metadata), operation, mechanisms, sourceRef and assessments of all
+   critical mechanisms from the live schema. Present/absent require evidence;
+   unchecked facts remain unknown and block selection. Comments/names/strings do
+   not prove semantics. The response contains selection, selectionRef and detectionRef
+   of the current MCP session. Clients without this tool may use
+   detect_1c_mechanisms → full compact-v1 detection → select_1c_requirements.
+   Do not truncate coverage.
+4. Obtain each unread selector's exact text (document#heading means the exact section)
+   through v8std. Check found, identity, truncation and necessary exceptions.
+   Check each selector once; mandatory takes priority.
+   Additional requirements do not weaken baseline or close missing mappings.
+5. Assess proposal/result and pass **policy.validate_compliance_ref**:
+   selectionRef, phase, explicit current {target,artifact,operation,sourceRef,
+   mechanisms,detectionRef,additionalRequirements} and rows
+   [[selector,status,evidence,reason?]]. Each row binds a specific requirement
+   condition to the current target. Passed requires substantive verification;
+   failed/unverified are allowed, while deviated with reason is allowed only for
+   recommended. Missing rows, contradictions, different target/mechanisms/registry/
+   sourceRef are rejected. The full equivalent validate_compliance remains
+   available; formats are defined in schema.
 
-**Blocked** (в том числе при isError:false), unknown, unavailable/missing registry
-coverage, неполный обязательный текст, недоступный policy или нарушенное mandatory
-блокируют зависимую запись/полное заключение о соответствии. Допустим частичный
-read-only отчёт с точными пределами. Ledger_valid подтверждает только
-согласованность реестра заявлений; он не доказывает истинность evidence и не
-разрешает запись. Не выдумывай passed ради прохождения проверки.
+**Blocked** (including isError:false), unknown, unavailable/missing registry
+coverage, incomplete mandatory text, unavailable policy or violated mandatory
+requirements block dependent writes/full compliance conclusions.
+A partial read-only report with exact limits is allowed. Ledger_valid confirms
+only assessment-record consistency; it does not prove evidence true or authorize
+writing. Do not invent passed to satisfy validation.
 
-После записи выполни отдельную result-проверку актуального результата. Для M/H
-переоцени detection; L может переиспользовать применимость после проверки, что
-механизмы и контекст прежние. Новая sourceRef требует актуального detection evidence
-и новых оценок строк. При новых механизмах, additions, смене artifact/operation,
-registry/corpus, relevant exception или противоречии пересмотри selection и
-получи только новые/инвалидированные тексты с причиной. Ссылки действуют только
-в создавшей их сессии и могут истечь; они не являются proof tokens.
+After writing, perform a separate result check on the current actual outcome.
+For M/H reassess detection; L may reuse applicability after verifying unchanged
+mechanisms and context. A new sourceRef requires current detection evidence and
+new row assessments. For new mechanisms, additions, artifact/operation changes,
+registry/corpus changes, relevant exceptions or contradictions, revise selection
+and obtain only new/invalidated text with a reason. References work only in their
+creating session and may expire; they are not proof tokens.
 
-Proposal не заменяет result. При новом обязательном условии после записи проверь
-его и при необходимости выполни новое guarded исправление. EDT diagnostics,
-query validation и поведенческие tests остаются самостоятельными gates; L/M/H
-не снижает нормативную силу. Не повторяй эквивалентные успешные обращения в одной
-фазе без инвалидирования facts.
-Сокращение исследования не объединяет proposal/result и не отменяет полный
-набор применимых обязательных условий. Новый sourceRef, несовместимый session ref
-или изменившаяся применимость требуют актуальных detection/selection/rows по
-живому контракту policy; неизменные подтверждённые контракты и тексты используй
-повторно. Не делай повторный полный обход MCP/корпуса, если нового основания нет.
+Proposal does not replace result. If a new mandatory condition appears after
+writing, verify it and, if needed, perform a new guarded correction.
+EDT diagnostics, query validation and behavioral tests remain independent gates;
+L/M/H does not reduce normative strength. Do not repeat equivalent successful
+calls within a phase unless facts are invalidated.
+Reducing investigation does not merge proposal/result or remove the full set of
+applicable mandatory conditions. A new sourceRef, incompatible session ref or
+changed applicability requires current detection/selection/rows under the live
+policy contract; reuse unchanged confirmed contracts and text.
+Do not repeat full MCP/corpus traversal without a new basis.
 
 ## YaXUnit
 
-Для YaXUnit authoring дополнительно select_yaxunit_requirements с фактическими
-test mechanisms и применимыми additions → точные v8std patterns → тот же
-ledger/phase контракт через полный validate_compliance. Это отдельный selection
-от общих 1C норм. Run/report возвращает not_applicable без digest и не разрешает
-authoring; debug/migrate с исправлением BSL использует общий operation: change.
+For YaXUnit authoring also use select_yaxunit_requirements with actual test
+mechanisms and applicable additions → exact v8std patterns → the same ledger/phase
+contract through full validate_compliance. This selection is separate from general
+1C requirements. Run/report returns not_applicable without digest and does not
+authorize authoring; debug/migrate that fixes BSL uses general operation: change.
 
-[Подробный протокол](requirements-details.md) нужен при разборе конфликтов
-применимости, переходов фаз и интеграции полного API. Он сохраняет те же гарантии.
+The [detailed protocol](requirements-details.md) serves applicability conflicts,
+phase transitions and full API integration. It preserves the same guarantees.

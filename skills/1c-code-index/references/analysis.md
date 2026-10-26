@@ -1,71 +1,71 @@
-# Анализ 1С и бюджет ответа
+# 1C analysis and response budget
 
-Это правила выбора возможностей, а не каталог инструментов. Названия, параметры
-и доступность бери из текущих описаний/schema MCP. Не восстанавливай неизвестный
-параметр по памяти и не включай массовые режимы изменением настроек пользователя.
-Неизвестные/проигнорированные параметры означают, что заявленный фильтр ещё не
-подтверждён: исправь запрос до выводов о scope и полноте.
+These are capability selection rules, not a tool catalogue. Take names, parameters
+and availability from current MCP descriptions/schemas. Do not reconstruct unknown
+parameters from memory or enable bulk modes by changing user settings.
+Unknown/ignored parameters mean the claimed filter is not yet confirmed:
+correct the request before drawing scope or completeness conclusions.
 
-## От вопроса к достаточному ответу
+## From question to sufficient answer
 
-| Вопрос | Предпочтительный маршрут и граница |
+| Question | Preferred route and boundary |
 | --- | --- |
-| Где реализован функционал | Короткий смысловой запрос по именам, синонимам владельца и комментариям; затем точные кандидаты. Буквальный grep не заменяет этот поиск; многословный результат проверь на все нужные условия. |
-| Что делает известный модуль/процедура | Карта символов, скелет блоков или контекст заданной строки, затем нужные тела/диапазоны. Большой усечённый body не является полным исходником. |
-| Как устроен объект | Узкий структурированный обзор нужных секций; имена/счётчики прежде подробностей форм, модулей и связей. Не разворачивай все секции по умолчанию. |
-| Как выполняется вызов | Адресные callers/callees и BSL-aware разрешение квалификаторов; для известной пары — поиск пути. При вопросе о цикле/исключении — контекст места вызова, не чтение всех модулей. |
-| Что затронет изменение | Сводка входящих ссылок по коду, метаданным и правам; затем только затронутая секция. Для связей объектов используй граф данных, для исполнения — граф вызовов; они не взаимозаменяемы. |
-| Откуда запускается обработчик | Привязки форм, подписки, перехваты расширений и соглашения платформы; отсутствие прямого вызова не доказывает недостижимость. Динамический dispatch проверяй при конкретном основании. |
-| Какие движения формирует проведение | Разделяй декларативный состав регистров, достижимые места записи и упоминания в коде. Отсутствие найденной записи при эвристике/динамике не доказывает отсутствия движений. |
-| Как назначены права | Адресный обзор объекта или роли с нужными правами. Статические права не доказывают эффективный runtime-доступ, RLS или текущие привилегии пользователя. |
-| Как работает отчёт/СКД | Разобранная схема с нужными наборами, связями, параметрами или настройками; тексты запросов включай только для вопроса, которому они нужны. |
-| Нужен точный текст | Различай тела процедур, весь код файла и текст/XML. Сужай путь и строки; для многострочной цепочки используй короткий якорь или подходящий regex. Oversize-файл может иметь AST без сохранённого текста. |
-| Нет достаточного специализированного ответа | Сначала узкий поиск/чтение. Read-only SQL — последний маршрут для доказанно нужного join/агрегации: схема из текущего контракта, точные alias/условия, выбранные колонки и LIMIT; без SELECT * и выгрузки базы. |
+| Where functionality is implemented | Short semantic search over names, owner synonyms and comments; then exact candidates. Literal grep does not replace this search; check verbose results against all required conditions. |
+| What a known module/procedure does | Symbol map, block skeleton or context of a given line, then required bodies/ranges. A large truncated body is not complete source. |
+| How an object is structured | Narrow structured overview of needed sections; names/counts before form, module and relationship details. Do not expand all sections by default. |
+| How a call executes | Targeted callers/callees and BSL-aware qualifier resolution; for a known pair, path search. For loops/exceptions, read call-site context rather than every module. |
+| What a change affects | Incoming reference summary across code, metadata and permissions; then only the affected section. Use a data graph for object relationships and a call graph for execution; they are not interchangeable. |
+| What launches a handler | Form bindings, subscriptions, extension interceptors and platform conventions; absence of direct calls does not prove unreachability. Check dynamic dispatch when a specific basis exists. |
+| Which register movements posting produces | Distinguish declared registers, reachable write sites and code mentions. No found write under heuristic/dynamic analysis does not prove no movements. |
+| How permissions are assigned | Targeted object or role overview with needed rights. Static permissions do not prove effective runtime access, RLS or current user privileges. |
+| How a report/DCS works | Parsed schema with needed datasets, relationships, parameters or settings; include query text only when the question needs it. |
+| Exact text is needed | Distinguish procedure bodies, all file code and text/XML. Narrow path and lines; use a short anchor or suitable regex for multiline chains. Oversize files may have an AST without stored text. |
+| No sufficient specialized answer | Narrow search/read first. Read-only SQL is the last route for a proven necessary join/aggregation: schema from the current contract, exact aliases/conditions, selected columns and LIMIT; no SELECT * or database dump. |
 
-Не проходи эту таблицу как checklist для каждой задачи. Один достаточный
-специализированный ответ лучше набора перекрывающих друг друга обзоров. Если
-schema поддерживает небольшой пакет точных targets, используй его только вместо
-уже необходимых независимых вызовов, без расширения scope и массового discovery.
+Do not apply this table as a checklist to every task. One sufficient specialized
+answer is preferable to overlapping overviews. If the schema supports a small
+batch of exact targets, use it only instead of already necessary independent
+calls, without expanding scope or bulk discovery.
 
-## Полнота и свежесть
+## Completeness and freshness
 
-Процесс запущен, базовый текст готов и надстройка метаданных/связей готова — разные
-факты. Используй status каждого нужного repository/слоя и ответа; незавершённая
-надстройка не запрещает независимое чтение готового текста. Ожидание короткого
-батча оставляй серверу; при продолжающейся индексации не повторяй широкий запрос
-в цикле. Не запускай пересборку или enrichment ради проверки наличия возможности.
+A running process, ready base text and ready metadata/relationship enrichment are
+distinct facts. Use the status of each required repository/layer and response;
+incomplete enrichment does not prohibit independent reads of ready text.
+Leave short-batch waiting to the server; do not loop broad requests while indexing
+continues. Do not trigger rebuild or enrichment merely to check capability availability.
 
-Проверка подключения подтверждает соответствие aliases путям и объявленную
-свежесть. Она не доказывает полноту парсинга, отсутствие exclusions, наличие всех
-макетов/расширений или совпадение с исторической ревизией. Для отрицательного
-вывода нужны подходящий слой, scope, свежесть и отсутствие существенных пропусков.
-При конфликте с live EDT инвалидируй зависимое indexed evidence.
+Connection checks confirm alias-to-path correspondence and declared freshness.
+They do not prove complete parsing, no exclusions, all templates/extensions or
+historical revision correspondence. A negative conclusion requires the appropriate
+layer, scope, freshness and absence of substantial omissions.
+On conflict with live EDT, invalidate dependent indexed evidence.
 
-В ответе проверяй признаки усечения, omitted-секций, неполного prefilter/coverage,
-лимита файлов/узлов/глубины/времени, heuristic и continuation. Счётчик может быть
-частичным; завершённая страница не означает завершённый обход. Используй точный
-локатор определения при одноимённых процедурах. «Путь не найден в пределах
-поиска» не заменяет доказательство отсутствия пути.
+Check responses for truncation, omitted sections, incomplete prefilter/coverage,
+file/node/depth/time limits, heuristics and continuation. Counts may be partial;
+a complete page does not mean complete traversal. Use exact definition locators
+for same-named procedures. “No path found within the search” does not prove
+absence of a path.
 
-Сначала используй сводные счётчики, краткие поля, фильтры пути/типа/направления,
-ограничение секций и серверный бюджет. Затем по необходимости следуй выданному
-continuation/offset; не придумывай универсальную пагинацию для любого ответа.
-Увеличивай только конкретный мешающий предел и только для нерешённого вопроса.
-Не снимай общий cap и не включай выдачу всех тел ради экономии числа вызовов.
+First use summary counts, brief fields, path/type/direction filters, section
+limits and server budgets. Then follow returned continuation/offset if needed;
+do not invent universal pagination for every response. Increase only the specific
+blocking limit and only for an unresolved question. Do not remove the overall cap
+or request every body to reduce call count.
 
-## Повторная выдача и evidence
+## Repeated results and evidence
 
-Сервер может не возвращать строки, уже выданные этой MCP-сессии. Маркер отсева
-не означает нулевое число совпадений. Переиспользуй ранее полученные факты; после
-компактизации сохраняй alias, путь/ревизию, локатор, вывод и существенные пределы.
-Если сами данные потеряны, нужен поддержанный сброс выдачи или новая MCP-сессия
-только текущего binding; не перезапускай общий демон и не повторяй пустые вызовы.
+The server may omit rows already delivered in this MCP session. A suppression
+marker does not mean zero matches. Reuse prior facts; after compaction retain
+alias, path/revision, locator, conclusion and substantial limits. If the actual
+data is lost, use a supported result-history reset or a new MCP session for only
+the current binding; do not restart the shared daemon or repeat empty calls.
 
-Встроенное кэширование и наблюдение за изменениями не дают бессрочной свежести:
-не считай результат автоматически актуальным после смены профиля, checkout или
-релевантной записи. Не добавляй внешний кэш поверх MCP без отдельного контракта
-инвалидации. Не переноси readiness, историю выдачи и aliases другой конфигурации.
+Built-in caching and change tracking do not ensure indefinite freshness:
+do not assume results remain current after profile changes, checkout or relevant
+writes. Do not add an external cache over MCP without a separate invalidation
+contract. Do not transfer another configuration's readiness, result history or aliases.
 
-Сохраняй краткий ответ на вопрос с конкретными locators и пределами покрытия.
-Завершай поиск, когда evidence достаточно; полнота использования MCP означает
-доступный выбор всех подходящих возможностей, а не вызов каждой из них.
+Retain a concise answer with specific locators and coverage limits.
+Stop searching when evidence is sufficient; full MCP utilization means being able
+to choose all suitable capabilities, not calling each one.

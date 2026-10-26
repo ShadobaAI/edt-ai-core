@@ -1,73 +1,72 @@
-# Работа над 1C AI Core
+# Working on 1C AI Core
 
-Репозиторий содержит один универсальный плагин `1c-ai-core` для Codex.
-Корень репозитория — корень плагина. Это Node.js ESM, а не конфигурация 1С:
-обычные изменения кода плагина и локальные тесты выполняются без EDT.
+This repository contains one universal `1c-ai-core` plugin for Codex.
+The repository root is the plugin root. This is Node.js ESM, not a 1C configuration:
+ordinary plugin code changes and local tests do not require EDT.
 
-## Навигация
+## Navigation
 
-- `plugin.json`, `mcp.json`, `hooks/hooks.json` — точки подключения к Codex.
-- `scripts/` — профили, выбор каталога, настройки, runtime и диагностика.
-- `mcp/`, `ui/` — MCP-сервер настроек, форма и BSL LS proxy.
-- `policy/`, `hooks/` — нормативный протокол, action policy и защита исходников.
-- `skills/` — инструкции агенту; `schemas/` — контракты данных.
-- `profiles/generic-1c/`, `settings/`, `runtime/`, `knowledge/` — defaults и шаблоны.
-- `vanessa/` — интеграция Vanessa; `tests/` — регрессии.
-- `tools/`, `packaging/`, `.github/` — сборка и выпуск.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — устройство;
-  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — команды разработчика.
+- `plugin.json`, `mcp.json`, `hooks/hooks.json` — Codex entrypoints.
+- `scripts/` — profiles, directory selection, settings, runtime and diagnostics.
+- `mcp/`, `ui/` — settings MCP server, form and BSL LS proxy.
+- `policy/`, `hooks/` — normative protocol, action policy and source protection.
+- `skills/` — agent instructions; `schemas/` — data contracts.
+- `profiles/generic-1c/`, `settings/`, `runtime/`, `knowledge/` — defaults and templates.
+- `vanessa/` — Vanessa integration; `tests/` — regressions.
+- `tools/`, `packaging/`, `.github/` — building and releases.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — architecture;
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — developer commands.
 
-## Границы изменений
+## Change boundaries
 
-Сверяйте утверждения с текущим кодом, схемами и тестами, учитывайте
-существующие незакоммиченные правки. Статус «планируется» в документации
-не доказывает реализацию. OpenViking и MCP информационной базы описаны
-в [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
+Verify claims against current code, schemas and tests, accounting for existing
+uncommitted changes. A “planned” documentation status does not prove implementation.
+OpenViking and infobase MCP are described in [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md).
 
-Плагин независим от конкретного проекта. Поставляется только `generic-1c`.
-Реальные профили, endpoints, credentials, локальные пути и instance bindings
-принадлежат проектам или пользовательскому состоянию. Не возвращайте
-профили CRM/Kafka и локальные экспорты в поставку.
+The plugin is project-independent. Only `generic-1c` is bundled.
+Real profiles, endpoints, credentials, local paths and instance bindings belong
+to projects or user state. Do not restore CRM/Kafka profiles or local exports
+to the distribution.
 
-Перед переносом поведения из исходных окружений прочитайте
-`skills/catalog.yaml` (`migration_decisions`) и `skills/README.md`.
-Источники перечислены в [docs/SOURCES.md](docs/SOURCES.md).
-`1c-docs-mcp` (HelpSearchServer) и `1c-ssl-mcp` исключены, включая optional
-и fallback подключения. Проверяйте достаточность маршрутов EDT/code-index
-и готовность базы знаний отдельно от отсутствия этих серверов.
+Before migrating behavior from source environments, read
+`skills/catalog.yaml` (`migration_decisions`) and `skills/README.md`.
+Sources are listed in [docs/SOURCES.md](docs/SOURCES.md).
+`1c-docs-mcp` (HelpSearchServer) and `1c-ssl-mcp` are excluded, including optional
+and fallback connections. Assess EDT/code-index route sufficiency and knowledge
+base readiness separately from these servers' absence.
 
-Сохраняйте изоляцию каталога, экземпляра и MCP-сессии. История профилей
-и `active_project` не подтверждают выбор проекта в другом чате. Не ослабляйте
-проверку путей, schema validation, защиту исходников и общую action policy.
-Не закрепляйте каталог инструментов внешнего MCP вместо проверки живого API.
+Preserve directory, instance and MCP session isolation. Profile history and
+`active_project` do not confirm project selection in another chat. Do not weaken
+path checks, schema validation, source protection or the shared action policy.
+Do not pin an external MCP tool catalogue instead of checking its live API.
 
-## Проверка результата
+## Verification
 
-Для первого запуска нужны Node.js 22+ и dev-зависимости:
+Initial setup requires Node.js 22+ and dev dependencies:
 
 ```sh
 npm ci --ignore-scripts
 node tools/vendor.mjs
 ```
 
-Запускайте проверки по изменённой области, например
-`node --test tests/test-profiles.mjs`. Полный набор — `node tools/test.mjs`.
-Для документации проверяйте ссылки, примеры и соответствие реализации.
-Локальные тесты не доказывают live-приёмку EDT, v8std, тестов 1С или UI Codex;
-в отчёте разделяйте проверенные факты и ограничения.
+Run checks for the changed area, for example
+`node --test tests/test-profiles.mjs`. The full suite is `node tools/test.mjs`.
+For documentation, check links, examples and consistency with implementation.
+Local tests do not prove live acceptance of EDT, v8std, 1C tests or Codex UI;
+distinguish verified facts from limitations in reports.
 
-**Не собирайте плагин автоматически в конце каждой задачи.** Сборка нужна
-по запросу пользователя или для проверки изменения упаковки/состава поставки.
-В таком случае выполните `node tools/package-plugin.mjs` и
+**Do not automatically build the plugin at the end of every task.** Build only
+on user request or to verify packaging/distribution changes. In that case run
+`node tools/package-plugin.mjs` and
 `node tools/check-plugin.mjs .build/marketplace/plugins/1c-ai-core`.
-При изменении путей и состава согласуйте `scripts/package_layout.mjs`,
-проверки пакета, CI, тесты и документацию. Локальное состояние и dev-инструменты
-не должны попадать в ZIP. Самостоятельно ничего не публикуйте.
+When paths or contents change, align `scripts/package_layout.mjs`, package checks,
+CI, tests and documentation. Local state and dev tools must not enter the ZIP.
+Do not publish anything on your own.
 
-Python, PowerShell и Bash не являются зависимостями runtime, тестов или CI.
-`tools/build-plugin.sh` — необязательная dev-обёртка над Node-сборщиком.
-JS-зависимости и готовые Windows-модули Koffi включаются в пакет;
-пользователь не запускает npm install.
+Python, PowerShell and Bash are not runtime, test or CI dependencies.
+`tools/build-plugin.sh` is an optional dev wrapper around the Node builder.
+JS dependencies and prebuilt Windows Koffi modules are bundled;
+users do not run npm install.
 
-Код, навыки и документация распространяются под MPL 2.0: сохраняйте `LICENSE`,
-`NOTICE.md`, `UNICODE-LICENSE.txt` и лицензии заимствованных компонентов.
+Code, skills and documentation are distributed under MPL 2.0: preserve `LICENSE`,
+`NOTICE.md`, `UNICODE-LICENSE.txt` and borrowed component licenses.

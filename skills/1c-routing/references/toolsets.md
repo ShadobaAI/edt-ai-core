@@ -1,135 +1,133 @@
-# EDT toolsets и проверка обновления MCP
+# EDT toolsets and MCP update checks
 
-Применяй при неизвестной поверхности EDT, недоступной нужной группе, reconnect
-или явно запрошенной проверке обновления MCP. Обычная задача не требует аудита
-всех серверов и инструментов. Binding берётся из выбранного каталога и экземпляра;
-наличие инструмента не расширяет разрешённую область и эффекты.
+Apply when EDT capabilities are unknown, a needed group is unavailable, on reconnect
+or an explicitly requested MCP update check. Ordinary tasks do not require auditing
+all servers and tools. Binding comes from the selected directory and instance;
+tool availability does not expand authorized scope or effects.
 
-## Подключение и параллельные проекты
+## Connections and parallel projects
 
-Для каждого независимо выбранного профиля/каталога/конфигурации нужен свой
-пользовательский запущенный EDT-MCP, назначенный effective URL. Плагин не
-запускает EDT. Связанные база и расширения одного профиля могут находиться в
-одном workspace только по явным repository mappings. Соседний endpoint или
-общее `active_project` не заменяют отсутствующее подключение выбранного контура.
+Each independently selected profile/directory/configuration needs its own
+user-launched EDT-MCP assigned by the effective URL. The plugin does not launch
+EDT. A linked base and extensions of one profile may share a workspace only through
+explicit repository mappings. A neighboring endpoint or shared `active_project`
+does not replace a missing connection for the selected environment.
 
-При новом binding установи точные имя, canonical path, вид и open/ready нужного
-EDT-проекта, сопоставив их с profile repository; проверь root properties и
-compatibility только когда от них зависит действие. Не выбирай первый проект
-или конфигурацию по умолчанию. Историческое чтение сохраняет exact revision и
-не требует readiness текущей модели, если само от неё не зависит.
+For a new binding, establish the required EDT project's exact name, canonical
+path, type and open/ready state against the profile repository; check root
+properties and compatibility only when the action depends on them. Do not choose
+the first project or default configuration. Historical reading preserves the exact
+revision and needs no current-model readiness unless it depends on that model.
 
-Связывай evidence и opaque IDs с каталогом, экземпляром, URL, EDT-проектом и
-ревизией/стадией. При переключении не переноси jobs, launches, hashes, cursors
-или готовность между контурами. Исход уже отправленной операции выясняй через
-её исходный endpoint; новая сессия не разрешает повтор writer. Ошибка одного
-подключения останавливает зависимый маршрут, а не остальные проекты.
+Bind evidence and opaque IDs to directory, instance, URL, EDT project and
+revision/stage. Do not transfer jobs, launches, hashes, cursors or readiness between
+environments when switching. Determine an already submitted operation's outcome
+through its original endpoint; a new session does not authorize writer retries.
+One connection's failure stops its dependent route, not other projects.
 
-Отдельные HTTP sessions не изолируют toolsets, debugger, comparison slot или
-последний profiling result внутри одного EDT. При совместном endpoint выясни
-владельца общего состояния; не выключай чужие группы/измерения и не сбрасывай
-workspace ради своей задачи. Проверка подключений инвалидирует binding только
-выбранного каталога и экземпляра; она не доказывает live readiness EDT/v8std.
+Separate HTTP sessions do not isolate toolsets, debugger, comparison slot or the
+last profiling result within one EDT. With a shared endpoint, establish ownership
+of shared state; do not disable others' groups/measurements or reset the workspace
+for your task. Connection checks invalidate only the selected directory/instance
+binding; they do not prove live EDT/v8std readiness.
 
-## Бюджет запросов и контекста
+## Request and context budget
 
-Выбери самый дешёвый ответ, который сразу решает вопрос. Известный метод читай
-точечно без обязательной предварительной карты; для неизвестной области сначала
-нужны структура или сводка. Не выполняй цепочку count → список → полный текст,
-когда target уже известен. Применяй доступные серверные filters, field selection,
-compact/concise modes и небольшой limit; не выгружай workspace для фильтрации
-на клиенте. Независимые чтения объединяй в поддержанный bounded batch.
+Choose the cheapest response that directly resolves the question. Read known
+methods directly without a mandatory map first; obtain structure or summaries for
+unknown areas. Do not chain count → list → full text when the target is known.
+Use available server filters, field selection, compact/concise modes and small
+limits; do not dump workspaces for client-side filtering. Combine independent reads
+in supported bounded batches.
 
-Диагностику сужай до затронутых owners и нужного класса проблем; сводка нужна
-для ориентации в неизвестном scope, а не как второй обязательный вызов. Для
-метаданных сначала достаточно owning node; полные коллекции, XML, изображения
-и expanded documentation запрашивай только ради недостающего факта. Для layout
-начни с compact model, screenshot нужен для визуальной приёмки.
+Narrow diagnostics to affected owners and relevant problem classes; summaries
+orient an unknown scope rather than serving as a second mandatory call.
+An owning metadata node is initially sufficient; request full collections, XML,
+images and expanded documentation only for missing facts. For layout start with a
+compact model; screenshots serve visual acceptance.
 
-Structured result и embedded resource являются данными ответа: короткий text
-digest не заменяет их. Не перечитывай ту же выдачу в другом формате. Сохраняй
-truncation/cursor и продолжай только до достаточного evidence; отрицательное
-заключение о всём scope требует полного релевантного покрытия. Страницы одной
-ревизии не смешивай со следующим snapshot.
+Structured results and embedded resources are response data: a short text digest
+does not replace them. Do not reread the same output in a different format.
+Retain truncation/cursors and continue only until evidence is sufficient; a negative
+conclusion about the whole scope requires complete relevant coverage. Do not mix
+pages from one revision with the next snapshot.
 
-Переиспользуй schema, guides и source evidence в том же binding, пока они
-актуальны. После relevant mutation/checkout обновляй только затронутые данные;
-диагностика, runtime и render state требуют актуального состояния. Не создавай
-общий кэш для разных проектов. Для долгого действия предпочитай поддержанный
-async job и bounded waits короче transport timeout; не опрашивай его частым
-нулевым polling и не запускай повторно ради статуса.
+Reuse schemas, guides and source evidence within the same binding while current.
+After relevant mutation/checkout refresh only affected data; diagnostics, runtime
+and render state require current state. Do not create a shared cross-project cache.
+For long operations prefer supported async jobs and bounded waits shorter than
+transport timeout; avoid frequent zero polling or rerunning for status.
 
-## Раскрытие нужных инструментов
+## Exposing needed tools
 
-Если `core_runtime_status` подтверждает подключение, но хост сохранил только
-начальный набор relay, получи живые схемы через `core_runtime_tools` (точные
-имена в `names`), затем используй `core_runtime_call` с `calls: [{name, arguments}]`.
-При пустых host roots передавай каталог этого чата в `projectRoot` каждого
-управляющего вызова. Короткая последовательная группа сохраняет регистрацию
-workspace и анализ в одном процессе при раздельных соединениях хоста.
-Разрешения, source workflow и action policy проверяются для каждой native
-операции. Ошибка останавливает группу; уже выполненные операции не откатываются
-и повторять всю группу без проверки исхода нельзя. Это живой API, без встроенного
-каталога внешних инструментов и без обхода ограничений проекта.
+If `core_runtime_status` confirms connection but the host retained only the initial
+relay set, obtain live schemas through `core_runtime_tools` (exact names in
+`names`), then use `core_runtime_call` with `calls: [{name, arguments}]`.
+With empty host roots, pass this chat's directory as `projectRoot` in every control
+call. A short sequential group preserves workspace registration and analysis in
+one process despite separate host connections.
+Permissions, source workflow and action policy apply to each native operation.
+Errors stop the group; completed operations are not rolled back, and the whole
+group must not be retried without outcome verification. This is a live API without
+a built-in external tool catalogue or bypass of project restrictions.
 
-1. Установи живые `tools/list` и `list_toolsets`, когда их состояние неизвестно.
-   Начни с management/core/read и только необходимых задаче групп. Пользуйся
-   живыми schema и `get_tool_guide`: способ включения групп зависит от версии.
-   Не придумывай enable tool, параметры или server preference по старому примеру.
-2. Если нужная операция пока не видна, различай выключенную группу, unsupported
-   progressive disclosure, широкий исходный список и реально отсутствующую
-   возможность. При доступном supported enable выполни его для нужной группы,
-   затем обнови tools/list. Proxy передаёт новые инструменты, но сам группы не
-   включает. Disabled сервером capability не заменяй соседней authority.
-   Если сервер изначально выдаёт широкую поверхность, не заявляй экономию schema
-   от progressive disclosure и не имитируй её локальным фильтром имён. Изменение
-   пользовательского режима сервера — отдельная настройка, не preflight задачи.
-3. Переиспользуй успешно раскрытые группы и достаточные schema/guide в той же
-   сессии. Reconnect/restart, смена binding/URL, релевантная ошибка или противоречие
-   инвалидируют затронутые факты; повторно проверь только необходимую часть.
-   Не редактируй пользовательские настройки ради изменения режима disclosure.
-   Явный tools/list обновляет каталог и без push-уведомлений; обычные чтения и
-   записи не должны вызывать повторную загрузку всех schema. По завершении
-   сценария скрывай ненужную группу только при поддержке живым guide и доказанном
-   владении этим состоянием; server-wide reset не является cleanup сессии.
-4. Для EDT сохраняй доступ management и всем разрешённым операциям. Не добавляй
-   `enabled_tools`/`disabled_tools`, blanket allowlist или фильтр имён в hook;
-   появление нового имени само по себе не требует согласования. Его фактические
-   эффекты проверяются по общей [action policy](action-policy.md).
+1. Establish live `tools/list` and `list_toolsets` when their state is unknown.
+   Start with management/core/read and only task-required groups. Use live schemas
+   and `get_tool_guide`: group enabling varies by version. Do not invent enable
+   tools, parameters or server preferences from old examples.
+2. If the needed operation is not visible, distinguish a disabled group,
+   unsupported progressive disclosure, a broad initial list and a truly absent
+   capability. Use supported enable for the needed group when available, then
+   refresh tools/list. The proxy forwards new tools but does not enable groups.
+   Do not replace server-disabled capabilities with neighboring authorities.
+   If the server initially exposes a broad surface, do not claim progressive
+   disclosure schema savings or emulate them with local name filters. Changing
+   the user's server mode is a separate setting, not task preflight.
+3. Reuse successfully exposed groups and sufficient schemas/guides in the same
+   session. Reconnect/restart, binding/URL changes, relevant errors or contradictions
+   invalidate affected facts; recheck only the needed portion.
+   Do not edit user settings to change disclosure mode. Explicit tools/list refreshes
+   the catalogue without push notifications; ordinary reads/writes must not reload
+   all schemas. After the scenario, hide an unneeded group only when supported by
+   the live guide and ownership of that state is proven; server-wide reset is not
+   session cleanup.
+4. For EDT retain management access and all authorized operations. Do not add
+   `enabled_tools`/`disabled_tools`, blanket allowlists or name filters in the hook;
+   a new name alone does not require agreement. Check actual effects under the
+   shared [action policy](action-policy.md).
 
-Это правило раскрытия EDT не распространяется на OpenViking. Знания доступны
-только через отдельные `knowledge_status`, `knowledge_search`, `knowledge_read`.
-Не раскрывай upstream tools через native relay, `core_runtime_call` или прямое
-подключение ради обхода ограничений. Новый или изменённый tool знаний требует
-внешнего подтверждения разрешённой поверхности и прав; `readOnlyHint` не даёт
-такого разрешения. Запись, удаление, публикация, ACL, захват сессий и личные
-области запрещены независимо от общей action policy и режима disclosure EDT.
+This EDT disclosure rule does not apply to OpenViking. Knowledge is accessible
+only through separate `knowledge_status`, `knowledge_search`, `knowledge_read`.
+Do not expose upstream tools through native relay, `core_runtime_call` or direct
+connections to bypass restrictions. New/changed knowledge tools require external
+confirmation of authorized capabilities and rights; `readOnlyHint` does not grant
+permission. Writes, deletion, publication, ACL, session takeover and personal areas
+are forbidden regardless of shared action policy or EDT disclosure mode.
 
-Читай structuredContent и embedded guide resources; текстовый ack не доказывает
-успех включения, готовность проекта или завершение операции. `jobId` принадлежит
-одному запуску: следи за ним поддержанным status-вызовом, не повторяй writer после
-timeout. Недоступную группу и причину остановки зависимого маршрута укажи явно.
+Read structuredContent and embedded guide resources; text acks do not prove
+successful enabling, project readiness or operation completion. A `jobId` belongs
+to one execution: follow it through supported status calls; do not repeat a writer
+after timeout. State unavailable groups and dependent-route stopping reasons explicitly.
 
-## Проверка обновления MCP
+## MCP update check
 
-При явно запрошенном toolkit/configuration update audit проверь initialize,
-`get_server_status`, полный tools/list, list_toolsets и guides только изменённых
-операций. Сохраняй negotiated protocol/session ID; после restart нужна новая
-initialize, старые факты и IDs сессии не считаются актуальными.
+For an explicitly requested toolkit/configuration update audit, check initialize,
+`get_server_status`, complete tools/list, list_toolsets and guides only for changed
+operations. Retain negotiated protocol/session ID; restart requires new initialize,
+and old session facts/IDs are no longer current.
 
-Это read-only проверка поверхности. Не меняй бизнес-исходники, не запускай ИБ,
-tests, import/export или cleanup лишь для демонстрации наличия инструмента.
-Project-aware navigation, metadata, diagnostics и mutation smoke требуют точного
-готового тестового проекта и соответствующего разрешённого scope. Сохраняй
-различие между доступностью инструмента и реально выполненной проверкой.
+This is a read-only capability check. Do not change business source, launch
+infobases, tests, import/export or cleanup merely to demonstrate tool availability.
+Project-aware navigation, metadata, diagnostics and mutation smoke checks require
+an exact ready test project and corresponding authorized scope. Distinguish
+tool availability from actually performed checks.
 
-Для аудита расхода используй доступную серверную статистику только в bounded
-окне и по релевантным операциям: metadata/counts и агрегаты размеров достаточно
-для поиска дорогой выдачи. Не выгружай raw bodies всей истории; она может
-содержать данные других задач того же EDT. Размер payload или оценка токенов
-не равны фактическому списанию лимита. Такой аудит не является preflight каждой
-задачи; сравнение проводи на сопоставимом сценарии.
+For usage audits, use available server statistics only within a bounded window and
+for relevant operations: metadata/counts and size aggregates suffice to locate
+expensive responses. Do not dump raw history bodies; they may contain other tasks'
+data from the same EDT. Payload size or token estimates do not equal actual limit
+consumption. Such audits are not preflight for every task; compare equivalent scenarios.
 
-Корпус v8std проверяй только для нужного маршрута: общие стандарты, рабочие
-`corporate:work:*` или YaXUnit patterns через $1c-standards. Не загружай все
-корпуса ради аудита EDT. Непроверенные runtime/нормативные gates сообщай отдельно.
+Check v8std only for the needed route: general standards, `corporate:work:*` rules
+or YaXUnit patterns through $1c-standards. Do not load all corpora to audit EDT.
+Report unchecked runtime/normative gates separately.

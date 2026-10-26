@@ -1,184 +1,185 @@
-# Контракт policy 2.1
+# Policy 2.1 contract
 
-Policy — локальный read-only проверяющий модуль. Он нормализует оценки механизмов,
-выбирает baseline из встроенного реестра, объединяет его с дополнительными нормами
-из v8std и проверяет согласованность ledger. Основной подбор по коду/контексту
-выполняется через [v8std discovery](../skills/1c-standards/references/discovery.md),
-исходники и нормативные тексты оценивает агент по разрешённым источникам.
-Policy не читает проектные файлы, не вызывает EDT/v8std и не разрешает запись.
-Общий рабочий процесс описан в
+Policy is a local read-only checker. It normalizes mechanism assessments, selects
+a baseline from the bundled registry, combines it with additional v8std requirements
+and checks ledger consistency. Primary code/context selection uses
+[v8std discovery](../skills/1c-standards/references/discovery.md);
+the agent assesses source and normative text through authorized sources.
+Policy does not read project files, call EDT/v8std or authorize writing.
+The shared workflow is in
 [requirements](../skills/1c-standards/references/requirements.md).
 
-## Факты и применимость
+## Facts and applicability
 
-Для обычной задачи доступны дополнительные session-инструменты:
-`assess_1c_requirements` объединяет detection и selection, возвращая полный
-selection и ссылки `selectionRef`/`detectionRef`. `validate_compliance_ref`
-принимает эти ссылки, явный current/phase и компактные строки
-`[selector,status,evidence,reason?]`. Backend восстанавливает полный запрос и
-выполняет тот же `validateCompliance`; проверка sourceRef, target, mechanisms,
-покрытия, фаз и mandatory не ослабляется. Ссылки действуют только в создавшей их
-MCP-сессии, не являются разрешениями и могут истечь после 64 сохранённых записей.
-При смене sourceRef нужен новый detection; новое evidence и отдельный result
-ledger обязательны. Исходные инструменты полного протокола сохраняются.
+Optional session tools serve ordinary tasks:
+`assess_1c_requirements` combines detection/selection and returns full selection
+with `selectionRef`/`detectionRef`. `validate_compliance_ref` accepts these refs,
+explicit current/phase and compact `[selector,status,evidence,reason?]` rows.
+The backend reconstructs the full request and runs the same `validateCompliance`;
+sourceRef, target, mechanisms, coverage, phase and mandatory checks are not weakened.
+Refs work only in their creating MCP session, are not permissions and may expire
+after 64 stored entries. Changed sourceRef needs new detection; new evidence and
+a separate result ledger are mandatory. Original full-protocol tools remain.
 
-`detect_1c_mechanisms` сохраняет название ради стабильного маршрута навыков,
-но фактически проверяет и нормализует assessments вызывающего агента.
-`sourceText` исключён из API: регулярные выражения не устанавливают тип receiver,
-область переменной, экспортный контракт или смысл строки с `SELECT`.
-Предоставляй `present|absent|unknown` и evidence из назначенного EDT/index/analyzer.
-Неуказанная оценка остаётся `unknown`; policy не превращает её в факт.
-Непустое evidence является утверждением вызывающего, а не проверкой его истинности.
+`detect_1c_mechanisms` retains its name for stable skill routing but actually checks
+and normalizes the calling agent's assessments.
+`sourceText` is excluded from the API: regex cannot establish receiver type,
+variable scope, export contract or the meaning of a string containing `SELECT`.
+Supply `present|absent|unknown` and evidence from assigned EDT/index/analyzer.
+Unspecified assessments remain `unknown`; policy does not turn them into facts.
+Nonempty evidence is a caller claim, not verification of its truth.
 
-Assessment относится к конкретной фазе и операции с затронутым контекстом.
-Для изменения учитываются baseline и оцениваемое состояние; механизм удаления
-не исчезает из result assessment после успешного удаления объекта.
-Design оценивает конкретное предложение, review — зафиксированную ревизию.
+Assessments belong to a specific phase/operation and affected context.
+Changes account for baseline and assessed state; deletion mechanisms do not vanish
+from result assessments after objects are deleted successfully.
+Design assesses a specific proposal; review assesses a fixed revision.
 
-У неоднозначных механизмов следующий смысл:
+Ambiguous mechanisms have these meanings:
 
-| Механизм | Что требуется установить |
+| Mechanism | What must be established |
 | --- | --- |
-| `query_text` | Текст запроса затронут в оцениваемом scope/переходе; имя метода или получение готового результата этого не доказывают. |
-| `query_result_processing` | Обрабатывается именно результат запроса; тип/контракт получателя подтверждён разрешёнными фактами. |
-| `module_variable` | Переменная принадлежит модулю; локальный `Перем` внутри метода недостаточен. |
-| `export_contract` | Затронут экспортный интерфейс, а не литерал/комментарий со словом «Экспорт». |
-| `changed_signature` | Сигнатура меняется в переходе baseline → proposal/result. |
-| `metadata_rename`, `metadata_delete` | Изменяется идентичность или удаляется объект метаданных, а не только его упоминание. |
-| `transactional_test` | Тест использует транзакционный режим; наличие persistent data устанавливается отдельно. |
-| `nontrivial_predicate` | Затронут нетривиальный test predicate; database assertion не следует из этого автоматически. |
+| `query_text` | Query text is affected in the assessed scope/transition; method names or obtaining ready results do not prove this. |
+| `query_result_processing` | An actual query result is processed; receiver type/contract is confirmed by authorized facts. |
+| `module_variable` | The variable belongs to the module; local `Перем` inside a method is insufficient. |
+| `export_contract` | An exported interface is affected, rather than a literal/comment containing “Экспорт”. |
+| `changed_signature` | Signature changes in the baseline → proposal/result transition. |
+| `metadata_rename`, `metadata_delete` | Metadata identity changes or an object is deleted, rather than merely its mention. |
+| `transactional_test` | The test uses transactional mode; persistent-data presence is established separately. |
+| `nontrivial_predicate` | A nontrivial test predicate is affected; this does not automatically imply database assertions. |
 
-Selector объединяет явные, классифицированные и подтверждённые detection-механизмы.
-Вычисляемые связи ограничены отношениями понятий: например,
+The selector unions explicit, classified and confirmed detection mechanisms.
+Derived relationships are limited to conceptual relations, for example
 `changed_signature → method_contract`, `persistent_data → test_data`.
-Они не выводят отсутствующие факты об исходнике. Query mechanisms сами по себе
-не добавляют `query_text`; обработчик готового результата может не содержать его.
-Полная проверка critical assessments обязательна для oneC selection; неизвестный
-critical факт или противоречие блокирует его. Для YaXUnit используется собственный
-словарь механизмов; oneC detection в этот selector не передаётся.
+They do not infer missing source facts. Query mechanisms alone do not add
+`query_text`; ready-result handlers may have none.
+Complete critical assessments are mandatory for oneC selection; unknown critical
+facts or contradictions block it. YaXUnit has its own mechanism vocabulary;
+oneC detection is not passed to that selector.
 
-## Покрытие реестра
+## Registry coverage
 
-`registry.json` хранит применимость и точные selectors, без нормативного текста.
-У правила `any` задаёт условие выбора. `covers` только отмечает механизм,
-покрытый безусловным для заданных artifact/operation правилом; это не условие
-совпадения. Например, authoring baseline покрывает `test_behavior` при design/create.
-Одновременные `any` и `covers` запрещены, чтобы эти роли не смешивались.
+`registry.json` stores applicability and exact selectors without normative text.
+A rule's `any` specifies selection conditions. `covers` merely marks a mechanism
+covered by an unconditional rule for a given artifact/operation; it is not a match
+condition. For example, authoring baseline covers `test_behavior` for design/create.
+Combining `any` and `covers` is forbidden to avoid conflating these roles.
 
-Каждый effective mechanism должен иметь покрытие среди реально выбранных строк.
-Общие baseline rows не скрывают механизм без подходящего правила. Отсутствие
-строк или такое неполное покрытие возвращает `unavailable` с
-`reason: registry_coverage_missing` и `uncoveredMechanisms`, без digest.
-Это проверка покрытия **заявленных механизмов встроенным реестром**; она не
-доказывает полноту перечня механизмов, корпуса или таблицы нормативных связей.
+Every effective mechanism must be covered by actually selected rows.
+General baseline rows do not hide mechanisms lacking suitable rules. Missing rows
+or incomplete coverage return `unavailable` with
+`reason: registry_coverage_missing` and `uncoveredMechanisms`, without digest.
+This checks **declared mechanism coverage by the bundled registry**; it does not
+prove complete mechanism lists, corpus or normative relationship tables.
 
-Для YaXUnit `run/report` возвращается `not_applicable` с причиной
-`authoring_not_requested`. Это не selection и не доказательство успешного теста.
-Authoring mechanisms, включая неизвестные, не создают authoring gate в этих режимах.
-Названия переданных механизмов всё равно проверяются по словарю.
+YaXUnit `run/report` returns `not_applicable` with
+`authoring_not_requested`. This is neither selection nor proof of successful tests.
+Authoring mechanisms, including unknown ones, do not create authoring gates in
+these modes. Supplied mechanism names are still checked against the vocabulary.
 
-## Нормы за пределами baseline
+## Requirements beyond baseline
 
-В оба `select_*_requirements` можно передать `additionalRequirements`:
+Both `select_*_requirements` accept `additionalRequirements`:
 
 ```json
 [{"selector":"std740","strength":"mandatory","basis":"Точный источник/редакция, условие нормы и применимость к target"}]
 ```
 
-Это не сырые search hits: агент предварительно читает точный нормативный текст
-и устанавливает применимость/силу требования. Допускаются exact std,
-corporate work, YaXUnit и Vanessa pattern selectors, в том числе с heading. Diagnostic ID,
-score и confidence не заменяют нормативный selector или basis. Реестр не обязан
-знать отдельный ID: например, найденный v8std std740 включается без новой строки
-registry. Additions не устраняют `registry_coverage_missing` для уже заявленного
-механизма, не превращают неизвестный assessment в факт и не понижают baseline.
+These are not raw search hits: the agent first reads exact normative text and
+establishes applicability/strength. Exact std, corporate work, YaXUnit and Vanessa
+pattern selectors are allowed, including headings. Diagnostic IDs, scores and
+confidence do not replace normative selectors or basis.
+The registry need not know a particular ID: for example, discovered v8std std740
+can be included without a new registry row.
+Additions do not remove `registry_coverage_missing` for declared mechanisms,
+turn unknown assessments into facts or downgrade baseline.
 
-Additions сортируются по selector; дубли в самом массиве отклоняются. Если selector
-совпадает с baseline, ledger содержит одну строку, mandatory имеет приоритет.
-Набор additions вместе с strength/basis связан с digest и сохранён в selection.
-В `validate_compliance.current` передай актуальный массив; его удаление/изменение
-требует selection заново. Все добавленные нормы проверяются тем же ledger и
-возвращают `blocked` при `failed/unverified`. Для YaXUnit `run/report` непустые
-additions отклоняются: это не authoring selection.
+Additions sort by selector; duplicates within the array are rejected.
+If a selector matches baseline, the ledger contains one row and mandatory wins.
+The additions set with strength/basis is bound to the digest and retained in
+selection. Pass the current array in `validate_compliance.current`;
+removing/changing it requires new selection. All added requirements use the same
+ledger and return `blocked` for `failed/unverified`.
+YaXUnit `run/report` rejects nonempty additions because it is not authoring selection.
 
-Пустой/отсутствующий массив не меняет selections/digests протокола 2.0. Policy
-не вызывает v8std, не удостоверяет basis и не обнаруживает пропущенные кандидаты
-самостоятельно. Учёт найденных/отклонённых/неразрешённых кандидатов ведётся в
-workflow; добавление этого API не создаёт технического перехвата EDT writer.
-Vanessa additions применимы в существующем oneC/YaXUnit target, когда этого
-требует его контекст. Отдельный Gherkin selector в policy не реализован;
-нормативная проверка feature сохраняется в отчёте Vanessa workflow.
+Empty/absent arrays preserve protocol 2.0 selections/digests.
+Policy does not call v8std, authenticate basis or independently discover omitted
+candidates. The workflow tracks found/rejected/unresolved candidates; this API
+does not create technical interception of EDT writers.
+Vanessa additions apply within existing oneC/YaXUnit targets when their context
+requires them. Policy has no separate Gherkin selector;
+feature normative checks remain in Vanessa workflow reports.
 
-## Привязка ledger и результаты
+## Ledger binding and results
 
-Selection относится к одному `target`: стабильному scope с проектом/компонентом.
-Он включён в digest вместе с kind, artifact, operation, mechanisms, выбранными
-нормами и непустыми additionalRequirements. `current.target/artifact/operation`
-должны совпадать с selection.
-Для проверки нескольких независимых scopes используй отдельные selections;
-enclosing context конкретного scope можно ссылать в evidence.
+Selection belongs to one `target`: a stable scope with project/component.
+Target enters the digest with kind, artifact, operation, mechanisms, selected
+requirements and nonempty additionalRequirements.
+`current.target/artifact/operation` must match selection.
+Use separate selections for independent scopes; a specific scope's enclosing
+context may be referenced in evidence.
 
-`current.sourceRef` обозначает конкретное состояние оцениваемой фазы.
-Для oneC он совпадает с `current.detection.sourceRef`. Каждая строка ledger
-содержит `selector`, `selection_digest`, `target`, `source_ref`, `status`, `evidence`
-и при deviation — `reason`. `target` и `source_ref` должны совпадать с current.
-`selector` — нормативная ссылка, а `matchedRows` содержит внутренние ID registry.
+`current.sourceRef` identifies the assessed phase's specific state.
+For oneC it matches `current.detection.sourceRef`.
+Each ledger row contains `selector`, `selection_digest`, `target`, `source_ref`,
+`status`, `evidence` and, for deviation, `reason`.
+`target` and `source_ref` must match current.
+`selector` is a normative reference; `matchedRows` contains internal registry IDs.
 
-При изменении source revision можно переиспользовать selection, если scope и
-применимость прежние. Ledger для нового состояния проверяется заново и получает
-актуальный `source_ref` и содержательное evidence. Простая замена ссылки без
-проверки не делает старую оценку истинной. Policy проверяет согласованность этих
-утверждений, а не их происхождение, подлинность или свежесть в EDT.
+After source-revision changes selection may be reused if scope/applicability are
+unchanged. Recheck the ledger for the new state with current `source_ref` and
+substantive evidence. Merely replacing the reference without verification does
+not make old assessments true. Policy checks claim consistency, not provenance,
+authenticity or EDT freshness.
 
-| Результат | Значение |
+| Result | Meaning |
 | --- | --- |
-| `ledger_valid` | Ledger содержит все selectors данного selection и согласован с current; mandatory строки имеют `passed`, recommended — `passed` или обоснованное `deviated`. Полнота подбора норм, истинность evidence и разрешение writer из этого не следуют. |
-| `blocked` | В структурно корректном ledger есть `failed` или `unverified`; `unresolved` перечисляет selectors, strength и статусы. Workflow допускает read-only отчёт и запрещает зависимую запись/полное заключение о соответствии. MCP сам не перехватывает writer. |
-| MCP `isError` | Некорректный запрос, устаревший/изменённый selection, несовпадение контекста, неполный ledger или недопустимый mandatory deviation. |
+| `ledger_valid` | Ledger contains all selection selectors and agrees with current; mandatory rows are `passed`, recommended rows `passed` or justified `deviated`. This does not imply complete requirement selection, true evidence or writer permission. |
+| `blocked` | Structurally correct ledger contains `failed` or `unverified`; `unresolved` lists selectors, strength and statuses. Workflow permits read-only reports and prohibits dependent writes/full compliance conclusions. MCP does not itself intercept writers. |
+| MCP `isError` | Invalid request, stale/changed selection, context mismatch, incomplete ledger or forbidden mandatory deviation. |
 
-`counts` считает строки ledger и отклонения; это не число независимо проверенных
-норм. Design допускает только `phase: proposal`, review — только `phase: result`.
-Create/change использует обе фазы; сервер не хранит историю их выполнения.
-Точность нормативного текста, его полнота/редакция, проектные исключения,
-EDT diagnostics и поведенческие результаты проверяются отдельно по workflow.
-EDT primary validation и BSL LS не являются безусловным доказательством ошибки:
-применяй общий [контракт диагностики](../skills/1c-routing/references/diagnostics.md),
-учитывая правило, настройки, ревизию и полноту контекста.
+`counts` counts ledger rows and deviations, not independently checked requirements.
+Design allows only `phase: proposal`; review only `phase: result`.
+Create/change uses both phases; the server does not retain their execution history.
+Normative-text accuracy, completeness/revision, project exceptions, EDT diagnostics
+and behavioral results are checked separately under the workflow.
+EDT primary validation and BSL LS are not unconditional proof of defects:
+apply the shared [diagnostics contract](../skills/1c-routing/references/diagnostics.md)
+with rule, settings, revision and context completeness.
 
-Общие action tools проверяют только объявленные effects/scope и caller evidence
-реального пользовательского поручения. Они не аутентифицируют человека, не
-вычисляют эффекты произвольного инструмента и не заменяют host approvals.
+Shared action tools check only declared effects/scope and caller evidence of
+actual user assignments. They do not authenticate people, compute arbitrary
+tool effects or replace host approvals.
 
-## Переход с 1.1
+## Migration from 1.1
 
-Версия исходного пакета — `0.2.1`, протокола — `2.1.0`, registry schema — `2`,
-registry — `2026-10-20.1`.
-Переход с 1.1 несовместим: selections и ledgers нужно пересоздать. Дополнение
-2.1 сохраняет формат и digest 2.0 при отсутствии additions.
+Source package version is `0.2.1`, protocol `2.1.0`, registry schema `2`,
+registry `2026-10-20.1`.
+Migration from 1.1 is incompatible: recreate selections and ledgers.
+The 2.1 addition preserves 2.0 format/digest without additions.
 
-- Вместо `sourceText` передавай явные assessments из разрешённых фактов.
-- В оба selector добавлен обязательный `target`.
-- В current обязательны `target`, `artifact`, `operation`, `sourceRef`, `mechanisms`.
-- В ledger `rule_id` заменён на `selector`, добавлен `source_ref`.
-- `status: passed` ответа validator заменён на `ledger_valid|blocked`; счётчики
-  передаются как `counts`. Статус `passed` отдельной строки ledger сохранён.
-- `run/report` больше не создают пустой selection с passing digest.
+- Replace `sourceText` with explicit assessments from authorized facts.
+- Both selectors add mandatory `target`.
+- Current requires `target`, `artifact`, `operation`, `sourceRef`, `mechanisms`.
+- Ledger replaces `rule_id` with `selector` and adds `source_ref`.
+- Validator response `status: passed` becomes `ledger_valid|blocked`; counters
+  use `counts`. Individual ledger-row `passed` is retained.
+- `run/report` no longer create empty selections with passing digests.
 
-## Рекомендации по дальнейшему развитию
+## Recommendations for further development
 
-1. Поддерживать сверку selectors и exact headings с corpus revision. Офлайн-сверка
-   исходников v8std от 20 октября 2026 подтвердила все 73 уникальных selectors;
-   см. [границы и evidence](../docs/VERIFICATION.md). Она не проверяет опубликованный
-   MCP, полноту всех нормативных связей или состояние полного runtime package.
-   Структурные тесты registry не заменяют такую приёмку.
-2. При усилении evidence получать receipts от source/normative authorities:
-   идентичность артефакта, ревизию/hash, точный selector, полноту и редакцию текста.
-   Проверять их доверенной стороной; добавление ещё одного self-reported поля
-   само по себе не создаёт доказательства.
-3. Использовать существующий v8std code/context retrieval для кандидатов и
-   EDT/analyzer для проверяемых source facts. Не поддерживать второй частичный
-   BSL parser или дубликат поискового индекса внутри policy. Heuristic confidence
-   v8std не превращать в подтверждение ошибки или полноты подбора.
-4. Машинное применение project exceptions вводить вместе с проверяемыми scope,
-   источником, условием и ревизией исключения. До этого profile exceptions и
-   противоречия явно разбирает агент; checker не интерпретирует их автоматически.
+1. Maintain selector/exact-heading reconciliation against corpus revision.
+   Offline v8std source reconciliation on 20 October 2026 confirmed all 73 unique
+   selectors; see [limits and evidence](../docs/VERIFICATION.md).
+   It did not check published MCP, complete normative relationships or the full
+   runtime package state. Structural registry tests do not replace that acceptance.
+2. For stronger evidence obtain receipts from source/normative authorities:
+   artifact identity, revision/hash, exact selector, text completeness/revision.
+   Verify them through a trusted party; another self-reported field alone creates
+   no proof.
+3. Use existing v8std code/context retrieval for candidates and EDT/analyzer for
+   verifiable source facts. Do not maintain a second partial BSL parser or duplicate
+   search index within policy. Do not turn v8std heuristic confidence into confirmed
+   defects or complete requirement selection.
+4. Introduce machine-applied project exceptions together with verifiable scope,
+   source, condition and revision. Until then the agent explicitly resolves profile
+   exceptions/conflicts; the checker does not interpret them automatically.

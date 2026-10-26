@@ -5,116 +5,117 @@ description: Use for bounded read-only 1C source discovery, structure, reference
 
 # 1C code-index
 
-Используй профиль выбранного каталога, его точный alias и разрешённый repository.
-Применяй knowledge gate и [разделение источников](../1c-routing/SKILL.md).
-Индексный факт не становится live-фактом или нормативным требованием; найденный
-в знаниях механизм не доказывает его наличие и контракт в выбранном индексе.
-При неизвестной/инвалидированной готовности подтверди соответствие alias реальному
-пути, свежесть и нужный слой индекса. Демон для каждого корня профиля обслуживает
-его конфигурации; сессии того же корня разделяют демон, но не историю выдачи.
-Смена каталога/профиля/ревизии инвалидирует затронутое evidence. Не останавливай
-демон при смене задачи или отключении: он может обслуживать другую сессию.
-Отличай факт индексной ревизии от текущего состояния рабочей копии. Узкий запрос
-к назначенному EDT допустим для уже известного символа, контракта, метаданных или
-конкретной зависимости, когда нужен недостающий live-факт. Он не восстанавливает
-недоступный индекс и не разрешает общий discovery через EDT, обход репозиториев
-или снятие зависимой блокировки. Незатронутые индексные факты сохраняют свои
-границы применимости; конфликт обновляет только относящееся к нему evidence.
-Дата проверки API-карточки и Git-редакция знаний не подтверждают текущий исходник.
-Для применимости учитывай рабочую ветку/ревизию, значимые незакоммиченные
-изменения, фактическую версию библиотеки/платформы и контекст выполнения.
-Уточняй только значимые расхождения разрешённой authority; без этого не повышай
-карточку или старый индексный факт до подтверждения текущего контракта.
+Use the selected directory's profile, its exact alias and authorized repository.
+Apply the knowledge gate and [source separation](../1c-routing/SKILL.md).
+An indexed fact is not a live fact or normative requirement; a mechanism found
+in knowledge does not prove its presence or contract in the selected index.
+When readiness is unknown/invalidated, confirm alias-to-real-path correspondence,
+freshness and the required index layer. Each profile root's daemon serves its
+configurations; sessions of the same root share the daemon but not result history.
+Directory/profile/revision changes invalidate affected evidence. Do not stop the
+daemon when switching tasks or disconnecting: it may serve another session.
+Distinguish indexed-revision facts from the current working copy. A narrow query
+to the assigned EDT is allowed for an already known symbol, contract, metadata or
+specific dependency when a missing live fact is needed. It does not restore an
+unavailable index or authorize general EDT discovery, repository traversal or
+lifting a dependent block. Unaffected indexed facts retain their applicability
+limits; conflicts refresh only related evidence.
+An API card's verification date and knowledge Git revision do not confirm current
+source. For applicability, consider working branch/revision, significant uncommitted
+changes, actual library/platform version and execution context.
+Resolve only significant discrepancies through the authorized authority; without
+this, do not promote a card or old indexed fact to confirmation of the current contract.
 
-Поверхность выбирай по живым описаниям и schema установленного MCP; переиспользуй
-их до reconnect, смены binding или уведомления об изменении. Не фиксируй версию,
-адрес исходного репозитория, каталог инструментов или allowlist в навыке. Обычный
-запрос не требует полного аудита поверхности. Недоступную возможность не имитируй.
+Choose capabilities from the installed MCP's live descriptions and schemas;
+reuse them until reconnect, binding change or a change notification. Do not pin
+a version, source repository URL, tool catalogue or allowlist in the skill.
+Ordinary queries do not require a full capability audit. Do not emulate an
+unavailable capability.
 
-Сначала сформулируй вопрос и выбери самый компактный достаточный ответ. Для
-назначения функционала начни со смыслового поиска, для известного объекта/символа
-— с адресного структурированного чтения. Для большого модуля/процедуры сначала
-карта или скелет, затем нужное тело либо диапазон. Граф начинай с глубины 1;
-путь между известными точками предпочтительнее большого дерева. Специализированный
-обзор объекта, влияния, проведения, форм, прав или СКД заменяет серию чтений XML
-и общий SQL. Подробные правила выбора и полноты:
-[анализ и бюджет ответа](references/analysis.md) — читай для сложного анализа,
-неоднозначной выдачи или недостающего специализированного маршрута.
+First formulate the question and choose the most compact sufficient response.
+For functionality purpose, start with semantic search; for a known object/symbol,
+use targeted structured reads. For large modules/procedures, obtain a map or
+skeleton before needed bodies or ranges. Start graphs at depth 1; a path between
+known points is preferable to a large tree. Specialized object, impact, posting,
+form, permissions or DCS overviews replace repeated XML reads and general SQL.
+Detailed selection and completeness rules:
+[analysis and response budget](references/analysis.md) — read for complex analysis,
+ambiguous results or missing specialized routes.
 
-По умолчанию запрашивай до 10–20 совпадений, краткие поля и только нужную секцию;
-точный файл/объект/направление задавай сразу. Неполная страница, опущенная секция,
-отсев уже выданных строк и пустой результат имеют разный смысл. Учитывай markers
-полноты и подсказки продолжения; не повышай общий бюджет и не читай все страницы
-ради самого обхода. Один нерешённый факт оправдывает одно адресное расширение.
-Повторно используй достаточное evidence; не дублируй его в EDT. Индекс не является
-writer, live truth, справкой платформы или primary diagnostics. Недоступность,
-устаревание, ошибка и неполнота блокируют только зависимый вывод, не независимые
-ответы по готовому слою.
+By default request up to 10–20 matches, brief fields and only the needed section;
+specify exact file/object/direction immediately. An incomplete page, omitted
+section, suppression of previously delivered rows and an empty result have
+different meanings. Account for completeness markers and continuation hints;
+do not raise the overall budget or read all pages merely to traverse them.
+One unresolved fact justifies one targeted expansion.
+Reuse sufficient evidence; do not duplicate it in EDT. The index is not a writer,
+live truth, platform reference or primary diagnostics. Unavailability, staleness,
+errors and incompleteness block only dependent conclusions, not independent
+answers using a ready layer.
 
 ## Reuse-gate
 
-Единица контроля — новая техническая операция по назначению, даже в двух строках
-BSL: например, значение с умолчанием, сообщение пользователю, заполнение объекта,
-разрешение пути или проектная проверка. `Если`, присваивание, локальный цикл и
-повторное применение подтверждённого механизма сами по себе не требуют поиска.
-Контроль не означает сетевой запрос на каждый оператор или повторно известный API.
+The unit of review is a new technical operation by purpose, even in two BSL lines:
+for example, a default value, user message, object filling, path resolution or
+project validation. `Если`, assignment, local loops and reuse of a confirmed
+mechanism do not themselves require search. The check does not mean a network
+request for every statement or already known API.
 
-Выбери достаточную глубину:
+Choose sufficient depth:
 
-| Режим | Основание | Действие |
+| Mode | Basis | Action |
 | --- | --- | --- |
-| Известный механизм | Контракт уже подтверждён для применимого контекста и не инвалидирован | Используй evidence без нового поиска |
-| Быстрое уточнение | Новый для задачи механизм, низкий риск, не хватает узкого факта | Один сгруппированный смысловой поиск и проверка недостающего |
-| Углублённая проверка | Общий API, поставка, права, данные, транзакции, клиент/сервер или существенные эффекты | Подтверди контракт, потребителей и последствия в текущем контексте |
+| Known mechanism | Contract already confirmed for the applicable context and not invalidated | Use evidence without searching again |
+| Quick clarification | Mechanism new to the task, low risk, one narrow fact missing | One grouped semantic search and verification of the missing fact |
+| In-depth verification | Shared API, supplier distribution, permissions, data, transactions, client/server or substantial effects | Confirm contract, consumers and consequences in the current context |
 
-Для нового механизма используй явно выбранные знания, если они включены;
-платформенный API проверяй по $1c-platform-docs без дублирующего поиска знаний,
-а индексные/текущие факты — по [ролям authorities](../1c-routing/SKILL.md).
-Известный механизм не отменяет readiness обязательного источника: отсутствие
-нового поиска не снимает knowledge gate, включая весь workflow в KORA.
-Сначала учти обязательный проектный API/настройку из действующих инструкций.
-Прямой библиотечный вызов не заменяет проектную обёртку без проверки её контракта,
-владельца и допустимости такого решения; обнаруженное противоречие требует
-решения в разрешённом scope, а не молчаливого обхода. Если обязательного контракта
-нет, выбирай по применимости и риску, без принуждения к неподходящему легаси.
-Пометка `recommendation: avoid` запрещает предлагать кандидата для нового вызова;
-совместимость, недопустимые эффекты или цена изменения общего легаси могут
-обосновывать локальное решение. Зафиксируй конкретную причину нового кода.
+For a new mechanism, use explicitly selected knowledge when enabled; verify
+platform APIs through $1c-platform-docs without duplicate knowledge search,
+and indexed/current facts under [authority roles](../1c-routing/SKILL.md).
+A known mechanism does not cancel mandatory source readiness: no new search does
+not remove the knowledge gate, including the entire KORA workflow.
+First account for mandatory project APIs/settings from current instructions.
+A direct library call does not replace a project wrapper without checking its
+contract, owner and whether the solution is allowed; a discovered contradiction
+requires resolution within authorized scope rather than silent bypass.
+If no mandatory contract exists, choose by applicability and risk without forcing
+unsuitable legacy use. `recommendation: avoid` prohibits proposing the candidate
+for a new call; compatibility, unacceptable effects or the cost of changing shared
+legacy may justify a local solution. Record the specific reason for new code.
 
-Перед новой смысловой операцией сформулируй назначение в 1–3 смысловых
-терминах. Когда нужен индексный поиск, ищи в текущем alias; зависимости подключай только по evidence,
-а не соседству каталогов. Platform/BSP reference следует $1c-platform-docs.
+Before a new semantic operation, express its purpose in 1–3 semantic terms.
+When index search is needed, search the current alias; include dependencies only
+on evidence, not directory proximity. Platform/BSP reference follows $1c-platform-docs.
 
-По умолчанию рассмотри не больше пяти относящихся к вопросу кандидатов адресным
-чтением. Проверь назначение, параметры, return contract, client/server
-context, export/access и ownership. Сопоставь применимые версии платформы,
-библиотеки и проекта, ограничения вызова и существенные эффекты: права,
-транзакции, запись данных, события и жизненный цикл. Похожее имя или API-статус
-`confirmed` вне подтверждённой области не доказывают пригодность кандидата.
-Для неоднозначности используй depth-1
-references/callers. Один нерешённый факт допускает одно обоснованное расширение;
-выход за пять кандидатов требует конкретной ambiguity/coverage/conflict причины.
-Остановись на подходящем решении, не продолжай обзор альтернатив ради обзора.
+By default, examine at most five relevant candidates through targeted reads.
+Check purpose, parameters, return contract, client/server context, export/access
+and ownership. Compare applicable platform, library and project versions, call
+restrictions and substantial effects: permissions, transactions, data writes,
+events and lifecycle. A similar name or API status `confirmed` outside its
+confirmed scope does not prove suitability.
+For ambiguity use depth-1 references/callers. One unresolved fact permits one
+justified expansion; exceeding five candidates needs a specific
+ambiguity/coverage/conflict reason. Stop at a suitable solution; do not keep
+surveying alternatives for their own sake.
 
-Сравни применимое переиспользование, узкую локальную адаптацию и новую реализацию
-по контракту, существенным эффектам, риску сопровождения и достаточной сложности.
-Адаптация сохраняет контракт кандидата и разрешённую область. Неэкспортированный
-метод не разрешает сразу дублировать его: оцени владельца и возможность решения
-в своём scope. Изменение чужого/общего API — отдельное изменение с потребителями,
-владельцем и необходимой авторизацией; не расширяй им текущую задачу автоматически.
-Новая логика требует отсутствия подходящего кандидата либо установленного
-несоответствия контракта, контекста, ownership или покрытия, либо существенного
-риска/несоразмерной сложности его адаптации. Пустой поиск
-доказывает отсутствие только в ready, полном документированном coverage.
-Кандидат другой компоненты не расширяет разрешение на её изменение.
+Compare applicable reuse, narrow local adaptation and new implementation by
+contract, substantial effects, maintenance risk and sufficient complexity.
+Adaptation preserves the candidate's contract and authorized scope. A nonexported
+method does not immediately justify duplication: assess ownership and possible
+solutions within your scope. Changing another owner's/shared API is a separate
+change with consumers, an owner and necessary authorization; do not automatically
+expand the current task with it.
+New logic requires no suitable candidate, an established mismatch in contract,
+context, ownership or coverage, or substantial risk/disproportionate adaptation
+complexity. Empty search proves absence only within ready, complete documented
+coverage. A candidate in another component does not expand permission to modify it.
 
-Останови поиск, когда фактов достаточно для выбора в разрешённом scope; обход
-оставшихся страниц и альтернатив ради полноты не требуется. Сохрани краткое
-решение, рассмотренные применимые варианты и существенные пределы: выбранные
-коллекции/alias, ветка/ревизия, partial/truncation и непроверенные условия.
-Пробел нельзя выдавать за доказанное отсутствие механизма; при отсутствии
-обязательного факта останови зависимый вывод по $1c-routing.
-Конфликт индекса с live EDT
-инвалидирует indexed evidence до восстановления свежести; противоречие двух
-обязательных authorities блокирует зависимую работу. Не подменяй missing index
-повторным общим discovery через EDT или shell.
+Stop searching when facts suffice for a choice within authorized scope; traversing
+remaining pages and alternatives for completeness is unnecessary. Retain the brief
+decision, applicable options examined and substantial limits: selected
+collections/alias, branch/revision, partial/truncation and unchecked conditions.
+Do not present a gap as proven absence of a mechanism; when a mandatory fact is
+missing, stop the dependent conclusion under $1c-routing.
+An index/live EDT conflict invalidates indexed evidence until freshness is
+restored; conflicting mandatory authorities block dependent work.
+Do not replace a missing index with repeated general discovery through EDT or shell.

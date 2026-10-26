@@ -1,15 +1,15 @@
-# Bundled CLI и editor transition
+# Bundled CLI and editor transition
 
-Для `call --arguments-file` Node.js разрешает путь от каталога вызова один раз,
-сохраняет hash bytes в scope и передаёт Node абсолютный путь и ожидаемый hash.
-Node проверяет hash того же прочитанного buffer до dispatch и использует его
-parsed arguments без повторного чтения. Изменение файла требует нового describe
-и проверки согласования; смена cwd не должна менять исполняемый payload.
+For `call --arguments-file`, Node.js resolves the path relative to the invocation
+directory once, retains its byte hash in scope and passes Node the absolute path
+and expected hash. Node checks the same read buffer's hash before dispatch and
+uses its parsed arguments without rereading. Changed files require new describe
+and agreement verification; changed cwd must not change executed payload.
 
-В plugin root доступен `scripts/vanessa.mjs`; он проверяет enabled capability,
-schema local runtime, соответствие project/features/results/server binding и
-общую action policy до dispatch. Путь plugin root получай из установленного
-пакета, не ищи toolkit в Kafka checkout.
+The plugin root contains `scripts/vanessa.mjs`; it checks enabled capability,
+local runtime schema, project/features/results/server binding correspondence and
+shared action policy before dispatch. Obtain the plugin root from the installed
+package; do not search for toolkits in Kafka checkouts.
 
 ```text
 node <PLUGIN_ROOT>/scripts/vanessa.mjs describe --project-root PROJECT --feature RELATIVE_FEATURE --scenario EXACT_NAME
@@ -18,42 +18,44 @@ node <PLUGIN_ROOT>/scripts/vanessa.mjs list --project-root PROJECT
 node <PLUGIN_ROOT>/scripts/vanessa.mjs run --project-root PROJECT --feature RELATIVE_FEATURE --scenario EXACT_NAME --authorization-file APPROVAL_JSON
 ```
 
-Относительный `--feature` считается от `projectRoot`. Допустимы файлы в
-настроенном `features` и явно выбранные временные копии внутри проекта, например
-`.local/repair.feature`. `describe` и `run` проверяют одну область: путь после
-разрешения ссылок остаётся внутри проекта и имеет расширение `.feature`.
+Relative `--feature` is based on `projectRoot`. Files in configured `features`
+and explicitly selected temporary copies within the project, for example
+`.local/repair.feature`, are allowed. `describe` and `run` check the same scope:
+after resolving links, the path stays inside the project and has a `.feature`
+extension.
 
-`describe` не запускает приложение и выводит точный scope/effects записи
-авторизации; для другого действия используй `describe --for-action start|setup|connect|call`.
-`APPROVAL_JSON` имеет `effects`, `scope`, `authorizations` по
-`policy.check_action`; evidence ссылается на реальное разрешение человека для
-этой области. Не создавай его как замену согласованию и не расширяй старое
-разрешение. `configure` только показывает настройки; `start/setup/connect`
-могут запускать клиент/manager и изменять runtime, поэтому требуют нужных effects.
-Для generic `call` effects установи по живой schema/guide и actual arguments.
+`describe` does not launch applications and prints exact scope/effects for the
+authorization record; for other actions use
+`describe --for-action start|setup|connect|call`.
+`APPROVAL_JSON` contains `effects`, `scope`, `authorizations` under
+`policy.check_action`; evidence references real human permission for this scope.
+Do not create it as a substitute for agreement or expand old permission.
+`configure` only displays settings; `start/setup/connect` may launch clients/
+manager and modify runtime, so require corresponding effects.
+For generic `call`, establish effects from live schema/guide and actual arguments.
 
-`run` удерживает общий endpoint/TestClient lock от полной readiness до reload,
-syntax, независимой selection/content проверки, запуска выбранного scenario и
-получения результатов. Timeout не повторяет mutation. Проверяется соответствие
-исполненного содержимого хешу файла. Автоматический receipt остаётся unverified
-до проверки настоящего test outcome.
+`run` holds the shared endpoint/TestClient lock from full readiness through reload,
+syntax, independent selection/content checks, selected-scenario execution and
+results retrieval. Timeout does not repeat mutation. Executed content is checked
+against file hash. Automatic receipts remain unverified until actual test-outcome
+assessment.
 
-Bundled wire adapter исходно проверен на Vanessa Single 1.2.043.45 / MCP 1.31.
-Версии сохраняются как provenance. Совместимость определяется актуальными tools,
-schemas и распознанными полями ответов; одного tools/list недостаточно. Изменённый
-или неполный ответ остаётся unverified независимо от номера release.
+The bundled wire adapter was initially verified on Vanessa Single 1.2.043.45 /
+MCP 1.31. Versions are retained as provenance. Compatibility depends on current
+tools, schemas and recognized response fields; tools/list alone is insufficient.
+Changed/incomplete responses remain unverified regardless of release number.
 
-Если manager в tree mode, используй `run ... --editor-transition` с открытым
-stdin. Под тем же lock/session ожидается максимум 60 секунд:
+If the manager is in tree mode, use `run ... --editor-transition` with open stdin.
+The same lock/session waits at most 60 seconds:
 
-1. Получи `awaiting_editor_enable` и проверь manager/profile/PID.
-2. Доступным UI-инструментом наблюдай именно этот manager и его фактический
-   элемент «Перейти в Vanessa Editor»; выполни только этот переход.
-3. Передай одну строку `{"action":"continue"}`. Успешный `open_feature_file`
-   подтверждает editor availability; cached content её не доказывает.
-4. Проверь syntax, selection, actual content и results. После run верни tree mode
-   наблюдаемым control и получи полное state перед новой цепочкой.
+1. Receive `awaiting_editor_enable` and check manager/profile/PID.
+2. With an available UI tool, observe this exact manager and its actual
+   “Перейти в Vanessa Editor” element; perform only that transition.
+3. Send one line `{"action":"continue"}`. Successful `open_feature_file` confirms
+   editor availability; cached content does not prove it.
+4. Check syntax, selection, actual content and results. After run restore tree
+   mode through an observed control and obtain complete state before a new chain.
 
-Не продолжай после посторонних UI-действий, неоднозначного окна, истёкшего wait
-или неизвестного исхода. Без UI capability останови переход, не перезапускай
-manager вместо него и не выдумывай readiness.
+Do not continue after unrelated UI actions, ambiguous windows, expired waits or
+unknown outcomes. Without UI capability stop transition; do not restart the manager
+instead or invent readiness.

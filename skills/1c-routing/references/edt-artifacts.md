@@ -1,69 +1,72 @@
-# Специализированные сценарии EDT
-Выбери только порученный сценарий с учётом knowledge gate и доступных
-capabilities [routing](../SKILL.md); остальные специализированные routes не
-являются обязательным preload или приёмкой этого действия.
+# Specialized EDT workflows
 
-Читай только раздел по задаче. Доступность операции, адресацию и defaults
-устанавливай из живой schema/guide назначенного EDT; статического каталога или
-зависимости от конкретной сборки нет. Общие binding, бюджет и unknown outcome
-принадлежат [toolsets](toolsets.md), эффекты — [action policy](action-policy.md).
-Persistent source/metadata changes проходят $1c-code-change.
+Choose only the assigned scenario under the knowledge gate and available
+[routing](../SKILL.md) capabilities; other specialized routes are not mandatory
+preloads or acceptance requirements for this action.
 
-## Внешние обработки и отчёты
+Read only the task-relevant section. Establish operation availability, addressing
+and defaults from the assigned EDT's live schema/guide; there is no static catalogue
+or dependency on a specific build. Shared binding, budget and unknown-outcome rules
+belong to [toolsets](toolsets.md); effects belong to [action policy](action-policy.md).
+Persistent source/metadata changes follow $1c-code-change.
 
-Установи именно external-object project, qualified target, связанную базовую
-конфигурацию и приложение. Linked base не становится владельцем external object;
-готовый файл вне EDT-проекта — другой workflow. Метаданные, BSL и формы изменяй
-по общим editing contracts с guards и focused проверками.
+## External data processors and reports
 
-Для сборки уточни реальные эффекты текущего контракта: dumper может подготовить
-или обновить build infobase; разрешение на исходник этого не покрывает. Если
-selector использует простое имя, проверь коллизию обработки и отчёта. Не
-превращай одну сборку в build-all. Предпочитай новую пустую staging-папку,
-сохраняй существующий артефакт до проверки; replacement и запись build time в
-метаданные должны входить в scope. Проверь созданный файл и итог owning job,
-а не наличие output path. Debug launch следует [runtime](runtime.md).
+Establish the actual external-object project, qualified target, linked base
+configuration and application. The linked base does not own the external object;
+a ready file outside an EDT project is a different workflow. Change metadata,
+BSL and forms under shared editing contracts with guards and focused checks.
 
-## Локализация
+For builds, establish actual effects from the current contract: the dumper may
+prepare or update a build infobase; source permission does not cover this.
+If a selector uses a simple name, check processor/report name collisions.
+Do not turn one build into build-all. Prefer a new empty staging directory;
+preserve the existing artifact until verification. Replacement and writing build
+time to metadata must be in scope. Check the created file and owning job outcome,
+not output-path presence. Debug launch follows [runtime](runtime.md).
 
-Сначала установи объявленные языки, вид проекта, существующие dictionaries,
-storage/provider topology и область передачи данных. Чтение настроек не
-разрешает генерацию строк, запись словарей, overwrite или внешнюю передачу.
-Работай только с разрешёнными human-facing полями; programmatic names, FQN,
-BSL/query identifiers и platform tokens не переводятся.
+## Localization
 
-Выполни нужную генерацию или перевод один раз по текущему контракту. Перед
-readback дождись ready той же модели в bounded deadline; успешный ack не
-доказывает готовность. Проверь representative localized fields и targeted diff/
-diagnostics. Количество обработанных строк не доказывает качество перевода или
-полный coverage. Недоступный provider останавливает только зависимую операцию.
+First establish declared languages, project type, existing dictionaries,
+storage/provider topology and data-transfer scope. Reading settings does not
+authorize string generation, dictionary writes, overwrite or external transfer.
+Work only with authorized human-facing fields; do not translate programmatic
+names, FQN, BSL/query identifiers or platform tokens.
 
-## Формы, пакеты и связанные ресурсы
+Perform the required generation or translation once under the current contract.
+Before readback, wait for the same model's readiness within a bounded deadline;
+a successful ack does not prove readiness. Check representative localized fields
+and targeted diff/diagnostics. Processed string count does not prove translation
+quality or complete coverage. An unavailable provider stops only the dependent
+operation.
 
-Для формы проверяй не только наличие узлов, но и ownership, attributes/data paths,
-commands, handlers и refresh. У dynamic list проверь main table/custom query,
-поля и visible bindings. Изменённый запрос проверяется в owning context; model
-или screenshot не доказывают runtime interaction. У post-change render должна
-быть актуальная модель/refresh согласно guide.
+## Forms, packages and related resources
 
-Для XML/XDTO, картинок, макетов, прав и command interface используй профильный
-структурированный read/validator/writer, если он выражает задачу. Уточняй тип и
-канонический адрес, не переключайся на сериализованные файлы. Package validation
-состояния computed markers не заменяет свежую проверку после записи; undecided
-или неполное покрытие не является valid. Извлечение бинарного ресурса не разрешает
-перезаписать существующий файл; ограничивай выдачу нужным объектом/изображением.
+For forms, check ownership, attributes/data paths, commands, handlers and refresh
+as well as node presence. For dynamic lists check main table/custom query, fields
+and visible bindings. Validate changed queries in the owning context; models or
+screenshots do not prove runtime interaction. Post-change rendering needs a current
+model/refresh under the guide.
 
-## Сопровождение и внешняя помощь
+For XML/XDTO, images, templates, permissions and command interfaces, use the
+specialized structured read/validator/writer when it expresses the task.
+Establish type and canonical address; do not switch to serialized files.
+Package validation of computed-marker state does not replace fresh post-write
+checks; undecided or incomplete coverage is not valid. Extracting a binary resource
+does not authorize overwriting an existing file; bound output to the needed
+object/image.
 
-Revalidation, quick fix, disk synchronization, project/infobase lifecycle и
-import/export выбираются по фактическим effects. Preview/diagnostics не являются
-разрешением применить fix или синхронизировать модель на диск. Для изменений
-сохраняй targets, guards и итоговую проверку; не выполняй project-wide cleanup
-ради локальной ошибки. Сравнение конфигураций следует [comparison](comparison.md).
+## Maintenance and external assistance
 
-Внешнего AI-помощника используй только по явному поручению: это дополнительный
-расход лимита и возможная передача данных. Имя проекта в prompt не изолирует
-доступные ему tools/files. Передай только bounded вопрос и разрешённые данные;
-write-capable delegation требует доказанной технической границы доступа и
-отдельного scope. Сохрани исходный job, проверь существенные выводы прямыми
-read-only facts; повторный вызов не служит polling и не доказывает правильность.
+Choose revalidation, quick fixes, disk synchronization, project/infobase lifecycle
+and import/export by actual effects. Preview/diagnostics do not authorize applying
+fixes or synchronizing the model to disk. For changes retain targets, guards and
+final verification; do not perform project-wide cleanup for a local error.
+Configuration comparison follows [comparison](comparison.md).
+
+Use an external AI assistant only on explicit assignment: it consumes additional
+limits and may transfer data. A project name in a prompt does not isolate its
+accessible tools/files. Pass only a bounded question and authorized data;
+write-capable delegation requires a proven technical access boundary and separate
+scope. Retain the original job and verify substantial conclusions through direct
+read-only facts; another call is not polling and does not prove correctness.

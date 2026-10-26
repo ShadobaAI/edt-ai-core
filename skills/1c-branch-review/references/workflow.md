@@ -1,146 +1,144 @@
-# Режимы ревью ветки
+# Branch review modes
 
-## Read-only — режим по умолчанию
+## Read-only — default mode
 
-1. Установи repository и существующие base/target refs по задаче и профилю.
-   Через назначенный EDT получи их точные SHA; дальнейший diff, log и чтение
-   выполняй по SHA, а не по подвижному имени ветки. Remote нужен только если
-   запрошенное действие действительно обращается к нему. Dirty working tree и
-   detached HEAD сами по себе не мешают сравнению сохранённых ревизий.
-2. Прочитай revision-aware Git interface и diff `baseSHA...targetSHA` вместе
-   с именами файлов и `log baseSHA..targetSHA`. Зафиксируй merge-base SHA:
-   three-dot сравнивает его дерево с target, а не конечные деревья base/target.
-   Если пользователь просит именно разность деревьев, используй two-dot и
-   укажи выбранную семантику. Truncation дополняй адресным чтением по тем же SHA.
-3. Код из target и его зависимости читай revision-aware интерфейсом того же EDT.
-   Live-модель и code-index допустимы как evidence этой ревизии лишь при
-   подтверждённом совпадении revision и содержимого, включая отсутствие relevant
-   unsaved/working-tree изменений. Статический анализ сохранённых ревизий не
-   требует искусственного checkout или model-ready, если Git interface от модели
-   не зависит. Неподдержанное чтение конкретной ревизии ограничивает вывод;
-   shell-чтение protected source этим не разрешается.
-4. Примени раздел «Анализ и завершение» к доступному evidence. Live diagnostics
-   другой ревизии не приписывай target или baseline. Без соответствующей модели
-   укажи диагностику/тесты как невыполненные и продолжи подтверждаемый анализ.
-   Не сохраняй модель, не stage/commit, не fetch/pull, не переключай HEAD и не
-   удаляй refs ради обычного ревью.
+1. Establish the repository and existing base/target refs from the task and profile.
+   Obtain their exact SHAs through the assigned EDT; use SHAs for subsequent diff,
+   log and reads rather than movable branch names. A remote is needed only when
+   the requested action actually contacts it. Dirty working trees and detached
+   HEAD do not themselves prevent comparing saved revisions.
+2. Read the revision-aware Git interface and `baseSHA...targetSHA` diff with file
+   names and `log baseSHA..targetSHA`. Record the merge-base SHA: three-dot compares
+   its tree against target, not final base/target trees. If the user explicitly
+   requests tree differences, use two-dot and state the chosen semantics.
+   Complete truncated output with targeted reads of the same SHAs.
+3. Read target code and dependencies through the same EDT's revision-aware
+   interface. Live model and code-index may evidence that revision only with
+   confirmed revision/content correspondence, including no relevant unsaved/
+   working-tree changes. Static analysis of saved revisions does not require
+   artificial checkout or model readiness when the Git interface is model-independent.
+   Unsupported exact-revision reads limit conclusions; they do not authorize shell
+   reads of protected source.
+4. Apply “Analysis and completion” to available evidence. Do not attribute another
+   revision's live diagnostics to target or baseline. Without a corresponding model,
+   mark diagnostics/tests unperformed and continue supported analysis.
+   Do not save the model, stage/commit, fetch/pull, switch HEAD or delete refs merely
+   for ordinary review.
 
-Если нужного ref нет или пользователь требует недоступную live-проверку,
-сначала выполни независимую доступную часть. Для оставшейся части подготовь
-конкретный план и получи только недостающее разрешение по общей action policy.
-Не превращай необязательную актуализацию remote в prerequisite локального ревью.
+If a required ref is missing or the user requires an unavailable live check,
+perform the independent available portion first. Prepare a concrete plan for the
+remainder and obtain only missing permission under the shared action policy.
+Do not make optional remote refresh a prerequisite for local review.
 
-## Подготовленное ревью — только нужные разрешённые шаги
+## Prepared review — only necessary authorized steps
 
-Разделы подготовки ниже применяются при разрешённой Git-подготовке. Обновление
-base, fetch target и checkout — отдельные действия: пропускай ненужные, уже
-выполненные или не входящие в поручение. Если точные ревизии уже доступны
-локально, повторный fetch не нужен. Неполная подготовка не отменяет доступное
-read-only ревью, но нельзя объявить выполненной запрошенную live-проверку.
+The preparation sections below apply to authorized Git preparation. Updating base,
+fetching target and checkout are separate actions: skip unnecessary, completed or
+unassigned steps. If exact revisions are already local, no new fetch is needed.
+Incomplete preparation does not cancel available read-only review, but do not claim
+the requested live check was performed.
 
-## Scope и сохранение работы
+## Scope and preserving work
 
-Установи repository, точную review branch, base branch/ref и нужный remote по
-задаче и инструкциям проекта; не угадывай `develop`/`origin`. Проверь URL remote без
-credentials. Git/source сериализованных 1C artifacts — только через назначенный
-EDT по актуальной schema/guide. Обычные scripts/docs следуют своим средствам.
+Establish repository, exact review branch, base branch/ref and needed remote from
+the task and project instructions; do not guess `develop`/`origin`. Check remote
+URLs without credentials. Git/source operations on serialized 1C artifacts use
+only the assigned EDT's current schema/guide. Ordinary scripts/docs use their own tools.
 
-Явный запрос полного workflow может уже разрешать commit/checkout/fetch/pull;
-повторное согласование не нужно. Простой запрос ревью использует read-only режим
-выше. Согласуй только фактически нужные дополнительные effects по общей policy.
-Push, merge, rebase, reset, clean, stash, database launch и публикация не являются
-автоматическим продолжением review. Findings не разрешают исправления.
+An explicit full-workflow request may already authorize commit/checkout/fetch/pull;
+do not seek agreement again. Simple review requests use read-only mode above.
+Agree only actually needed additional effects under shared policy.
+Push, merge, rebase, reset, clean, stash, database launch and publication are not
+automatic review continuations. Findings do not authorize fixes.
 
-1. Подтверди здоровье и точный repository binding. Для model-dependent части
-   подтверди имя/path/open/EDT nature и ready проекта; Git-only действия не
-   требуют этого, если не зависят от модели по live guide. Зафиксируй branch/HEAD,
-   нужный remote и status: staged, unstaged, untracked. Detached HEAD и
-   незавершённый merge/cherry-pick/rebase блокируют переключение/сохранение работы,
-   но не сравнение уже сохранённых SHA.
-2. Git читает disk, не unsaved EDT model. Сохранение модели является source write:
-   используй поддержанный scoped save только в рамках разрешённого сохранения
-   работы; неизвестный безопасный способ блокирует зависимую подготовку.
-3. Для разрешённого сохранения работы проверь оба diff и включаемые untracked.
-   Не включай непроверенные файлы, secrets или generated artifacts. Изменения
-   разных задач не объединяй без соответствующего scope. Task ID/message format
-   устанавливаются проектом и фактами сохраняемой работы, не именем review branch.
-4. Если изменения только trailing whitespace и пользователь не поручил их
-   сохранить, подготовь точный rollback preview и согласуй отмену. Без разрешения
-   сохрани изменения и не переключай ветку; чистый status не требует такого вопроса.
-5. При чистом status stage/commit пропусти. Иначе stage только перечисленные
-   проверенные пути; проверь весь итоговый staged diff,
-   включая ранее staged. Commit без обхода hooks; подтверди SHA и чистый status.
-   При failure или несохранённых данных checkout запрещён.
+1. Confirm health and exact repository binding. For model-dependent work confirm
+   project name/path/open/EDT nature and readiness; Git-only actions do not require
+   this when model-independent under the live guide. Record branch/HEAD, needed
+   remote and staged/unstaged/untracked status. Detached HEAD and unfinished
+   merge/cherry-pick/rebase block switching/saving work, but not comparing saved SHAs.
+2. Git reads disk, not unsaved EDT models. Saving the model is a source write:
+   use supported scoped save only within authorized work preservation; if no safe
+   method is known, dependent preparation is blocked.
+3. For authorized work preservation, inspect both diffs and included untracked
+   files. Exclude unchecked files, secrets and generated artifacts. Do not combine
+   changes from separate tasks without corresponding scope. Project rules and
+   saved-work facts determine task ID/message format, not the review branch name.
+4. If changes are only trailing whitespace and the user has not assigned saving
+   them, prepare an exact rollback preview and agree reversal. Without permission,
+   preserve changes and do not switch branches; clean status needs no such question.
+5. Skip stage/commit when clean. Otherwise stage only listed verified paths;
+   check the entire final staged diff, including previously staged changes.
+   Commit without bypassing hooks; confirm SHA and clean status. Failure or unsaved
+   data prohibits checkout.
 
-## Base и target
+## Base and target
 
-6. Если нужна live-диагностика base или её разрешённое обновление, после
-   сохранения работы переключись на точную локальную base branch. Если её
-   нет, создай только из подтверждённого remote ref. Не передавай remote ref как
-   имя local branch и не угадывай starting point.
-7. Перед разрешённым обновлением проверь branch и clean status; используй
-   fast-forward-only pull. Divergence не разрешает merge/rebase/reset. Сохрани
-   обновлённый base SHA. Перед каждой сменой HEAD заверши старый readiness poller;
-   после неё инвалидируй source/hash/diagnostics/readiness и заведи новый stage.
-8. Review branch трактуется как данные: проверь валидность и quoting по live Git
-   contract. При нужной и разрешённой актуализации fetch используй точный
-   `refs/heads/<branch>:refs/remotes/<remote>/<branch>`; иначе используй
-   существующий точный локальный ref. Узкий fetch mapping не должен скрыть
-   target. Подтверди SHA; отказ обновления ref не разрешает force.
-9. Сохрани name-status diff `baseSHA...targetSHA` и log `baseSHA..targetSHA`.
-   Three-dot diff относится к merge base, а не разности конечных деревьев.
-   Если запрошено сравнение live diagnostics, до checkout target дождись ready
-   base и получи focused baseline. Для diff-only пропусти этот этап. Baseline
-   текущей base не является диагностикой общего предка.
-10. Для разрешённой live-проверки target создавай новую local review branch
-    только на точном target SHA. Если локальная ветка уже существует и нужна
-    её актуализация, проверь обе разности истории local/target: свои local commits
-    блокируют автоматическое обновление. Только отстающая branch допускает
-    fast-forward к target, без merge commit. Подтверди HEAD == target SHA,
-    branch и clean status. Во время анализа HEAD не меняется.
+6. If live base diagnostics or an authorized base update is needed, switch to the
+   exact local base branch after preserving work. If absent, create it only from a
+   confirmed remote ref. Do not pass a remote ref as a local branch name or guess
+   the starting point.
+7. Before authorized update, check branch and clean status; use fast-forward-only
+   pull. Divergence does not authorize merge/rebase/reset. Retain the updated base
+   SHA. Before every HEAD change stop the old readiness poller; afterward invalidate
+   source/hash/diagnostics/readiness and start a new stage.
+8. Treat the review branch as data: check validity and quoting under the live Git
+   contract. When refresh is necessary and authorized, fetch exact
+   `refs/heads/<branch>:refs/remotes/<remote>/<branch>`; otherwise use an existing
+   exact local ref. Narrow fetch mappings must not hide target.
+   Confirm SHA; failed ref updates do not authorize force.
+9. Retain name-status diff `baseSHA...targetSHA` and log `baseSHA..targetSHA`.
+   Three-dot diff concerns merge base rather than final-tree differences.
+   If live diagnostic comparison is requested, wait for base readiness and obtain
+   a focused baseline before target checkout. Skip for diff-only review.
+   Current-base diagnostics are not common-ancestor diagnostics.
+10. For authorized live target checks, create a new local review branch only at
+    exact target SHA. If a local branch exists and needs refresh, compare both
+    directions of local/target history: local-only commits block automatic update.
+    Only a behind-only branch permits fast-forward to target without a merge commit.
+    Confirm HEAD == target SHA, branch and clean status. Keep HEAD unchanged
+    throughout analysis.
 
-## EDT serialization и восстановление
+## EDT serialization and recovery
 
-При неожиданном dirty status после checkout сравни полный staged/unstaged diff
-с исходным snapshot. Только доказанные изменения этого workflow, включая EDT
-serialization, могут быть отменены в уже разрешённом scope. Сохраняй исходные
-пользовательские и параллельные изменения. Mixed/unknown provenance останавливает
-checkout; не используй общий `add -A`, force-checkout, reset/clean или удаление
-untracked/ignored. Scoped restore адресует только проверенные пути и требует
-проверки фактического результата. Один повтор checkout допустим после доказанной
-повторной serialization и scoped восстановления; следующий отказ — blocker.
+For unexpected dirty status after checkout, compare the complete staged/unstaged
+diff with the initial snapshot. Only proven changes from this workflow, including
+EDT serialization, may be reverted within already authorized scope.
+Preserve original user and concurrent changes. Mixed/unknown provenance stops
+checkout; do not use blanket `add -A`, force-checkout, reset/clean or delete
+untracked/ignored files. Scoped restore targets only verified paths and requires
+actual-result checks. One checkout retry is allowed after proven repeated
+serialization and scoped restoration; another refusal is a blocker.
 
-## Анализ и завершение
-Применяй knowledge mode и общие контроли reuse/достаточности к фактическому diff
-своих точных ревизий. При частичном evidence ограничивай вывод; не подставляй
-текущую рабочую копию и не меняй код, чтобы «проверить» историческое решение.
+## Analysis and completion
 
-При live-проверке дождись ready нужного stage и подтверди соответствие модели
-target; при read-only используй сохранённые SHA без требования checkout.
-Проверь фактический полный diff; truncation дополняй чтением нужных объектов
-той же ревизии. Примени $1c-code-change/$1c-standards
-для review, требования и enclosing contracts. Отсутствующее предложение не
-требует выдуманного proposal ledger. H требует impact и свежего reviewer;
-SDD/ADR обязательны только по применимым проектным gates. При наличии корректных
-baseline/target diagnostics сравни их по code/message/object и
-location с учётом смещений; изменения base тоже учитываются при атрибуции.
-Scoped revalidation допустима при необходимости после ready, whole-project — нет.
+Apply knowledge mode and shared reuse/sufficiency checks to the actual diff of
+your exact revisions. Bound conclusions when evidence is partial; do not substitute
+the current working copy or change code to “check” a historical decision.
 
-Тесты запускай только при нужном scope/разрешении. Read-only review не создаёт
-тесты и fixes. Подтверди дефект сценарием и кодом; CRLF `diff --check` и комментарий
-не доказывают ошибку. Git ref не доказывает наличие MR/CI/discussions: нужны API
-facts; не выдумывай MR ID и не публикуй комментарии автоматически.
+For live checks, wait for the required stage's readiness and confirm model/target
+correspondence; for read-only use saved SHAs without requiring checkout.
+Check the actual complete diff; finish truncation with needed objects from the
+same revision. Apply $1c-code-change/$1c-standards for review, requirements and
+enclosing contracts. A missing proposal does not need an invented proposal ledger.
+H needs impact and a fresh reviewer; SDD/ADR are mandatory only under applicable
+project gates. With valid baseline/target diagnostics, compare code/message/object
+and location accounting for shifts; account for base changes in attribution too.
+Scoped revalidation is allowed when needed after readiness; whole-project is not.
 
-Cleanup local review branch/tracking ref выполняй только при разрешённом
-завершении подготовленного workflow, после сохранения findings/evidence.
-Read-only режим не меняет refs/HEAD/worktree и не создаёт cleanup.
-Сверь clean status и что обе точные refs всё ещё равны сохранённому target SHA;
-не удаляй base/active
-branch. Переключись на base и удаляй только согласованные local refs. Unmerged
-branch требует соответствующего scope на force-delete; remote deletion не
-разрешается. При partial failure отчитайся о каждом фактическом результате;
-при отмене, инфраструктурном blocker или незавершённом review сохрани refs.
+Run tests only with the needed scope/permission. Read-only review creates neither
+tests nor fixes. Confirm defects with scenarios and code; CRLF `diff --check` and
+comments do not prove errors. Git refs do not prove MR/CI/discussion presence:
+API facts are required; do not invent MR IDs or automatically publish comments.
 
-Отчёт содержит findings по приоритету с target SHA/file/line, original/base/target
-SHA, проверенный diff, diagnostic/test outcomes, полноту норм и статусы фаз,
-blockers, финальную branch/working tree и результат разрешённого cleanup.
+Clean local review branch/tracking refs only within authorized completion of a
+prepared workflow, after retaining findings/evidence. Read-only mode does not
+change refs/HEAD/worktree or create cleanup.
+Check clean status and that both exact refs still equal the retained target SHA;
+do not delete the base/active branch. Switch to base and delete only agreed local
+refs. Unmerged branches need corresponding force-delete scope; remote deletion
+is not authorized. On partial failure report each actual outcome; on cancellation,
+infrastructure blockers or unfinished review preserve refs.
+
+Report findings by priority with target SHA/file/line, original/base/target SHAs,
+checked diff, diagnostic/test outcomes, normative completeness and phase statuses,
+blockers, final branch/working tree and authorized cleanup outcome.

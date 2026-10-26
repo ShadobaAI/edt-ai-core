@@ -1,43 +1,43 @@
-# Независимое ревью результата
+# Independent result review
 
-Передай свежему reviewer acceptance criteria и SDD/ADR, если они требуются
-проектом, final diff с base/target SHA для сохранённых ревизий либо baseline/
-result hashes для незакоммиченного результата. Commit ради ревью не требуется.
-Передай допустимые source evidence, selections и точные нормы, ledgers только
-применимых фаз, реальные diagnostic/test outcomes и существенные пробелы. Не передавай
-ожидаемый вердикт или implementation reasoning как доказательство корректности.
+Give a fresh reviewer acceptance criteria and SDD/ADR if required by the project,
+the final diff with base/target SHAs for saved revisions or baseline/result hashes
+for uncommitted results. No commit is required for review. Supply authorized source
+evidence, selections and exact requirements, ledgers only for applicable phases,
+actual diagnostic/test outcomes and substantial gaps. Do not supply an expected
+verdict or implementation reasoning as correctness evidence.
 
-Дай явное read-only задание и, когда host позволяет, read-only sandbox/agent
-configuration. Название роли не доказывает техническое ограничение доступа;
-если sandbox недоступен, явно укажи границу enforcement. Плагин не регистрирует
-скрыто CRM/Kafka agent names или пользовательские agent settings.
+Assign explicit read-only work and, when supported by the host, a read-only
+sandbox/agent configuration. Role names do not prove technical access restriction;
+if no sandbox is available, state the enforcement boundary explicitly.
+The plugin does not silently register CRM/Kafka agent names or user agent settings.
 
-Reviewer проверяет changed behavior и достижимые failure paths, authority/scope,
-concurrency, нормативную применимость, enclosing invariants, согласованность
-фактических результатов с критериями. Passing tests и слова implementation
-agent не доказывают корректность. Missing authority останавливает зависимый
-вывод, а не разрешает другую authority или generic filesystem source access.
-Для результата изменения проверяй фактический final diff против требований и
-критериев, а не только описание реализации. Оцени выбор reuse/локальной адаптации/
-нового кода, контракт кандидата и обоснование добавленной сложности по общим
-контролям $1c-code-change / $1c-code-index. Ограничь обзор затронутой областью
-и её существенными зависимостями; зелёный тест не закрывает неподтверждённое решение.
-По затронутым механизмам проверь права/RLS, недоверенные входы, транзакции и
-компенсации, клиент/сервер, порядок событий и lifecycle. Учитывай обновляемость
-поставки и реальные потребители общего контракта, а не только локального caller.
-Используй разрешённые source/metadata facts нужной ревизии; неизвестный важный
-потребитель или контекст остаётся пробелом, а не предположением о безопасности.
-Различай успешную диагностику, проверку поведения и нормативное соответствие:
-это самостоятельные результаты. Для каждого называй реально выполненную
-проверку и её coverage; protocol/ledger_valid доказывает согласованность оценок,
-а не истинность evidence, корректность поведения или прохождение остальных gates.
-Self-review автора не является независимым ревью. Если независимая проверка
-требуется, но отдельный reviewer недоступен, укажи незакрытый gate. Формальное
-следование навыку, заполненный ledger и отсутствие findings сами по себе не
-доказывают корректность; вывод опирается на фактический diff и проверенные условия.
+The reviewer checks changed behavior and reachable failure paths, authority/scope,
+concurrency, normative applicability, enclosing invariants and actual-result
+consistency with criteria. Passing tests and implementation-agent statements do
+not prove correctness. Missing authority stops dependent conclusions rather than
+authorizing another authority or generic filesystem source access.
+For change results check the actual final diff against requirements and criteria,
+not just implementation descriptions. Assess reuse/local-adaptation/new-code
+choices, candidate contracts and added-complexity justification under shared
+$1c-code-change / $1c-code-index checks. Bound review to affected scope and
+substantial dependencies; a green test does not resolve an unverified decision.
+For affected mechanisms check permissions/RLS, untrusted inputs, transactions and
+compensation, client/server boundaries, event order and lifecycle. Account for
+supplier updatability and actual shared-contract consumers, not just local callers.
+Use authorized source/metadata facts of the required revision; unknown significant
+consumers or context remain gaps rather than assumed safety.
+Distinguish successful diagnostics, behavioral verification and normative compliance:
+these are independent results. Name actual checks and coverage for each;
+protocol/ledger_valid proves assessment consistency, not evidence truth, behavior
+correctness or other passed gates.
+Author self-review is not independent review. If independent assessment is required
+but no separate reviewer is available, mark the open gate. Formal skill compliance,
+a filled ledger and no findings do not themselves prove correctness;
+conclusions rely on actual diff and verified conditions.
 
-Запрещены source/metadata writes, runtime evaluation, запуск/обновление базы,
-смена ветки, deployment и cutover. Нельзя делать fixes в ходе review.
-Нужны actionable findings: location, priority, сценарий, последствие и evidence;
-отдельно material unknowns/unperformed checks. Отсутствие находок формулируется
-с фактическими границами проверки, не как полная приёмка недоступных gates.
+Source/metadata writes, runtime evaluation, database launch/update, branch switching,
+deployment and cutover are forbidden. Do not fix findings during review.
+Provide actionable findings: location, priority, scenario, consequence and evidence;
+list material unknowns/unperformed checks separately. State no findings within
+actual verification boundaries, not as full acceptance of unavailable gates.

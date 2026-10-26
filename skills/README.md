@@ -35,35 +35,36 @@ Review EDT documentation coverage and the planned BSP knowledge/OpenViking
 replacement separately; excluding legacy servers does not establish replacement
 readiness or complete the remaining reconciliation.
 
-## Локальная сверка принятых решений
+## Local reconciliation of accepted decisions
 
-Сверка универсального поведения ограничена принятыми `migration_decisions`.
-Она подтверждает текущие исходники и изолированные проверки клиента, не полную
-историческую паритетность исходных окружений, реальные JAR/EDT/v8std и развёртывание.
-Поэтому `migration_acceptance` сохраняет отдельный незакрытый detailed-parity scope,
-а `accepted_decisions_local_acceptance` относится только к следующей таблице.
+Reconciliation of shared behavior is limited to accepted `migration_decisions`.
+It confirms current source and isolated client checks, not complete historical
+parity with source environments, actual JAR/EDT/v8std or deployment.
+Thus `migration_acceptance` retains a separate open detailed-parity scope,
+while `accepted_decisions_local_acceptance` refers only to the following table.
 
-| Принятое решение | Текущий механизм и локальные проверки |
+| Accepted decision | Current mechanism and local checks |
 | --- | --- |
-| project-profiles-outside-plugin | Только generic-профиль; `profile.mjs`, package allowlist; tests/test-profiles.mjs |
+| project-profiles-outside-plugin | Only generic profile; `profile.mjs`, package allowlist; tests/test-profiles.mjs |
 | bsl-native-multi-workspace | Native workspace API, session JVM/registrations, optional config; tests/test-bsl-ls-proxy.mjs |
-| platform-documentation-edt-only | Назначенный EDT и platform-docs, Help исключён из registry/схем/маршрутов |
-| bsp-documentation-without-ssl-mcp | SSL-MCP исключён; selected knowledge и index/live roles, tests/test-knowledge.mjs |
-| project-defined-supplier-maintenance | Общий ownership workflow и project instructions без фиксированных префиксов; tests/test-profiles.mjs |
-| edt-model-gate-recovery | Exact pre-write refusal, bounded recovery и отдельный cleanup scope; ревью инструкций edt-recovery.md, без заявления fixture/live-проверки самого recovery |
-| selected-directory-and-instance-profile | Независимые root/instance/session и overrides; tests/test-profile-settings.mjs, tests/test-setup.mjs |
-| edt-capability-driven-efficiency | Live schemas, toolsets и core_runtime bridge без pinned catalogue; tests/test-remote.mjs |
-| v8std-capability-driven-efficiency | Общий read-only сервер, bounded retrieval, отдельные contexts/ledgers; tests/test-setup.mjs, tests/test-policy.mjs |
+| platform-documentation-edt-only | Assigned EDT and platform-docs; Help excluded from registry/schemas/routes |
+| bsp-documentation-without-ssl-mcp | SSL-MCP excluded; selected knowledge and index/live roles, tests/test-knowledge.mjs |
+| project-defined-supplier-maintenance | Shared ownership workflow and project instructions without fixed prefixes; tests/test-profiles.mjs |
+| edt-model-gate-recovery | Exact pre-write refusal, bounded recovery and separate cleanup scope; edt-recovery.md instruction review without claiming fixture/live verification of recovery itself |
+| selected-directory-and-instance-profile | Independent root/instance/session and overrides; tests/test-profile-settings.mjs, tests/test-setup.mjs |
+| edt-capability-driven-efficiency | Live schemas, toolsets and core_runtime bridge without pinned catalogue; tests/test-remote.mjs |
+| v8std-capability-driven-efficiency | Shared read-only server, bounded retrieval, separate contexts/ledgers; tests/test-setup.mjs, tests/test-policy.mjs |
 
-Точные правила принадлежат связанным навыкам и runtime, таблица их не дублирует.
-Routing владеет knowledge/source gates, code-index — reuse, code-change — risk,
-sufficiency и writer lifecycle, standards — нормативными фазами, action policy —
-effects/авторизацией. Остальные сценарии применяют эти правила по необходимости,
-а не требуют загрузить все связанные skills/references заново.
-Пути `tests/` указаны от корня dev-checkout; эти dev-проверки не входят в ZIP.
-Проектные mappings, endpoints, credentials, формат маркировки и local exports
-не переносятся из исходных окружений в ядро. Состав готовой поставки и live
-приёмка проверяются отдельно; отсутствие исключённых серверов не является пробелом.
+Exact rules belong to linked skills and runtime; the table does not duplicate them.
+Routing owns knowledge/source gates; code-index owns reuse; code-change owns risk,
+sufficiency and writer lifecycle; standards owns normative phases; action policy
+owns effects/authorization. Other scenarios apply these rules as needed rather
+than requiring every linked skill/reference to be loaded again.
+`tests/` paths are relative to the dev-checkout root; these dev checks are not
+in the ZIP. Project mappings, endpoints, credentials, marker formats and local
+exports do not migrate from source environments into the core. Finished package
+contents and live acceptance are checked separately; excluded servers' absence
+is not a gap.
 
 Shared mutation safety is maintained in [1c-code-change](1c-code-change/SKILL.md)
 and its [EDT editing contracts](1c-code-change/references/edt-editing.md):

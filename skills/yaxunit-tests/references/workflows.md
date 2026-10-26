@@ -2,50 +2,51 @@
 
 ## Create/change
 
-1. Установи ожидаемое поведение и минимальные inputs/outcomes; выбери связанные
-   fixtures и isolation по parent skill. Через profile-bound alias найди тесты;
-   production dependency исследуй лишь для конкретного нерешённого факта.
-2. Выбери общие и YaXUnit требования по единому normative workflow. Проверь
-   предложение, declarative registration, export/context, fixture ownership,
-   deterministic setup, assertion semantics и fluent hierarchy до записи.
-3. Получи focused EDT baseline и source guard; измени только назначенное тестовое
-   расширение через EDT по $1c-code-change. Test-only файл не доказывает L: запросы,
-   state и production contract проверяются по реальным механизмам.
-4. На фактическом результате проверь затронутые authoring items, выполненные
-   proposal/result compliance и те же EDT diagnostics. Новые механизмы требуют
-   пересмотра selection. Runtime pass не заменяет нормативную проверку.
-5. Для нужного и разрешённого запуска прочитай живой guide `run_yaxunit_tests`: выбери точные project,
-   launch configuration и минимальный module/test filter. Установи эффекты
-   обновления БД, записи тестовых данных, запуска или перезапуска клиента и user agreement по
-   общей action policy. Не запускай всё расширение по умолчанию.
-6. Запусти один раз, сохрани `jobId` и следи за этим job через поддержанный status.
-   Timeout не разрешает повторный запуск; сначала установи outcome/state.
-   Сопоставь результат с тем же project/filter/run, counts и фактическими assertions.
-   Неожиданный нулевой count, skipped/незавершённый run или missing report — не pass.
+1. Establish expected behavior and minimal inputs/outcomes; choose related fixtures
+   and isolation under the parent skill. Find tests through the profile-bound alias;
+   investigate production dependencies only for specific unresolved facts.
+2. Select general and YaXUnit requirements under the single normative workflow.
+   Check proposal, declarative registration, export/context, fixture ownership,
+   deterministic setup, assertion semantics and fluent hierarchy before writing.
+3. Obtain focused EDT baseline and source guard; change only the assigned test
+   extension through EDT under $1c-code-change. Test-only files do not prove L:
+   assess queries, state and production contracts by actual mechanisms.
+4. On the actual result check affected authoring items, completed proposal/result
+   compliance and the same EDT diagnostics. New mechanisms require selection
+   review. Runtime pass does not replace normative verification.
+5. For necessary authorized execution read the live `run_yaxunit_tests` guide:
+   choose exact project, launch configuration and minimal module/test filter.
+   Establish database-update, test-data-write, client-launch/restart effects and
+   user agreement under shared action policy. Do not run the entire extension
+   by default.
+6. Run once, retain `jobId` and follow that job through supported status.
+   Timeout does not authorize rerun; first establish outcome/state.
+   Match results to the same project/filter/run, counts and actual assertions.
+   Unexpected zero counts, skipped/unfinished runs or missing reports are not pass.
 
 ## Design/review
 
-Design проверяет конкретное предложение с proposal ledger без записи/запуска.
-Review проверяет существующий тест/ревизию с result ledger без proposal и fixes.
-Отсутствие runtime не останавливает доступную статическую проверку. Общий oneC
-workflow и test patterns применяй к тому же предмету/фазе; не отправляй `debug`
-или `migrate` как operation в oneC selector, где таких значений нет.
+Design checks a specific proposal with a proposal ledger, without writes/launch.
+Review checks an existing test/revision with a result ledger, without proposal
+or fixes. Missing runtime does not stop available static checks.
+Apply general oneC workflow and test patterns to the same subject/phase;
+do not send `debug` or `migrate` as operation to a oneC selector lacking those values.
 
 ## Run/report/debug
 
-Run/report-only использует установленный test scope без authoring gate, пока
-не требуется изменить тест. Отделяй подтверждённый отчёт этого run от старых
-файлов. Сохраняй результат/ссылку в `yaxunit_config.results`, указывай фактические
-counts, время, выбранный фильтр и job ID; не включай credentials.
+Run/report-only uses the established test scope without authoring gates until test
+changes are needed. Distinguish the confirmed current run's report from old files.
+Retain results/reference in `yaxunit_config.results`; state actual counts, time,
+selected filter and job ID; exclude credentials.
 
-До изменения кода классифицируй отказ: test, product, data/environment или runner.
-Debug без разрешения на исправление остаётся диагностикой. Перезапуск и изменение
-данных сохраняют action policy независимо от имени режима.
-Читай только нужный для этой причины source. Testability препятствие следует
-[testability](testability.md); оно не расширяет разрешение на production.
-При debug прочитай общий [runtime contract](../../1c-routing/references/runtime.md).
-Не отключай break-on-error глобально как routine prerequisite. Сохраняй исходные
-breakpoints и восстанавливай реальное прежнее состояние временных изменений.
+Before changing code classify failure: test, product, data/environment or runner.
+Debug without fix permission remains diagnostics. Restart and data modification
+retain action policy regardless of mode name.
+Read only source needed for that cause. Testability obstacles follow
+[testability](testability.md); they do not expand production permission.
+For debug read the shared [runtime contract](../../1c-routing/references/runtime.md).
+Do not disable break-on-error globally as a routine prerequisite.
+Preserve original breakpoints and restore the actual prior state of temporary changes.
 
-Read-only review сообщает findings без fixes и без обязательного runtime запуска.
-Если нужная проверка недоступна, назови точную причину и границу вывода.
+Read-only review reports findings without fixes or mandatory runtime execution.
+When a needed check is unavailable, state the exact reason and conclusion boundary.

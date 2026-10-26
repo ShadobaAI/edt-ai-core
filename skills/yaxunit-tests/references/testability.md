@@ -1,7 +1,7 @@
 # Testability
 
-Читай только после конкретного препятствия deterministic тесту. Остановись на
-первом достаточном варианте:
+Read only after a specific obstacle to deterministic testing. Stop at the first
+sufficient option:
 
 ```text
 public product API
@@ -12,8 +12,8 @@ public product API
 → unsupported
 ```
 
-Ищи в `yaxunit` corpus только ещё неизвестный mock/seam API. Не повторяй уже
-достаточный поиск. Test-only aliases/overrides/wrappers остаются в test owner,
-минимальны, явно тестовые и не содержат бизнес-логику. Framework repository
-остаётся read-only. Production seam требует самостоятельного разрешения после
-оценки предыдущих вариантов; тестовый запрос его не подразумевает.
+Search the `yaxunit` corpus only for unknown mock/seam APIs. Do not repeat already
+sufficient searches. Test-only aliases/overrides/wrappers remain in the test owner,
+minimal, explicitly test-specific and without business logic. The framework
+repository remains read-only. Production seams need separate permission after
+assessing earlier options; test requests do not imply it.

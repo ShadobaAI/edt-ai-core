@@ -1,64 +1,64 @@
-# Оценка диагностических замечаний
+# Assessing diagnostic findings
 
-EDT остаётся primary validation и источником live model/metadata. Это назначение
-authority, а не гарантия истинности каждого замечания. BSL LS используется для
-focused analyzer-вопроса, включая уточнение спорного EDT finding, когда нужное
-правило/контекст поддерживаются. Ни один из этих источников не получает общего
-статуса «100% доказанная ошибка» или «полная гарантия отсутствия ошибок».
+EDT remains primary validation and the source of live model/metadata. This assigns
+authority, not guaranteed truth to every finding. BSL LS serves focused analyzer
+questions, including disputed EDT findings when the required rule/context is
+supported. Neither source has a blanket status of “100% proven error” or
+“complete guarantee of no errors.”
 
-## Контекст и настройки
+## Context and settings
 
-Для существенного finding сохраняй источник и код правила, severity/type,
-repository/EDT project, ревизию или hash проверенного артефакта и релевантный
-контекст анализа. При зависимости от окружения установи версию analyzer,
-платформу/compatibility, доступность metadata/type information и effective
-settings конкретного правила. Не предполагай, что code-style warning означает
-ошибку выполнения или что тип `error` исключает false positive.
+For substantial findings retain source and rule code, severity/type,
+repository/EDT project, checked artifact revision or hash and relevant analysis
+context. When environment-dependent, establish analyzer version,
+platform/compatibility, metadata/type-information availability and effective
+settings for the specific rule. Do not assume code-style warnings mean runtime
+errors or that type `error` excludes false positives.
 
-BSL LS чувствителен к настройкам: включённым правилам, их параметрам, корню и
-доступным сведениям о проекте. Сбой конфигурации/неполный контекст — отдельная
-причина результата. Меняй настройки только в разрешённой configuration-задаче;
-не отключай правила и не меняй пороги ради прохождения проверки.
+BSL LS depends on enabled rules, their parameters, root and available project
+information. Configuration failure/incomplete context is a separate cause of a
+result. Change settings only under an authorized configuration task; do not disable
+rules or alter thresholds merely to pass checks.
 
-## Классификация
+## Classification
 
-| Статус оценки | Основание |
+| Assessment status | Basis |
 | --- | --- |
-| Подтверждённый дефект/нарушение | Условие конкретного правила проверено на актуальном коде/metadata и применимо к этому scope. Для поведенческого дефекта укажи сценарий и последствие. |
-| False positive / неприменимо | Условие правила не выполняется или доказано ограничение analyzer в этом контексте; сохрани конкретное объяснение и evidence. |
-| Проблема конфигурации/покрытия | Неверен root/version/settings либо недоступны нужные metadata, типы, ревизия или завершённый результат анализа. |
-| Неопределённо | Данных недостаточно для предыдущих выводов; сохрани пробел и останови только зависимое заключение/действие. |
+| Confirmed defect/violation | The specific rule condition is checked against current code/metadata and applies to this scope. For behavioral defects, state the scenario and consequence. |
+| False positive / not applicable | The rule condition does not hold or an analyzer limitation in this context is proven; retain a specific explanation and evidence. |
+| Configuration/coverage problem | Wrong root/version/settings or unavailable required metadata, types, revision or completed analysis result. |
+| Uncertain | Insufficient data for the preceding conclusions; retain the gap and stop only the dependent conclusion/action. |
 
-Новизна относительно baseline — отдельный признак, а не степень достоверности.
-Сравнивай результаты для сопоставимых scope/settings/версий с учётом смещения
-строк. Изменение настроек или модели само по себе не доказывает регрессию кода.
+Novelty relative to baseline is a separate property, not a confidence level.
+Compare results for comparable scope/settings/versions, accounting for line shifts.
+Changed settings or models alone do not prove a code regression.
 
-На больших проектах оценивай changed scope и непосредственно затронутые
-enclosing contracts. Общий список замечаний проекта не является критерием
-приёмки локального изменения. Незатронутый legacy и шум вне этой области не
-требуют массового исправления или project-wide revalidation. Если результат
-получен по устаревшей/неполной модели, это ограничение покрытия; сам размер
-проекта не доказывает ложность отдельного замечания.
+For large projects assess the changed scope and directly affected enclosing
+contracts. The project's full findings list is not an acceptance criterion for a
+local change. Unaffected legacy and out-of-scope noise do not require mass fixes
+or project-wide revalidation. A stale/incomplete model limits coverage; project
+size alone does not prove an individual finding false.
 
-Отсутствие того же сообщения у другого analyzer не опровергает finding:
-покрытие правил и доступный контекст различаются. Дополнительную проверку выбирай
-по недостающему факту: точный текст нормы через v8std, source/типы через
-назначенный EDT/index/analyzer, focused тест — если требуется и разрешён.
-Не запускай оба analyzer на каждое замечание автоматически.
+Absence of the same message from another analyzer does not refute a finding:
+rule coverage and available context differ. Choose additional checks by missing
+fact: exact normative text through v8std, source/types through assigned
+EDT/index/analyzer, focused tests if required and authorized.
+Do not automatically run both analyzers for every finding.
 
-Доказанный false positive не требует бессмысленного изменения рабочего кода.
-Не скрывай его из отчёта и не выдавай за исправленную ошибку. Новое неразрешённое
-существенное finding в затронутой области или ненадёжная обязательная проверка не позволяют подтвердить
-полное завершение. Сам факт сообщения EDT/BSL LS не заполняет автоматически
-нормативный ledger статусом `failed`; это требует оценки применимости правила.
-Если точный mandatory текст буквально запрещает любое новое сообщение без
-исключения для false positive, сохрани расхождение с этим workflow и разреши
-его по $1c-standards. Самостоятельно не переписывай условие нормы в `passed`.
+A proven false positive does not require pointless changes to working code.
+Do not hide it from the report or present it as a fixed defect. A new unresolved
+substantial finding in affected scope or unreliable mandatory verification
+prevents confirmation of full completion. An EDT/BSL LS message alone does not
+automatically populate the normative ledger with `failed`; rule applicability
+must be assessed. If exact mandatory text literally prohibits every new message
+without a false-positive exception, retain the discrepancy with this workflow and
+resolve it under $1c-standards. Do not independently rewrite the requirement as
+`passed`.
 
-## Документированные ограничения BSL LS
+## Documented BSL LS limitations
 
-Официальные описания прямо допускают ложные срабатывания, в том числе у
+Official descriptions explicitly allow false positives, including
 [LogicalOrInTheWhereSectionOfQuery](https://1c-syntax.github.io/bsl-language-server/diagnostics/LogicalOrInTheWhereSectionOfQuery/)
-и [DenyIncompleteValues](https://1c-syntax.github.io/bsl-language-server/diagnostics/DenyIncompleteValues/).
-Сверяй применимость описания с установленной версией. Сильное подтверждение
-конкретной находки не превращается в универсальную гарантию для всех правил.
+and [DenyIncompleteValues](https://1c-syntax.github.io/bsl-language-server/diagnostics/DenyIncompleteValues/).
+Check description applicability to the installed version. Strong confirmation of
+one finding does not become a universal guarantee for every rule.
