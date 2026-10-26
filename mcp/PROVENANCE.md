@@ -9,8 +9,9 @@ serializes tool calls across index changes, separates bidirectional request IDs,
 and bounds EOF shutdown. UTF-8 and URI-to-path conversion preserve Unicode Windows
 paths without 8.3 aliases. Explicit analyzer configuration is optional and reaches
 both the global and workspace loaders. No fallback API or component-version pin
-is introduced. See [review and validation](BSL_LS_REVIEW.md) for the native API
-evidence, installed-artifact mismatch and limits of live acceptance.
+is introduced. See the [architecture](../docs/ARCHITECTURE.md#managed-runtime)
+and [local verification limits](../docs/ACCEPTANCE.md) for the current contract
+and the distinction between fixture checks and live acceptance.
 
 ## Bundled normative policy
 
@@ -41,7 +42,7 @@ Empty additions preserve 2.0 selections; retrieval completeness and the truth of
 applicability judgments remain outside this consistency checker.
 
 The MCP reads only its bundled registry/schema, uses built-in Node modules,
-returns structured results for all six tools, and does not read project source
+returns structured results for all exposed tools, and does not read project source
 or contact external services. Exact normative text is never copied into the
 registry. Local tests establish protocol and applicability/ledger behavior;
 they do not establish v8std corpus availability or normative truth of evidence.

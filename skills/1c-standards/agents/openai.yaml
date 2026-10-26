@@ -1,7 +1,7 @@
 interface:
-  display_name: "1C Standards"
-  short_description: "Work policy and general 1C standards"
-  default_prompt: "Use $1c-standards to select applicable requirements with policy, read exact v8std text, and verify proposal/result evidence."
+  display_name: "Стандарты 1С"
+  short_description: "Правила работы и общие стандарты 1С"
+  default_prompt: "Используй $1c-standards, чтобы выбрать применимые требования через policy, прочитать точный текст v8std и проверить подтверждения для предлагаемого изменения и результата."
 
 dependencies:
   tools:

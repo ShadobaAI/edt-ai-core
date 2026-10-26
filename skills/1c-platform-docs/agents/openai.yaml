@@ -1,4 +1,4 @@
 interface:
-  display_name: "1C Platform Docs"
-  short_description: "Project-aware 1C API verification through EDT"
-  default_prompt: "Use $1c-platform-docs to verify this API against the active EDT project and platform version."
+  display_name: "Документация платформы 1С"
+  short_description: "Проверка API 1С через EDT с учётом проекта"
+  default_prompt: "Используй $1c-platform-docs, чтобы проверить этот API с учётом выбранного проекта EDT и версии платформы."

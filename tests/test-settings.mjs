@@ -548,6 +548,26 @@ test("apply reparses under the acquired lock and detects intervening changes", a
     /предпросмотра/,
   );
 });
+test("settings import preserves explicit empty required URLs in the current instance", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const backend = new SettingsBackend();
+  process.env.EDT_AI_INSTANCE = "second";
+  await backend.main({ action: "update", set: { edtUrl: "http://localhost:18117/mcp" } });
+  process.env.EDT_AI_INSTANCE = "first";
+  await backend.main({ action: "update", set: { edtUrl: "http://localhost:18115/mcp", v8stdUrl: "http://localhost:18116/mcp" } });
+  const request = { text: JSON.stringify({ format: "1c-ai-core-settings", version: 1,
+    settings: { mcp: { required: { edt: { url: "" }, v8std: { url: "" } } } } }) };
+  const preview = await backend.main({ ...request, action: "preview" });
+  assert.deepEqual(preview.connectionUrls, { edt: "", v8std: "" });
+  assert.equal(preview.writesInstanceConnections, true);
+  const applied = await backend.main({ ...request, action: "apply", revision: preview.revision });
+  assert.equal(applied.values.edtUrl, ""); assert.equal(applied.values.v8stdUrl, "");
+  assert.deepEqual(load(instance_file(settings(), f.root)).connections, { edt: { url: "" }, v8std: { url: "" } });
+  process.env.EDT_AI_INSTANCE = "second";
+  assert.equal((await backend.main({ action: "read" })).values.edtUrl, "http://localhost:18117/mcp");
+  process.env.EDT_AI_INSTANCE = "first";
+  assert.equal((await backend.main({ action: "read" })).values.edtUrl, "");
+});
 test("parallel instances keep overrides before profile init and after import; empty URL disconnects", async (t) => {
   const f = fixture(t),
     a = await session(t, "mcp/settings.mjs", [], f),

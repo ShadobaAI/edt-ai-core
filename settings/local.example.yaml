@@ -1,4 +1,4 @@
-# Copy as local.yaml when installing directly from the source marketplace.
+# Скопируйте в local.yaml при установке напрямую из магазина исходников.
 active_project: null
 mcp:
   required:
@@ -19,19 +19,21 @@ mcp:
       allow_prerelease: false
   optional:
     openviking:
+      enabled: false
       url: ''
       headers_env: {}
       timeout_seconds: 20
       max_response_bytes: 8388608
-# OpenViking also needs an explicitly selected project knowledge mode/provider
-# and collections. A nonempty URL enables transport; an empty URL disables it.
-# Transport configuration alone does not change provider: none.
-# Credential mappings contain environment names, never values:
+# OpenViking также требует явно выбранных режима знаний, провайдера
+# и коллекций в профиле проекта. Для подключения нужны enabled: true и непустой URL.
+# enabled: false сохраняет URL и запрещает подключение.
+# Настройка транспорта сама по себе не изменяет provider: none.
+# В сопоставлении авторизации указываются имена переменных окружения, без значений:
 # headers_env: { Authorization: TEAM_KNOWLEDGE_AUTH }
-# latest selects stable releases unless allow_prerelease is true.
-# Set version to an exact tag (including a prerelease) to pin a release.
-# For external mode set mode: external and url. Advanced connection fields:
-# headers_env: { Authorization: MY_MCP_AUTH_HEADER } (the complete header value)
+# latest выбирает стабильные релизы, если не задано allow_prerelease: true.
+# Для закрепления релиза задайте version точным тегом, включая предварительный релиз.
+# Для внешнего режима задайте mode: external и url. Дополнительные поля подключения:
+# headers_env: { Authorization: MY_MCP_AUTH_HEADER } (полное значение заголовка)
 # timeout_seconds: 60
 # max_response_bytes: 33554432
 

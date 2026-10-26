@@ -10,6 +10,22 @@ export const ROOT = path.resolve(
   "..",
 );
 export class ConfigError extends Error {}
+// Prepared copies record hook paths separately: hooks do not inherit MCP env.
+// Read only this installed copy; project/instance selection stays with the host.
+export function configure_hook_environment() {
+  let runtime;
+  try {
+    runtime = JSON.parse(fs.readFileSync(path.join(ROOT, "hooks/runtime.local.json"), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return;
+    throw new ConfigError("Invalid local hook runtime configuration");
+  }
+  if (!runtime || typeof runtime !== "object" || Array.isArray(runtime) ||
+      [runtime.state, runtime.settings].some(value => typeof value !== "string" || !path.isAbsolute(value)))
+    throw new ConfigError("Invalid local hook runtime configuration");
+  process.env.EDT_AI_STATE_DIR ||= runtime.state;
+  process.env.EDT_AI_SETTINGS ||= runtime.settings;
+}
 export class ProfileNotFound extends ConfigError {}
 export class ProfileAmbiguous extends ConfigError {
   constructor(candidates) {

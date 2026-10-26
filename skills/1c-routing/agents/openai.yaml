@@ -1,4 +1,4 @@
 interface:
-  display_name: "1C Routing"
-  short_description: "Route 1C work through EDT and read-only analysis"
-  default_prompt: "Use $1c-routing to choose the authoritative tools and safety policy for this 1C task."
+  display_name: "Маршрутизация задач 1С"
+  short_description: "Выбор EDT и инструментов анализа для задач 1С"
+  default_prompt: "Используй $1c-routing, чтобы выбрать авторитетные инструменты и правила безопасной работы для этой задачи 1С."

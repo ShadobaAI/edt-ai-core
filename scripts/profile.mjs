@@ -201,7 +201,7 @@ export function create_profile(selected) {
   if (!is_dir(root)) throw new ConfigError("Project directory does not exist");
   if (exists(target)) throw new ConfigError("Profile already exists: " + target);
   const data = load(path.join(ROOT, "profiles/generic-1c/profile.yaml"));
-  data.project.id = path.basename(root).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "") || "project";
+  data.project.id = path.basename(root).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "project";
   validate_at(root, data);
   // Resolve every supporting path before the first write (including junctions).
   for (const name of [".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.md", "AGENTS.override.md"]) {

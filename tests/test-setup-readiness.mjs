@@ -149,7 +149,7 @@ test("readiness includes enabled optional MCP and invalidates changed settings, 
   receipt.result.checkedAt=new Date(Date.now()-16*60*1000).toISOString();fs.writeFileSync(file,JSON.stringify(receipt));
   assert.equal((await backend.main({action:"read"})).readiness.state,"stale");
   fs.writeFileSync(file,'{"version":1,"result":{"state":"ready","checks":[null]}}');assert.equal((await backend.main({action:"read"})).readiness.state,"not_checked");
-  await backend.main({action:"update",set:{openvikingUrl:"https://knowledge.example/mcp"}});
+  await backend.main({action:"update",set:{openvikingEnabled:true,openvikingUrl:"https://knowledge.example/mcp"}});
   const result=await backend.main({action:"check",authorization});assert.equal(result.readiness.state,"blocked");assert.equal(result.external.openviking.ready,false);
   await backend.main({action:"update",set:{v8stdUrl:""}});assert.equal((await backend.main({action:"read"})).readiness.state,"stale");
 });

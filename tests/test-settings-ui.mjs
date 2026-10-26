@@ -81,8 +81,8 @@ test("OpenViking editable transport fields save typed values through the shared 
     if (name === "settings.update") { updated = args.set; Object.assign(current.values, args.set); return {}; }
     throw new Error(name);
   }); await ui.flush();
-  assert.equal(ui.elements.has("openvikingEnabled"), false);
-  const values = { openvikingUrl: "https://knowledge.example/mcp",
+  assert.equal(ui.elements.get("openvikingEnabled").checked, false);
+  const values = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
     openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
     openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
   for (const [key, value] of Object.entries(values)) {
@@ -92,6 +92,45 @@ test("OpenViking editable transport fields save typed values through the shared 
   }
   await ui.elements.get("saveButton").onclick();
   assert.deepEqual(JSON.parse(JSON.stringify(updated)), values);
+});
+
+test("OpenViking can be disabled and enabled without changing its saved URL", async () => {
+  const url = "https://knowledge.example/mcp", updates = [];
+  const current = { ...read, values: { ...read.values, openvikingEnabled: true, openvikingUrl: url },
+    valueSources: { openvikingEnabled: "project_local" } };
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.update") { updates.push(args.set); Object.assign(current.values, args.set); return {}; }
+    throw new Error(name);
+  }); await ui.flush();
+  const enabled = ui.elements.get("openvikingEnabled");
+  assert.equal(enabled.checked, true);
+  assert.match(ui.elements.get("openvikingEnabledSource").textContent, /локальных настроек проекта/);
+  for (const value of [false, true]) {
+    enabled.checked = value; enabled.events.change();
+    await ui.elements.get("saveButton").onclick();
+    assert.deepEqual(JSON.parse(JSON.stringify(updates.at(-1))), { openvikingEnabled: value });
+    assert.equal(ui.elements.get("openvikingUrl").value, url);
+    assert.equal(current.values.openvikingUrl, url);
+  }
+});
+
+test("an unsaved OpenViking disable is included in the probe and survives refresh", async () => {
+  const url = "https://knowledge.example/mcp";
+  const current = { ...read, values: { ...read.values, openvikingEnabled: true, openvikingUrl: url } };
+  let draft;
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.probe_connections") { draft = args.connections.openviking; return { id: "off-probe", status: "completed", result: { external: {} } }; }
+    throw new Error(name);
+  }); await ui.flush();
+  const enabled = ui.elements.get("openvikingEnabled");
+  enabled.checked = false; enabled.events.change();
+  await ui.elements.get("probeButton").onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(draft)), { enabled: false });
+  assert.equal(enabled.checked, false);
+  assert.equal(ui.elements.get("openvikingUrl").value, url);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.update").length, 0);
 });
 
 test("knowledge UI shows scoped setup publication and drops stale readiness without losing draft fields", async () => {

@@ -1,7 +1,7 @@
 interface:
-  display_name: "1C code-index"
-  short_description: "Read-only indexed search and impact analysis"
-  default_prompt: "Use $1c-code-index to investigate this 1C project through its exact alias and confirm through EDT only when authoritative live state is required."
+  display_name: "Индекс кода 1С"
+  short_description: "Поиск по индексу и анализ влияния без изменения исходников"
+  default_prompt: "Используй $1c-code-index, чтобы исследовать этот проект 1С по его точному псевдониму; подтверждай через EDT только необходимые факты текущего состояния."
 
 dependencies:
   tools:

@@ -63,6 +63,11 @@ another chat before correcting the actual connection problem.
   the same selected root, instance and precedence. OpenViking transport fields
   are openvikingEnabled/Url/Timeout/MaxResponseBytes/HeadersEnv; HeadersEnv is a
   complete map of header names to environment variable names, never secrets.
+  OpenViking is optional and disabled by default. Its enabled flag is independent
+  of the URL: to connect under the user's request, explicitly set
+  openvikingEnabled=true. Changing a URL does not enable a disabled transport.
+  Disabling it preserves the URL, knowledge mode and requirements; mandatory
+  knowledge and KORA gates still block their dependent work.
   Read valueSources per field: a URL source does not describe all transport fields.
 - Detection never overrides an explicit URL. If inspect reports a conflicting
   EDT port, verify the assigned endpoint/projects before proposing an override.

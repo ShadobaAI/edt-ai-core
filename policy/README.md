@@ -152,7 +152,7 @@ tool effects or replace host approvals.
 
 ## Migration from 1.1
 
-Source package version is `0.2.1`, protocol `2.1.0`, registry schema `2`,
+Protocol version is `2.1.0`, registry schema `2`,
 registry `2026-10-20.1`.
 Migration from 1.1 is incompatible: recreate selections and ledgers.
 The 2.1 addition preserves 2.0 format/digest without additions.
@@ -168,10 +168,10 @@ The 2.1 addition preserves 2.0 format/digest without additions.
 ## Recommendations for further development
 
 1. Maintain selector/exact-heading reconciliation against corpus revision.
-   Offline v8std source reconciliation on 20 October 2026 confirmed all 73 unique
-   selectors; see [limits and evidence](../docs/VERIFICATION.md).
-   It did not check published MCP, complete normative relationships or the full
-   runtime package state. Structural registry tests do not replace that acceptance.
+   Structural registry tests check the bundled contract and declared coverage;
+   see [local verification limits](../docs/ACCEPTANCE.md).
+   They do not verify the published v8std corpus, complete normative relationships
+   or live runtime acceptance.
 2. For stronger evidence obtain receipts from source/normative authorities:
    artifact identity, revision/hash, exact selector, text completeness/revision.
    Verify them through a trusted party; another self-reported field alone creates

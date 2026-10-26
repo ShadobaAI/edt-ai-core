@@ -65,6 +65,14 @@ test("profile creation preserves existing instructions byte for byte and fills o
   }
 });
 
+test("profile creation bounds the generated id for a long project directory name", t => {
+  const f = fixture(t), root = path.join(f.base, "project-" + "a".repeat(70));
+  fs.mkdirSync(root);
+  create_profile(root);
+  const profile = project_profile(root);
+  assert.equal(profile.project.id, path.basename(root).slice(0, 64));
+});
+
 test("unsafe supporting paths reject profile creation before any writes", (t) => {
   const f = fixture(t), outside = path.join(f.base, "outside");
   fs.mkdirSync(outside);
@@ -442,6 +450,13 @@ test("guard rejects reads, writes, patches, traversal, broad discovery, shell an
       { patch: "*** Update File: src/a.bsl\n*** Move to: docs/a.md" },
     ],
     ["Glob", {}],
+    ["mcp__filesystem__move_file", { source: "src/Module.bsl", destination: "docs/Module.bsl" }],
+    ["mcp__filesystem__move_file", { source: "docs/Module.bsl", destination: "src/Module.bsl" }],
+    ["mcp__filesystem__move_file", { source: f.root, destination: path.join(f.base, "renamed") }],
+    ["mcp__filesystem__list_directory", { path: f.root }],
+    ["mcp__filesystem__list_directory_with_sizes", { path: f.root }],
+    ["mcp__filesystem__search_files", { path: f.root, pattern: "**/*.bsl" }],
+    ["mcp__filesystem__directory_tree", { path: f.root }],
     ["exec_command", { cmd: "node -v", workdir: "." }],
     ["exec", { code: "tools.exec_command(...)" }],
     ["mcp__code_index.search", { repo: "foreign" }],
@@ -451,6 +466,11 @@ test("guard rejects reads, writes, patches, traversal, broad discovery, shell an
     assert.ok(reason({ cwd: f.root, tool_name, tool_input }), tool_name);
   for (const [tool_name, tool_input] of [
     ["Read", { path: "docs/a.md" }],
+    ["mcp__filesystem__move_file", { source: "docs/old.md", destination: "docs/new.md" }],
+    ["mcp__filesystem__list_directory", { path: "docs" }],
+    ["mcp__filesystem__list_directory_with_sizes", { path: "docs" }],
+    ["mcp__filesystem__search_files", { path: "docs", pattern: "**/*.md" }],
+    ["mcp__filesystem__directory_tree", { path: "docs" }],
     ["mcp__edt.read", { path: "src/a.bsl" }],
     ["mcp__code_index.search", { repo: "product" }],
     ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: { repo: "product" } }] }],
@@ -482,4 +502,51 @@ test("guard rejects reads, writes, patches, traversal, broad discovery, shell an
     ).hookSpecificOutput.permissionDecision,
     "deny",
   );
+});
+
+test("prepared hooks share their local settings and state while preserving explicit environment and chat scope", t => {
+  const f = fixture(t); f.save();
+  const plugin = path.join(f.base, "hook-copy");
+  const files = ["plugin.json", "vendor/deps.mjs", "settings/defaults.json", "policy/default.json",
+    ...["project-profile", "plugin-settings", "project-local"].map(name => `schemas/${name}.schema.json`),
+    ...["project_paths", "casefold", "common", "guard", "profile", "action_policy", "compatibility", "knowledge",
+      "project_context", "directory_context", "diagnostics", "selection"].map(name => `scripts/${name}.mjs`),
+    "hooks/guard.mjs", "hooks/session-start.mjs"];
+  for (const name of files) {
+    const target = path.join(plugin, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(ROOT, name), target);
+  }
+  const env = { ...f.env, CODEX_HOME: path.join(f.base, "empty-host") };
+  delete env.EDT_AI_STATE_DIR; delete env.EDT_AI_SETTINGS;
+  const run = (hook, event, extra = {}) => success(node(path.relative(ROOT, path.join(plugin, "hooks", hook + ".mjs")), [], {
+    cwd: f.root, env: { ...env, ...extra }, input: JSON.stringify({ cwd: f.root, ...event }),
+  }));
+  const event = { tool_name: "mcp__edt__list_projects", tool_input: {} };
+  assert.deepEqual(run("guard", event), {}, "portable copies need no local runtime file");
+  const config = load(path.join(ROOT, "settings/defaults.json"));
+  config.state_dir = f.state;
+  config.mcp.optional.openviking = { ...config.mcp.optional.openviking, enabled: true, url: "http://localhost:12345/mcp" };
+  const configPath = path.join(f.state, "custom-settings.json"), runtimePath = path.join(plugin, "hooks/runtime.local.json");
+  dump(config, configPath);
+  const runtime = { node: process.execPath, state: f.state, settings: configPath,
+    projectRoot: f.state, instance: "other" };
+  fs.writeFileSync(runtimePath, JSON.stringify(runtime));
+  assert.equal(run("guard", event).hookSpecificOutput.permissionDecision, "deny", "custom settings retain the invalid knowledge gate");
+  assert.match(run("session-start", {}).hookSpecificOutput.additionalContext, /selected chat directory/);
+  const events = fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(new Set(events.map(item => item.component)), new Set(["guard", "session-start"]));
+  assert.ok(events.every(item => item.instance === "first"));
+  assert.equal(events.find(item => item.component === "session-start").detail.projectRoot, f.root);
+  const overrideState = path.join(f.base, "override-state"), overrideSettings = path.join(f.base, "override-settings.json");
+  dump(load(path.join(ROOT, "settings/defaults.json")), overrideSettings);
+  const explicit = { EDT_AI_STATE_DIR: overrideState, EDT_AI_SETTINGS: overrideSettings };
+  assert.deepEqual(run("guard", event, explicit), {}, "environment settings override prepared defaults");
+  run("guard", { tool_name: "Read", tool_input: { path: "src/Module.bsl" } }, explicit);
+  assert.ok(fs.existsSync(path.join(overrideState, "diagnostics/events.0.jsonl")), "environment state receives hook diagnostics");
+  assert.equal(fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8").trim().split("\n").length, events.length);
+  for (const invalid of ["{", JSON.stringify({ ...runtime, state: "relative" }), JSON.stringify({ ...runtime, settings: 42 })]) {
+    fs.writeFileSync(runtimePath, invalid);
+    assert.equal(run("guard", event).hookSpecificOutput.permissionDecision, "deny", "invalid prepared runtime fails closed");
+  }
 });

@@ -37,7 +37,7 @@ test("OpenViking uses explicit nonempty collections without requiring the recomm
   f.profile.knowledge.collections = ["team-architecture"];
   validate(f.profile);
   const config = settings();
-  assert.equal(knowledge_status(f.profile, config).state, "not_configured");
+  assert.equal(knowledge_status(f.profile, config).state, "disabled");
   config.mcp.optional.openviking = { enabled: true, url: "http://127.0.0.1:1/mcp" };
   assert.deepEqual(knowledge_status(f.profile, config).collections, ["team-architecture"]);
   assert.equal(knowledge_status(f.profile, config).state, "not_verified");
@@ -102,6 +102,32 @@ test("required knowledge blocks only the declared dependent phases", t => {
   assert.throws(() => validate(f.profile), /dependent_actions/);
   delete f.profile.knowledge.required;
   assert.throws(() => validate(f.profile), /required/);
+});
+
+test("disabled optional knowledge permits setup without network while required knowledge keeps its gates", async t => {
+  const f = fixture(t); environment(t, f.env);
+  f.profile.knowledge = { mode: "transitional", provider: "openviking", manifest: null,
+    collections: ["architecture"], required: false, dependent_actions: [] }; f.save();
+  const config = settings(); config.active_project = f.root;
+  config.mcp.optional.openviking.url = "https://saved.example/mcp";
+  const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network"); });
+  const optional = await probe_connections(config, f.root, f.profile);
+  assert.equal(optional.knowledge.state, "disabled");
+  assert.equal(optional.external.openviking, undefined);
+  assert.equal(save_readiness(f.state, config, f.profile, [], { edt: { ready: true }, v8std: { ready: true } }).state, "ready");
+  assert.equal(knowledge_gate(f.profile, config, "review").allowed, true);
+  assert.equal(knowledge_gate(f.profile, config, "knowledge_search").allowed, false);
+  for (const mode of ["transitional", "kora"]) {
+    f.profile.knowledge.mode = mode; f.profile.knowledge.required = true;
+    f.profile.knowledge.dependent_actions = mode === "kora" ? [...WORKFLOW_ACTIONS] : ["implementation"];
+    const required = await probe_connections(config, f.root, f.profile);
+    assert.equal(required.knowledge.state, "not_configured");
+    assert.equal(required.external.openviking.connected, false);
+    assert.equal(save_readiness(f.state, config, f.profile, [], { ...required.external, edt: { ready: true }, v8std: { ready: true } }).state, "blocked");
+    assert.equal(knowledge_gate(f.profile, config, "implementation").allowed, false);
+  }
+  assert.equal(config.mcp.optional.openviking.url, "https://saved.example/mcp");
+  assert.equal(network.mock.callCount(), 0);
 });
 
 test("settings.inspect exposes the profile's knowledge dependency scope", async t => {
@@ -231,7 +257,7 @@ test("mode/provider/transport/collection/requirement matrix never silently repai
               if (profileValid) validate(f.profile); else assert.throws(() => validate(f.profile), undefined, label);
               const status = knowledge_status(f.profile, config);
               const invalid = !profileValid || provider === "none" && enabled;
-              const expected = invalid ? "invalid" : provider === "none" ? "disabled" : enabled && url ? "not_verified" : "not_configured";
+              const expected = invalid ? "invalid" : provider === "none" || !enabled && !required ? "disabled" : enabled && url ? "not_verified" : "not_configured";
               assert.equal(status.state, expected, label);
               assert.equal(status.koraReady, false, label);
               if (invalid || mode === "kora" || required)
@@ -265,7 +291,7 @@ test("malformed knowledge fields and transports fail closed without network acce
 test("inspection, doctor and setup report a conflicting transport without disabling or repairing it", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const backend = new SettingsBackend();
-  await backend.main({ action: "update", set: { openvikingUrl: "https://knowledge.example/mcp" } });
+  await backend.main({ action: "update", set: { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp" } });
   const savedFile = instance_file(backend.current(), f.root);
   const saved = fs.readFileSync(savedFile, "utf8");
   const read = await backend.main({ action: "read" });

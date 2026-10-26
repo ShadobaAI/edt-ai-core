@@ -266,7 +266,7 @@ export class SettingsBackend {
         if (Object.hasOwn(entry, "url")) {
           const value = entry.url;
           delete entry.url;
-          if (value) connections[name] = { url: validate_url(value, name) };
+          connections[name] = { url: value ? validate_url(value, name) : "" };
         }
       imported = data.profile == null ? null : structuredClone(data.profile);
       if (!editing) config = deep_merge(config, changes);

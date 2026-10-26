@@ -190,7 +190,15 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       verification: { git_manifest: "matched_committed_bytes", index_contents: "exact_active_manifest", excluded_materials: "absent",
         deleted_materials: "absent", changed_materials: "matched", delivery: "immutable_endpoint", deployment_id: "fixture-deployment" },
       verified_at: "2026-10-24T08:00:00Z", expires_at: "2026-10-25T08:00:00Z", evidence_ref: "https://example.org/publication" });
-    assert.equal(knowledge.knowledge_status(candidate, common.load(path.join(root, "settings/defaults.json"))).state, "not_configured");
+    const knowledgeSettings = common.load(path.join(root, "settings/defaults.json"));
+    assert.equal(knowledge.knowledge_status(candidate, knowledgeSettings).state, "disabled");
+    knowledgeSettings.mcp.optional.openviking.enabled = true;
+    assert.equal(knowledge.knowledge_status(candidate, knowledgeSettings).state, "not_configured");
+    knowledgeSettings.mcp.optional.openviking.url = "https://example.org/mcp";
+    assert.equal(knowledge.knowledge_status(candidate, knowledgeSettings).state, "not_verified");
+    knowledgeSettings.mcp.optional.openviking.enabled = false;
+    assert.equal(knowledge.knowledge_status(candidate, knowledgeSettings).state, "disabled");
+    assert.equal(knowledgeSettings.mcp.optional.openviking.url, "https://example.org/mcp");
     assert.throws(() => profiles.validate({ ...candidate, schema_version: "0.1" }), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
     // Import through the real settings stdio server exercises bundled YAML/Ajv.
     const { McpClient } = await import(

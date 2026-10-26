@@ -61,7 +61,7 @@ const primitive = {
   codeIndexAllowPrerelease: { type: "boolean", title: "Предварительные релизы индекса кода", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   bslLsVersion: { type: "string", title: "Версия BSL LS", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
   bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
-  openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Поле совместимости: включение определяется URL. Непустой URL включает транспорт, пустой отключает. Не изменяет режим и обязательность знаний." },
+  openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Включает подключение для текущего каталога и экземпляра. При выключении сохранённый URL остаётся; режим и обязательность знаний не изменяются." },
   openvikingUrl: { type: "string", title: "URL OpenViking", description: "Override текущего каталога и экземпляра. Пустое значение отключает транспорт; окружение имеет высший приоритет." },
   openvikingTimeout: { type: "number", title: "Таймаут OpenViking, с", exclusiveMinimum: 0, maximum: 300 },
   openvikingMaxResponseBytes: { type: "integer", title: "Лимит ответа OpenViking, байт", minimum: 1024, maximum: 16777216 },

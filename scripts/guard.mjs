@@ -114,7 +114,7 @@ export function reason(event, delegatedKnowledge = false) {
       /^\*\*\* (?:(?:Add|Update|Delete) File|Move to): ([^\r\n]+)/gm,
     ),
   ].map((match) => match[1]);
-  const explicit = ["path", "file_path", "filename", "file", "directory", "uri"]
+  const explicit = ["path", "file_path", "filename", "file", "directory", "uri", "source", "destination"]
     .map((key) => args[key])
     .filter((value) => typeof value === "string");
   if (Array.isArray(args.paths))
@@ -147,16 +147,17 @@ export function reason(event, delegatedKnowledge = false) {
       ...inspected.matchAll(/(?:[A-Za-z]:[/\\]|\.\.?[/\\])[^\s"'`;|<>]+/g),
     ].map((match) => match[0]),
   ];
+  const broad = ["Glob", "Grep", "list_directory", "list_directory_with_sizes", "search_files", "directory_tree", "move_file"].includes(bare.split("__").at(-1));
   for (const file of paths)
     if (
       touches(
         path.resolve(base, file),
-        ["Glob", "Grep", "list_directory"].includes(bare),
+        broad,
       )
     )
       return "Filesystem path resolves into protected source";
   if (
-    ["Glob", "Grep", "list_directory"].includes(bare) &&
+    broad &&
     !paths.length &&
     touches(base, true)
   )

@@ -192,9 +192,10 @@ export function load_manifest(root, relative, selectedCollections = []) {
 export function knowledge_status(profile, config) {
   const { provider, mode = provider === "none" ? "disabled" : null, collections = [], required = false, dependent_actions = [] } = profile?.knowledge || {};
   const transport = config?.mcp?.optional?.openviking;
+  const enabled = Boolean(transport) && transport.enabled !== false;
   const result = { provider, mode, collections: structuredClone(collections), required, dependentActions: structuredClone(dependent_actions),
     configured: false, connected: false, ready: false, lifecycle: "saved", searchReadiness: "not_verified", readinessScope: "configuration",
-    transport: { enabled: transport?.enabled === true, endpointConfigured: typeof transport?.url === "string" && Boolean(transport.url) },
+    transport: { enabled, endpointConfigured: typeof transport?.url === "string" && Boolean(transport.url) },
     coverage: "not_verified", coverageScope: "selected_collections", apiExistence: "not_determined",
     workflowScope: mode === "kora" ? "all" : "dependent_actions", koraReady: false };
   try {
@@ -202,14 +203,16 @@ export function knowledge_status(profile, config) {
     check_schema(config, "plugin-settings.schema.json");
     if (transport?.url) validate_openviking_url(transport.url);
   } catch (error) {
-    return { ...result, state: "invalid", lifecycle: "invalid", detail: "Invalid knowledge configuration: " + error.message };
+    return { ...result, state: "invalid", lifecycle: "invalid", detail: "Некорректная настройка знаний: " + error.message };
   }
-  if (provider === "none") return { ...result, state: transport?.enabled ? "invalid" : "disabled", lifecycle: transport?.enabled ? "invalid" : "disabled",
-    detail: transport?.enabled ? "OpenViking transport is enabled but knowledge.provider is none." : "Knowledge is explicitly disabled; no knowledge coverage is claimed." };
-  const configured = transport?.enabled === true && Boolean(transport.url);
+  if (provider === "none") return { ...result, state: enabled ? "invalid" : "disabled", lifecycle: enabled ? "invalid" : "disabled",
+    detail: enabled ? "Транспорт OpenViking включён, но в профиле задано knowledge.provider: none." : "Знания явно отключены; покрытие базы знаний не подтверждается." };
+  if (!enabled && !required) return { ...result, state: "disabled", lifecycle: "disabled",
+    detail: "Необязательное подключение знаний отключено; выбранный профиль и адрес сохранены." };
+  const configured = enabled && Boolean(transport?.url);
   return { ...result, configured, lifecycle: configured ? "configured" : "saved", state: configured ? "not_verified" : "not_configured",
-    detail: configured ? "Search readiness for the selected collections has not been verified."
-      : "OpenViking transport is disabled or its URL is empty; the profile's knowledge requirements remain in force." };
+    detail: configured ? "Готовность поиска по выбранным коллекциям ещё не проверена."
+      : "Подключение OpenViking отключено или его URL пуст; требования профиля к знаниям сохраняются." };
 }
 
 // This decision only constrains knowledge dependencies; it grants no authority
@@ -222,7 +225,7 @@ export function knowledge_gate(profile, config, action, confirmation = null) {
     if (observation?.ready === true) knowledge = { ...knowledge, state: "ready", lifecycle: "ready", connected: true, ready: true,
       searchReadiness: "ready", readiness: observation.readiness, koraReady: knowledge.mode === "kora",
       readinessScope: "workflow",
-      detail: "Selected-collection search readiness verified for this connection." };
+      detail: "Готовность поиска по выбранным коллекциям подтверждена для этого подключения." };
   }
   const dependent = knowledge.mode === "kora" || action === "knowledge_search" || knowledge.required && Array.isArray(knowledge.dependentActions) &&
     (action === "workflow" || knowledge.dependentActions.includes(action));

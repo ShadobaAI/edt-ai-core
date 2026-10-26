@@ -1,4 +1,4 @@
 interface:
-  display_name: "1C Code Change"
-  short_description: "EDT-only 1C changes with focused validation"
-  default_prompt: "Use $1c-code-change to implement this scoped 1C change through EDT-MCP and validate the affected objects."
+  display_name: "Изменение кода 1С"
+  short_description: "Изменения 1С через EDT с проверкой затронутых объектов"
+  default_prompt: "Используй $1c-code-change, чтобы внести это ограниченное изменение 1С через EDT-MCP и проверить затронутые объекты."

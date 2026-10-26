@@ -18,7 +18,7 @@ export function setup_knowledge_status(profile, config, root, observation) {
       proof.evidence !== knowledge_evidence_revision(config, root, profile) ||
       Date.now() < Date.parse(proof.status.readiness.checkedAt) || Date.now() >= Date.parse(proof.status.readiness.expiresAt)) return knowledge;
   return { ...knowledge, state: "ready", ready: true, lifecycle: "ready", searchReadiness: "ready",
-    readiness: structuredClone(proof.status.readiness), detail: "Selected search verified by the setup probe; workflow must verify its own session." };
+    readiness: structuredClone(proof.status.readiness), detail: "Поиск по выбранным коллекциям подтверждён проверкой настройки; рабочий процесс должен проверить собственную сессию." };
 }
 
 // Read-only external acceptance for setup, without launching managed services,

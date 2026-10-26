@@ -120,8 +120,11 @@ async function checkKnowledgeWorkflow(action = "workflow") {
   return () => { validate(); return workflowKnowledge.check(profile, config, action); };
 }
 async function refreshTools() {
-  const revision = client.tools_revision,
-    next = (await all_pages(client, "tools/list", "tools")).tools;
+  const owner = client, epoch = generation,
+    revision = owner.tools_revision,
+    next = (await all_pages(owner, "tools/list", "tools")).tools;
+  if (owner !== client || epoch !== generation)
+    throw new ConfigError("Project binding changed while refreshing tools");
   toolsRevision = revision;
   toolsDirty = false;
   if (stable(next) !== stable(tools)) {
@@ -484,6 +487,7 @@ async function dispatch(message) {
             const declaredRead = nativeTool.annotations?.readOnlyHint === true && nativeTool.annotations?.destructiveHint !== true;
             // A phase assertion cannot downgrade a writer or an unknown effect.
             const recheckKnowledge = await checkKnowledgeWorkflow(declaredRead ? params.arguments.workflowAction : "workflow");
+            if (pending.cancelled || client !== owner || epoch !== generation) throw new ConfigError("Runtime batch interrupted before the next call; completed calls were not rolled back");
             pending.client = owner;
             diagnostic.event("native_request_started", { requestId: id, tool: call.name, projectRoot: selected });
             dispatched = true;
@@ -516,7 +520,10 @@ async function dispatch(message) {
       } else if (client) {
         // Discovery/status controls remain available to repair setup. Native
         // workflow calls, resources and prompts cannot bypass mandatory KORA.
-        const recheckKnowledge = await checkKnowledgeWorkflow();
+        const owner = client, epoch = generation,
+          recheckKnowledge = await checkKnowledgeWorkflow();
+        if (pending.cancelled) throw new ConfigError("Request cancelled before dispatch; not executed");
+        if (client !== owner || epoch !== generation) throw new ConfigError("Project binding changed before dispatch; not executed");
         const keys = {
             "resources/list": "resources",
             "resources/templates/list": "resourceTemplates",
@@ -524,18 +531,17 @@ async function dispatch(message) {
           },
           key = keys[method];
         if (method === "tools/call") checkAlias(params);
-        pending.client = client;
+        pending.client = owner;
         if (key) {
           try {
-            result = await client.request(method, params, { onId: value => { pending.upstreamId = value; } });
+            result = await owner.request(method, params, { onId: value => { pending.upstreamId = value; } });
           } catch (error) {
             if (error.code !== -32601)
               throw error;
             result = { [key]: [] };
           }
         } else {
-          pending.client = client;
-          result = await client.request(method, params, { onId: value => { pending.upstreamId = value; } });
+          result = await owner.request(method, params, { onId: value => { pending.upstreamId = value; } });
         }
         try { recheckKnowledge(); }
         catch (error) {

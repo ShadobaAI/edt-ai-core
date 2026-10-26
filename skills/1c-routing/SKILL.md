@@ -77,7 +77,7 @@ sufficient confirmation rather than inference from incomplete search.
 | Standards and normative corpus | `v8std` |
 | Deterministic applicability and proposal/result ledger | bundled read-only `policy` / $1c-standards |
 | Runtime launch/debug state | `edt` / [runtime contract](references/runtime.md) |
-| Performance measurement | `edt` / [profiling workflow](references/runtime.md#замер-производительности) |
+| Performance measurement | `edt` / [profiling workflow](references/runtime.md#performance-measurement) |
 | External processors/reports, localization, specialized artifacts | `edt` / [artifact workflows](references/edt-artifacts.md) |
 | Configuration comparison / decision files | `edt` / [comparison contract](references/comparison.md) |
 

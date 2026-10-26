@@ -271,6 +271,35 @@ test("a failed retrieval invalidates prior readiness until a successful explicit
   f.client.respond = normal;
   assert.equal((await adapter.verifyReadiness()).ready, true);
 });
+for (const batch of [false, true]) test(`cancellation during mandatory readiness prevents ${batch ? "batch" : "direct"} native dispatch`, { timeout: 15000 }, async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);
+  f.profile.knowledge.required = true; f.profile.knowledge.dependent_actions = ["implementation"];
+  f.profile.connections.edt = { url: remote.url }; f.save();
+  const entered = Promise.withResolvers(), gate = Promise.withResolvers(); t.after(() => gate.resolve());
+  f.client.before = async message => {
+    if (message.method === "tools/call" && message.params.name === "find") { entered.resolve(); await gate.promise; }
+  };
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, true);
+  const call = { name: "read", arguments: { uris: uri, offset: 0, limit: 1000 } };
+  const pending = client.request("tools/call", batch ? { name: "core_runtime_call", arguments: { calls: [call] } } : call);
+  const hostId = client.sequence;
+  const outcome = pending.then(result => ({ result }), error => ({ error }));
+  await entered.promise;
+  client.notify("notifications/cancelled", { requestId: hostId });
+  await client.request("ping");
+  gate.resolve();
+  const completed = await outcome;
+  if (batch) {
+    assert.equal(completed.result?.isError, true);
+    assert.equal(completed.result.structuredContent.completed, 0);
+    assert.deepEqual(completed.result.structuredContent.stopped.notStarted, ["read"]);
+    assert.equal(completed.result.structuredContent.results[0].error.outcome, "not_executed");
+  } else assert.match(completed.error?.message || "", /cancelled before dispatch/);
+  // The single addressed read belongs to readiness; the native read never starts.
+  assert.equal(remote.requests.filter(message => message.method === "tools/call" && message.params.name === "read").length, 1);
+});
+
 test("loss of mandatory knowledge during a native write stops the batch and preserves completed results", async t => {
   const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);
   f.profile.knowledge.required = true; f.profile.knowledge.dependent_actions = ["implementation"];
@@ -778,13 +807,37 @@ test("disabled knowledge never opens the configured endpoint, including contradi
     f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
     f.profile.connections.openviking.enabled = enabled; f.save();
     const status = (await client.call("knowledge_status", {})).structuredContent;
-    assert.equal(status.state, "invalid");
+    assert.equal(status.state, enabled ? "invalid" : "disabled");
     assert.equal(status.binding, null);
     for (const [name, args] of [["knowledge_search", { query: "x", collection: "architecture" }], ["knowledge_read", { uri, collection: "architecture" }]])
-      await assert.rejects(client.call(name, args), /disabled|provider is none/);
+      await assert.rejects(client.call(name, args), /отключ|knowledge\.provider/);
     assert.equal(remote.requests.length, 0);
     assert.equal(remote.closed.length, 0);
   }
+});
+
+test("the transport switch preserves its endpoint, retires only its instance and resists an environment URL", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f);
+  const saved = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
+  const controls = await session(t, "mcp/settings.mjs", [], f);
+  const first = await session(t, "mcp/openviking.mjs", [], f, { EDT_AI_OPENVIKING_URL: remote.url });
+  const second = await session(t, "mcp/openviking.mjs", [], f, { EDT_AI_INSTANCE: "second" });
+  const before = (await first.call("knowledge_status", {})).structuredContent;
+  const other = (await second.call("knowledge_status", {})).structuredContent;
+  await controls.call("settings.update", { set: { openvikingEnabled: false } });
+  const disabled = (await first.call("knowledge_status", {})).structuredContent;
+  assert.equal(disabled.state, "disabled"); assert.equal(disabled.connected, false); assert.equal(disabled.binding, null);
+  const count = remote.requests.length;
+  await assert.rejects(first.call("knowledge_search", { query: "x", collection: "architecture" }), /отключено/);
+  assert.equal(remote.requests.length, count);
+  assert.deepEqual(remote.closed, ["fixture-1"]);
+  assert.deepEqual((await second.call("knowledge_status", {})).structuredContent.binding, other.binding);
+  const view = (await controls.call("settings.read", {})).structuredContent;
+  assert.equal(view.values.openvikingUrl, remote.url); assert.equal(view.values.openvikingEnabled, false);
+  await controls.call("settings.update", { set: { openvikingEnabled: true } });
+  const enabled = (await first.call("knowledge_status", {})).structuredContent;
+  assert.equal(enabled.connected, true); assert.notEqual(enabled.binding.connectionId, before.binding.connectionId);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), saved);
 });
 test("profile history and active_project never select or switch another knowledge session", async t => {
   const f = adapterFixture(t), other = fixture(t);
@@ -836,7 +889,7 @@ test("profiles share one external read server with independent collections, cont
   await assert.rejects(search(second, "architecture"), /outside the selected profile/);
   assert.equal(remote.requests.length, before);
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
-  f.profile.connections.openviking.url = ""; f.save();
+  f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
   assert.equal((await first.call("knowledge_status", {})).structuredContent.binding, null);
   const stillBound = await search(second, "bsp");
   assert.deepEqual(stillBound.binding, results[1].binding);
@@ -911,7 +964,7 @@ test("disabling knowledge while initialize is pending prevents discovery and ret
   const pending = client.call("knowledge_status", {}), rejected = assert.rejects(pending, /binding changed/);
   await entered.promise;
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
-  f.profile.connections.openviking.url = ""; f.save();
+  f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
   assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");
   release.resolve(); await rejected;
   assert.equal(remote.requests.some(value => value.method === "tools/list" || value.method === "tools/call"), false);
@@ -927,7 +980,7 @@ test("a binding invalidated while the old DELETE is pending never opens a stale 
   const rejected = assert.rejects(client.call("knowledge_status", {}), /binding changed/);
   await entered.promise;
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
-  f.profile.connections.openviking.url = ""; f.save();
+  f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
   release.resolve(); await rejected;
   assert.equal(remote.requests.filter(value => value.method === "initialize").length, 1);
   assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");

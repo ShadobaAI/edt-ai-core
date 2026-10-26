@@ -20,7 +20,7 @@
             "type": "command",
             "command": "node \"${PLUGIN_ROOT}/hooks/guard.mjs\"",
             "timeout": 5,
-            "statusMessage": "Checking the selected 1C project source boundary"
+            "statusMessage": "Проверка границ исходников выбранного проекта 1С"
           }
         ]
       }

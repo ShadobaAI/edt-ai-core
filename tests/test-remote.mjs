@@ -507,6 +507,50 @@ test("lazy relay preserves paginated tools/results, bounded discovery and indepe
     true,
   );
 });
+test("a tool catalogue received after host roots change cannot restore the previous binding", { timeout: 10000 }, async t => {
+  const f = fixture(t);
+  let release, waiting;
+  t.after(() => release?.());
+  const held = new Promise(resolve => { waiting = resolve; });
+  let lists = 0;
+  const e = await endpoint(t, async ({ req, res, message, reply, error }) => {
+    if (req.method === "DELETE") return res.writeHead(204).end();
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: {}, serverInfo: { name: "fixture", version: "1" } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") {
+      if (++lists === 2) {
+        await new Promise(resolve => { release = resolve; waiting(); });
+      }
+      return reply({ tools: [{ name: "previous_project", inputSchema: { type: "object" } }] });
+    }
+    return error(-32601);
+  });
+  f.profile.connections = { edt: { url: e.url } };
+  f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f, { EDT_AI_PROJECT_ROOT: "" });
+  assert.equal((await client.call("core_runtime_status", { projectRoot: f.root })).structuredContent.ready, true);
+  const pending = client.request("tools/list");
+  const rejected = assert.rejects(pending, /binding changed/i);
+  await held;
+  // Return a valid empty roots response so the old project is fully unbound.
+  client.roots = [];
+  let rootsChanged;
+  const rootsAnswered = new Promise(resolve => { rootsChanged = resolve; });
+  const send = client.send.bind(client);
+  client.send = message => { send(message); if (message.result?.roots) rootsChanged(); };
+  client.notify("notifications/roots/list_changed");
+  await rootsAnswered;
+  // Ping is handled after the host roots response without reconnecting a project.
+  await client.request("ping");
+  release();
+  await rejected;
+  const status = (await client.call("core_runtime_status", {})).structuredContent;
+  assert.equal(status.selectedDirectory, null);
+  assert.equal(status.nativeToolCount, 0);
+  assert.equal(status.binding, null);
+});
+
 test("failed lazy startup retries on the next host request without a config change", async (t) => {
   const f = fixture(t);
   let fail = true;

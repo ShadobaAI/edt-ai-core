@@ -85,13 +85,13 @@ details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer
 <details id="legacyState" hidden><summary>Проверьте прежние подключения</summary><p>Старое состояние сохранено. Его владелец не записан, поэтому адреса требуют проверки для этой папки.</p><pre id="legacyConnections"></pre><button id="migrateConnectionsButton">Использовать эти подключения</button></details>
 <div class="connection-field"><label class="field" for="edtUrl">EDT<small>Проект и платформа 1С</small></label><input id="edtUrl" type="text" placeholder="URL сервера EDT MCP" autocomplete="off"><div id="edtSource" class="source-line"></div><div id="edtPortHint" class="source-line" role="status" hidden><span id="edtPortText"></span> <button id="useEdtPortButton" class="text-button">Обновить порт</button></div></div>
 <div class="connection-field"><label class="field" for="v8stdUrl">v8std<small>Стандарты разработки</small></label><input id="v8stdUrl" type="text" placeholder="URL сервера v8std MCP" autocomplete="off"><div id="v8stdSource" class="source-line"></div></div>
-<div class="connection-field"><label class="field" for="openvikingUrl">OpenViking<small>Существующий сервер знаний</small></label><input id="openvikingUrl" type="text" placeholder="URL внешнего сервера MCP" autocomplete="off"><div id="openvikingSource" class="source-line"></div></div>
+<div class="connection-field"><label class="field" for="openvikingUrl">OpenViking<small>Необязательный сервер знаний</small></label><input id="openvikingUrl" type="text" placeholder="URL внешнего сервера MCP" autocomplete="off"><div id="openvikingSource" class="source-line"></div><label class="replace source-line" for="openvikingEnabled"><input id="openvikingEnabled" type="checkbox"><span>Использовать OpenViking</span></label><div id="openvikingEnabledSource" class="source-line"></div></div>
 <fieldset class="openviking-advanced"><legend>Дополнительные настройки OpenViking</legend>
 <label class="field" for="openvikingTimeout">Таймаут, секунды (до 300)</label><input id="openvikingTimeout" type="text" inputmode="decimal">
 <div id="openvikingTimeoutSource" class="muted"></div>
 <label class="field" for="openvikingMaxResponseBytes">Лимит ответа, байт (1024–16777216)</label><input id="openvikingMaxResponseBytes" type="text" inputmode="numeric">
 <div id="openvikingMaxResponseBytesSource" class="muted"></div>
-<label class="field" for="openvikingHeadersEnv">Заголовки → имена переменных окружения (JSON)</label><input id="openvikingHeadersEnv" type="text" placeholder='{"Authorization":"OV_AUTHORIZATION"}' autocomplete="off"><p>Укажите имена переменных. Значения credentials задаются вне формы.</p>
+<label class="field" for="openvikingHeadersEnv">Заголовки → имена переменных окружения (JSON)</label><input id="openvikingHeadersEnv" type="text" placeholder='{"Authorization":"OV_AUTHORIZATION"}' autocomplete="off"><p>Укажите имена переменных. Данные авторизации задаются вне формы.</p>
 <div id="openvikingHeadersEnvSource" class="muted"></div>
 </fieldset>
 <div class="notice-box" id="knowledgeSummary" role="status" aria-live="polite"><pre id="knowledgeDetails"></pre></div>
@@ -154,8 +154,8 @@ const selectedVersions=new Map();
 const versionCatalogs=new Map();let versionOpen=false,versionLimit=50,versionIndex=-1,visibleVersions=[];
 const versionField=component=>component==="bsl-ls"?"bslLsVersion":"codeIndexVersion";
 const checkboxField=field=>field.endsWith("Enabled")||field.endsWith("AllowPrerelease");
-const openvikingFields=["openvikingUrl","openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"];
-const openvikingMembers=["url","timeout_seconds","max_response_bytes","headers_env"];
+const openvikingFields=["openvikingEnabled","openvikingUrl","openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"];
+const openvikingMembers=["enabled","url","timeout_seconds","max_response_bytes","headers_env"];
 const transportValue=key=>checkboxField(key)?$(key).checked:key==="openvikingHeadersEnv"?JSON.parse($(key).value):["openvikingTimeout","openvikingMaxResponseBytes"].includes(key)?Number($(key).value):$(key).value.trim();
 const savedField=(values,field)=>checkboxField(field)?Boolean(values?.[field]):field==="openvikingHeadersEnv"?JSON.stringify(values?.[field]||{}):String(values?.[field]??(field.endsWith("Version")?"latest":""));
 const selectedVersion=component=>selectedVersions.get(component)||savedField(currentData?.values,versionField(component));
@@ -297,7 +297,7 @@ function renderCurrent(current,{preserveDraft=false}={}){
   if(changedScope){cancelReadinessRetry();dirtyFields.clear();invalidate();$("settingsText").value="";editorOriginal="";editBaseRevision=null;resetJsonEditor();$("probeResult").hidden=true;$("connections").hidden=true;$("exportSaved").hidden=true;updateResults.clear();selectedVersions.clear();renderUpdates();}
   $("legacyState").hidden=current.legacyState?.status!=="owner_unknown"||!Object.keys(current.legacyState?.connections||{}).length;
   $("legacyConnections").textContent=Object.entries(current.legacyState?.connections||{}).map(([name,item])=>name+": "+(item.url||"отключён")).join("\n");
-  for(const field of ["codeIndexEnabled","bslLsEnabled"])if(!preserveDraft||!dirtyFields.has(field))$(field).checked=Boolean(current.values?.[field]);
+  for(const field of ["codeIndexEnabled","bslLsEnabled","openvikingEnabled"])if(!preserveDraft||!dirtyFields.has(field))$(field).checked=Boolean(current.values?.[field]);
   for(const field of ["openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"])if(!preserveDraft||!dirtyFields.has(field))$(field).value=savedField(current.values,field);
   for(const field of openvikingFields){
     $(field).readOnly=Boolean(current.schema?.properties?.[field]?.readOnly)||current.viewOnly;
@@ -366,11 +366,11 @@ function renderKnowledge(current){
     "Выбранные коллекции: "+(config.collections?.join(", ")||"нет"),
     "Покрытие: только выбранные коллекции; наличие API и полнота содержания не подтверждены.",
     "Редакция публикации: "+(publication?.state==="verified"?publication.gitRevision+" · индекс "+publication.snapshot:"не подтверждена"),
-    "Готовность setup: "+(setup?.ready?"подтверждена для выбранных коллекций; workflow проверяет свою сессию":"не подтверждена")];
+    "Готовность окружения: "+(setup?.ready?"подтверждена для выбранных коллекций; рабочие действия требуют проверки своей сессии":"не подтверждена")];
   if(current.readiness?.state==="stale")lines.push(current.readiness.reason||"Проверка устарела.");
   const reasons=(fresh?current.readiness.checks||[]:[]).filter(item=>["knowledge","openviking"].includes(item.id)&&!["ready","disabled"].includes(item.state)).map(item=>item.detail);
   if(!setup?.ready)lines.push("Причина: "+(reasons.filter(Boolean).join("; ")||config.detail||"Требуется проверка готовности."));
-  lines.push("Область блокировки: "+(config.state==="disabled"?"нет":config.state==="invalid"||config.workflowScope==="all"?"весь workflow":config.required?config.dependentActions?.join(", "):"поиск знаний"));
+  lines.push("Область блокировки: "+(config.state==="disabled"?"нет":config.state==="invalid"||config.workflowScope==="all"?"все рабочие действия":config.required?config.dependentActions?.join(", "):"поиск знаний"));
   $("knowledgeDetails").textContent=lines.join("\n");
 }
 async function refresh(){const revision=viewRevision,current=currentData?.viewOnly?await tool("settings.status",{projectRoot:currentData.values.projectRoot}):await tool("settings.read");if(disposed||revision!==viewRevision)return currentData;renderCurrent(current,{preserveDraft:true});return current;}
@@ -423,6 +423,7 @@ function syncControls(){
   $("openExportButton").disabled||=$("exportSaved").hidden;
   const loaded=currentData?.profile?.status==="loaded",draftRoot=dirtyFields.has("projectRoot"),blocked=currentData?.viewOnly||draftRoot;
   for(const id of ["saveButton","probeButton","saveComponentsButton","updateComponent","versionButton","versionSearch","moreVersionsButton","refreshVersionsButton","checkButton","readinessButton","installUpdateButton","downloadButton","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled",...openvikingFields])$(id).disabled||=!loaded||blocked;
+  $("openvikingEnabled").disabled||=$("openvikingEnabled").readOnly;
   $("refreshVersionsButton").disabled||=!connected||Boolean(versionCatalogs.get($("updateComponent").value)?.loading);
   syncInstallControl();
   for(const id of ["indexRepository","rebuildIndexButton"])$(id).disabled||=!loaded||blocked||currentData?.values?.codeIndexEnabled===false||!$("indexRepository").value;

@@ -10,7 +10,7 @@ Reuse current facts and sufficient normative text across phases when their
 conditions and boundaries are unchanged. For each new phase state what they
 confirm: baseline checks do not prove changed results, and selection/ledger and
 session refs do not transfer as completed conclusions. Apply corpus reuse rules
-from the [MCP contract](mcp.md#повторное-использование-evidence), without a new full
+from the [MCP contract](mcp.md#evidence-reuse), without a new full
 search for an already confirmed contract.
 On revision, binding/identity, affected-code, publication/corpus changes, errors
 or contradictions, establish which facts depend on them. Refresh only those:
