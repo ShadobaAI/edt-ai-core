@@ -38,7 +38,10 @@ export function fixture(t) {
   const clients = [];
   t.after(async () => {
     for (const client of clients) await client.close();
-    fs.rmSync(base, { recursive: true, force: true });
+    // Windows may briefly retain cwd/stdio handles after a process exits.
+    await fs.promises.rm(base, {
+      recursive: true, force: true, maxRetries: 10, retryDelay: 100,
+    });
   });
   return { base, root, state, profile, env, save, clients };
 }
@@ -54,7 +57,7 @@ export function environment(t, env) {
   });
 }
 export function node(file, args = [], options = {}) {
-  return spawnSync(process.execPath, [path.join(ROOT, file), ...args], {
+  return spawnSync(process.execPath, [path.resolve(ROOT, file), ...args], {
     encoding: "utf8",
     windowsHide: true,
     shell: false,

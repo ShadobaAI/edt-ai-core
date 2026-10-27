@@ -519,7 +519,7 @@ test("prepared hooks share their local settings and state while preserving expli
   }
   const env = { ...f.env, CODEX_HOME: path.join(f.base, "empty-host") };
   delete env.EDT_AI_STATE_DIR; delete env.EDT_AI_SETTINGS;
-  const run = (hook, event, extra = {}) => success(node(path.relative(ROOT, path.join(plugin, "hooks", hook + ".mjs")), [], {
+  const run = (hook, event, extra = {}) => success(node(path.join(plugin, "hooks", hook + ".mjs"), [], {
     cwd: f.root, env: { ...env, ...extra }, input: JSON.stringify({ cwd: f.root, ...event }),
   }));
   const event = { tool_name: "mcp__edt__list_projects", tool_input: {} };
