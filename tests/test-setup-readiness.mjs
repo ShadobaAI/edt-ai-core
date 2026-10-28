@@ -13,7 +13,7 @@ import { instance_directory } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 
 async function ready_fixture(t) {
-  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null;
+  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready";
   const server=createServer(async(req,res)=>{
     let text="";for await(const part of req)text+=part;
     if(!text){res.writeHead(202).end();return;}const message=JSON.parse(text);calls++;
@@ -28,13 +28,32 @@ async function ready_fixture(t) {
       return reply({tools:noTools&&req.url==="/v8std"?[]:[{name:"list_projects",inputSchema:{type:"object",properties:{format:{enum:["json"]}}}}]});
     }
     if(message.method==="tools/call"&&req.url==="/index")return reply({structuredContent:{mcp:{status:"ok"},daemon:{status:"online"},repos:[{repo:"product",root_path:f.root,path_status:{status:"ready"},data_version:settling&&++indexChecks===1?{}:{stale:false}}]}});
-    if(message.method==="tools/call")return reply({content:[{type:"text",text:JSON.stringify({projects:[{name:"Product",path:wrongPath?f.base:f.root,open:true,state:"ready",edtProject:true}]})}]});
+    if(message.method==="tools/call")return reply({content:[{type:"text",text:JSON.stringify({projects:[{name:"Product",path:wrongPath?f.base:f.root,open:true,state:projectState,edtProject:true}]})}]});
     reply({});
   });server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>{server.closeAllConnections();return new Promise(done=>server.close(done));});
   const backend=new SettingsBackend(),url="http://127.0.0.1:"+server.address().port;
   await backend.main({action:"update",set:{codeIndexEnabled:false,bslLsEnabled:false,edtUrl:url+"/edt",v8stdUrl:url+"/v8std"}});
-  return {f,backend,url,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;}};
+  return {f,backend,url,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;},setProjectState:state=>{projectState=state;}};
 }
+
+test("EDT building and mapping failures remain distinct in saved readiness", async t => {
+  const { f, backend, setProjectState, wrong } = await ready_fixture(t);
+  const scope = f.root + "#first";
+  setProjectState("building");
+  const result = await backend.main({ action: "refresh_readiness", scope });
+  assert.equal(result.readiness.state, "blocked");
+  assert.equal(result.external.edt.repositories[0].matched, true);
+  assert.equal(result.external.edt.failure, undefined);
+  assert.match(result.external.edt.detail, /product: EDT сообщает о сборке проекта/);
+  assert.match(result.external.edt.detail, /повторите проверку готовности/);
+  const saved = (await backend.main({ action: "read" })).readiness.checks.find(item => item.id === "edt");
+  assert.equal(saved.detail, result.external.edt.detail);
+  wrong();
+  const mismatch = await backend.main({ action: "refresh_readiness", scope });
+  assert.equal(mismatch.external.edt.failure.category, "access_scope");
+  assert.match(mismatch.external.edt.detail, /имя и путь не сопоставлены/);
+  setProjectState("ready");
+});
 
 test("managed probe errors omit arbitrary upstream credential encodings before readiness caching", async t => {
   const { f, backend, url, failIndex } = await ready_fixture(t);

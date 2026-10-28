@@ -9,6 +9,19 @@ import { knowledge_evidence_revision } from "./components.mjs";
 import { connection_failure, verification_limits, safe_error_message, register_diagnostic_secrets, sanitize_diagnostics } from "./diagnostics.mjs";
 
 const observations = new WeakMap();
+function edt_project_detail(repositories) {
+  const lines = repositories.map(item => {
+    let status = "готов";
+    if (!item.matched) status = "имя и путь не сопоставлены с проектом EDT";
+    else if (item.open !== true) status = "проект не открыт или его состояние открытия не подтверждено";
+    else if (item.state === "building") status = "EDT сообщает о сборке проекта";
+    else if (!item.ready) status = "готовность проекта EDT не подтверждена";
+    return item.id + ": " + status;
+  });
+  if (repositories.some(item => item.matched && item.open === true && item.state === "building"))
+    lines.push("Дождитесь завершения сборки в EDT и повторите проверку готовности. Если сборка не завершается, проверьте операции и ошибки в EDT.");
+  return lines.join("\n");
+}
 // Setup evidence is a bounded observation of a closed probe, never a workflow
 // capability. Caller-supplied ready flags and deserialized JSON prove nothing.
 export function setup_knowledge_status(profile, config, root, observation) {
@@ -81,12 +94,13 @@ export async function probe_connections(config, root, profile) {
                 return { id: repository.id, matched: Boolean(project), ready: Boolean(project?.open === true && project?.state === "ready" && project?.edtProject === true), ...(project ? { state: project.state, open: project.open } : {}) };
               });
               result.projectReadiness = result.repositories.length && result.repositories.every(item => item.ready) ? "verified" : "not_ready";
+              if (result.projectReadiness !== "verified") result.detail = edt_project_detail(result.repositories);
             }
           }
         }
       }
       result.ready = name === "edt" ? result.projectReadiness === "verified" : true;
-      if (!result.ready) result.failure = { category: "access_scope" };
+      if (!result.ready && (!result.repositories || result.repositories.some(item => !item.matched))) result.failure = { category: "access_scope" };
     } catch (error) { result.detail = safe_error_message(error); result.failure = connection_failure(error, phase); }
     finally { await client.close().catch(() => {}); }
     return [name, result];
