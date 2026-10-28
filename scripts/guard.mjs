@@ -16,7 +16,7 @@ export function* strings(value) {
 }
 const escapeRE = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const setupMethods = new Set([
-  "create", "load", "import", "export", "select_profile", "status", "refresh_readiness", "reset_connection", "open", "inspect", "probe_connections", "profile", "read", "pick_directory",
+  "create", "load", "import", "export", "select_profile", "forget_profile", "status", "refresh_readiness", "reset_connection", "open", "inspect", "probe_connections", "profile", "read", "pick_directory",
   "open_directory", "update", "preview", "apply", "export_data", "save_export", "open_export_directory", "export_diagnostics", "diagnostics",
   "open_diagnostics_directory", "edit", "document", "operation", "check", "run_check", "rebuild_index", "updates", "versions",
 ]);
