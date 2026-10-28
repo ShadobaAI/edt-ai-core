@@ -20,6 +20,7 @@ process.on("uncaughtExceptionMonitor", error => diagnostic.event("uncaught_excep
 const resource = "ui://1c-ai-core/settings.html";
 const protocols = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 let selectedRoot = process.env.EDT_AI_PROJECT_ROOT || null;
+let viewedRoot = null;
 let rootLocked = Boolean(selectedRoot);
 let selectionRevision = 0;
 let pendingRoots = null, rootsSequence = 0;
@@ -126,7 +127,7 @@ function readSettings(actual) {
     knowledge: actual.knowledge,
     environmentCompatibility: actual.environmentCompatibility,
     legacyState: actual.legacyState,
-    profileHistory: actual.profileHistory || [], summary: actual.summary,
+    profileHistory: actual.profileHistory || [], profileHistoryHidden: actual.profileHistoryHidden, summary: actual.summary,
     configurationError: actual.configurationError,
     operation: operationSummary(),
     folderActions: { supported: process.platform === "win32" },
@@ -147,6 +148,8 @@ const editArguments = {
   baseRevision: { type: "string", minLength: 1, description: "Required in edit mode: exact baseRevision returned by settings.edit." },
 };
 const tools = [
+  { name: "settings.forget_profile", title: "Убрать профиль из списка", description: "Remove a profile from the user's list without deleting the profile, project state, or changing the chat selection.",
+    inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.select_profile", title: "Открыть профиль", description: "Explicitly select a directory in the settings app. Another chat's profile is read-only and never rebinds the current chat.",
     inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.status", title: "Сводное состояние профиля", description: "Passive profile and local daemon observation. Does not launch services or repeat preparation or probes.",
@@ -314,6 +317,11 @@ async function call(name, args, meta = {}) {
     if (revision !== selectionRevision) throw new Error("Папка чата изменилась. Откройте документ заново.");
     return { content: [{ type: "text", text: "Документ профиля прочитан." }], _meta: { data: document } };
   }
+  if (name === "settings.forget_profile") {
+    const { forget_profile, profile_history, profile_hidden } = await import("../scripts/profile_history.mjs");
+    forget_profile(state, args.projectRoot, [selectedRoot, viewedRoot]);
+    return result({ profileHistory: profile_history(state, selectedRoot), profileHistoryHidden: profile_hidden(state, args.projectRoot) });
+  }
   if (name === "settings.diagnostics") {
     const data = sanitize_diagnostics({ ...diagnostic_journal(state), observedAt: new Date().toISOString(),
       runtime: { plugin: core_version, node: process.version, platform: process.platform, architecture: process.arch },
@@ -370,7 +378,10 @@ async function call(name, args, meta = {}) {
     const current = rootLocked ? await readValues() : null;
     if (revision !== selectionRevision) throw new Error("Папка чата изменилась. Выберите профиль заново.");
     const viewOnly = Boolean(selectionError || (rootLocked && actual.values.projectRoot !== current.values.projectRoot));
-    if (name === "settings.select_profile" && !viewOnly) { selectedRoot = actual.values.projectRoot; selectionRevision += 1; }
+    if (name === "settings.select_profile") {
+      viewedRoot = actual.values.projectRoot;
+      if (!viewOnly) { selectedRoot = actual.values.projectRoot; selectionRevision += 1; }
+    }
     const view = readSettings(actual);
     view.viewOnly = viewOnly;
     view.chatProjectRoot = current?.values.projectRoot || null;

@@ -7,9 +7,11 @@ import { is_dir, is_file, path_identity, project_directory, record_project_owner
 
 // User state survives plugin upgrades. Never scan unrelated project directories.
 export function remember_profile(state, root, profile) {
-  if (!root || profile?.status !== "loaded") return;
+  if (!root) return;
   // History failure must not turn an already saved profile into a failed operation.
   try {
+    fs.rmSync(path.join(project_directory(state, root), "profile-hidden"), { force: true });
+    if (profile?.status !== "loaded") return true;
     record_project_owner(state, root);
     atomic_write(path.join(project_directory(state, root), "profile-history.json"), JSON.stringify({
       root: path_identity(root), lastOpened: new Date().toISOString(),
@@ -18,6 +20,19 @@ export function remember_profile(state, root, profile) {
     }));
   } catch { return false; }
   return true;
+}
+
+export function profile_hidden(state, root) {
+  return Boolean(root && is_file(path.join(project_directory(state, root), "profile-hidden")));
+}
+
+export function forget_profile(state, root, selectedRoots = []) {
+  if (!path.isAbsolute(root)) throw new Error("Укажите абсолютный путь к профилю.");
+  const identity = path_identity(root);
+  if (!selectedRoots.filter(Boolean).some(selected => identity === path_identity(selected)) && !profile_history(state).some(item => item.projectRoot === identity))
+    throw new Error("Профиль не найден в списке.");
+  record_project_owner(state, identity);
+  atomic_write(path.join(project_directory(state, identity), "profile-hidden"), "hidden\n");
 }
 
 export function profile_history(state, selectedRoot = null) {
@@ -30,6 +45,7 @@ export function profile_history(state, selectedRoot = null) {
     try { owner = JSON.parse(fs.readFileSync(path.join(home, "project-owner.json"), "utf8")).root; }
     catch { try { owner = JSON.parse(fs.readFileSync(path.join(home, "code-index/owner.json"), "utf8")).project_root; } catch {} }
     if (typeof owner !== "string" || !path.isAbsolute(owner)) continue;
+    if (profile_hidden(state, owner)) continue;
     try { visit = JSON.parse(fs.readFileSync(path.join(home, "profile-history.json"), "utf8")); } catch {}
     if (!visit || typeof visit !== "object" || visit.root !== owner) visit = {};
     const item = { projectRoot: owner, lastOpened: typeof visit.lastOpened === "string" && Number.isFinite(Date.parse(visit.lastOpened)) ? visit.lastOpened : null,

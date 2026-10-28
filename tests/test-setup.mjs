@@ -38,7 +38,7 @@ test("chat setup binds only its settings session, reports repairs and needs no r
   assert.equal(invalid.profile.compatibility.core, ">=0.1.0 <0.2.0");
   assert.deepEqual(invalid.nextSteps, ["repair_profile"]);
   const edit = (await a.call("settings.edit", {})).structuredContent;
-  const data = JSON.parse(edit.text); data.profile.compatibility.core = ">=0.3.0 <0.4.0";
+  const data = JSON.parse(edit.text); data.profile.compatibility.core = ">=0.4.0 <0.5.0";
   const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
   const preview = (await a.call("settings.preview", request)).structuredContent;
   await a.call("settings.apply", { ...request, revision: preview.revision, replace: true });

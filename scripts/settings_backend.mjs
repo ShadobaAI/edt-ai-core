@@ -51,7 +51,7 @@ import {
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion } from "./directory_context.mjs";
-import { profile_history, remember_profile, profile_summary } from "./profile_history.mjs";
+import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness } from "./setup_readiness.mjs";
 import { knowledge_status } from "./knowledge.mjs";
 import { environment_compatibility, safe_error_message, sanitize_setup_result } from "./diagnostics.mjs";
@@ -391,6 +391,7 @@ export class SettingsBackend {
         preparationScope: preparation_scope(actual.projectRoot),
         legacyState: legacy,
         profileHistory: profile_history(this.STATE, actual.projectRoot),
+        profileHistoryHidden: profile_hidden(this.STATE, actual.projectRoot),
         summary: await profile_summary(this.STATE, effective, profile, readiness, knowledge),
       };
     }

@@ -198,6 +198,29 @@ test("history selection previews another project without rebinding the chat or l
   await assert.rejects(client.call("settings.update",{set:{projectRoot:other}}),/текущей сессией/);
 });
 
+test("removing history entries preserves project files and chat selection across sessions", async t => {
+  const f=fixture(t);f.save();const other=path.join(f.base,"other");fs.mkdirSync(path.join(other,"src"),{recursive:true});
+  dump({...f.profile,project:{...f.profile.project,id:"other"}},path.join(other,".ai/project.yaml"));
+  const client=await session(t,"mcp/settings.mjs",[],f);
+  const catalogue=(await client.request("tools/list",{})).tools;
+  assert.deepEqual(catalogue.find(item=>item.name==="settings.forget_profile")._meta.ui.visibility,["app"]);
+  await client.call("settings.select_profile",{projectRoot:other});
+  const profileFile=path.join(other,".ai/project.yaml"), before=fs.readFileSync(profileFile,"utf8");
+  const removed=(await client.call("settings.forget_profile",{projectRoot:other})).structuredContent;
+  assert.equal(removed.profileHistory.some(item=>item.projectRoot===other),false);
+  assert.equal(fs.readFileSync(profileFile,"utf8"),before);
+  assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
+  const next=await session(t,"mcp/settings.mjs",[],f);
+  assert.equal((await next.call("settings.read",{})).structuredContent.profileHistory.some(item=>item.projectRoot===other),false);
+  await next.call("settings.select_profile",{projectRoot:other});
+  assert.equal((await next.call("settings.read",{})).structuredContent.profileHistory.some(item=>item.projectRoot===other),true);
+  await next.call("settings.forget_profile",{projectRoot:f.root});
+  const current=(await next.call("settings.read",{})).structuredContent;
+  assert.equal(current.profileHistoryHidden,true);assert.equal(current.values.projectRoot,f.root);
+  assert.equal(fs.existsSync(path.join(f.root,".ai/project.yaml")),true);
+  await assert.rejects(next.call("settings.forget_profile",{projectRoot:path.join(f.base,"unknown")}),/не найден/);
+});
+
 test("history counts EDT descriptors separately from repositories and refreshes old records", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Base</name></projectDescription>");

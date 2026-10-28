@@ -1518,7 +1518,7 @@ test("history previews another profile read-only without selecting it for chat o
     if(name==="settings.document"){assert.equal(args.projectRoot,other.values.projectRoot);return {text:"history-profile-document",baseRevision:"history"};}
     throw new Error(name);
   });
-  await ui.flush();await ui.elements.get("profileHistory").children.find(item=>item.children[0].textContent==="Other").onclick();
+  await ui.flush();await ui.elements.get("profileHistory").children.find(item=>item.children[0].children[0].textContent==="Other").children[0].onclick();
   assert.equal(ui.elements.get("profileTitle").textContent,"Other");assert.equal(ui.elements.get("viewOnlyHint").hidden,false);
   for(const id of ["saveButton","probeButton","checkButton","downloadButton"])assert.equal(ui.elements.get(id).disabled,true);
   assert.equal(ui.elements.get("editSettingsButton").disabled,false);
@@ -1539,7 +1539,7 @@ test("profile cards show EDT project counts instead of repository counts", async
     ],
   }));
   await ui.flush();
-  const cards = ui.elements.get("profileHistory").children;
+  const cards = ui.elements.get("profileHistory").children.map(card => card.children[0]);
   assert.equal(cards.find(card => card.children[0].textContent === "Project").children[2].textContent, "EDT-проектов: 2");
   assert.equal(cards.find(card => card.children[0].textContent === "Other").children[2].textContent, "EDT-проектов: 0");
   assert.equal(cards.find(card => card.children[0].textContent === "Old").children[2].textContent, "EDT-проектов: —");
@@ -1563,9 +1563,26 @@ test("history search filters names and paths without losing profile state", asyn
   const ui=screen(async()=>({...read,profileHistory:[{projectRoot:"C:/Archive/Old",projectId:"Old",status:"unavailable",repositoryCount:3}]}));
   await ui.flush();ui.elements.get("historySearch").value="archive";ui.elements.get("historySearch").events.input();
   const entries=ui.elements.get("profileHistory").children;
-  assert.equal(entries.length,1);assert.equal(entries[0].disabled,true);assert.equal(entries[0].children[3].textContent,"Каталог недоступен");
+  assert.equal(entries.length,1);assert.equal(entries[0].children[0].disabled,true);assert.equal(entries[0].children[0].children[3].textContent,"Каталог недоступен");
   ui.elements.get("historySearch").value="absent";ui.elements.get("historySearch").events.input();
   assert.equal(ui.elements.get("historyEmpty").textContent,"Профили не найдены.");
+});
+
+test("history removal works for unavailable and current profiles without selecting them", async () => {
+  const gone={projectRoot:"C:/gone",projectId:"Gone",status:"unavailable"};let history=[gone];
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,profileHistory:history};
+    if(name==="settings.forget_profile"){history=history.filter(item=>item.projectRoot!==args.projectRoot);return {profileHistory:history};}
+    throw new Error(name);
+  });
+  await ui.flush();const cards=ui.elements.get("profileHistory").children;
+  const unavailable=cards.find(card=>card.children[0].children[0].textContent==="Gone");
+  assert.equal(unavailable.children[0].disabled,true);assert.equal(unavailable.children[1].disabled,false);
+  await unavailable.children[1].onclick();
+  const current=ui.elements.get("profileHistory").children[0];await current.children[1].onclick();
+  assert.equal(ui.elements.get("profileHistory").children.length,0);
+  assert.equal(ui.elements.get("profileTitle").textContent,"Project");
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
 });
 
 test("a failed automatic observation retries and keeps the last successful profile visible", async () => {
