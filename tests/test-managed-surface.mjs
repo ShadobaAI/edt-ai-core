@@ -25,8 +25,8 @@ test("profile import does not connect runtime; status bootstraps prepared tools 
   const status = (await client.call("core_runtime_status", {})).structuredContent;
   assert.equal(status.ready, true);
   assert.equal(status.serverContract.serverInfo.name, "fixture");
-  assert.ok((await client.request("tools/list")).tools.some(tool => tool.name === "inspect"));
-  assert.ok(client.tools_revision > revision);
+  assert.ok((await client.call("core_runtime_tools", {})).structuredContent.tools.some(tool => tool.name === "inspect"));
+  assert.equal(client.tools_revision, revision);
 });
 
 test("BSL status bootstraps native tools after preparation without a host discovery refresh and keeps scope isolated", async t => {
@@ -50,12 +50,12 @@ test("BSL status bootstraps native tools after preparation without a host discov
   assert.equal(status.binding.projectRoot, f.root);
   assert.equal(status.binding.instance, "first");
   assert.match(status.serverContract.instructions, /Native fixture contract/);
-  assert.ok(client.tools_revision > revision);
+  assert.equal(client.tools_revision, revision);
   assert.equal((await client.call("core_runtime_status", {})).structuredContent.binding.connectionId, status.binding.connectionId);
   assert.equal((await other.call("core_runtime_status", {})).structuredContent.selectedDirectory, null);
   assert.equal((await otherInstance.call("core_runtime_status", { projectRoot: f.root })).structuredContent.ready, false);
   await assert.rejects(client.call("core_runtime_status", { projectRoot: f.state }), /закреплён/);
-  const tools = (await client.request("tools/list")).tools;
+  const tools = (await client.call("core_runtime_tools", {})).structuredContent.tools;
   assert.ok(tools.some(tool => tool.name === "register_workspace_folder"));
   assert.deepEqual(tools.find(tool => tool.name === "analyze_workspace").inputSchema.required, ["workspaceFolder"]);
   assert.equal((await client.call("inspect", {})).structuredContent.binding, f.root);
@@ -76,11 +76,13 @@ test("managed stdio relay preserves schemas/results and refreshes discovery only
         .join(" "),
     },
   );
-  const tools = (await client.request("tools/list")).tools;
+  await client.call("core_runtime_status", {});
+  const publicTools = (await client.request("tools/list")).tools;
   assert.deepEqual(
-    tools.map((tool) => tool.name),
-    ["core_runtime_status", "core_runtime_tools", "core_runtime_call", "inspect", "tail"],
+    publicTools.map((tool) => tool.name),
+    ["core_runtime_status", "core_runtime_tools", "core_runtime_call"],
   );
+  const tools = (await client.call("core_runtime_tools", {})).structuredContent.tools;
   const inspect = tools.find(tool => tool.name === "inspect");
   assert.equal(inspect.inputSchema.properties.change.type, "boolean");
   assert.equal(inspect.annotations.readOnlyHint, true);
@@ -97,7 +99,7 @@ test("managed stdio relay preserves schemas/results and refreshes discovery only
   const refreshed = (await client.call("inspect", {})).structuredContent;
   assert.equal(refreshed.discoveries, before.discoveries + 2);
   assert.ok(
-    (await client.request("tools/list")).tools.some(
+    (await client.call("core_runtime_tools", {})).structuredContent.tools.some(
       (tool) => tool.name === "later",
     ),
   );
@@ -144,6 +146,10 @@ test("cached host catalogue can discover and call native BSL tools, with validat
   // Deliberately never refresh the host tools/list after the initial snapshot.
   const schema = (await client.call("core_runtime_tools", { names: ["analyze_workspace"] })).structuredContent;
   assert.deepEqual(schema.tools[0].inputSchema.required, ["workspaceFolder"]);
+  const names = (await client.call("core_runtime_tools", { detail: "names" })).structuredContent;
+  assert.ok(names.names.includes("analyze_workspace")); assert.equal(names.tools, undefined);
+  assert.deepEqual((await client.call("core_runtime_tools", { names: ["analyze_workspace"], detail: "names" })).structuredContent.names, ["analyze_workspace"]);
+  await assert.rejects(client.call("core_runtime_tools", { detail: "invalid" }), /Invalid runtime tool detail/);
   const batch = calls => client.request("tools/call", { name: "core_runtime_call", arguments: { calls } });
   const valid = await batch([{ name: "inspect", arguments: { change: true } }, { name: "later", arguments: {} }]);
   assert.equal(valid.structuredContent.completed, 2);

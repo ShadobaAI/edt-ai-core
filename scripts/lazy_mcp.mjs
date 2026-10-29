@@ -27,7 +27,7 @@ import { launch_selection, roots_selection, explicit_selection } from "./selecti
 import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation } from "./components.mjs";
 import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
-import { Ajv, Ajv2020 } from "../vendor/deps.mjs";
+import { Ajv, Ajv2019, Ajv2020, draft6MetaSchema } from "../vendor/deps.mjs";
 import { create_diagnostic_logger, register_diagnostic_secrets, safe_error_message } from "./diagnostics.mjs";
 import { knowledge_status, WORKFLOW_ACTIONS } from "./knowledge.mjs";
 import { WorkflowKnowledge } from "./openviking_adapter.mjs";
@@ -59,19 +59,27 @@ let selected = selection.directory,
   selectionError = null,
   rootsPending = null,
   rootsCounter = 0,
-  initialized = false;
+  initialized = false,
+  discoveryNotificationPending = false,
+  requestInitialRoots = false;
 let lastError = "Выберите каталог проекта с .ai/project.yaml.";
 let rootsReady = Promise.resolve(), finishRoots = null;
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const emit = (message) =>
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+function notifyDiscoveryChanged() {
+  if (closed) return;
+  if (!initialized) { discoveryNotificationPending = true; return; }
+  discoveryNotificationPending = false;
+  emit({ method: "notifications/resources/list_changed" });
+  emit({ method: "notifications/prompts/list_changed" });
+}
 async function disconnect() {
   generation++;
   const knowledgeClosing = workflowKnowledge.close();
   const previous = client;
   if (previous) diagnostic.event("disconnected", { projectRoot: selected, binding: bindingContext });
   const connecting = connectingClient;
-  const hadTools = tools.length > 0;
   connectingClient = null;
   client = null;
   tools = [];
@@ -80,7 +88,7 @@ async function disconnect() {
   bindingContext = null;
   boundAliases.clear();
   nativeValidators.clear();
-  if (hadTools && !closed) emit({ method: "notifications/tools/list_changed" });
+  if (previous) notifyDiscoveryChanged();
   if (previous) await previous.close();
   if (connecting && connecting !== previous) await connecting.close();
   await knowledgeClosing;
@@ -95,6 +103,12 @@ async function requestRoots() {
   await disconnect();
   currentRevision = null;
   if (rootsPending === id) emit({ id, method: "roots/list", params: {} });
+}
+async function waitForRoots() {
+  if (!rootsPending) return;
+  let timer;
+  try { await Promise.race([rootsReady, new Promise(resolve => { timer = setTimeout(resolve, 3000); })]); }
+  finally { clearTimeout(timer); }
 }
 function configContext() {
   const config = settings(configuration);
@@ -127,10 +141,7 @@ async function refreshTools() {
     throw new ConfigError("Project binding changed while refreshing tools");
   toolsRevision = revision;
   toolsDirty = false;
-  if (stable(next) !== stable(tools)) {
-    tools = next;
-    emit({ method: "notifications/tools/list_changed" });
-  }
+  if (stable(next) !== stable(tools)) tools = next;
 }
 async function refreshNotifiedTools() {
   if (client && (toolsDirty || client.tools_revision !== toolsRevision))
@@ -237,7 +248,7 @@ async function bind(refreshSurface, retryFailed, connect) {
       };
     diagnostic.event("connected", { binding: bindingContext, tools: tools.length,
       server: candidate.initialization?.serverInfo, protocol: candidate.initialization?.protocolVersion });
-    emit({ method: "notifications/tools/list_changed" });
+    notifyDiscoveryChanged();
   } catch (error) {
     await disconnect();
     failedRevision = revision;
@@ -253,9 +264,9 @@ const statusTool = () => ({
   description:
     component === "v8std"
       ? "Read the selected profile binding and negotiated server instructions/capabilities. Reuse until the binding or contract changes."
-      : "Connect the selected repository binding and read its service state and native server contract. Managed services start only with this project's and instance's existing preparation permission; this does not grant permission. If the host keeps its initial catalogue, use core_runtime_tools and core_runtime_call.",
+      : "Connect the selected repository binding and read its service state and native server contract. Managed services start only with this project's and instance's existing preparation permission; this does not grant permission. Use core_runtime_tools and core_runtime_call for native APIs.",
   inputSchema: { type: "object", properties: {
-    projectRoot: { type: "string", minLength: 1, description: "Current chat's known local project directory, only when the host supplied no directory. Binds this MCP session without changing other chats. Never substitute another project's directory." },
+    projectRoot: { type: "string", minLength: 1, description: "Current chat's project directory when host roots are empty; binds only this session." },
   }, additionalProperties: false },
   annotations: { readOnlyHint: COMPONENTS[component].kind === "remote", destructiveHint: false },
 });
@@ -263,10 +274,11 @@ const rootProperty = () => statusTool().inputSchema.properties.projectRoot;
 const controlTools = () => [statusTool(), {
   name: "core_runtime_tools",
   title: "Живой API " + component,
-  description: "Read the selected server's live native tool definitions, including full schemas and annotations. Use names to request only needed definitions. Available even when the host caches its initial tool list. Supply this chat's projectRoot when roots are empty; this never overrides a host/session binding.",
+  description: "Read the selected server's live native tool definitions, including full schemas and annotations. Use detail=names to discover names, then names to request only needed definitions. Supply this chat's projectRoot when roots are empty; this never overrides a host/session binding.",
   inputSchema: { type: "object", properties: {
     projectRoot: rootProperty(),
     names: { type: "array", items: { type: "string", minLength: 1 }, minItems: 1, maxItems: 32, uniqueItems: true },
+    detail: { type: "string", enum: ["full", "names"], description: "Return full definitions (default) or only native tool names." },
   }, additionalProperties: false },
   annotations: { readOnlyHint: COMPONENTS[component].kind === "remote", destructiveHint: false },
 }, {
@@ -285,9 +297,10 @@ const controlTools = () => [statusTool(), {
   annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
 }];
 function controlArguments(name, args) {
-  const allowed = name === "core_runtime_tools" ? ["projectRoot", "names"] : name === "core_runtime_call" ? ["projectRoot", "calls", "workflowAction"] : ["projectRoot"];
+  const allowed = name === "core_runtime_tools" ? ["projectRoot", "names", "detail"] : name === "core_runtime_call" ? ["projectRoot", "calls", "workflowAction"] : ["projectRoot"];
   if (!object(args) || Object.keys(args).some(key => !allowed.includes(key))) throw new ConfigError("Invalid runtime control arguments");
   if (args.workflowAction !== undefined && !WORKFLOW_ACTIONS.includes(args.workflowAction)) throw new ConfigError("Invalid workflow action");
+  if (args.detail !== undefined && !["full", "names"].includes(args.detail)) throw new ConfigError("Invalid runtime tool detail");
   if (args.names !== undefined && (!Array.isArray(args.names) || !args.names.length || args.names.length > 32 || args.names.some(name => typeof name !== "string" || !name) || new Set(args.names).size !== args.names.length))
     throw new ConfigError("names must contain 1 to 32 unique native tool names");
   if (name === "core_runtime_call" && (!Array.isArray(args.calls) || !args.calls.length || args.calls.length > 16 || args.calls.some(call => !object(call) || typeof call.name !== "string" || !call.name || !object(call.arguments) || Object.keys(call).some(key => !["name", "arguments"].includes(key)))))
@@ -302,8 +315,16 @@ function validateNative(call) {
   if (!tool || controlTools().some(tool => tool.name === call.name)) throw new ConfigError("Unknown native tool: " + call.name);
   const schema = tool.inputSchema, key = stable(schema);
   if (!nativeValidators.has(key)) {
-    const Compiler = /draft-07/.test(schema?.$schema || "") ? Ajv : Ajv2020;
-    nativeValidators.set(key, new Compiler({ allErrors: true, strict: false, ownProperties: true, validateFormats: false }).compile(schema));
+    const dialect = schema?.$schema;
+    const options = { allErrors: true, strict: false, ownProperties: true, validateFormats: false };
+    let compiler;
+    if (dialect === undefined || ["https://json-schema.org/draft/2020-12/schema", "https://json-schema.org/draft/2020-12/schema#"].includes(dialect)) compiler = new Ajv2020(options);
+    else if (["https://json-schema.org/draft/2019-09/schema", "https://json-schema.org/draft/2019-09/schema#"].includes(dialect)) compiler = new Ajv2019(options);
+    else if (["http://json-schema.org/draft-07/schema", "http://json-schema.org/draft-07/schema#"].includes(dialect)) compiler = new Ajv(options);
+    else if (["http://json-schema.org/draft-06/schema", "http://json-schema.org/draft-06/schema#"].includes(dialect)) {
+      compiler = new Ajv(options); compiler.addMetaSchema(draft6MetaSchema);
+    } else throw new ConfigError("Unsupported native JSON Schema dialect");
+    nativeValidators.set(key, compiler.compile(schema));
   }
   const validate = nativeValidators.get(key);
   if (!validate(call.arguments)) throw new ConfigError("Invalid native arguments for " + call.name + ": " + validate.errors.map(error => `${error.instancePath || "$"}: ${error.message}`).join("; "));
@@ -327,11 +348,15 @@ async function dispatch(message) {
       }
     }
     finishRoots?.(); finishRoots = null;
-    emit({ method: "notifications/tools/list_changed" });
+    notifyDiscoveryChanged();
     return;
   }
   if (!Object.hasOwn(message, "id")) {
-    if (method === "notifications/initialized") initialized = true;
+    if (method === "notifications/initialized") {
+      initialized = true;
+      if (discoveryNotificationPending) notifyDiscoveryChanged();
+      if (requestInitialRoots) { requestInitialRoots = false; await requestRoots(); }
+    }
     else if (method === "notifications/cancelled") {
       const pending = requests.get(requestKey(message.params?.requestId));
       if (pending) {
@@ -387,20 +412,19 @@ async function dispatch(message) {
             : PROTOCOLS[0],
           serverInfo: { name: "1c-ai-" + component, title: component, version: core_version, icons: component_icons(component) },
           capabilities: {
-            tools: { listChanged: true },
-            resources: {},
-            prompts: {},
+            tools: {},
+            resources: { listChanged: true },
+            prompts: { listChanged: true },
           },
         };
       hostCapabilities = message.params?.capabilities || {};
-      result.instructions = "For each new binding read core_runtime_status once for the selected project/instance and the native server instructions/capabilities. If selectedDirectory is empty, pass this chat's known local project directory as projectRoot to core_runtime_status; this binds only this connection. Do not restart chats or spawn substitute relays to repair empty roots. Reuse the contract until binding changes. Native tools and results retain their full schemas. Managed services require initial preparation in settings; profile inspection does not start them.";
-      result.instructions += " If the host catalogue lacks native tools, get their live definitions with core_runtime_tools (names limits the response), then use core_runtime_call with native name/arguments in calls. Pass the same chat projectRoot on these controls when host roots are empty. A short sequential calls batch preserves workspace registration and analysis in one process even on hosts with separate connections. Classify and authorize every native call by its schema/annotations and action policy; the envelope grants no permissions. Batches stop on the first failure, preserve prior results and are never automatically retried.";
+      result.instructions = "Call core_runtime_status per binding; pass this chat's projectRoot if roots are empty. Use core_runtime_tools and core_runtime_call for native APIs.";
       if (component === "bsl-ls")
         result.instructions +=
-          "Use the assigned EDT-MCP to discover configuration project names and paths. Register the exact configuration directory with register_workspace_folder, then use file paths or the returned workspaceFolder URI to select its context. Several folders may remain registered; no active configuration is shared. Only directories inside the selected project binding are accepted.";
+          " Discover configuration paths via EDT; register each directory before analysis. Only paths inside this binding are accepted.";
+      diagnostic.event("host_initialized", { protocol: result.protocolVersion, rootsAdvertised: message.params?.capabilities?.roots != null });
+      requestInitialRoots = message.params?.capabilities?.roots != null && !process.env.EDT_AI_PROJECT_ROOT;
       emit({ id, result });
-      if (message.params?.capabilities?.roots != null && !process.env.EDT_AI_PROJECT_ROOT)
-        await requestRoots();
       return;
     }
     let result;
@@ -408,33 +432,34 @@ async function dispatch(message) {
     if (method === "tools/call") diagnostic.event("request_started", { requestId: id, tool: params.name, projectRoot: selected });
     const pending = { cancelled: false };
     requests.set(requestKey(id), pending);
+    if (["resources/list", "resources/templates/list", "prompts/list"].includes(method)) await waitForRoots();
     if (method === "ping") result = {};
+    // Keep the host catalogue stable and bounded; native API discovery and
+    // calls use the controls regardless of upstream catalogue size.
+    else if (method === "tools/list") {
+      result = { tools: controlTools() };
+    }
+    // No project-bound resources exist yet. Do not hide errors from a bound
+    // server or bypass knowledge checks after a project has been selected.
+    else if (!client && !selected && !selectionError && !rootsPending && ["resources/list", "resources/templates/list", "prompts/list"].includes(method)) {
+      result = { [{ "resources/list": "resources", "resources/templates/list": "resourceTemplates", "prompts/list": "prompts" }[method]]: [] };
+    }
     else {
-      const previous = client;
       const control = method === "tools/call" && controlTools().some(tool => tool.name === params.name);
       if (control) {
         const args = params.arguments || {};
         controlArguments(params.name, args);
-        if (rootsPending && args.projectRoot !== undefined) {
-          let timer;
-          try { await Promise.race([rootsReady, new Promise(resolve => { timer = setTimeout(resolve, 3000); })]); }
-          finally { clearTimeout(timer); }
-        }
-        if (rootsPending && args.projectRoot !== undefined) throw new ConfigError("Ожидается выбранный каталог проекта.");
-        const previousDirectory = selected;
+        await waitForRoots();
+        if (rootsPending) throw new ConfigError("Ожидается выбранный каталог проекта.");
         selection = explicit_selection({ ...selection, directory: selected }, args.projectRoot, selectionError);
         selected = selection.directory;
-        if (selected !== previousDirectory) emit({ method: "notifications/tools/list_changed" });
       }
       // Status is the model's bootstrap when only this tool was discovered.
       // Waiting for a host tools/list refresh here strands prepared services.
       // bind() still enforces the project/instance preparation permission.
-      await ensureBinding(method !== "tools/list");
+      await ensureBinding();
       if (pending.cancelled) throw new ConfigError("Request cancelled before dispatch; not executed");
-      if (method === "tools/list") {
-        if (client && client === previous) await refreshTools();
-        result = { tools: [...controlTools(), ...tools] };
-      } else if (
+      if (
         method === "tools/call" &&
         params.name === "core_runtime_status"
       ) {
@@ -449,7 +474,7 @@ async function dispatch(message) {
           selectionSource: selection.source,
           knowledge: (() => { try { const [, config, profile] = configContext(); return knowledge_status(profile, config); } catch { return null; } })(),
           nativeToolCount: tools.length,
-          toolAccess: "Use core_runtime_tools for live schemas and core_runtime_call if native tools are absent from the host catalogue. Both accept this chat's projectRoot for empty host roots.",
+          toolAccess: "Use core_runtime_tools for live schemas and core_runtime_call for native operations. Both accept this chat's projectRoot for empty host roots.",
         };
         {
           status.binding = bindingContext;
@@ -474,7 +499,9 @@ async function dispatch(message) {
         await refreshTools();
         const names = params.arguments?.names;
         if (names?.some(name => !tools.some(tool => tool.name === name))) throw new ConfigError("Requested native tool is not in the live server catalogue");
-        result = { content: [], structuredContent: { binding: bindingContext, tools: names ? tools.filter(tool => names.includes(tool.name)) : tools } };
+        const selectedTools = names ? tools.filter(tool => names.includes(tool.name)) : tools;
+        result = { content: [], structuredContent: { binding: bindingContext,
+          ...(params.arguments?.detail === "names" ? { names: selectedTools.map(tool => tool.name) } : { tools: selectedTools }) } };
       } else if (client && control && params.name === "core_runtime_call") {
         const owner = client, ownerBinding = bindingContext, epoch = generation, results = [];
         for (const call of params.arguments.calls) {
@@ -557,6 +584,7 @@ async function dispatch(message) {
     }
     if (method === "tools/call") diagnostic.event("request_completed", { requestId: id, tool: message.params?.name, projectRoot: selected,
       durationMs: Date.now() - started, isError: Boolean(result?.isError), binding: bindingContext }, result?.isError ? "error" : "info");
+    if (method === "tools/list") diagnostic.event("host_tools_list", { requestId: id, durationMs: Date.now() - started, count: result.tools.length, controlCount: controlTools().length, bound: Boolean(client), rootsPending: Boolean(rootsPending) });
     emit({ id, result });
     if (method === "tools/call" && client && params.name === "enable_toolset") {
       toolsDirty = true;

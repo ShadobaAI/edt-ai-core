@@ -22,11 +22,11 @@ const mechanismInput = {
 const schemaRegistry = loadRegistry();
 const oneCMechanismInput = Object.fromEntries(
   Object.keys(mechanismInput).map((name) =>
-    [name, { type: "array", items: { enum: schemaRegistry.oneC.mechanisms } }]),
+    [name, { type: "array", items: { $ref: "#/$defs/mechanism" } }]),
 );
 const yaxunitMechanismInput = Object.fromEntries(
   Object.keys(mechanismInput).map((name) =>
-    [name, { type: "array", items: { enum: schemaRegistry.yaxunit.mechanisms } }]),
+    [name, { type: "array", items: { $ref: "#/$defs/mechanism" } }]),
 );
 const tools = [
   { name: "get_action_policy", description: "Read the shared action agreement groups and protected-source boundary. No stored authorizations.",
@@ -41,13 +41,13 @@ const tools = [
     }, required: ["sourceRef", "assessments"], additionalProperties: false } },
   { name: "select_1c_requirements", description: "Select baseline normative selectors from declared facts and merge additionalRequirements found through v8std code/context retrieval after reading exact text. Additions cannot weaken registry requirements or repair missing registry coverage. Unknown assessments block selection; uncovered mechanisms return unavailable. Does not prove retrieval completeness or applicability.",
     outputSchema: requirementsResultSchema,
-    annotations: readOnly, inputSchema: { type: "object", properties: {
+    annotations: readOnly, inputSchema: { type: "object", $defs: { mechanism: { enum: schemaRegistry.oneC.mechanisms } }, properties: {
       artifact: { enum: ["bsl", "query", "metadata"] }, operation: { enum: ["design", "create", "change", "review"] },
       target: nonblank, ...oneCMechanismInput, detection: detectionSchema, additionalRequirements: additionalRequirementsSchema,
     }, required: ["target", "artifact", "operation", "mechanisms", "detection"], additionalProperties: false } },
   { name: "select_yaxunit_requirements", description: "Select baseline YaXUnit authoring patterns and merge additionalRequirements retrieved from v8std after applicability checks. Run/report return not_applicable without a digest; nonempty authoring additions are rejected in those modes.",
     outputSchema: requirementsResultSchema,
-    annotations: readOnly, inputSchema: { type: "object", properties: {
+    annotations: readOnly, inputSchema: { type: "object", $defs: { mechanism: { enum: schemaRegistry.yaxunit.mechanisms } }, properties: {
       operation: { enum: ["design", "create", "change", "review", "debug", "migrate", "run", "report"] },
       target: nonblank, ...yaxunitMechanismInput, additionalRequirements: additionalRequirementsSchema,
     }, required: ["target", "operation", "mechanisms"], additionalProperties: false } },
@@ -69,7 +69,7 @@ const { detection, ...assessmentInput } = selectInput.properties;
 const complianceCurrent = tools.find(tool => tool.name === "validate_compliance").inputSchema.properties.current;
 const { detection: currentDetection, ...referenceCurrent } = complianceCurrent.properties;
 tools.push({ name: "assess_1c_requirements", description: "Normalize assessments and select requirements in one call. Returns the full selection plus session references, retaining every assessment for later consistency checks. Does not inspect source or prove normative truth. Prefer this path to avoid retransmitting detection and selection.", annotations: readOnly,
-  inputSchema: { type: "object", properties: { ...assessmentInput, assessments: assessmentsSchema, sourceRef: nonblank }, required: ["target", "artifact", "operation", "mechanisms", "sourceRef", "assessments"], additionalProperties: false },
+  inputSchema: { type: "object", $defs: selectInput.$defs, properties: { ...assessmentInput, assessments: assessmentsSchema, sourceRef: nonblank }, required: ["target", "artifact", "operation", "mechanisms", "sourceRef", "assessments"], additionalProperties: false },
   outputSchema: { type: "object", properties: { selection: requirementsResultSchema, selectionRef: nonblank, detectionRef: nonblank }, required: ["selection"], additionalProperties: false } });
 tools.push({ name: "validate_compliance_ref", description: "Apply the complete compliance check using session references and compact rows [selector,status,evidence,reason?]. Explicit current scope, sourceRef and phase remain mandatory. For a changed source obtain new detection evidence; stale, other-session or altered contexts are rejected. References authorize nothing.", annotations: readOnly,
   inputSchema: { type: "object", properties: { phase: { enum: ["proposal", "result"] }, selectionRef: nonblank,

@@ -23,7 +23,7 @@ let selectedRoot = process.env.EDT_AI_PROJECT_ROOT || null;
 let viewedRoot = null;
 let rootLocked = Boolean(selectedRoot);
 let selectionRevision = 0;
-let pendingRoots = null, rootsSequence = 0;
+let pendingRoots = null, rootsSequence = 0, requestInitialRoots = false;
 let selectionError = null, rootReady = Promise.resolve(), finishRoots;
 function requestRoots() {
   if (process.env.EDT_AI_PROJECT_ROOT) return;
@@ -167,7 +167,7 @@ const tools = [
   { name: "settings.profile", title: "Настройки проекта", description: "Open the settings form for this chat's selected profile only on an explicit user request to open/show this form. Chat configuration, code analysis and runtime troubleshooting do not authorize opening a form; use settings.inspect instead. Always supply this chat's known projectRoot so the form retains its directory across MCP connections; {} uses host roots when available. Does not reload profiles or borrow another chat's directory.",
     inputSchema: inspectInput, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "thread" }] } } },
   ...[["settings.create", "Создать профиль", "Create the generic .ai/project.yaml and missing project instructions in this chat's selected repository, only when the user requests creation. Never overwrites a profile or existing instructions. Returns projectInstructions.created/preserved; optional overrideFile reports a non-empty AGENTS.override.md that takes precedence over the adjacent AGENTS.md. contentValidated=false means project rules still need review. Follow the setup skill's project-instructions reference to complete them from confirmed facts. Repository mappings still need configuration."],
-      ["settings.load", "Загрузить профиль", "Validate and reload the existing .ai/project.yaml for this chat's selected repository. Does not import a file or launch services. Report sessionGuidance. If the host keeps its initial tool catalogue, use the assigned relay's core_runtime_tools/core_runtime_call with this chat's projectRoot."]].map(([name, title, description]) => ({
+      ["settings.load", "Загрузить профиль", "Validate and reload the existing .ai/project.yaml for this chat's selected repository. Does not import a file or launch services. Report sessionGuidance. Use the assigned relay's core_runtime_tools/core_runtime_call with this chat's projectRoot."]].map(([name, title, description]) => ({
     name, title, description, inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1, description: "Only for an unbound settings screen. A chat's selected root cannot be changed." } }, additionalProperties: false },
     annotations: annotations(false), _meta: shared,
   })),
@@ -549,6 +549,10 @@ async function dispatch(message) {
   if (typeof message.method !== "string") {
     write({ id: message.id ?? null, error: { code: -32600, message: "Invalid Request" } }); return;
   }
+  if (message.method === "notifications/initialized") {
+    if (requestInitialRoots) { requestInitialRoots = false; requestRoots(); }
+    return;
+  }
   if (message.method === "notifications/roots/list_changed") { requestRoots(); return; }
   if (!Object.hasOwn(message, "id")) return;
   // Discovery reports the supported legacy versions even to modern probes.
@@ -564,7 +568,7 @@ async function dispatch(message) {
     let data;
     if (message.method === "initialize") {
       data = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0],
-        instructions: "Start chat setup with settings.inspect once; include this chat's known local projectRoot when the host supplied no directory. Reuse its validation, connection sources, valueSources and nextSteps. Open settings forms only on an explicit user request to open/show the form or from plugin app navigation. Chat configuration, code analysis and runtime diagnostics do not authorize opening a form. Inspection, checks and operation polling return data without UI. Do not reload an already loaded profile, inspect plugin source, spawn substitute relays or restart chats for empty roots. Create only a missing profile on user request. Preparation needs scoped user authorization. Never select another chat's root.",
+        instructions: "Start with settings.inspect; supply this chat's projectRoot if roots are empty. Forms and preparation require authorization.",
         serverInfo: { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version, icons: plugin_icons() },
         capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "server/discover") {
@@ -587,8 +591,8 @@ async function dispatch(message) {
       write({ id: message.id, error: { code: -32601, message: "Method not found" } });
       return;
     }
+    if (message.method === "initialize") requestInitialRoots = !process.env.EDT_AI_PROJECT_ROOT && message.params?.capabilities?.roots != null;
     write({ id: message.id, result: data });
-    if (message.method === "initialize" && !process.env.EDT_AI_PROJECT_ROOT && message.params?.capabilities?.roots) requestRoots();
   } catch (error) { write({ id: message.id, error: { code: -32000, message: safe_error_message(error) } }); }
 }
 readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", line => {

@@ -60,8 +60,8 @@ transport timeout; avoid frequent zero polling or rerunning for status.
 
 ## Exposing needed tools
 
-If `core_runtime_status` confirms connection but the host retained only the initial
-relay set, obtain live schemas through `core_runtime_tools` (exact names in
+Once `core_runtime_status` confirms connection, obtain live schemas through
+`core_runtime_tools` (exact names in
 `names`), then use `core_runtime_call` with `calls: [{name, arguments}]`.
 With empty host roots, pass this chat's directory as `projectRoot` in every control
 call. A short sequential group preserves workspace registration and analysis in
@@ -71,14 +71,17 @@ Errors stop the group; completed operations are not rolled back, and the whole
 group must not be retried without outcome verification. This is a live API without
 a built-in external tool catalogue or bypass of project restrictions.
 
-1. Establish live `tools/list` and `list_toolsets` when their state is unknown.
+1. Establish the live native catalogue through `core_runtime_tools` and
+   `list_toolsets` when their state is unknown. Use `detail: "names"` before
+   requesting the needed full schemas when names are unknown.
    Start with management/core/read and only task-required groups. Use live schemas
    and `get_tool_guide`: group enabling varies by version. Do not invent enable
    tools, parameters or server preferences from old examples.
 2. If the needed operation is not visible, distinguish a disabled group,
    unsupported progressive disclosure, a broad initial list and a truly absent
    capability. Use supported enable for the needed group when available, then
-   refresh tools/list. The proxy forwards new tools but does not enable groups.
+   refresh the native definitions via core_runtime_tools. The relay exposes the
+   current native schemas but does not enable groups on its own.
    Do not replace server-disabled capabilities with neighboring authorities.
    If the server initially exposes a broad surface, do not claim progressive
    disclosure schema savings or emulate them with local name filters. Changing
@@ -86,8 +89,8 @@ a built-in external tool catalogue or bypass of project restrictions.
 3. Reuse successfully exposed groups and sufficient schemas/guides in the same
    session. Reconnect/restart, binding/URL changes, relevant errors or contradictions
    invalidate affected facts; recheck only the needed portion.
-   Do not edit user settings to change disclosure mode. Explicit tools/list refreshes
-   the catalogue without push notifications; ordinary reads/writes must not reload
+   Do not edit user settings to change disclosure mode. core_runtime_tools refreshes
+   the native catalogue without push notifications; ordinary reads/writes must not reload
    all schemas. After the scenario, hide an unneeded group only when supported by
    the live guide and ownership of that state is proven; server-wide reset is not
    session cleanup.

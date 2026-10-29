@@ -107,5 +107,6 @@ export async function probe_connections(config, root, profile) {
   })));
   const status = setup_knowledge_status(profile, config, root, external.openviking);
   return { projectRoot: root, external, knowledge: status, verificationLimits: verification_limits(status.ready),
-    scope: "setup_probe", fullReadiness: "not_verified" };
+    scope: "setup_probe", fullReadiness: "not_verified", chatRelay: "not_verified",
+    detail: "Проверено отдельное подключение к серверам; каталог инструментов и привязка relay текущего чата не проверены." };
 }

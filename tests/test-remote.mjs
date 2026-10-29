@@ -143,9 +143,43 @@ test("remote relay cancellation uses the upstream HTTP id before the response fi
     setTimeout(()=>reply({content:[],structuredContent:{upstreamId:message.id,cancelled}}),350);
   });
   f.profile.connections={edt:{url:e.url}};f.save();const c=await session(t,"scripts/lazy_mcp.mjs",["--component","edt"],f);
-  await c.request("tools/list");const work=c.request("tools/call",{name:"slow"}),hostId=c.sequence;
+  await c.call("core_runtime_status",{});const work=c.request("tools/call",{name:"slow"}),hostId=c.sequence;
   await sleep(70);c.notify("notifications/cancelled",{requestId:hostId});
   const result=(await work).structuredContent;assert.equal(result.cancelled,result.upstreamId);
+});
+
+test("relay validates native calls using the schema's declared JSON Schema dialect", async t => {
+  const f = fixture(t), calls = [];
+  const dialects = {
+    draft6: "http://json-schema.org/draft-06/schema#",
+    draft7: "http://json-schema.org/draft-07/schema#",
+    draft2019: "https://json-schema.org/draft/2019-09/schema",
+    draft2020: "https://json-schema.org/draft/2020-12/schema",
+    unsupported: "https://example.org/unknown-schema",
+  };
+  const e = await endpoint(t, ({ req, res, message, reply, error }) => {
+    if (req.method === "DELETE") return res.writeHead(204).end();
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: Object.entries(dialects).map(([name, $schema]) => ({ name,
+      inputSchema: { $schema, type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false }, annotations: { readOnlyHint: true } })) });
+    if (message.method === "tools/call") { calls.push(message.params.name); return reply({ content: [], structuredContent: { accepted: true } }); }
+    return error(-32601);
+  });
+  f.profile.connections = { v8std: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "v8std"], f);
+  assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, true);
+  for (const name of Object.keys(dialects).filter(name => name !== "unsupported")) {
+    const valid = await client.call("core_runtime_call", { calls: [{ name, arguments: { value: "ok" } }] });
+    assert.equal(valid.structuredContent.completed, 1, name);
+    const invalid = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name, arguments: { value: 42 } }] } });
+    assert.equal(invalid.isError, true, name); assert.equal(invalid.structuredContent.completed, 0, name);
+  }
+  const unsupported = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "unsupported", arguments: { value: "ok" } }] } });
+  assert.equal(unsupported.isError, true);
+  assert.match(unsupported.structuredContent.results[0].error.message, /Unsupported native JSON Schema dialect/);
+  assert.deepEqual(calls, ["draft6", "draft7", "draft2019", "draft2020"]);
 });
 test("legacy negotiation omits initialize version header; sessions reuse and DELETE remain isolated", async (t) => {
   let counter = 0;
@@ -461,8 +495,10 @@ test("lazy relay preserves paginated tools/results, bounded discovery and indepe
       EDT_AI_V8STD_URL: e.url.replace("/mcp", "/other"),
     });
   const names = async (c) =>
-    (await c.request("tools/list")).tools.map((tool) => tool.name);
-  assert.deepEqual(await names(a), ["core_runtime_status", "core_runtime_tools", "core_runtime_call", "inspect", "tail"]);
+    (await c.call("core_runtime_tools", {})).structuredContent.tools.map((tool) => tool.name);
+  await a.call("core_runtime_status", {});
+  await b.call("core_runtime_status", {});
+  assert.deepEqual(await names(a), ["inspect", "tail"]);
   assert.ok((await names(b)).includes("tail"));
   const before = e.calls.filter(
     (x) => x.message.method === "tools/list",
@@ -530,7 +566,7 @@ test("a tool catalogue received after host roots change cannot restore the previ
   f.save();
   const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f, { EDT_AI_PROJECT_ROOT: "" });
   assert.equal((await client.call("core_runtime_status", { projectRoot: f.root })).structuredContent.ready, true);
-  const pending = client.request("tools/list");
+  const pending = client.call("core_runtime_tools", {});
   const rejected = assert.rejects(pending, /binding changed/i);
   await held;
   // Return a valid empty roots response so the old project is fully unbound.

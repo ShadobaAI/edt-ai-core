@@ -71,9 +71,8 @@ prefixes, aliases, ports or a running EDT.
   project/instance. Profile inspection/create/load/import never provisions services.
   After that preparation, stdio entrypoints install missing verified artifacts
   and start the scoped service on demand.
-  core_runtime_status also connects prepared managed services and publishes
-  their tools; a host tools/list refresh is not a prerequisite. Hosts that keep
-  their initial catalogue use core_runtime_tools for live schemas and
+  core_runtime_status also connects prepared managed services; a host tools/list
+  refresh is not a prerequisite. Use core_runtime_tools for live schemas and
   core_runtime_call for native calls, with the same chat projectRoot for empty
   roots. Short sequential batches preserve session-local registrations; native
   permissions apply to every call. Inspection and

@@ -45,7 +45,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     if (params.name === "crash") { process.exit(7); return; }
     if (params.name === "malformed") { console.log("null"); return; }
     if (params.name === "ask_host") { callbackRequest=message.id; emit({id:"fixture-host-callback",method:"sampling/createMessage",params:{messages:[],maxTokens:10}}); return; }
-    if (params.name === "slow") { setTimeout(() => emit({ id: message.id, result: { content: [], structuredContent: { upstreamId: message.id, notifications } } }), 400); return; }
+    if (params.name === "slow") {
+      if (process.env.FIXTURE_SLOW_STARTED) emit({ method: "notifications/progress", params: { progressToken: "fixture-slow", progress: 1 } });
+      setTimeout(() => emit({ id: message.id, result: { content: [], structuredContent: { upstreamId: message.id, notifications } } }), process.env.FIXTURE_SLOW_STARTED ? 1200 : 400); return;
+    }
     if (params.arguments?.change) {
       changed = true;
       emit({ method: "notifications/tools/list_changed" });

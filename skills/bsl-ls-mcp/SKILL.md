@@ -7,15 +7,16 @@ description: Run repository-local BSL LS diagnostics or semantic navigation for 
 
 Read core_runtime_status once for this chat's binding; supply its known
 projectRoot when the host supplied no directory. With existing project/instance
-preparation permission, this connects BSL LS and publishes its native tools.
+preparation permission, this connects BSL LS for native operations.
 Use its returned detail for a connection failure. Do not open settings forms or
 repeat full environment preparation merely because native tools were initially
 absent; settings.inspect provides setup evidence without UI when needed.
 
-If status is connected but the host still exposes only runtime controls, call
+Once status is connected, call
 `core_runtime_tools` for the needed live schemas (`names` limits the response),
 then `core_runtime_call` with `calls: [{name, arguments}]`. These controls are in
-the initial catalogue and do not require a host tools/list refresh. Supply this
+the initial catalogue and do not require a host tools/list refresh. Use
+`detail: "names"` first if the needed native names are unknown. Supply this
 chat's projectRoot on each control when host roots are empty. On hosts with
 separate connections, group native registration and file analysis in one short
 sequential batch. Apply native annotations and action policy to every call;

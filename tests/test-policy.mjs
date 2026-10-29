@@ -7,6 +7,7 @@ import { settings } from "../scripts/common.mjs";
 import { smoke } from "../scripts/policy_runtime.mjs";
 import { Ajv2020 } from "../vendor/deps.mjs";
 import { loadRegistry } from "../policy/selector.mjs";
+import { validateSchema } from "../policy/schema.mjs";
 
 async function policy(t) {
   const f = fixture(t),
@@ -96,6 +97,27 @@ test("canonical policy connection exposes full and compact read-only workflows",
     (await smoke(settings())).evidence,
     "synthetic_protocol_checks_only",
   );
+});
+
+test("shared mechanism schema references preserve enum validation for every input array", async t => {
+  const p = await policy(t), detection = await p.detection();
+  const assessments = Object.fromEntries(p.tools.detect_1c_mechanisms.inputSchema.properties.assessments.propertyNames.enum.map(name => [name, { status: "absent", evidence: "fixture" }]));
+  const registry = loadRegistry();
+  for (const [name, mechanism, base] of [
+    ["select_1c_requirements", registry.oneC.mechanisms[0], { target: p.target, artifact: "bsl", operation: "change", mechanisms: [], detection }],
+    ["assess_1c_requirements", registry.oneC.mechanisms[0], { target: p.target, artifact: "bsl", operation: "change", mechanisms: [], sourceRef: "fixture", assessments }],
+    ["select_yaxunit_requirements", registry.yaxunit.mechanisms[0], { target: p.target, operation: "design", mechanisms: [] }],
+  ]) {
+    const schema = p.tools[name].inputSchema;
+    const ajv = new Ajv2020({ strict: false }).compile(schema);
+    for (const field of ["mechanisms", "classifiedMechanisms", "detectedMechanisms", "unknownMechanisms"]) {
+      const valid = { ...base, [field]: [mechanism] }, invalid = { ...base, [field]: ["not-a-mechanism"] };
+      assert.equal(ajv(valid), true, `${name}/${field}`);
+      assert.doesNotThrow(() => validateSchema(schema, valid));
+      assert.equal(ajv(invalid), false, `${name}/${field}`);
+      assert.throws(() => validateSchema(schema, invalid));
+    }
+  }
 });
 
 test("session references reduce retransmission while retaining all compliance and phase checks", async t => {

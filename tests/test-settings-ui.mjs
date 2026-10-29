@@ -631,6 +631,7 @@ test("external connection button polls one read-only probe and displays project 
   assert.equal(probes, 1);
   assert.match(ui.elements.get("probeResult").textContent, /product: building/);
   assert.match(ui.elements.get("probeResult").textContent, /v8std: подключение проверено/);
+  assert.match(ui.elements.get("probeResult").textContent, /Каталог инструментов и привязка relay текущего чата не проверены/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });
 

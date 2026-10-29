@@ -20,12 +20,12 @@ import { once } from "node:events";
 import { launch, stop_child } from "../scripts/processes.mjs";
 import { stop_daemon, platform_build, save_json, acquire_reader, installed_runtime } from "../scripts/runtime.mjs";
 const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href;
-async function managed(t, f, prepare = true) {
+async function managed(t, f, prepare = true, extra = {}) {
   environment(t, f.env); f.save();
   if (prepare) grant_preparation(f.state, f.root, ["code-index"]);
   const c = await session(t, "scripts/lazy_mcp.mjs", ["--component", "code-index"], f,
-    { NODE_OPTIONS: [process.env.NODE_OPTIONS, "--import " + preload].filter(Boolean).join(" ") });
-  await c.request("tools/list"); return c;
+    { NODE_OPTIONS: [process.env.NODE_OPTIONS, "--import " + preload].filter(Boolean).join(" "), ...extra });
+  await c.call("core_runtime_status", {}); return c;
 }
 test("unselected connections never borrow active_project; roots fallback is shared", t => {
   const f = fixture(t);
@@ -69,18 +69,22 @@ test("native instructions survive and unrelated settings preserve the reader ses
   assert.deepEqual((await c.call("inspect",{})).structuredContent,before);
 });
 test("cancellation reaches the executing upstream request before completion with its mapped id", async t => {
-  const f=fixture(t), c=await managed(t,f);
+  const f=fixture(t), c=await managed(t,f,true,{FIXTURE_SLOW_STARTED:"1"});
+  let ready; const started=new Promise(resolve=>{ready=resolve;});
+  c.options.onNotification=message=>{if(message.method==="notifications/progress" && message.params.progressToken==="fixture-slow")ready();};
   const pending=c.request("tools/call",{name:"slow"}); const hostId=c.sequence;
-  await sleep(80); c.notify("notifications/cancelled",{requestId:hostId,reason:"test"});
+  await started; c.notify("notifications/cancelled",{requestId:hostId,reason:"test"});
   const result=(await pending).structuredContent;
   const cancellation=result.notifications.find(n=>n.method==="notifications/cancelled");
   assert.ok(cancellation); assert.equal(cancellation.params.requestId,result.upstreamId);
 });
 test("cancellation maps numeric/string host ids independently", async t => {
-  const f=fixture(t), c=await managed(t,f);
+  const f=fixture(t), c=await managed(t,f,true,{FIXTURE_SLOW_STARTED:"1"});
+  let seen=0, ready; const started=new Promise(resolve=>{ready=resolve;});
+  c.options.onNotification=message=>{if(message.method==="notifications/progress" && message.params.progressToken==="fixture-slow" && ++seen===2)ready();};
   const raw = id => new Promise(resolve=>{ c.pending.set(id,resolve); c.send({id,method:"tools/call",params:{name:"slow"}}); });
   const a=raw(888), b=raw("888");
-  await sleep(80); c.notify("notifications/cancelled",{requestId:"888"});
+  await started; c.notify("notifications/cancelled",{requestId:"888"});
   const [first,second]=await Promise.all([a,b]);
   const ids=second.result.structuredContent.notifications.filter(n=>n.method==="notifications/cancelled").map(n=>n.params.requestId);
   assert.ok(ids.includes(second.result.structuredContent.upstreamId));
@@ -114,7 +118,8 @@ test("reading a profile cannot provision managed runtimes before initial prepara
   assert.deepEqual((await c.request("tools/list")).tools.map(x=>x.name),["core_runtime_status","core_runtime_tools","core_runtime_call"]);
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   grant_preparation(f.state,f.root,["code-index"]);
-  assert.ok((await c.request("tools/list")).tools.some(x=>x.name==="inspect"));
+  await c.call("core_runtime_status",{});
+  assert.ok((await c.call("core_runtime_tools",{})).structuredContent.tools.some(x=>x.name==="inspect"));
 });
 test("disabled components neither require preparation nor launch a child",async t=>{
   const f=fixture(t);dump({mcp:{managed:{"code-index":{enabled:false}}}},f.env.EDT_AI_SETTINGS);

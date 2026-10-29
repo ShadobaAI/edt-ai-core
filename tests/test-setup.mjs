@@ -3,13 +3,15 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { fixture, ROOT, environment } from "./helpers.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
-import { sleep } from "../scripts/common.mjs";
+import { dump, sleep } from "../scripts/common.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
+import { read_lines } from "../scripts/mcp_codec.mjs";
 
 async function unbound(t, f, file = "mcp/settings.mjs", args = []) {
   const client = new McpClient([process.execPath, path.join(ROOT, file), ...args], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
@@ -122,6 +124,8 @@ test("one bounded setup probe verifies external connections and refuses a wrong 
   assert.equal(result.external.edt.projectReadiness, "verified");
   assert.equal(result.external.v8std.connected, true);
   assert.equal(result.fullReadiness, "not_verified");
+  assert.equal(result.chatRelay, "not_verified");
+  assert.match(result.detail, /каталог инструментов/i);
   assert.equal(upstream.calls.filter(name => name === "tools/call").length, 1);
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   f.profile.repositories[0].path = "src"; f.save();
@@ -130,7 +134,179 @@ test("one bounded setup probe verifies external connections and refuses a wrong 
   await assert.rejects(client.call("settings.operation", { waitMs: 0.5 }), /тип/);
 });
 
-test("explicit managed binding notifies discovery and honors the preparation gate", async t => {
+test("v8std bootstrap survives empty roots and isolates projects on a shared server", async t => {
+  const f = fixture(t), messages = [];
+  const server = createServer(async (request, response) => {
+    let body = ""; for await (const part of request) body += part;
+    if (!body) return response.writeHead(202).end();
+    const message = JSON.parse(body); messages.push(message);
+    const reply = result => response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    if (message.method === "server/discover") return response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" } }));
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "v8std-fixture", version: "1" }, capabilities: { tools: {} } });
+    if (message.method.startsWith("notifications/")) return response.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: [{ name: "v8std_explain_snippet", inputSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] }, annotations: { readOnlyHint: true } }] });
+    if (message.method === "tools/call") return reply({ content: [{ type: "text", text: "fixture candidate" }], structuredContent: { candidates: ["fixture standard"] } });
+    if (message.method === "resources/list") return response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32010, message: "fixture resource error" } }));
+    response.writeHead(202).end();
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); return new Promise(done => server.close(done)); });
+  f.profile.connections = { v8std: { url: `http://127.0.0.1:${server.address().port}/mcp` } }; f.save();
+  const other = path.join(f.base, "other"); fs.mkdirSync(other); fs.mkdirSync(path.join(other, "src"));
+  dump(f.profile, path.join(other, ".ai/project.yaml"));
+  const a = await unbound(t, f, "scripts/lazy_mcp.mjs", ["--component", "v8std"]);
+  const b = await unbound(t, f, "scripts/lazy_mcp.mjs", ["--component", "v8std"]);
+  assert.deepEqual((await a.request("tools/list")).tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
+  assert.deepEqual(await a.request("resources/list"), { resources: [] });
+  assert.deepEqual(await a.request("resources/templates/list"), { resourceTemplates: [] });
+  assert.equal(messages.length, 0);
+  const statusA = (await a.call("core_runtime_status", { projectRoot: f.root })).structuredContent;
+  assert.equal(statusA.ready, true);
+  assert.equal((await b.call("core_runtime_status", {})).structuredContent.selectedDirectory, null);
+  const statusB = (await b.call("core_runtime_status", { projectRoot: other })).structuredContent;
+  assert.equal(statusB.ready, true); assert.notEqual(statusA.binding.connectionId, statusB.binding.connectionId);
+  await assert.rejects(a.request("resources/list"), /MCP resources\/list/);
+  assert.ok((await a.request("tools/list")).tools.some(tool => tool.name === "core_runtime_status"));
+  const result = await a.call("core_runtime_call", { calls: [{ name: "v8std_explain_snippet", arguments: { code: "Сообщить(\"Тест\");" } }] });
+  assert.deepEqual(result.structuredContent.results[0].result.structuredContent.candidates, ["fixture standard"]);
+  assert.equal((await b.call("core_runtime_status", {})).structuredContent.binding.projectRoot, other);
+  assert.equal(JSON.stringify(messages).includes(JSON.stringify(f.root).slice(1, -1)), false);
+  assert.equal(JSON.stringify(messages).includes(JSON.stringify(other).slice(1, -1)), false);
+  assert.equal(messages.filter(message => message.method === "initialize").every(message => !message.params.capabilities.roots), true);
+});
+
+test("resource and prompt discovery changes are advertised when a binding opens and closes", async t => {
+  const f = fixture(t), notifications = [];
+  const server = createServer(async (request, response) => {
+    let body = ""; for await (const part of request) body += part;
+    if (!body) return response.writeHead(202).end();
+    const message = JSON.parse(body);
+    const reply = result => response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    if (message.method === "server/discover") return response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" } }));
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "fixture", version: "1" }, capabilities: { tools: {}, resources: {}, prompts: {} } });
+    if (message.method === "tools/list") return reply({ tools: [] });
+    if (message.method === "resources/list") return reply({ resources: [{ uri: "fixture://one", name: "one" }] });
+    if (message.method === "resources/templates/list") return reply({ resourceTemplates: [{ uriTemplate: "fixture://{id}", name: "template" }] });
+    if (message.method === "prompts/list") return reply({ prompts: [{ name: "fixture" }] });
+    return response.writeHead(202).end();
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); return new Promise(done => server.close(done)); });
+  f.profile.connections = { edt: { url: `http://127.0.0.1:${server.address().port}/mcp` } }; f.save();
+  const client = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "edt"], ROOT,
+    { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10, { onNotification: message => notifications.push(message.method) });
+  f.clients.push(client); client.roots = [];
+  let rootsAnswered; const rootsReady = new Promise(resolve => { rootsAnswered = resolve; });
+  const send = client.send.bind(client);
+  client.send = message => { send(message); if (message.result?.roots) rootsAnswered(); };
+  const init = await client.initialize();
+  await rootsReady;
+  assert.equal(init.capabilities.resources.listChanged, true); assert.equal(init.capabilities.prompts.listChanged, true);
+  assert.deepEqual(await client.request("resources/list"), { resources: [] });
+  assert.deepEqual(await client.request("resources/templates/list"), { resourceTemplates: [] });
+  assert.deepEqual(await client.request("prompts/list"), { prompts: [] });
+  notifications.length = 0;
+  await client.call("core_runtime_status", { projectRoot: f.root });
+  assert.ok(notifications.includes("notifications/resources/list_changed"));
+  assert.ok(notifications.includes("notifications/prompts/list_changed"));
+  assert.equal((await client.request("resources/list")).resources.length, 1);
+  assert.equal((await client.request("resources/templates/list")).resourceTemplates.length, 1);
+  assert.equal((await client.request("prompts/list")).prompts.length, 1);
+  notifications.length = 0;
+  client.notify("notifications/roots/list_changed");
+  await client.request("ping");
+  assert.ok(notifications.includes("notifications/resources/list_changed"));
+  assert.ok(notifications.includes("notifications/prompts/list_changed"));
+});
+
+test("initial relay catalogue is available while host roots are pending or fail", async t => {
+  const f = fixture(t); f.save();
+  for (const component of ["v8std", "edt", "code-index", "bsl-ls"]) {
+    const child = spawn(process.execPath, [path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", component],
+      { cwd: ROOT, env: { ...f.env, EDT_AI_PROJECT_ROOT: "" }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    t.after(() => child.kill());
+    const pending = new Map(), notifications = []; let roots, receivedRoots = false;
+    const rootsRequest = new Promise(resolve => { roots = resolve; });
+    read_lines(child.stdout, message => {
+      if (message.method === "roots/list") { receivedRoots = true; roots(message); }
+      else if (message.method) notifications.push(message.method);
+      else if (pending.has(message.id)) { pending.get(message.id)(message); pending.delete(message.id); }
+    }, error => { throw error; });
+    const send = message => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+    const request = (id, method, params = {}) => new Promise(resolve => { pending.set(id, resolve); send({ id, method, params }); });
+    const init = await request(1, "initialize", { protocolVersion: "2025-06-18", capabilities: { roots: {} }, clientInfo: { name: "host-fixture", version: "1" } });
+    assert.equal(init.result.protocolVersion, "2025-06-18");
+    await request(9, "ping"); assert.equal(receivedRoots, false);
+    send({ method: "notifications/initialized", params: {} });
+    const rootCall = await rootsRequest;
+    const first = await request(2, "tools/list");
+    assert.deepEqual(first.result.tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
+    const pendingResources = request(3, "resources/list");
+    send({ id: rootCall.id, error: { code: -32000, message: "host roots failed" } });
+    assert.match((await pendingResources).error.message, /Host could not supply/);
+    assert.deepEqual((await request(4, "tools/list")).result.tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
+    assert.ok(notifications.includes("notifications/resources/list_changed"));
+    assert.ok(notifications.includes("notifications/prompts/list_changed"));
+    assert.ok((await request(5, "tools/call", { name: "core_runtime_status", arguments: { projectRoot: f.root } })).error);
+    assert.match((await request(6, "resources/list")).error.message, /Host could not supply/);
+    assert.match((await request(7, "resources/templates/list")).error.message, /Host could not supply/);
+    assert.match((await request(8, "prompts/list")).error.message, /Host could not supply/);
+    child.stdin.end(); await once(child, "exit");
+  }
+});
+
+test("settings and knowledge request host roots only after MCP initialization", async t => {
+  const f = fixture(t);
+  for (const file of ["mcp/settings.mjs", "mcp/openviking.mjs"]) {
+    const child = spawn(process.execPath, [path.join(ROOT, file)],
+      { cwd: ROOT, env: { ...f.env, EDT_AI_PROJECT_ROOT: "" }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    t.after(() => child.kill());
+    const pending = new Map(); let rootRequest, receivedRoots = false;
+    const roots = new Promise(resolve => { rootRequest = resolve; });
+    read_lines(child.stdout, message => {
+      if (message.method === "roots/list") { receivedRoots = true; rootRequest(message); }
+      else if (pending.has(message.id)) { pending.get(message.id)(message); pending.delete(message.id); }
+    }, error => { throw error; });
+    const send = message => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+    const request = (id, method, params = {}) => new Promise(resolve => { pending.set(id, resolve); send({ id, method, params }); });
+    const init = await request(1, "initialize", { protocolVersion: "2025-06-18", capabilities: { roots: {} }, clientInfo: { name: "fixture", version: "1" } });
+    assert.equal(init.result.protocolVersion, "2025-06-18");
+    await request(2, "tools/list"); assert.equal(receivedRoots, false);
+    send({ method: "notifications/initialized", params: {} });
+    const root = await roots; send({ id: root.id, result: { roots: [] } });
+    assert.ok((await request(3, "tools/list")).result.tools.length > 0);
+    child.stdin.end(); await once(child, "exit");
+  }
+});
+
+test("a slow shared EDT connection cannot block the relay's bootstrap catalogue", async t => {
+  const f = fixture(t); let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const server = createServer(async (request, response) => {
+    let body = ""; for await (const part of request) body += part;
+    if (!body) return response.writeHead(202).end();
+    const message = JSON.parse(body);
+    const reply = result => response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    if (message.method === "server/discover") return response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" } }));
+    if (message.method === "initialize") { entered(); await held; return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "fixture", version: "1" }, capabilities: { tools: {} } }); }
+    if (message.method === "tools/list") return reply({ tools: [{ name: "inspect", inputSchema: { type: "object" } }] });
+    response.writeHead(202).end();
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => { server.closeAllConnections(); return new Promise(done => server.close(done)); });
+  f.profile.connections = { edt: { url: `http://127.0.0.1:${server.address().port}/mcp` } }; f.save();
+  const client = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "edt"], f.root, f.env, 10);
+  f.clients.push(client); await client.initialize();
+  assert.equal((await client.request("tools/list")).tools.length, 3);
+  const status = client.call("core_runtime_status", {}); await started;
+  assert.equal((await client.request("tools/list")).tools.length, 3);
+  release(); assert.equal((await status).structuredContent.ready, true);
+  assert.ok((await client.call("core_runtime_tools", {})).structuredContent.tools.some(tool => tool.name === "inspect"));
+});
+
+test("explicit managed binding preserves the public catalogue and honors the preparation gate", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href;
   const client = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "code-index"], ROOT,
@@ -138,11 +314,12 @@ test("explicit managed binding notifies discovery and honors the preparation gat
   f.clients.push(client); client.roots = []; await client.initialize();
   const revision = client.tools_revision;
   await client.call("core_runtime_status", { projectRoot: f.root });
-  assert.ok(client.tools_revision > revision);
+  assert.equal(client.tools_revision, revision);
   assert.deepEqual((await client.request("tools/list")).tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   grant_preparation(f.state, f.root, ["code-index"]);
-  assert.ok((await client.request("tools/list")).tools.some(tool => tool.name === "inspect"));
+  await client.call("core_runtime_status", {});
+  assert.ok((await client.call("core_runtime_tools", {})).structuredContent.tools.some(tool => tool.name === "inspect"));
   assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, true);
 });
 

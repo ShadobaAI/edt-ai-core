@@ -730,7 +730,7 @@ async function pollOperation(operationId){
     if(operation.action==="probe"){
       if(!operationMatchesProfile(operation)){notice("Проверка завершена для другого каталога или экземпляра. Результат не применяется к текущему профилю.");return;}
       const result=operation.result;$("probeResult").hidden=false;
-      $("probeResult").textContent=Object.entries(result.external).map(([name,item])=>name+": "+(!item.configured?"адрес не указан":item.connected?"подключение проверено":"ошибка подключения")+(item.detail?"\n"+item.detail:"")+(item.repositories?"\n"+item.repositories.map(repository=>repository.id+": "+(!repository.matched?"путь или имя не совпадают":repository.ready?"готов":repository.state||"не готов")).join("\n"):"")).join("\n\n");
+      $("probeResult").textContent=Object.entries(result.external).map(([name,item])=>name+": "+(!item.configured?"адрес не указан":item.connected?"подключение проверено":"ошибка подключения")+(item.detail?"\n"+item.detail:"")+(item.repositories?"\n"+item.repositories.map(repository=>repository.id+": "+(!repository.matched?"путь или имя не совпадают":repository.ready?"готов":repository.state||"не готов")).join("\n"):"")).join("\n\n")+"\n\nЭто отдельная проверка серверов. Каталог инструментов и привязка relay текущего чата не проверены.";
       notice("Проверка внешних подключений завершена. Привязка инструментов чата проверяется отдельно.");return;
     }
     if(!["check","refresh_readiness"].includes(operation.action)){

@@ -114,10 +114,9 @@ If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
   chat's known projectRoot to each relay's core_runtime_status once. This binds
   only that MCP session and preserves host/environment locks and other chats.
   For prepared managed services, this call connects the scoped process and
-  publishes its native tools under the existing preparation permission. It does
+  makes its native API available under the existing preparation permission. It does
   not require a prior tool-list refresh or another full settings.run_check.
-  Settings-form selection does not bind other MCP sessions. If the host keeps
-  the initial catalogue, use core_runtime_tools for
+  Settings-form selection does not bind other MCP sessions. Use core_runtime_tools for
   live schemas and core_runtime_call for a bounded sequential calls batch.
   Supply the same chat projectRoot when host roots are empty. Native permissions,
   source workflow and action policy apply to every call; group BSL registration
