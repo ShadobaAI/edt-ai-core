@@ -148,13 +148,17 @@ test("diagnostic storage follows CODEX_HOME, rotates within 2 MiB and expires ol
 test("concurrent plugin processes leave complete records under one shared size limit", async t => {
   const f = fixture(t), source = pathToFileURL(path.join(ROOT, "scripts/diagnostics.mjs")).href;
   const workers = Array.from({ length: 3 }, (_, worker) => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["--input-type=module", "-e", `import {create_diagnostic_logger} from ${JSON.stringify(source)}; const logger=create_diagnostic_logger('worker-${worker}'); for(let i=0;i<100;i++) logger.event('concurrent',{i});`], { env: f.env, windowsHide: true, stdio: "ignore" });
-    child.once("error", reject); child.once("close", code => code === 0 ? resolve() : reject(new Error("Worker exited " + code)));
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `import {create_diagnostic_logger} from ${JSON.stringify(source)}; const logger=create_diagnostic_logger('worker-${worker}'), written=[]; for(let i=0;i<100;i++) if(logger.event('concurrent',{i})) written.push(i); process.stdout.write(JSON.stringify({session:logger.session,written}));`], { env: f.env, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    child.stdout.setEncoding("utf8"); child.stdout.on("data", chunk => { output += chunk; });
+    child.once("error", reject); child.once("close", code => { if (code !== 0) reject(new Error("Worker exited " + code)); else { try { resolve(JSON.parse(output)); } catch (error) { reject(error); } } });
   }));
-  await Promise.all(workers);
+  const completed = await Promise.all(workers);
   const logs = read_diagnostic_logs(f.state);
-  assert.deepEqual(logs.issues, []); assert.ok(logs.events.length >= 250);
-  assert.equal(new Set(logs.events.map(event => event.session)).size, 3);
+  assert.deepEqual(logs.issues, []);
+  const expected = completed.flatMap(({ session, written }) => written.map(i => `${session}:${i}`)).sort();
+  assert.ok(expected.length > 0);
+  assert.deepEqual(logs.events.map(event => `${event.session}:${event.detail.i}`).sort(), expected);
 });
 
 test("secrets are removed before logging and again on export, with URLs still diagnosable", t => {

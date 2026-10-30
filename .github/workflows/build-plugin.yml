@@ -4,18 +4,16 @@ on:
   push:
     branches: [develop]
     tags: ['[0-9]+.[0-9]+.[0-9]+']
-  pull_request:
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: build-plugin-${{ github.event.pull_request.number || github.ref }}
-  # Queue push builds instead of replacing an earlier pending push. PR updates
-  # retain their existing cancellation behavior.
-  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: build-plugin-${{ github.ref }}
+  # Queue pushes instead of replacing an earlier pending build.
+  queue: max
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -29,7 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # PRs use a stable tag, or the source version before the first release.
+          # Preview numbering and release validation need Git history.
           fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
