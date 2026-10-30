@@ -71,7 +71,17 @@ export function atomic_write(file, text, overwrite = true) {
   const tmp = path.join(path.dirname(file), `.core-${randomUUID()}.tmp`);
   try {
     fs.writeFileSync(tmp, text, { flag: "wx", mode: 0o600 });
-    if (overwrite) fs.renameSync(tmp, file);
+    if (overwrite) {
+      // Windows can briefly deny replacement while another process has the
+      // destination open. Retry without deleting it or weakening atomicity.
+      for (let attempt = 0; ; attempt++) {
+        try { fs.renameSync(tmp, file); break; }
+        catch (error) {
+          if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt === 5) throw error;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+        }
+      }
+    }
     else fs.linkSync(tmp, file);
   } finally {
     fs.rmSync(tmp, { force: true });
