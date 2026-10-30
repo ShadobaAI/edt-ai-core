@@ -3,6 +3,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 import { fixture, environment, ROOT } from "./helpers.mjs";
 import { package_plugin } from "../tools/package-plugin.mjs";
 import { verify } from "../tools/verify-package.mjs";
@@ -38,6 +39,15 @@ import {
 } from "../scripts/windows_process.mjs";
 import { launch, stop_child, alive } from "../scripts/processes.mjs";
 import { sleep } from "../scripts/common.mjs";
+
+test("CI entrypoint starts before dependencies and vendor are installed", t => {
+  const f = fixture(t), script = path.join(f.base, "ci.mjs");
+  fs.copyFileSync(path.join(ROOT, "tools/ci.mjs"), script);
+  const result = spawnSync(process.execPath, [script, "unknown"], { cwd: f.base, encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /Unknown CI action/);
+  assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/);
+});
 
 test("reproducible ZIPs include bundled dependencies, exclude state/tooling and survive Node-only extracted smoke", async (t) => {
   const f = fixture(t),
