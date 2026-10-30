@@ -12,6 +12,9 @@ permissions:
 
 concurrency:
   group: build-plugin-${{ github.event.pull_request.number || github.ref }}
+  # Queue push builds instead of replacing an earlier pending push. PR updates
+  # retain their existing cancellation behavior.
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
