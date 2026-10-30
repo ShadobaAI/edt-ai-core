@@ -2,8 +2,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { preview_number } from "./preview-number.mjs";
-import { read_source_manifest } from "./release_policy.mjs";
 const invoke = (script, args = []) => {
   const result = spawnSync(process.execPath, [script, ...args], {
     stdio: "inherit",
@@ -29,7 +27,13 @@ if (action === "install") {
   invoke("tools/without-shells.mjs", ["tools/test.mjs"]);
 else if (action === "build") {
   const preview = process.env.GITHUB_ACTIONS === "true" && process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF === "refs/heads/develop";
-  const version = preview ? `${read_source_manifest(process.cwd()).version}-preview.${preview_number()}` : null;
+  let version = null;
+  if (preview) {
+    // The install action must run before loading modules that depend on vendor/.
+    const { preview_number } = await import("./preview-number.mjs");
+    const { read_source_manifest } = await import("./release_policy.mjs");
+    version = `${read_source_manifest(process.cwd()).version}-preview.${preview_number()}`;
+  }
   invoke("tools/without-shells.mjs", ["tools/package-plugin.mjs", ...(preview ? ["--preview", "true", "--version", version] : [])]);
   invoke("tools/check-plugin.mjs", [`.build/marketplace/plugins/${preview ? "1c-ai-core-preview" : "1c-ai-core"}`]);
   if (process.env.GITHUB_STEP_SUMMARY)
