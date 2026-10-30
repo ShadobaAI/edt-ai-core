@@ -4,14 +4,15 @@ export const core_version = JSON.parse(fs.readFileSync(new URL("../plugin.json",
 const tuple = text => text.split(".").map(Number);
 const compare = (a, b) => { for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return Math.sign(a[i] - b[i]); return 0; };
 export function satisfies_core(range, version = core_version) {
-  if (typeof range !== "string" || !/^\d+\.\d+\.\d+$/.test(version)) throw new ConfigError("Invalid core compatibility range/version");
+  if (typeof range !== "string" || !/^\d+\.\d+\.\d+(?:-preview\.[1-9]\d*)?$/.test(version)) throw new ConfigError("Invalid core compatibility range/version");
   const clauses = range.split("||").map(part => part.trim().split(/\s+/));
   const parsed = clauses.map(clause => clause.map(token => {
     const match = /^(>=|<=|>|<|=|\^|~)?(\d+\.\d+\.\d+)$/.exec(token);
     if (!match) throw new ConfigError("Invalid core compatibility comparator: " + token);
     return [match[1] || "=", tuple(match[2])];
   }));
-  const actual = tuple(version);
+  // Preview builds use the compatibility contract of their base release.
+  const actual = tuple(version.split("-")[0]);
   return parsed.some(clause => clause.every(([op, expected]) => {
     const c = compare(actual, expected);
     if (op === "^") {

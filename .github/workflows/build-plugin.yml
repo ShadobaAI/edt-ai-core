@@ -2,12 +2,13 @@ name: Build 1c-ai-core plugin
 
 on:
   push:
-    # Tag pushes only. Ordinary branch pushes never start this workflow.
+    branches: [develop]
     tags: ['[0-9]+.[0-9]+.[0-9]+']
   pull_request:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: build-plugin-${{ github.event.pull_request.number || github.ref }}
@@ -36,6 +37,8 @@ jobs:
       - name: Node regressions
         run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'test'], {stdio:'inherit'})
       - name: Build and verify package
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'build'], {stdio:'inherit'})
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

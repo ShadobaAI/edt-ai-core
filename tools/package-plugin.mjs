@@ -4,15 +4,18 @@ import { spawnSync } from "node:child_process";
 import { ROOT, entrypoint, argumentsOf, cli } from "../scripts/common.mjs";
 import { resolve, exists, sha256 } from "../scripts/project_paths.mjs";
 import { zip } from "../scripts/archives.mjs";
-import { read_source_manifest, resolve_version } from "./release_policy.mjs";
+import { read_source_manifest, resolve_version, preview_key } from "./release_policy.mjs";
 
 import { source_files, walk } from "../scripts/package_layout.mjs";
 export { DIRECTORIES, FILES, walk } from "../scripts/package_layout.mjs";
 
-export function package_plugin(output = path.join(ROOT, ".build"), override) {
+export function package_plugin(output = path.join(ROOT, ".build"), override, preview = false) {
   const manifest = read_source_manifest(ROOT),
-    version = resolve_version(ROOT, override),
+    version = preview ? override : resolve_version(ROOT, override),
     paths = source_files(ROOT);
+  if (preview && preview_key(version).base !== manifest.version)
+    throw new Error("Preview version must match the source manifest");
+  const name = preview ? "1c-ai-core-preview" : "1c-ai-core";
   const template = path.join(ROOT, "packaging/marketplace.template.json");
   if (
     !fs.statSync(template).isFile() ||
@@ -46,7 +49,7 @@ export function package_plugin(output = path.join(ROOT, ".build"), override) {
   // Validate all inputs before removing the previous, repository-scoped output.
   if (exists(output)) fs.rmSync(output, { recursive: true });
   const marketplace = path.join(output, "marketplace"),
-    plugin = path.join(marketplace, "plugins/1c-ai-core");
+    plugin = path.join(marketplace, "plugins", name);
   fs.mkdirSync(plugin, { recursive: true });
   for (const name of paths) {
     const target = path.join(plugin, name);
@@ -58,6 +61,8 @@ export function package_plugin(output = path.join(ROOT, ".build"), override) {
     fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
   };
   manifest.version = version;
+  manifest.name = name;
+  if (preview) manifest.extensions["com.openai"].interface.displayName = "1C AI Core Preview";
   write(path.join(plugin, "plugin.json"), manifest);
   const codex = Object.fromEntries(
     Object.entries(manifest).filter(
@@ -71,9 +76,9 @@ export function package_plugin(output = path.join(ROOT, ".build"), override) {
     mcpServers: "./mcp.json",
   });
   write(path.join(plugin, "build-info.json"), {
-    plugin: "1c-ai-core",
+    plugin: name,
     version,
-    profile: "release",
+    profile: preview ? "preview" : "release",
     revision,
     dirty,
     runId: process.env.GITHUB_RUN_ID || null,
@@ -84,6 +89,8 @@ export function package_plugin(output = path.join(ROOT, ".build"), override) {
       "\nThis local build includes uncommitted changes or has no base commit. The source link does not identify its complete contents.\n";
   fs.writeFileSync(path.join(plugin, "SOURCE.md"), sourceNotice);
   catalog.plugins[0].policy.installation = "AVAILABLE";
+  catalog.plugins[0].name = name;
+  catalog.plugins[0].source.path = `./plugins/${name}`;
   write(path.join(marketplace, ".agents/plugins/marketplace.json"), catalog);
   const archive = (directory, destination, prefix = "") =>
     fs.writeFileSync(
@@ -98,10 +105,10 @@ export function package_plugin(output = path.join(ROOT, ".build"), override) {
       ),
     );
   const archives = [
-    path.join(output, `1c-ai-core-${version}.zip`),
-    path.join(output, `1c-ai-core-${version}-marketplace.zip`),
+    path.join(output, `${name}-${version}.zip`),
+    path.join(output, `${name}-${version}-marketplace.zip`),
   ];
-  archive(plugin, archives[0], "1c-ai-core/");
+  archive(plugin, archives[0], `${name}/`);
   archive(marketplace, archives[1]);
   fs.writeFileSync(
     path.join(output, "SHA256SUMS"),
@@ -117,6 +124,6 @@ export function package_plugin(output = path.join(ROOT, ".build"), override) {
 if (entrypoint(import.meta.url))
   await cli(() => {
     console.log(
-      JSON.stringify(package_plugin(undefined, argumentsOf().version)),
+      JSON.stringify(package_plugin(undefined, argumentsOf().version, argumentsOf().preview === "true")),
     );
   });

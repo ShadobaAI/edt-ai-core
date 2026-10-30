@@ -2,7 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { run_sync } from "../scripts/processes.mjs";
-import { version_key, compare_version } from "./release_policy.mjs";
+import { version_key, compare_version, preview_key, compare_preview } from "./release_policy.mjs";
 import { verify } from "./verify-package.mjs";
 import { resolve, contained, exists } from "../scripts/project_paths.mjs";
 import { argumentsOf, entrypoint, cli } from "../scripts/common.mjs";
@@ -38,19 +38,28 @@ export function validate_run(record) {
     record.conclusion !== "success"
   )
     throw new Error(
-      "Only a successful tagged release build of this repository can be published",
+      "Only a successful tagged release or develop push build of this repository can be published",
     );
-  version_key(record.head_branch);
+  if (record.head_branch !== "develop") version_key(record.head_branch);
 }
 export function validate_build(build, record) {
+  const preview = record.head_branch === "develop";
   if (
-    build.profile !== "release" ||
+    build.profile !== (preview ? "preview" : "release") ||
     build.dirty ||
     build.revision !== record.head_sha ||
-    build.version !== record.head_branch ||
+    (!preview && build.version !== record.head_branch) ||
     String(build.runId) !== String(record.id)
   )
     throw new Error("Artifact does not match the successful release run");
+  if (preview) preview_key(build.version);
+}
+export function validate_source_preview(checkout, build, exec = run) {
+  exec(["git", "fetch", "--no-tags", "origin", "refs/heads/develop"], { cwd: checkout });
+  exec(["git", "merge-base", "--is-ancestor", build.revision, "FETCH_HEAD"], { cwd: checkout });
+  const source = JSON.parse(exec(["git", "show", `${build.revision}:plugin.json`], { cwd: checkout }));
+  if (source.name !== "1c-ai-core" || source.version !== preview_key(build.version).base)
+    throw new Error("Preview base version does not match the source revision");
 }
 export function validate_source_tag(checkout, build, exec = run) {
   exec(["git", "fetch", "--no-tags", "origin", "refs/tags/" + build.version], {
@@ -119,19 +128,19 @@ export function update_catalog(checkout, payload) {
   fs.mkdirSync(path.dirname(catalog), { recursive: true });
   fs.writeFileSync(catalog, JSON.stringify(current, null, 2) + "\n");
 }
-export function stage_catalog(checkout, exec = run) {
+export function stage_catalog(checkout, exec = run, name = "1c-ai-core") {
   exec(
     [
       "git",
       "add",
       "--",
-      "plugins/1c-ai-core",
+      `plugins/${name}`,
       ".agents/plugins/marketplace.json",
     ],
     { cwd: checkout },
   );
   const tracked = new Set(
-    exec(["git", "ls-files", "--", "plugins/1c-ai-core"], {
+    exec(["git", "ls-files", "--", `plugins/${name}`], {
       cwd: checkout,
     }).split(/\r?\n/),
   );
@@ -150,13 +159,14 @@ export function stage_catalog(checkout, exec = run) {
     "mcp/settings.mjs",
     "hooks/guard.mjs",
   ])
-    if (!tracked.has("plugins/1c-ai-core/" + file))
+    if (!tracked.has(`plugins/${name}/` + file))
       throw new Error("Runtime file was not staged: " + file);
 }
 export function stage_release(checkout, payload, source, build, exec = run) {
+  const preview = build.profile === "preview", name = preview ? "1c-ai-core-preview" : "1c-ai-core";
   const previousFile = path.join(
     checkout,
-    "plugins/1c-ai-core/build-info.json",
+    `plugins/${name}/build-info.json`,
   );
   if (exists(previousFile)) {
     const previous = JSON.parse(fs.readFileSync(previousFile, "utf8"));
@@ -165,7 +175,7 @@ export function stage_release(checkout, payload, source, build, exec = run) {
       previous.version === build.version
     )
       return false;
-    if (compare_version(build.version, previous.version) <= 0)
+    if ((preview ? compare_preview(build.version, previous.version) : compare_version(build.version, previous.version)) <= 0)
       throw new Error(
         "Publication cannot replace or roll back an existing version",
       );
@@ -174,7 +184,7 @@ export function stage_release(checkout, payload, source, build, exec = run) {
       { cwd: source },
     );
   }
-  const target = path.join(checkout, "plugins/1c-ai-core");
+  const target = path.join(checkout, "plugins", name);
   if (
     (exists(target) && fs.lstatSync(target).isSymbolicLink()) ||
     !contained(resolve(checkout), resolve(target))
@@ -182,13 +192,13 @@ export function stage_release(checkout, payload, source, build, exec = run) {
     throw new Error("Unsafe plugin destination");
   update_catalog(checkout, payload);
   if (exists(target)) fs.rmSync(target, { recursive: true });
-  fs.cpSync(path.join(payload, "plugins/1c-ai-core"), target, {
+  fs.cpSync(path.join(payload, "plugins", name), target, {
     recursive: true,
     // Force JS traversal: Node 22's native Windows copy mishandles Unicode
     // paths (nodejs/node#61950), including a checkout below a Unicode temp dir.
     filter: () => true,
   });
-  stage_catalog(checkout, exec);
+  stage_catalog(checkout, exec, name);
   return true;
 }
 export function push_release(
@@ -213,7 +223,7 @@ export function push_release(
   );
   for (let attempt = 0; attempt < 3; attempt++) {
     if (!stage_release(checkout, payload, source, build, exec)) return;
-    exec(["git", "commit", "-m", "Publish 1c-ai-core " + build.version], {
+    exec(["git", "commit", "-m", `Publish ${build.profile === "preview" ? "1c-ai-core-preview" : "1c-ai-core"} ` + build.version], {
       cwd: checkout,
     });
     const parents = exec(["git", "rev-list", "--parents", "-n", "1", "HEAD"], {
@@ -287,11 +297,12 @@ export function publish(runId, work, exec = run) {
     "clone",
     "--single-branch",
     "--branch",
-    "main",
+    build.profile === "preview" ? "develop" : "main",
     `https://github.com/${REPOSITORY}.git`,
     source,
   ]);
-  validate_source_tag(source, build, sourceExec);
+  if (build.profile === "preview") validate_source_preview(source, build, sourceExec);
+  else validate_source_tag(source, build, sourceExec);
   const checkout = path.join(work, "catalog"),
     environment = { ...git_environment(token), GH_TOKEN: token };
   clone_marketplace(checkout, environment, sourceExec);

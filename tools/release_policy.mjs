@@ -4,6 +4,16 @@ import { spawnSync } from "node:child_process";
 import { ROOT, entrypoint, argumentsOf, cli } from "../scripts/common.mjs";
 export const VERSION_PATTERN =
   "(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)";
+export const PREVIEW_PATTERN = `${VERSION_PATTERN}-preview\\.(?:[1-9][0-9]*)`;
+export function preview_key(version) {
+  const match = new RegExp(`^(${VERSION_PATTERN})-preview\\.([1-9][0-9]*)$`).exec(version);
+  if (!match) throw new Error("Expected a preview version such as 1.0.0-preview.1");
+  return { base: match[1], number: BigInt(match[2]) };
+}
+export function compare_preview(a, b) {
+  const left = preview_key(a), right = preview_key(b);
+  return compare_version(left.base, right.base) || (left.number > right.number ? 1 : left.number < right.number ? -1 : 0);
+}
 export function version_key(version) {
   if (
     typeof version !== "string" ||

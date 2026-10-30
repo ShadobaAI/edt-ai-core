@@ -39,7 +39,6 @@ export const FILES = [
     "PROJECT_AGENTS",
     "REQUIREMENTS",
     "INTEGRATIONS",
-    "ROADMAP",
     "SOURCES",
   ].map((name) => "docs/" + name + ".md"),
 ];

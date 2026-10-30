@@ -13,11 +13,13 @@ async function check_worker(selected) {
   const manifest = json(".codex-plugin/plugin.json"),
     universal = json("plugin.json"),
     build = json("build-info.json");
+  const name = build.profile === "preview" ? "1c-ai-core-preview" : "1c-ai-core";
   for (const item of [manifest, universal]) {
-    assert.equal(item.name, "1c-ai-core");
+    assert.equal(item.name, name);
     assert.equal(item.version, build.version);
   }
-  assert.equal(build.plugin, "1c-ai-core");
+  assert.equal(build.plugin, name);
+  assert.equal(manifest.interface.displayName, name === "1c-ai-core-preview" ? "1C AI Core Preview" : "1C AI Core");
   assert.equal(manifest.skills, "./skills/");
   assert.equal(manifest.mcpServers, "./mcp.json");
   assert.equal(manifest.hooks, "./hooks/hooks.json");
