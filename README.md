@@ -85,6 +85,7 @@ MCP информационной базы для разрешённых свед
 - [Создание и устройство профиля](docs/PROFILES.md)
 - [AGENTS.md своего проекта](docs/PROJECT_AGENTS.md)
 - [Требования и ограничения](docs/REQUIREMENTS.md)
+- [Требования к качеству решений](docs/QUALITY_REQUIREMENTS.md)
 - [Вся документация](docs/README.md)
 
 ## Разработчику
