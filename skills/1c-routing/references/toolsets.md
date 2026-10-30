@@ -68,7 +68,13 @@ call. A short sequential group preserves workspace registration and analysis in
 one process despite separate host connections.
 Permissions, source workflow and action policy apply to each native operation.
 Errors stop the group; completed operations are not rolled back, and the whole
-group must not be retried without outcome verification. This is a live API without
+group must not be retried without outcome verification. Use `actions` positions
+(one-based) to distinguish repeated names: `response_ok` means a successful native
+response, `response_error` an error response, `unknown` an attempted dispatch without
+a confirmed response, `not_started` no dispatch, and `response_ok_workflow_stopped`
+a successful response followed by a failed workflow recheck. Inspect `results` for
+the response and reason. An error response does not prove that no mutation occurred;
+an acknowledgement does not prove an asynchronous job finished. This is a live API without
 a built-in external tool catalogue or bypass of project restrictions.
 
 1. Establish the live native catalogue through `core_runtime_tools` and

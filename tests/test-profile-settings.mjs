@@ -97,12 +97,34 @@ test("profile status restores both managed checks and expires their scoped evide
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
 });
 
+test("default authorities stay configured while explicit managed opt-outs are preserved", async t => {
+  const f = fixture(t); f.save();
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const initial = (await client.call("settings.read", {})).structuredContent;
+  assert.equal(initial.values.codeIndexEnabled, true);
+  assert.equal(initial.values.bslLsEnabled, true);
+  const defaults = JSON.parse(fs.readFileSync(path.join(ROOT, "settings/defaults.json"), "utf8"));
+  assert.equal(defaults.mcp.required.edt.mode, "user");
+  assert.equal(defaults.mcp.required.v8std.mode, "user");
+  assert.equal(defaults.mcp.required.edt.url, "");
+  assert.equal(defaults.mcp.required.v8std.url, "");
+  await client.call("settings.update", { set: { codeIndexEnabled: false, bslLsEnabled: false } });
+  const current = (await client.call("settings.read", {})).structuredContent;
+  assert.equal(current.values.codeIndexEnabled, false);
+  assert.equal(current.values.bslLsEnabled, false);
+  for (const id of ["code-index", "bsl-ls"])
+    assert.equal(current.summary.components.find(item => item.id === id).status, "disabled");
+  assert.equal(fs.existsSync(path.join(f.state, "runtime")), false);
+});
+
 test("loading settings returns fresh service status without a separate status request or preparation", async t => {
   const f = fixture(t); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
   const initial = (await client.call("settings.read", {})).structuredContent;
   assert.equal(initial.summary?.components.find(item => item.id === "code-index")?.status, "stopped");
-  assert.equal(initial.summary.components.find(item => item.id === "bsl-ls").status, "disabled");
+  assert.equal(initial.values.codeIndexEnabled, true);
+  assert.equal(initial.values.bslLsEnabled, true);
+  assert.equal(initial.summary.components.find(item => item.id === "bsl-ls").status, "not_checked");
   assert.equal(fs.existsSync(path.join(f.state, "projects")), false);
   const requests = [];
   const server = createServer((req, res) => {

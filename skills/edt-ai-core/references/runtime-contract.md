@@ -65,8 +65,9 @@ prefixes, aliases, ports or a running EDT.
   server release or a static operation catalogue.
 - Platform documentation uses the assigned EDT through `$1c-platform-docs`.
   No additional documentation MCP is part of installation or readiness.
-- code-index and BSL LS can be disabled independently or connected in external
-  mode. BSL LS is off by default; enable it for focused analyzer work.
+- code-index and BSL LS are enabled by default and can be disabled independently
+  or connected in external mode. Use BSL LS for focused analyzer work and changed
+  BSL diagnostics when enabled and prepared; settings can override the default.
   The first settings.run_check authorizes ongoing managed starts for the selected
   project/instance. Profile inspection/create/load/import never provisions services.
   After that preparation, stdio entrypoints install missing verified artifacts

@@ -49,6 +49,15 @@ compact plan when several substantial decisions exist; H needs a separate agreed
 SDD and a plan of substantial stages, with an ADR if needed.
 Reuse existing project documents and decisions; a full template and new file
 are not required for each local edit.
+For a substantial change, identify affected objects and entry points, candidate
+existing mechanisms, execution context and concrete acceptance checks before
+writing. Reconcile SDD and requirements with later user clarifications and current
+code; identify material contradictions and resolve them within authorized scope.
+Do not silently treat an outdated document or an implementation as the requirement.
+Keep a compact task record of accepted risks, rejected alternatives, limitations,
+their sources and conditions for reconsideration; pass the relevant facts to review.
+An ordering chosen in a plan does not itself create an authorization or safety gate:
+perform independent authorized work while respecting actual project requirements.
 Stop decomposition when substantial decisions, constraints and checks are known.
 Do not plan individual statements or confirmed APIs; resolve new technical
 questions locally within the existing task boundaries.
@@ -124,6 +133,9 @@ contract or retain necessary protection; do not remove it to reduce the diff.
    Syntactic composition of already confirmed operations requires no separate search.
    Verify unknown platform APIs and restrictions through $1c-platform-docs.
    Reuse already sufficient facts without searching again.
+   Before creating forms, roles or rights, check the actual execution context,
+   standard capabilities and suitable existing objects/permissions. Create only
+   what the accepted behavior requires; do not assume privileged execution.
 2. Follow the shared [requirements workflow](../1c-standards/references/requirements.md)
    from $1c-standards: full detection, `policy` selection, exact `v8std` requirements,
    project conditions and `validate_compliance` with `phase: proposal` before writing.
@@ -145,6 +157,10 @@ contract or retain necessary protection; do not remove it to reduce the diff.
    [diagnostics contract](../1c-routing/references/diagnostics.md): primary validation
    does not make EDT infallible, and BSL LS messages depend on the rule, settings
    and context completeness.
+   For changed BSL, use enabled and prepared BSL LS for focused complementary
+   diagnostics before and after the change; report unavailable checks and coverage.
+   It does not replace EDT validation or justify starting an unprepared service
+   without the applicable authorization.
 4. Retain the hash/version from the EDT read and pass it to the write guard
    provided by the live contract. A version conflict requires a new read and
    reconciliation with the current state; do not bypass it by overwriting or
@@ -196,6 +212,13 @@ and unreliable mandatory post-validation block confirmation of completion.
 
 Verify the actual result against retained requirements and task criteria;
 compare the diff against the reuse and sufficiency checks above.
+Check observable behavior and specified error text, including intermediate or
+unfinished entry points: they must not change data before reporting an unsupported
+operation unless that effect is explicitly required. For affected invariants,
+check each relevant write path, including exchange/loading where applicable, and
+whether conversion can conceal duplicates. Record accepted path limitations and
+their consequences for review. Inspect the diff for unintended line-ending or
+format churn and distinguish it from semantic changes.
 Under the shared requirements workflow, run `validate_compliance` with
 `phase: result` and current mechanisms/evidence. Proposal, diagnostics and tests
 do not replace this check. Changed applicability requires revising selection

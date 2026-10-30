@@ -56,6 +56,15 @@ only for actual collection members. Establish the programmatic name before writi
 synonym search does not make a synonym a valid write identifier. For rename/delete,
 assess affected data, references, permissions and integrations; do not expand
 the operation through cascading changes without the corresponding scope.
+Check the live operation's support for the exact nested object and rename mode;
+changing a `name` property is not necessarily a supported rename. If unavailable,
+report the specific limitation and affected operation rather than inventing a
+file-write or delete/recreate workaround. Verify the actual compare-and-write
+guard for metadata properties; a reread cannot make an unguarded write atomic.
+When an authorized write can proceed without a guard, explicitly report the
+affected operation and residual risk of overwriting concurrent changes; include
+that limitation in the completion report. High-risk writes still require the
+compare-and-write guarantee specified by the parent skill.
 
 For command interfaces, establish the exact address first; after changing, check
 saved visibility, role overrides and order. Do not edit serialized files.

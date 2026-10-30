@@ -47,5 +47,4 @@ v8std запускается пользователем отдельно и пр
 EDT-проекты, профили и exports не поставляются; остаётся только `generic-1c`.
 `1c-docs-mcp` (HelpSearchServer) и `1c-ssl-mcp` исключены, включая optional
 и fallback варианты. Замещающие маршруты оцениваются отдельно.
-Текущий контракт знаний и MCP ИБ описан в [INTEGRATIONS.md](INTEGRATIONS.md),
-этапы реализации — в [ROADMAP.md](ROADMAP.md).
+Текущий контракт знаний и MCP ИБ описан в [INTEGRATIONS.md](INTEGRATIONS.md).

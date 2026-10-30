@@ -28,7 +28,7 @@ import { COMPONENTS, component_settings, component_enabled, binding_fingerprint,
 import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
 import { Ajv, Ajv2019, Ajv2020, draft6MetaSchema } from "../vendor/deps.mjs";
-import { create_diagnostic_logger, register_diagnostic_secrets, safe_error_message } from "./diagnostics.mjs";
+import { create_diagnostic_logger, register_diagnostic_secrets, safe_error_message, connection_failure } from "./diagnostics.mjs";
 import { knowledge_status, WORKFLOW_ACTIONS } from "./knowledge.mjs";
 import { WorkflowKnowledge } from "./openviking_adapter.mjs";
 
@@ -63,6 +63,7 @@ let selected = selection.directory,
   discoveryNotificationPending = false,
   requestInitialRoots = false;
 let lastError = "Выберите каталог проекта с .ai/project.yaml.";
+let lastFailure = null;
 let rootsReady = Promise.resolve(), finishRoots = null;
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const emit = (message) =>
@@ -165,7 +166,7 @@ async function ensureBinding(refreshSurface = true, retryFailed = true, connect 
 }
 async function bind(refreshSurface, retryFailed, connect) {
   if (rootsPending) return;
-  let revision = null;
+  let revision = null, stage = "configuration";
   try {
     const [root, config, profile] = configContext(),
       token = reconnect_file(state, root);
@@ -175,7 +176,7 @@ async function bind(refreshSurface, retryFailed, connect) {
     revision = binding_fingerprint(config, component, root, profile, reconnect[component] || reconnect.id || "");
     if (revision === failedRevision && !retryFailed) return;
     if (client && !client.error && revision === currentRevision) {
-      if (refreshSurface) await refreshNotifiedTools();
+      if (refreshSurface) { stage = "tools/list"; await refreshNotifiedTools(); }
       return;
     }
     await disconnect();
@@ -202,6 +203,7 @@ async function bind(refreshSurface, retryFailed, connect) {
         );
       candidate = new RemoteMcp(url, options.timeout_seconds || (component === "v8std" ? 60 : 30), { ...transportOptions, headers_env: options.headers_env });
     } else {
+      stage = "preparation";
       require_preparation(state, root, component);
       candidate = new McpClient(
         [
@@ -223,9 +225,12 @@ async function bind(refreshSurface, retryFailed, connect) {
     }
     try {
       connectingClient = candidate;
+      stage = "initialize";
       await candidate.initialize();
+      stage = "tools/list";
       toolsRevision = candidate.tools_revision;
       tools = (await all_pages(candidate, "tools/list", "tools")).tools;
+      stage = "native_validation";
       if (component === "bsl-ls") validate_bsl_tools(tools);
       toolsDirty = false;
       if (epoch !== generation || closed) throw new ConfigError("Project binding changed while connecting");
@@ -239,6 +244,7 @@ async function bind(refreshSurface, retryFailed, connect) {
     connectingClient = null;
     failedRevision = null;
     lastError = "";
+    lastFailure = null;
     bindingContext = {
         projectRoot: root,
         instance: instance_name(),
@@ -255,6 +261,7 @@ async function bind(refreshSurface, retryFailed, connect) {
     if (revision === null) currentRevision = null;
     if (lastError !== safe_error_message(error)) diagnostic.event("connection_failed", { projectRoot: selected, error }, "error");
     lastError = safe_error_message(error);
+    lastFailure = { stage, ...connection_failure(error, ["configuration", "preparation"].includes(stage) ? "configuration" : stage === "initialize" ? "transport" : "server_contract") };
   }
 }
 const statusTool = () => ({
@@ -284,7 +291,7 @@ const controlTools = () => [statusTool(), {
 }, {
   name: "core_runtime_call",
   title: "Вызов native API " + component,
-  description: "Call native tools using their live schemas from core_runtime_tools. Calls run sequentially in one project-bound connection, so workspace registration and analysis can share a BSL LS process. Stops at the first failure; completed calls are not rolled back. Apply the native annotations, source workflow and action policy to EVERY call; this wrapper grants no permissions. Supply this chat's projectRoot when roots are empty. Never retry a failed batch blindly.",
+  description: "Call native tools using their live schemas from core_runtime_tools. Calls run sequentially in one project-bound connection, so workspace registration and analysis can share a BSL LS process. Stops at the first failure; completed calls are not rolled back. The actions summary uses one-based positions; response_error or unknown does not prove whether a mutation had effects. Apply the native annotations, source workflow and action policy to EVERY call; this wrapper grants no permissions. Supply this chat's projectRoot when roots are empty. Never retry a failed batch blindly.",
   inputSchema: { type: "object", properties: {
     projectRoot: rootProperty(),
     calls: { type: "array", minItems: 1, maxItems: 16, items: {
@@ -470,10 +477,12 @@ async function dispatch(message) {
           state: client?.error ? "error" : client ? "connected" : "disconnected",
           component,
           detail: lastError,
+          ...(lastFailure ? { failure: lastFailure } : {}),
           selectedDirectory: selected,
           selectionSource: selection.source,
           knowledge: (() => { try { const [, config, profile] = configContext(); return knowledge_status(profile, config); } catch { return null; } })(),
           nativeToolCount: tools.length,
+          nativeCatalog: client ? (tools.length ? "available" : "empty") : "not_checked",
           toolAccess: "Use core_runtime_tools for live schemas and core_runtime_call for native operations. Both accept this chat's projectRoot for empty host roots.",
         };
         {
@@ -517,8 +526,9 @@ async function dispatch(message) {
             if (pending.cancelled || client !== owner || epoch !== generation) throw new ConfigError("Runtime batch interrupted before the next call; completed calls were not rolled back");
             pending.client = owner;
             diagnostic.event("native_request_started", { requestId: id, tool: call.name, projectRoot: selected });
-            dispatched = true;
-            const native = await owner.request("tools/call", { ...call, ...(params._meta ? { _meta: params._meta } : {}) }, { onId: value => { pending.upstreamId = value; } });
+            const native = await owner.request("tools/call", { ...call, ...(params._meta ? { _meta: params._meta } : {}) }, {
+              onId: value => { pending.upstreamId = value; }, onDispatch: () => { dispatched = true; },
+            });
             received = true;
             results.push({ name: call.name, result: native });
             diagnostic.event("native_request_completed", { requestId: id, tool: call.name, projectRoot: selected, isError: Boolean(native.isError) });
@@ -537,8 +547,15 @@ async function dispatch(message) {
           }
         }
         const failed = Boolean(results.at(-1)?.error || results.at(-1)?.result?.isError);
+        const actions = params.arguments.calls.map((call, index) => {
+          const entry = results[index];
+          const status = !entry ? "not_started" : entry.error?.outcome === "not_executed" ? "not_started"
+            : entry.error?.outcome === "unknown" ? "unknown" : entry.result?.isError ? "response_error"
+            : entry.error ? "response_ok_workflow_stopped" : "response_ok";
+          return { position: index + 1, name: call.name, status };
+        });
         result = { content: results.flatMap(entry => [...(entry.result?.content || []), ...(entry.error ? [{ type: "text", text: entry.error.message }] : [])]),
-          structuredContent: { binding: ownerBinding, results, completed: results.filter(entry => entry.result && !entry.result.isError).length, requested: params.arguments.calls.length,
+          structuredContent: { binding: ownerBinding, results, actions, completed: results.filter(entry => entry.result && !entry.result.isError).length, requested: params.arguments.calls.length,
             ...(failed ? { stopped: { completedActions: results.filter(entry => entry.result && !entry.result.isError).map(entry => entry.name),
               notStarted: [...results.filter(entry => entry.error?.outcome === "not_executed").map(entry => entry.name), ...params.arguments.calls.slice(results.length).map(entry => entry.name)],
               unknownActions: results.filter(entry => entry.error?.outcome === "unknown").map(entry => entry.name), rollback: "not_performed",

@@ -27,7 +27,7 @@
         "java": "java",
         "node": "node",
         "configuration": null,
-        "enabled": false
+        "enabled": true
       }
     },
     "optional": {

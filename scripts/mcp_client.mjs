@@ -59,11 +59,11 @@ export class McpClient {
     this.pending.clear();
     this.options.onClose?.(error);
   }
-  send(message) {
+  send(message, onDispatch) {
     if (this.error) throw this.error;
-    this.process.stdin.write(
-      JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n",
-    );
+    const payload = JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n";
+    onDispatch?.();
+    this.process.stdin.write(payload);
   }
   request(method, params = {}, options = {}) {
     if (this.error) return Promise.reject(this.error);
@@ -86,7 +86,7 @@ export class McpClient {
           reject(error);
         } else resolve(message.result);
       });
-      try { this.send({ id, method, params }); }
+      try { this.send({ id, method, params }, options.onDispatch); }
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error); }
     });
   }

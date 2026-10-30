@@ -329,7 +329,7 @@ test("manual editing resets removed runtime fields and preserves the unchanged p
   const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
   const preview = (await client.call("settings.preview", request)).structuredContent;
   assert.equal(preview.replacesProfile, false);
-  assert.deepEqual(preview.sharedRuntimeChanges["bsl-ls"], { mode: "auto", version: "latest", allow_prerelease: false, java: "java", node: "node", configuration: null, enabled: false });
+  assert.deepEqual(preview.sharedRuntimeChanges["bsl-ls"], { mode: "auto", version: "latest", allow_prerelease: false, java: "java", node: "node", configuration: null, enabled: true });
   const result = (await client.call("settings.apply", { ...request, revision: preview.revision })).structuredContent;
   assert.equal(result.backup, null);
   assert.deepEqual(fs.readFileSync(profilePath), before);

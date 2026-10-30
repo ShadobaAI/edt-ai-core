@@ -50,7 +50,7 @@ node tools/test.mjs
 Тестовый runner использует Node без shell/glob expansion. Фикстуры проверяют
 схемы, изоляцию, API, ошибки и упаковку; они не подтверждают фактическую
 приёмку установленного EDT, v8std, JAR, тестовых баз и UI Codex.
-Карта regression/behavioral evidence и отдельные ограничения:
+Карта регрессионных и поведенческих проверок и их ограничения:
 [ACCEPTANCE.md](ACCEPTANCE.md). Поведенческие сценарии выполняются отдельно
 по `tests/behavioral/README.md`; Node runner не выдаёт их за автоматические тесты.
 

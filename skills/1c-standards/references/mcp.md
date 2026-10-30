@@ -10,6 +10,11 @@ connection instructions and capabilities. This establishes MCP availability, not
 article presence or corpus completeness. Choose capabilities by purpose, description
 and live schema; do not guess names. The server's read contract does not replace
 project instructions or user authority.
+Inspect `nativeCatalog` and, on failure, `failure.stage`/`failure.category` and
+`detail`: connection, catalogue, schema validation, actual reading and policy are
+separate checks. An empty catalogue or a connected status does not establish that
+the needed read or workflow is usable. Report the failing operation and binding;
+do not treat setup readiness as proof of this session's relay.
 
 Reuse discovery in the current binding. Refresh after endpoint changes,
 reconnection, capability-change notifications, incompatible responses or explicit

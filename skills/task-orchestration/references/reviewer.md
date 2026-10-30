@@ -6,6 +6,10 @@ for uncommitted results. No commit is required for review. Supply authorized sou
 evidence, selections and exact requirements, ledgers only for applicable phases,
 actual diagnostic/test outcomes and substantial gaps. Do not supply an expected
 verdict or implementation reasoning as correctness evidence.
+Include the current requirements and later clarifications, accepted risks and
+rejected alternatives with their sources and conditions for reconsideration,
+including known write-path limitations. These decisions constrain the review but
+do not establish that implementation satisfies them.
 
 Assign explicit read-only work and, when supported by the host, a read-only
 sandbox/agent configuration. Role names do not prove technical access restriction;
@@ -25,6 +29,11 @@ substantial dependencies; a green test does not resolve an unverified decision.
 For affected mechanisms check permissions/RLS, untrusted inputs, transactions and
 compensation, client/server boundaries, event order and lifecycle. Account for
 supplier updatability and actual shared-contract consumers, not just local callers.
+Check reachable partial implementations and error paths for unintended writes,
+and assess invariants across relevant ordinary and exchange/loading paths, including
+whether conversion hides duplicates. Compare behavior and specified error text to
+current criteria; identify contradictory or obsolete requirements explicitly.
+Separate line-ending/format churn from semantic changes in the reviewed diff.
 Use authorized source/metadata facts of the required revision; unknown significant
 consumers or context remain gaps rather than assumed safety.
 Distinguish successful diagnostics, behavioral verification and normative compliance:

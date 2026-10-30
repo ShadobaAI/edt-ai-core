@@ -148,6 +148,98 @@ test("remote relay cancellation uses the upstream HTTP id before the response fi
   const result=(await work).structuredContent;assert.equal(result.cancelled,result.upstreamId);
 });
 
+test("v8std relay distinguishes configuration, catalogue and read failures from connection", async t => {
+  const f = fixture(t); f.save(); let mode = "empty";
+  const e = await endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") {
+      if (mode === "broken") return error(-32603);
+      return reply({ tools: mode === "empty" ? [] : [{ name: "read_standard", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] }, annotations: { readOnlyHint: true } }] });
+    }
+    if (message.params.arguments.id === "missing") return reply({ isError: true, content: [{ type: "text", text: "standard not found" }] });
+    return reply({ content: [], structuredContent: { id: message.params.arguments.id, text: "fixture requirement" } });
+  });
+  delete f.env.CORE_TEST_MISSING_AUTH;
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "v8std"], f);
+  const initial = (await client.call("core_runtime_status", {})).structuredContent;
+  assert.equal(initial.ready, false); assert.equal(initial.failure.stage, "configuration");
+  assert.equal(initial.nativeCatalog, "not_checked");
+  f.profile.connections = { v8std: { url: e.url, headers_env: { Authorization: "CORE_TEST_MISSING_AUTH" } } }; f.save();
+  const missingCredential = (await client.call("core_runtime_status", {})).structuredContent;
+  assert.equal(missingCredential.ready, false); assert.equal(missingCredential.failure.stage, "initialize");
+  assert.equal(missingCredential.failure.category, "authorization");
+  assert.equal(e.calls.length, 0);
+  delete f.profile.connections.v8std.headers_env; f.save();
+  const empty = (await client.call("core_runtime_status", {})).structuredContent;
+  assert.equal(empty.ready, true); assert.equal(empty.nativeCatalog, "empty");
+  assert.equal(empty.workflowReadiness.state, "not_checked");
+  mode = "broken"; f.profile.connections.v8std.url = e.url + "/broken"; f.save();
+  const broken = (await client.call("core_runtime_status", {})).structuredContent;
+  assert.equal(broken.ready, false); assert.equal(broken.failure.stage, "tools/list");
+  assert.equal(broken.failure.category, "server_contract"); assert.equal(broken.nativeCatalog, "not_checked");
+  mode = "ready"; f.profile.connections.v8std.url = e.url + "/ready"; f.save();
+  const ready = (await client.call("core_runtime_status", {})).structuredContent;
+  assert.equal(ready.nativeCatalog, "available"); assert.equal(ready.failure, undefined);
+  const success = await client.call("core_runtime_call", { calls: [{ name: "read_standard", arguments: { id: "fixture" } }] });
+  assert.equal(success.structuredContent.results[0].result.structuredContent.text, "fixture requirement");
+  const denied = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "read_standard", arguments: { id: "missing" } }] } });
+  assert.equal(denied.isError, true);
+  assert.equal(denied.structuredContent.actions[0].status, "response_error");
+  assert.equal(denied.structuredContent.results[0].result.content[0].text, "standard not found");
+});
+
+test("relay reports local HTTP contract failure before dispatch without inventing an unknown outcome", async t => {
+  const f = fixture(t);
+  const e = await endpoint(t, ({ message, reply }) => {
+    if (message.method === "server/discover") return reply({ supportedVersions: ["2026-07-28"] });
+    if (message.method === "tools/list") return reply({ tools: [{ name: "change", inputSchema: {
+      type: "object", properties: { value: { type: "string", "x-mcp-header": "Bad Header" } },
+    } }] });
+    return reply({ content: [] });
+  });
+  f.profile.connections = { edt: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const result = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "change", arguments: { value: "x" } }] } });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.results[0].error.outcome, "not_executed");
+  assert.match(result.structuredContent.results[0].error.message, /Incompatible native HTTP contract/);
+  assert.deepEqual(result.structuredContent.actions, [{ position: 1, name: "change", status: "not_started" }]);
+  assert.equal(e.calls.filter(call => call.message.method === "tools/call").length, 0);
+});
+
+test("batch summaries distinguish repeated calls, server errors and unknown outcomes", async t => {
+  const f = fixture(t); let mode = "error", dispatched = [];
+  const e = await endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: [{ name: "change", inputSchema: { type: "object", properties: { step: { type: "integer" } }, required: ["step"] } }] });
+    dispatched.push(message.params.arguments.step);
+    if (message.params.arguments.step === 2 && mode === "unknown") return res.destroy();
+    if (message.params.arguments.step === 2) return reply({ isError: true, content: [{ type: "text", text: "specific refusal" }] });
+    return reply({ content: [{ type: "text", text: "accepted" }] });
+  });
+  f.profile.connections = { edt: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const calls = [1, 2, 3].map(step => ({ name: "change", arguments: { step } }));
+  for (const expected of ["response_error", "unknown"]) {
+    mode = expected === "unknown" ? "unknown" : "error"; dispatched = [];
+    const response = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls } });
+    assert.equal(response.isError, true);
+    assert.deepEqual(response.structuredContent.actions, [
+      { position: 1, name: "change", status: "response_ok" },
+      { position: 2, name: "change", status: expected },
+      { position: 3, name: "change", status: "not_started" },
+    ]);
+    assert.deepEqual(dispatched, [1, 2]);
+    assert.equal(response.structuredContent.stopped.rollback, "not_performed");
+    if (expected === "response_error") assert.equal(response.structuredContent.results[1].result.content[0].text, "specific refusal");
+    else assert.equal(response.structuredContent.results[1].error.outcome, "unknown");
+  }
+});
+
 test("relay validates native calls using the schema's declared JSON Schema dialect", async t => {
   const f = fixture(t), calls = [];
   const dialects = {

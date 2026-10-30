@@ -92,11 +92,11 @@ export class RemoteMcp {
   credential_headers() {
     if (this.options.credentialHeaders) return this.options.credentialHeaders();
     return Object.fromEntries(Object.entries(this.options.headers_env || {}).map(([name, variable]) => {
-      if (!process.env[variable]) throw new Error("Missing connection credential environment variable: " + variable);
+      if (!process.env[variable]) throw Object.assign(new Error("Missing connection credential environment variable: " + variable), { category: "authorization" });
       return [name, process.env[variable]];
     }));
   }
-  async send(payload, expect_reply = true) {
+  async send(payload, expect_reply = true, onDispatch) {
     this.options.beforeRequest?.(payload);
     const modern = this.protocol === RemoteMcp.MODERN_PROTOCOL;
     const headers = {
@@ -150,10 +150,12 @@ export class RemoteMcp {
     }
     if (this.session && !modern) headers["Mcp-Session-Id"] = this.session;
     if (payload.method === "initialize") delete headers["MCP-Protocol-Version"];
+    const body = JSON.stringify(wire);
+    onDispatch?.();
     const response = await fetch(this.url, {
       method: "POST",
       headers,
-      body: JSON.stringify(wire),
+      body,
       signal: AbortSignal.timeout(this.timeout),
       redirect: "error",
     });
@@ -233,7 +235,7 @@ export class RemoteMcp {
       id,
       method,
       params,
-    });
+    }, true, options.onDispatch);
     if (
       this.protocol === RemoteMcp.MODERN_PROTOCOL &&
       method === "tools/list" &&
