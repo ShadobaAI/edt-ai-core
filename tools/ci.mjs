@@ -2,6 +2,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { preview_number } from "./preview-number.mjs";
+import { read_source_manifest } from "./release_policy.mjs";
 const invoke = (script, args = []) => {
   const result = spawnSync(process.execPath, [script, ...args], {
     stdio: "inherit",
@@ -26,17 +28,20 @@ if (action === "install") {
 } else if (action === "test")
   invoke("tools/without-shells.mjs", ["tools/test.mjs"]);
 else if (action === "build") {
-  invoke("tools/without-shells.mjs", ["tools/package-plugin.mjs"]);
-  invoke("tools/check-plugin.mjs", [".build/marketplace/plugins/1c-ai-core"]);
+  const preview = process.env.GITHUB_ACTIONS === "true" && process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF === "refs/heads/develop";
+  const version = preview ? `${read_source_manifest(process.cwd()).version}-preview.${preview_number()}` : null;
+  invoke("tools/without-shells.mjs", ["tools/package-plugin.mjs", ...(preview ? ["--preview", "true", "--version", version] : [])]);
+  invoke("tools/check-plugin.mjs", [`.build/marketplace/plugins/${preview ? "1c-ai-core-preview" : "1c-ai-core"}`]);
   if (process.env.GITHUB_STEP_SUMMARY)
     fs.appendFileSync(
       process.env.GITHUB_STEP_SUMMARY,
-      "Node.js plugin and marketplace ZIPs verified. Publication follows successful tagged builds and the complete smoke matrix.\n",
+      "Node.js plugin and marketplace ZIPs verified. Publication follows successful release or develop builds and the complete smoke matrix.\n",
     );
 } else if (action === "smoke") {
   const target = path.join(process.env.RUNNER_TEMP, "1c core smoke");
   invoke("tools/verify-package.mjs", [".build/download", target]);
-  invoke("tools/check-plugin.mjs", [path.join(target, "plugins/1c-ai-core")]);
+  const name = JSON.parse(fs.readFileSync(path.join(target, ".agents/plugins/marketplace.json"), "utf8")).plugins[0].name;
+  invoke("tools/check-plugin.mjs", [path.join(target, "plugins", name)]);
 } else if (action === "publish")
   invoke("tools/publish-marketplace.mjs", [
     "--run-id",

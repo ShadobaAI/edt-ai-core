@@ -12,11 +12,15 @@ import {
   compare_version,
   version_key,
   resolve_version,
+  compare_preview,
 } from "../tools/release_policy.mjs";
+import { preview_number } from "../tools/preview-number.mjs";
+import { satisfies_core } from "../scripts/compatibility.mjs";
 import {
   validate_run,
   validate_build,
   validate_source_tag,
+  validate_source_preview,
   update_catalog,
   stage_release,
   push_release,
@@ -147,6 +151,62 @@ test("stable version ordering, untagged initial checkout and release-tag overrid
   process.env.GITHUB_REF_NAME = "1.2.3";
   assert.equal(resolve_version(ROOT), "1.2.3");
   assert.throws(() => resolve_version(ROOT, "1.2.4"), /triggering/);
+});
+test("preview ordinals count develop push runs separately per source version and include failed runs", t => {
+  const f = fixture(t), base = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"))).version;
+  const sha = n => String(n).repeat(40);
+  const runs = [
+    { id: 3, run_number: 8, event: "push", head_branch: "develop", head_sha: sha(3), conclusion: "failure" },
+    { id: 2, run_number: 5, event: "push", head_branch: "develop", head_sha: sha(2) },
+    { id: 1, run_number: 3, event: "push", head_branch: "develop", head_sha: sha(1) },
+    { id: 4, run_number: 9, event: "push", head_branch: "develop", head_sha: sha(4) },
+    { id: 5, run_number: 2, event: "pull_request", head_branch: "develop", head_sha: sha(5) },
+  ];
+  environment(t, { ...f.env, GITHUB_RUN_ID: "3", GITHUB_SHA: sha(3) });
+  const exec = args => args[0] === "gh" ? JSON.stringify({ workflow_runs: runs }) : JSON.stringify({ name: "1c-ai-core", version: args[2].startsWith(sha(2)) ? "9.9.9" : base });
+  assert.equal(preview_number(exec), 2);
+  process.env.GITHUB_RUN_ID = "1"; process.env.GITHUB_SHA = sha(1);
+  assert.equal(preview_number(exec), 1);
+  process.env.GITHUB_SHA = sha(2);
+  assert.throws(() => preview_number(exec), /missing/);
+  assert.ok(compare_preview("1.2.3-preview.10", "1.2.3-preview.9") > 0);
+  assert.ok(compare_preview("1.2.4-preview.1", "1.2.3-preview.99") > 0);
+  assert.equal(satisfies_core(">=1.2.3 <2.0.0", "1.2.3-preview.1"), true);
+  assert.throws(() => satisfies_core(">=1.2.3", "1.2.3-preview.0"));
+});
+test("preview package is checked and coexists with stable in the marketplace", async t => {
+  const f = fixture(t), base = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"))).version;
+  const bare = path.join(f.base, "store.git"), checkout = path.join(f.base, "catalog");
+  run(["git", "init", "--bare", bare]);
+  const exec = (args, options) => run(args[0] === "git" && args[1] === "clone" ? ["git", "clone", bare, args.at(-1)] : args, options);
+  clone_marketplace(checkout, process.env, exec);
+  const stable = package_plugin(), stableBuild = JSON.parse(fs.readFileSync(path.join(stable.plugin, "build-info.json")));
+  push_release(checkout, path.dirname(path.dirname(stable.plugin)), ROOT, stableBuild, process.env, exec);
+  const result = package_plugin(undefined, `${base}-preview.1`, true);
+  const extracted = path.join(f.base, "preview"), build = verify(path.join(ROOT, ".build"), extracted);
+  assert.equal(build.plugin, "1c-ai-core-preview");
+  assert.equal((await check(path.join(extracted, "plugins/1c-ai-core-preview"))).runtime, "node-only");
+  push_release(checkout, extracted, ROOT, build, process.env, exec);
+  const entries = JSON.parse(fs.readFileSync(path.join(checkout, ".agents/plugins/marketplace.json"))).plugins;
+  assert.deepEqual(entries.map(entry => entry.name), ["1c-ai-core", "1c-ai-core-preview"]);
+  assert.ok(fs.existsSync(path.join(checkout, "plugins/1c-ai-core/plugin.json")));
+  assert.equal(stage_release(checkout, extracted, ROOT, build, exec), false);
+  const newer = package_plugin(undefined, `${base}-preview.2`, true);
+  const newerBuild = JSON.parse(fs.readFileSync(path.join(newer.plugin, "build-info.json")));
+  push_release(checkout, path.dirname(path.dirname(newer.plugin)), ROOT, newerBuild, process.env, exec);
+  assert.throws(() => stage_release(checkout, extracted, ROOT, build, exec), /roll back/);
+  assert.throws(() => package_plugin(undefined, "9.9.9-preview.1", true), /source manifest/);
+});
+test("preview publication validates branch, build identity and source version", () => {
+  const record = { id: 42, repository: { full_name: "ShadobaAI/edt-ai-core" }, head_repository: { full_name: "ShadobaAI/edt-ai-core" }, path: ".github/workflows/build-plugin.yml", event: "push", conclusion: "success", head_branch: "develop", head_sha: "abc" };
+  const build = { profile: "preview", dirty: false, revision: "abc", version: "1.2.3-preview.2", runId: "42" };
+  validate_run(record); validate_build(build, record);
+  assert.throws(() => validate_build({ ...build, profile: "release" }, record));
+  assert.throws(() => validate_build({ ...build, version: "1.2.3" }, record));
+  assert.throws(() => validate_run({ ...record, head_branch: "feature" }));
+  const exec = args => args[1] === "show" ? JSON.stringify({ name: "1c-ai-core", version: "1.2.3" }) : "";
+  validate_source_preview("fixture", build, exec);
+  assert.throws(() => validate_source_preview("fixture", { ...build, version: "1.2.4-preview.1" }, exec), /base version/);
 });
 test("release validation rejects foreign, branch, failed, dirty and mismatched artifacts before publication", (t) => {
   const f = fixture(t),

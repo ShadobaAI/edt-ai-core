@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
-import { VERSION_PATTERN, version_key } from "./release_policy.mjs";
+import { VERSION_PATTERN, PREVIEW_PATTERN, version_key, preview_key } from "./release_policy.mjs";
 import { unzip } from "../scripts/archives.mjs";
 import {
   sha256,
@@ -17,7 +17,7 @@ export function verify(download, destination) {
     .trimEnd()
     .split("\n")) {
     const match = new RegExp(
-      `^([a-f0-9]{64})  (1c-ai-core-${VERSION_PATTERN}(?:-marketplace)?\\.zip)$`,
+      `^([a-f0-9]{64})  ((?:1c-ai-core-${VERSION_PATTERN}|1c-ai-core-preview-${PREVIEW_PATTERN})(?:-marketplace)?\\.zip)$`,
     ).exec(line.replace(/\r$/, ""));
     if (!match || entries.has(match[2]))
       throw new Error("Invalid or duplicate checksum entry");
@@ -45,12 +45,14 @@ export function verify(download, destination) {
   if (exists(destination))
     throw new Error("Extraction destination already exists");
   const data = unzip(fs.readFileSync(path.join(download, name)));
+  const preview = name.startsWith("1c-ai-core-preview-");
+  const identity = preview ? "1c-ai-core-preview" : "1c-ai-core";
   for (const file of Object.keys(data))
     if (
       file.endsWith("/") ||
       !(
         file === ".agents/plugins/marketplace.json" ||
-        file.startsWith("plugins/1c-ai-core/")
+        file.startsWith(`plugins/${identity}/`)
       )
     )
       throw new Error("Unexpected marketplace content");
@@ -60,31 +62,32 @@ export function verify(download, destination) {
   if (
     catalog.name !== "shadobaai" ||
     catalog.plugins.length !== 1 ||
-    catalog.plugins[0].name !== "1c-ai-core"
+    catalog.plugins[0].name !== identity
   )
     throw new Error("Unexpected marketplace source");
   assert.deepEqual(catalog.interface, { displayName: "ShadobaAI" });
   assert.deepEqual(catalog.plugins[0].source, {
     source: "local",
-    path: "./plugins/1c-ai-core",
+    path: `./plugins/${identity}`,
   });
   assert.deepEqual(catalog.plugins[0].policy, {
     installation: "AVAILABLE",
     authentication: "ON_INSTALL",
   });
   const manifest = JSON.parse(
-      Buffer.from(data["plugins/1c-ai-core/.codex-plugin/plugin.json"]),
+      Buffer.from(data[`plugins/${identity}/.codex-plugin/plugin.json`]),
     ),
-    build = JSON.parse(Buffer.from(data["plugins/1c-ai-core/build-info.json"]));
+    build = JSON.parse(Buffer.from(data[`plugins/${identity}/build-info.json`]));
   if (
-    manifest.name !== "1c-ai-core" ||
+    manifest.name !== identity || build.plugin !== identity ||
     manifest.version !== build.version ||
     manifest.skills !== "./skills/" ||
-    build.profile !== "release"
+    build.profile !== (preview ? "preview" : "release") ||
+    manifest.interface?.displayName !== (preview ? "1C AI Core Preview" : "1C AI Core")
   )
     throw new Error("Inconsistent plugin identity");
-  version_key(manifest.version);
-  if (name !== `1c-ai-core-${manifest.version}-marketplace.zip`)
+  if (preview) preview_key(manifest.version); else version_key(manifest.version);
+  if (name !== `${identity}-${manifest.version}-marketplace.zip`)
     throw new Error("Archive name does not match the manifest version");
   const plugin = unzip(
     fs.readFileSync(
@@ -93,7 +96,7 @@ export function verify(download, destination) {
   );
   const expected = Object.fromEntries(
     Object.entries(data)
-      .filter(([file]) => file.startsWith("plugins/1c-ai-core/"))
+      .filter(([file]) => file.startsWith(`plugins/${identity}/`))
       .map(([file, value]) => [file.slice("plugins/".length), value]),
   );
   assert.deepEqual(plugin, expected, "Plugin ZIP and marketplace ZIP differ");

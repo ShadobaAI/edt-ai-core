@@ -1,6 +1,6 @@
 name: Publish 1c-ai-core to codex-plugins
 
-# A release tag builds first; publication waits for the entire run, including
+# A release tag or develop push builds first; publication waits for the entire run, including
 # the Windows/Linux/macOS smoke matrix. Pull requests never publish.
 # Source access stays read-only; only codex-plugins receives a push.
 on:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       build_run_id:
-        description: Successful tagged release run of Build 1c-ai-core plugin
+        description: Successful tagged release or develop push run of Build 1c-ai-core plugin
         required: true
         type: string
 
@@ -23,7 +23,7 @@ defaults:
 
 jobs:
   publish:
-    # Reject failed, branch and fork/PR runs before granting a runner/token.
+    # Reject failed, unrelated branch and fork/PR runs before granting a runner/token.
     # The dot is a coarse version filter; the script validates the exact bare
     # version, run identity and downloaded release artifact.
     if: >-
@@ -33,7 +33,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
-      contains(github.event.workflow_run.head_branch, '.')))
+      (github.event.workflow_run.head_branch == 'develop' || contains(github.event.workflow_run.head_branch, '.'))))
     # Skipped PR events do not take a place in the publication queue.
     concurrency:
       group: publish-1c-ai-core-to-codex-plugins
