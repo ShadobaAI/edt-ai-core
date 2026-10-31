@@ -67,14 +67,18 @@ async function endpoint(t, handler) {
 }
 
 test("an unbound relay does not keep a polling timer alive", async t => {
-  const f = fixture(t), preload = path.join(f.base, "idle-resources.mjs"), sample = path.join(f.base, "idle-resources.json");
-  fs.writeFileSync(preload, `import fs from 'node:fs'; setInterval(() => fs.writeFileSync(process.env.CORE_TEST_IDLE_SAMPLE, JSON.stringify(process.getActiveResourcesInfo())), 75).unref();`);
+  const f = fixture(t), preload = path.join(f.base, "idle-resources.mjs"), sample = path.join(f.base, "idle-resources.json"), trigger = path.join(f.base, "sample-idle");
+  // Publish a single complete sample after the status call, avoiding reads while a write truncates the file.
+  fs.writeFileSync(preload, `import fs from 'node:fs'; const timer = setInterval(() => { if (!fs.existsSync(process.env.CORE_TEST_IDLE_TRIGGER)) return; const sample = process.env.CORE_TEST_IDLE_SAMPLE; fs.writeFileSync(sample + '.tmp', JSON.stringify(process.getActiveResourcesInfo())); fs.renameSync(sample + '.tmp', sample); clearInterval(timer); }, 75); timer.unref();`);
   const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f,
-    { NODE_OPTIONS: "--import " + pathToFileURL(preload).href, CORE_TEST_IDLE_SAMPLE: sample });
+    { NODE_OPTIONS: "--import " + pathToFileURL(preload).href, CORE_TEST_IDLE_SAMPLE: sample, CORE_TEST_IDLE_TRIGGER: trigger });
   await sleep(200);
   assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, false);
   await sleep(150);
-  assert.ok(fs.existsSync(sample));
+  fs.writeFileSync(trigger, "");
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(sample) && Date.now() < deadline) await sleep(25);
+  assert.ok(fs.existsSync(sample), "idle resource sample was not published");
   assert.equal(JSON.parse(fs.readFileSync(sample, "utf8")).filter(name => name === "Timeout").length, 0);
 });
 
