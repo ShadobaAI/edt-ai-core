@@ -79,6 +79,8 @@ export class RemoteMcp {
     this.resources_revision = 0;
     this.initialization = {};
     this.tool_headers = new Map();
+    this.activeRequests = new Set();
+    this.generation = 0;
   }
   result(message) {
     if (message.error) throw new RemoteRpcError(message.error);
@@ -152,11 +154,17 @@ export class RemoteMcp {
     if (payload.method === "initialize") delete headers["MCP-Protocol-Version"];
     const body = JSON.stringify(wire);
     onDispatch?.();
+    const active = { controller: new AbortController(), method: payload.method, closeTimer: null };
+    this.activeRequests.add(active);
+    return this.exchange(payload, body, headers, modern, expect_reply, active.controller)
+      .finally(() => { clearTimeout(active.closeTimer); this.activeRequests.delete(active); });
+  }
+  async exchange(payload, body, headers, modern, expect_reply, controller) {
     const response = await fetch(this.url, {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.timeout(this.timeout),
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(this.timeout)]),
       redirect: "error",
     });
     if (!response.ok) {
@@ -216,6 +224,7 @@ export class RemoteMcp {
               let reply;
               try { reply = { result: await this.options.onRequest(message) }; }
               catch (error) { reply = { error: { code: error.code || -32603, message: error.message } }; }
+              controller.signal.throwIfAborted();
               await this.send({ jsonrpc: "2.0", id: message.id, ...reply }, false);
             } else if (message.method) this.options.onNotification?.(message);
           }
@@ -259,11 +268,14 @@ export class RemoteMcp {
     return this.send({ jsonrpc: "2.0", method, params }, false);
   }
   async initialize() {
-    await this.close();
+    const closing = this.close(), generation = this.generation;
+    await closing;
+    if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
     this.protocol = RemoteMcp.MODERN_PROTOCOL;
     this.sequence = 0;
     try {
       const result = await this.request("server/discover");
+      if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
       if (
         !Array.isArray(result.supportedVersions) ||
         !result.supportedVersions.includes(this.protocol)
@@ -284,6 +296,7 @@ export class RemoteMcp {
       )
         throw error;
     }
+    if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
     this.protocol = RemoteMcp.LEGACY_PROTOCOLS[0];
     this.session = null;
     this.sequence = 0;
@@ -293,12 +306,14 @@ export class RemoteMcp {
         clientInfo: { name: "1c-ai-core", version: core_version },
         capabilities: this.options.capabilities || {},
       });
+      if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
       if (!RemoteMcp.LEGACY_PROTOCOLS.includes(result.protocolVersion))
         throw new RemoteContractError(
           "Invalid legacy MCP negotiated version",
         );
       this.protocol = result.protocolVersion;
       await this.notify("notifications/initialized");
+      if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
       this.initialization = result;
       return result;
     } catch (error) {
@@ -307,10 +322,24 @@ export class RemoteMcp {
     }
   }
   async close() {
+    this.generation++;
     const session = this.session;
     this.session = null;
     this.initialization = {};
     this.tool_headers.clear();
+    // Ending a local transport does not prove the remote operation was stopped.
+    // Abort its HTTP resources while preserving the unknown-outcome semantics.
+    for (const active of this.activeRequests) {
+      const abort = () => active.controller.abort(Object.assign(new Error("MCP connection closed; pending operation outcome unknown"), { outcomeUnknown: true }));
+      if (active.method === "initialize") {
+        // A late initialize may establish a server session. Give its response
+        // a bounded chance to supply the ID so that it can be deleted.
+        if (!active.closeTimer) {
+          active.closeTimer = setTimeout(abort, Math.min(this.timeout, 5000));
+          active.closeTimer.unref();
+        }
+      } else abort();
+    }
     if (!session) return;
     try {
       const response = await fetch(this.url, {

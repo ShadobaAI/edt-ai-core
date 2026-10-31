@@ -65,9 +65,11 @@ let selected = selection.directory,
 let lastError = "Выберите каталог проекта с .ai/project.yaml.";
 let lastFailure = null;
 let rootsReady = Promise.resolve(), finishRoots = null;
+let closed = false;
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-const emit = (message) =>
-  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+const emit = (message) => {
+  if (!closed) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+};
 function notifyDiscoveryChanged() {
   if (closed) return;
   if (!initialized) { discoveryNotificationPending = true; return; }
@@ -77,6 +79,7 @@ function notifyDiscoveryChanged() {
 }
 async function disconnect() {
   generation++;
+  stopIdlePolling();
   const knowledgeClosing = workflowKnowledge.close();
   const previous = client;
   if (previous) diagnostic.event("disconnected", { projectRoot: selected, binding: bindingContext });
@@ -136,8 +139,13 @@ async function checkKnowledgeWorkflow(action = "workflow") {
 }
 async function refreshTools() {
   const owner = client, epoch = generation,
-    revision = owner.tools_revision,
-    next = (await all_pages(owner, "tools/list", "tools")).tools;
+    revision = owner.tools_revision;
+  let next;
+  try { next = (await all_pages(owner, "tools/list", "tools")).tools; }
+  catch (error) {
+    if (owner !== client || epoch !== generation) throw new ConfigError("Project binding changed while refreshing tools");
+    throw error;
+  }
   if (owner !== client || epoch !== generation)
     throw new ConfigError("Project binding changed while refreshing tools");
   toolsRevision = revision;
@@ -152,6 +160,7 @@ let bindingPromise = null, generation = 0, hostCapabilities = {}, callbackSequen
 const callbacks = new Map(), requests = new Map();
 const requestKey = id => typeof id + ":" + id;
 function callback(message) {
+  if (closed) return Promise.reject(new Error("Host disconnected"));
   const id = "core-callback-" + ++callbackSequence;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { callbacks.delete(id); reject(new Error("Host callback timed out")); }, 60000);
@@ -160,11 +169,13 @@ function callback(message) {
   });
 }
 async function ensureBinding(refreshSurface = true, retryFailed = true, connect = true) {
+  if (closed) throw new Error("Host disconnected");
   const next = (bindingPromise || Promise.resolve()).catch(() => {}).then(() => bind(refreshSurface, retryFailed, connect));
   bindingPromise = next;
   try { await next; } finally { if (bindingPromise === next) bindingPromise = null; }
 }
 async function bind(refreshSurface, retryFailed, connect) {
+  if (closed) return;
   if (rootsPending) return;
   let revision = null, stage = "configuration";
   try {
@@ -180,6 +191,7 @@ async function bind(refreshSurface, retryFailed, connect) {
       return;
     }
     await disconnect();
+    if (closed) return;
     if (!component_enabled(config, component)) throw new ConfigError("Компонент отключён в настройках.");
     if (!connect) { if (revision !== failedRevision) lastError = "Компонент не подключён. Откройте его инструменты после подготовки MCP."; return; }
     currentRevision = revision;
@@ -254,6 +266,7 @@ async function bind(refreshSurface, retryFailed, connect) {
       };
     diagnostic.event("connected", { binding: bindingContext, tools: tools.length,
       server: candidate.initialization?.serverInfo, protocol: candidate.initialization?.protocolVersion });
+    startIdlePolling();
     notifyDiscoveryChanged();
   } catch (error) {
     await disconnect();
@@ -619,41 +632,50 @@ async function dispatch(message) {
   }
 }
 let queue = Promise.resolve(),
-  closed = false,
-  idleQueued = false;
+  idleQueued = false,
+  idleTimer = null;
 const enqueue = (action) => {
   queue = queue.then(action).catch((error) => {
     process.stderr.write(safe_error_message(error) + "\n");
   });
 };
+function startIdlePolling() {
+  if (idleTimer || closed) return;
+  idleTimer = setInterval(() => {
+    if (initialized && !closed && !idleQueued) {
+      idleQueued = true;
+      enqueue(async () => {
+        try {
+          if (!closed && client && !requests.size) await ensureBinding(true, false, false);
+        } finally {
+          idleQueued = false;
+        }
+      });
+    }
+  }, 500);
+}
+function stopIdlePolling() {
+  if (idleTimer) clearInterval(idleTimer);
+  idleTimer = null;
+}
 read_lines(process.stdin, message => {
   if (!message.method && callbacks.has(message.id)) { callbacks.get(message.id)(message); callbacks.delete(message.id); return; }
   void dispatch(message).catch(error => process.stderr.write(safe_error_message(error) + "\n"));
 }, error => { process.stderr.write(safe_error_message(error) + "\n"); shutdown(); });
-const timer = setInterval(() => {
-  if (initialized && !closed && !idleQueued) {
-    idleQueued = true;
-    enqueue(async () => {
-      try {
-        if (!closed && client && !requests.size) await ensureBinding(true, false, false);
-      } finally {
-        idleQueued = false;
-      }
-    });
-  }
-}, 500);
-process.stdin.once("end", () => {
-  closed = true;
-  clearInterval(timer);
-  void disconnect();
-});
 const shutdown = () => {
+  if (closed) return;
   closed = true;
-  clearInterval(timer);
+  stopIdlePolling();
   process.stdin.pause();
+  finishRoots?.();
+  finishRoots = null;
   for (const done of callbacks.values()) done({ error: { message: "Host disconnected" } });
   callbacks.clear();
-  void disconnect();
+  void disconnect().catch(error => process.stderr.write(safe_error_message(error) + "\n"));
 };
+process.stdin.once("end", shutdown);
+process.stdin.once("close", shutdown);
+process.stdin.once("error", shutdown);
+process.stdout.once("error", shutdown);
 process.once("SIGTERM", shutdown);
 process.once("SIGINT", shutdown);

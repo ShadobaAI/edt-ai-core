@@ -39,6 +39,7 @@ export const FILES = [
     "PROJECT_AGENTS",
     "REQUIREMENTS",
     "QUALITY_REQUIREMENTS",
+    "SETTINGS_UI_AUDIT",
     "INTEGRATIONS",
     "SOURCES",
   ].map((name) => "docs/" + name + ".md"),

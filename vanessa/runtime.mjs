@@ -25,7 +25,12 @@ export async function withProfileLock(profile, use) {
   try {
     for (const key of [`profile-${profile.identity}`, endpointKey(profile), clientKey(profile)].sort()) {
       const file = path.join(root, `${key}.lock`);
-      try { const fd = fs.openSync(file, "wx"); fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, profile: profile.identity })); fs.closeSync(fd); files.push(file); }
+      try {
+        const fd = fs.openSync(file, "wx");
+        files.push(file);
+        try { fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, profile: profile.identity })); }
+        finally { fs.closeSync(fd); }
+      }
       catch (error) {
         if (error.code !== "EEXIST") throw error;
         let owner;
@@ -105,7 +110,9 @@ export async function start(profile) {
     const claim = { profile: profile.identity, fingerprint: fingerprint(profile), client: clientKey(profile), clientKeyVersion: 2, startupLog, status: "starting" };
     // Reserve an explicit state directory before launch, also for different endpoints.
     if (!fs.existsSync(stateFile)) {
-      const fd = fs.openSync(stateFile, "wx"); fs.writeFileSync(fd, JSON.stringify(claim)); fs.closeSync(fd);
+      const fd = fs.openSync(stateFile, "wx");
+      try { fs.writeFileSync(fd, JSON.stringify(claim)); }
+      finally { fs.closeSync(fd); }
     }
     fs.writeFileSync(path.join(profile.stateDir, "interactive.json"), JSON.stringify(interactiveParameters(profile), null, 2) + "\n");
     fs.mkdirSync(profile.results, { recursive: true });

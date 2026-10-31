@@ -539,10 +539,10 @@ export async function start_daemon(
     throw new ConfigError(
       "Existing project daemon is alive but unhealthy; inspect its logs before restart",
     );
-  const out = fs.openSync(path.join(home, "stdout.log"), "a"),
-    err = fs.openSync(path.join(home, "stderr.log"), "a");
-  let proc;
+  let proc, out, err;
   try {
+    out = fs.openSync(path.join(home, "stdout.log"), "a");
+    err = fs.openSync(path.join(home, "stderr.log"), "a");
     proc = io.launch(exe, ["daemon", "run"], {
       cwd: home,
       env: {
@@ -556,8 +556,8 @@ export async function start_daemon(
       stderrFile: path.join(home, "stderr.log"),
     });
   } finally {
-    fs.closeSync(out);
-    fs.closeSync(err);
+    try { if (out !== undefined) fs.closeSync(out); }
+    finally { if (err !== undefined) fs.closeSync(err); }
   }
   try {
     let launchError;
@@ -600,8 +600,8 @@ export async function ensure_daemon(state, root, data, exe, io) {
     45,
   );
 }
-export function java_command(config) {
-  const java = which(config.mcp.managed["bsl-ls"].java || "java");
+export function java_info(command = "java") {
+  const java = which(command || "java");
   if (!java)
     throw new ConfigError(
       "Java is required; set mcp.managed.bsl-ls.java in plugin settings",
@@ -612,12 +612,28 @@ export function java_command(config) {
     shell: false,
     timeout: 20000,
   });
-  const match = /version "(\d+)/.exec(
-    (version.stderr || "") + (version.stdout || ""),
-  );
-  if (version.error || version.status !== 0 || !match)
-    throw new ConfigError("Java could not start; configure mcp.managed.bsl-ls.java. The selected JAR determines Java compatibility; inspect its startup error if it needs a newer JVM.");
-  return java;
+  const output = (version.stderr || "") + (version.stdout || "");
+  const match = /^(?:java|openjdk) version "([0-9][A-Za-z0-9._+-]{0,127})"/m.exec(output);
+  if (version.error || version.status !== 0 || !match) {
+    // Java can echo JAVA_TOOL_OPTIONS and arbitrary JVM properties. Never put
+    // process output or an untrusted executable's error text into diagnostics.
+    const code = typeof version.error?.code === "string" && /^[A-Z0-9_]{1,32}$/.test(version.error.code)
+      ? ` (${version.error.code})` : Number.isInteger(version.status) ? ` (exit ${version.status})` : "";
+    throw new ConfigError(`Java could not start; configure mcp.managed.bsl-ls.java${code}.`);
+  }
+  return { path: java, version: match[1] };
+}
+export function java_in_directory(directory) {
+  if (!path.isAbsolute(directory) || !is_dir(directory)) throw new ConfigError("Выберите существующий каталог Java.");
+  const executable = process.platform === "win32" ? "java.exe" : "java";
+  const java = [path.join(directory, "bin", executable), path.join(directory, executable)].find(file => {
+    try { return fs.statSync(file).isFile(); } catch { return false; }
+  });
+  if (!java) throw new ConfigError(`В выбранном каталоге не найден bin/${executable}.`);
+  return java_info(java);
+}
+export function java_command(config) {
+  return java_info(config.mcp.managed["bsl-ls"].java || "java").path;
 }
 export async function launch_command(
   state,

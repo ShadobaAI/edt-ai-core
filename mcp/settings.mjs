@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import readline from "node:readline";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { launch_selection, roots_selection, explicit_selection } from "../scripts/selection.mjs";
 import { core_version } from "../scripts/compatibility.mjs";
@@ -21,6 +22,8 @@ const resource = "ui://1c-ai-core/settings.html";
 const protocols = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 let selectedRoot = process.env.EDT_AI_PROJECT_ROOT || null;
 let viewedRoot = null;
+let latestSettingsExport = null, latestDiagnosticsExport = null;
+const pickedImports = new Map();
 let rootLocked = Boolean(selectedRoot);
 let selectionRevision = 0;
 let pendingRoots = null, rootsSequence = 0, requestInitialRoots = false;
@@ -62,6 +65,7 @@ const primitive = {
   codeIndexAllowPrerelease: { type: "boolean", title: "Предварительные релизы индекса кода", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   bslLsVersion: { type: "string", title: "Версия BSL LS", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
   bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
+  bslLsJava: { type: "string", minLength: 1, title: "Java для BSL LS" },
   openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Включает подключение для текущего каталога и экземпляра. При выключении сохранённый URL остаётся; режим и обязательность знаний не изменяются." },
   openvikingUrl: { type: "string", title: "URL OpenViking", description: "Override текущего каталога и экземпляра. Пустое значение отключает транспорт; окружение имеет высший приоритет." },
   openvikingTimeout: { type: "number", title: "Таймаут OpenViking, с", exclusiveMinimum: 0, maximum: 300 },
@@ -82,6 +86,7 @@ function values(c) {
     codeIndexEnabled: c.mcp.managed["code-index"].enabled !== false, bslLsEnabled: c.mcp.managed["bsl-ls"].enabled !== false,
     codeIndexVersion: c.mcp.managed["code-index"].version, codeIndexAllowPrerelease: Boolean(c.mcp.managed["code-index"].allow_prerelease),
     bslLsVersion: c.mcp.managed["bsl-ls"].version, bslLsAllowPrerelease: Boolean(c.mcp.managed["bsl-ls"].allow_prerelease),
+    bslLsJava: c.mcp.managed["bsl-ls"].java,
     openvikingEnabled: Boolean(c.mcp.optional?.openviking?.enabled),
     openvikingUrl: c.mcp.optional?.openviking?.url || "",
     openvikingTimeout: c.mcp.optional?.openviking?.timeout_seconds,
@@ -111,13 +116,14 @@ async function readValues(remember = false) {
 }
 function readSettings(actual) {
   const properties = structuredClone(primitive);
-  for (const [field, source] of Object.entries(actual.valueSources || {}))
+  for (const [field, source] of Object.entries({ ...actual.valueSources, ...actual.managedValueSources }))
     if (properties[field] && (source.startsWith("environment:") || source === "connections_file"))
       properties[field].readOnly = true;
   return {
     schema: { type: "object", properties },
     values: actual.values, instance: actual.instance, connectionSources: actual.connectionSources,
-    valueSources: actual.valueSources,
+    valueSources: actual.valueSources, managedValueSources: actual.managedValueSources,
+    settingsRevision: actual.settingsRevision, writePaths: actual.writePaths, layerValues: actual.layerValues,
     installedVersions: actual.installedVersions,
     preparationScope: actual.preparationScope,
     profile: actual.profile, directoryContext: actual.directoryContext, sessionGuidance: actual.sessionGuidance,
@@ -144,8 +150,10 @@ const inspectInput = { type: "object", properties: {
   projectRoot: { type: "string", minLength: 1, description: "Known local directory of this chat when host roots are empty. Read-only inspection binds only this settings session; does not create a profile or launch services." },
 }, additionalProperties: false };
 const editArguments = {
-  mode: { type: "string", enum: ["import", "edit"], description: "Import merges portable settings; edit saves the complete document loaded by settings.edit and resets omitted runtime values to defaults." },
+  mode: { type: "string", enum: ["import", "edit", "layer"], description: "Import merges portable settings; edit saves the complete profile/runtime document; layer edits one selected settings document." },
   baseRevision: { type: "string", minLength: 1, description: "Required in edit mode: exact baseRevision returned by settings.edit." },
+  layerScope: { type: "string", enum: ["profile", "project_local", "instance", "global"], description: "Required in layer mode: the settings document returned by settings.edit." },
+  includeMachineSettings: { type: "boolean", description: "When false, omit profile connections, test commands, and machine-specific runtime paths and endpoints from an import. Omitted retains the legacy import behavior." },
 };
 const tools = [
   { name: "settings.forget_profile", title: "Убрать профиль из списка", description: "Remove a profile from the user's list without deleting the profile, project state, or changing the chat selection.",
@@ -157,7 +165,7 @@ const tools = [
   { name: "settings.refresh_readiness", title: "Обновить готовность профиля", description: "Refresh live service checks when the settings app loads a profile. Reuses only this project's and instance's existing preparation permission and installed runtimes. Does not grant permission, download components or rebind chat connections. Poll settings.operation with the returned id.",
     inputSchema: { type: "object", properties: { scope: { type: "string", minLength: 1 } }, required: ["scope"], additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly },
   { name: "settings.reset_connection", title: "Вернуть наследование подключения", description: "Remove this instance's URL override and inherit the next configured source.",
-    inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std", "openviking"] } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
+    inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std", "openviking"] }, expectedRevision: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.open", title: "Настройки", description: "Open the full settings workspace with the user's profile list from Open plugin or app navigation. The form automatically refreshes readiness using installed runtimes and existing project-scoped preparation permissions.",
     inputSchema: empty, annotations: annotations(), _meta: { ui: { resourceUri: resource, visibility: ["app"] }, "openai/ui": { entrypoints: [{ type: "global" }] } } },
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
@@ -178,11 +186,18 @@ const tools = [
   { name: "settings.pick_directory", title: "Выбрать папку проекта", description: "Start the native folder picker for an unbound settings screen and return an operation ID immediately. Poll settings.operation; do not repeat to wait. Cancellation leaves the selection unchanged.",
     inputSchema: { type: "object", properties: { projectRoot: { type: "string" } }, additionalProperties: false },
     annotations: annotations(false), _meta: appOnly },
+  { name: "settings.pick_java", title: "Выбрать Java", description: "Choose a Java installation in a native folder dialog and verify its executable. Returns an operation ID; does not save settings.", inputSchema: empty, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.pick_import_file", title: "Выбрать файл для импорта", description: "Choose a JSON or YAML file in the native Windows dialog and return an operation ID. Cancellation changes nothing.", inputSchema: empty, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.import_file", title: "Прочитать выбранный файл", description: "Return the previously selected import file to the settings app only.", inputSchema: { type: "object", properties: { fileId: { type: "string", minLength: 1 } }, required: ["fileId"], additionalProperties: false }, annotations: annotations(), _meta: appOnly },
+  { name: "settings.check_java", title: "Проверить Java", description: "Check the specified Java executable and report its path and version without saving it.", inputSchema: { type: "object", properties: { command: { type: "string", minLength: 1 } }, required: ["command"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.profile_source", title: "Импорт из профиля", description: "Read a different registered profile for a target import preview. Local overrides are never included.", inputSchema: { type: "object", properties: { sourceRoot: { type: "string", minLength: 1 }, includeConnections: { type: "boolean" } }, required: ["sourceRoot"], additionalProperties: false }, annotations: annotations(), _meta: appOnly },
+  { name: "settings.rename_profile", title: "Переименовать профиль", description: "Change only project.id in the selected profile, with validation, a backup and a revision check.", inputSchema: { type: "object", properties: { projectId: { type: "string", minLength: 1 }, expectedRevision: { type: "string", minLength: 1 } }, required: ["projectId", "expectedRevision"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.repair_document", title: "Исправить профиль", description: "Read the raw selected profile for repair and validated import.", inputSchema: empty, annotations: annotations(), _meta: appOnly },
   { name: "settings.open_directory", title: "Открыть папку проекта", description: "Open the selected project directory in the system file manager.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
   { name: "settings.update", title: "Сохранить настройки", description: "Update changed plugin settings.",
     inputSchema: { type: "object", required: ["set"], properties: { set: {
-      type: "object", properties: primitive, minProperties: 1, additionalProperties: false } }, additionalProperties: false },
+      type: "object", properties: primitive, minProperties: 1, additionalProperties: false }, scope: { type: "string", enum: ["profile", "project_local", "instance", "global"] }, expectedRevision: { type: "string", minLength: 1 } }, additionalProperties: false },
     outputSchema: { type: "object", required: ["values"], properties: { values: { type: "object" } } },
     annotations: annotations(false), _meta: shared },
   ...[["settings.import", "Открыть импорт"], ["settings.export", "Открыть экспорт"]].map(([name, title]) => ({
@@ -202,18 +217,18 @@ const tools = [
     annotations: annotations(false), _meta: shared },
   { name: "settings.export_data", title: "Скачать настройки", description: "Export shared settings and tracked profile defaults; instance overrides stay local.",
     inputSchema: empty, annotations: annotations(), _meta: shared },
-  { name: "settings.save_export", title: "Сохранить файл настроек", description: "Save the portable settings export to a local file and return its confirmed path to the settings app. Replaces the previous export; instance overrides stay local.",
+  { name: "settings.save_export", title: "Сохранить файл настроек", description: "Choose a destination in the system Save As dialog and save the portable settings export. Instance overrides stay local.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
   { name: "settings.open_export_directory", title: "Открыть папку экспорта", description: "Open the directory containing the saved settings export. Does not accept arbitrary paths or generate another export.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
-  { name: "settings.export_diagnostics", title: "Сохранить диагностику", description: "Save a bounded, redacted support report to disk from the settings app only and return its confirmed path in app metadata. Replaces the previous support report. Works without a profile and during a running operation. Does not contact services or upload data.",
+  { name: "settings.export_diagnostics", title: "Сохранить диагностику", description: "Choose a destination for a bounded, redacted support report. Works without a profile and during a running operation. Does not contact services or upload data.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
   { name: "settings.diagnostics", title: "Журнал и диагностика", description: "Read the last 200 sanitized plugin events and local session metadata in the settings app. Works without a profile and during operations. Does not contact or launch services. Log data is app-only metadata.",
     inputSchema: empty, annotations: annotations(), _meta: appOnly },
   { name: "settings.open_diagnostics_directory", title: "Открыть папку диагностики", description: "Open the directory containing the saved support report from the settings app only. Does not generate a report or accept arbitrary paths.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
-  { name: "settings.edit", title: "Загрузить настройки для редактирования", description: "Read the complete profile and shared runtime document with a baseRevision. Save edits through settings.preview/apply with mode=edit and that baseRevision; omitted runtime fields reset to defaults, unchanged profiles are not rewritten.",
-    inputSchema: empty, annotations: annotations(), _meta: shared },
+  { name: "settings.edit", title: "Загрузить настройки для редактирования", description: "Read the combined profile/runtime document or one selected settings document with a baseRevision. Save through preview/apply using mode=edit or mode=layer respectively.",
+    inputSchema: { type: "object", properties: { layerScope: { type: "string", enum: ["profile", "project_local", "instance", "global"] } }, additionalProperties: false }, annotations: annotations(), _meta: shared },
   { name: "settings.document", title: "Просмотреть документ профиля", description: "Read a history profile document in the settings app without selecting it for chat operations. Does not write or launch services.",
     inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(), _meta: appOnly },
   { name: "settings.operation", title: "Состояние операции", description: "Read a running or completed settings operation without retrying it. Results belong to this MCP session and include their original project/instance.",
@@ -269,6 +284,29 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
   });
 }
 const operations = new SettingsOperations(async (action, args, context) => {
+  if (action === "pick_import_file") {
+    const file = await folder_action("file", context.selectedDirectory || "", { title: "Выберите файл настроек · 1C AI Core" });
+    if (context.selectionRevision !== selectionRevision) throw new Error("Профиль изменился во время выбора файла.");
+    if (!file) return { cancelled: true };
+    if (!/\.(json|ya?ml)$/i.test(file)) throw new Error("Выберите файл JSON или YAML.");
+    await assertUserFileBoundary(file, context.projectRoot);
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 2 * 1024 * 1024) throw new Error("Файл недоступен, является ссылкой или превышает 2 МиБ.");
+    const bytes = fs.readFileSync(file);
+    if (bytes.length > 2 * 1024 * 1024) throw new Error("Файл превышает 2 МиБ.");
+    const text = bytes.toString("utf8");
+    if (!Buffer.from(text, "utf8").equals(bytes)) throw new Error("Файл должен быть в кодировке UTF-8.");
+    const fileId = randomUUID();
+    pickedImports.set(fileId, { text, filename: path.basename(file), projectRoot: context.projectRoot, selectionRevision });
+    while (pickedImports.size > 4) pickedImports.delete(pickedImports.keys().next().value);
+    return { fileId, filename: path.basename(file) };
+  }
+  if (action === "pick_java") {
+    const directory = await folder_action("pick", "", { title: "Выберите каталог Java · 1C AI Core" });
+    if (context.selectionRevision !== selectionRevision) throw new Error("Профиль изменился во время выбора Java.");
+    return directory ? backend("java_probe", { directory }, context) : { cancelled: true };
+  }
+  if (action === "check_java") return backend("java_probe", args, context);
   if (action !== "pick_directory") return backend(action, args, context);
   const directory = await folder_action("pick", args.projectRoot || context.selectedDirectory || "");
   if (context.selectionRevision !== selectionRevision) throw new Error("Папка чата изменилась во время выбора. Откройте настройки заново.");
@@ -279,6 +317,46 @@ const operations = new SettingsOperations(async (action, args, context) => {
   selectionRevision += 1;
   return data;
 }, (name, detail, level) => diagnostic.event(name, detail, level));
+async function assertUserFileBoundary(selected, projectRoot, write = false, allowStateExport = false) {
+  const { resolve, contained, configuration_root, ProfileAmbiguous } = await import("../scripts/project_paths.mjs");
+  const destination = resolve(selected);
+  if (write) {
+    const settingsFiles = [configPath, process.env.EDT_AI_CONNECTIONS_FILE].filter(Boolean).map(resolve);
+    if ((!allowStateExport && contained(resolve(state), destination)) ||
+        settingsFiles.some(file => contained(file, destination) && contained(destination, file)))
+      throw new Error("Нельзя заменять служебное состояние плагина экспортом.");
+  }
+  if (projectRoot) {
+    const { project_profile } = await import("../scripts/profile.mjs");
+    const { inside } = await import("../scripts/common.mjs");
+    let root;
+    try { root = configuration_root(projectRoot); }
+    catch (error) {
+      // Multiple candidate profiles are all below the selected directory.
+      // Protect that whole directory while still allowing an external report.
+      if (!(error instanceof ProfileAmbiguous)) throw error;
+      root = resolve(projectRoot);
+    }
+    let protectedPaths;
+    try { const profile = project_profile(root); protectedPaths = [...profile.roots.source, ...profile.roots.protected].map(relative => inside(root, relative)); }
+    catch { protectedPaths = [root]; }
+    if (protectedPaths.some(protectedPath => contained(protectedPath, destination))) throw new Error("Нельзя выбирать файлы в защищённых исходниках проекта.");
+    if (write && ([inside(root, ".ai/project.yaml"), inside(root, ".ai/project.local.yaml")].some(file => contained(file, destination) && contained(destination, file)) ||
+        contained(inside(root, ".ai/instances"), destination)))
+      throw new Error("Нельзя заменять файлы настроек проекта экспортом.");
+  }
+}
+async function exportDestination(data, context, title) {
+  const { save_export_to_path, state_export_path, save_state_export } = await import("../scripts/settings_export.mjs");
+  const fallback = process.platform !== "win32";
+  const selected = fallback ? state_export_path(state, context.kind) : await folder_action("save", "", { title, filename: data.filename });
+  if (!selected) return { cancelled: true };
+  if (context.revision !== selectionRevision) throw new Error("Профиль изменился во время выбора файла. Повторите экспорт.");
+  await assertUserFileBoundary(selected, context.projectRoot, true, fallback);
+  if (context.revision !== selectionRevision) throw new Error("Профиль изменился во время выбора файла. Повторите экспорт.");
+  const saved = fallback ? save_state_export(state, context.kind, data, selected, context.limit) : save_export_to_path(selected, data, context.limit);
+  return { ...saved, canOpenDirectory: !fallback };
+}
 function operationSummary() {
   const { result, ...summary } = operations.status();
   return summary;
@@ -331,13 +409,17 @@ async function call(name, args, meta = {}) {
     return { content: [{ type: "text", text: "Журнал плагина прочитан." }], _meta: { data } };
   }
   if (name === "settings.export_diagnostics") {
+    const exportContext = { revision: selectionRevision, projectRoot: selectedRoot, kind: "diagnostics", limit: 16 * 1024 * 1024 };
     diagnostic.event("support_export_requested", { projectRoot: selectedRoot });
-    const { support_bundle, save_support_bundle } = await import("../scripts/support_bundle.mjs");
+    const { support_bundle } = await import("../scripts/support_bundle.mjs");
     const context = { selectedDirectory: selectedRoot, rootLocked };
     const data = await support_bundle({ state, configPath, selectedRoot,
       selection: { rootLocked, selectionError, pendingRoots }, operation: operations.status(), loggerStatus: diagnostic.status(),
       readCurrent: () => backend("read", {}, context, 8000) });
-    const saved = save_support_bundle(state, data);
+    if (exportContext.revision !== selectionRevision) throw new Error("Профиль изменился во время подготовки диагностики. Повторите операцию.");
+    const saved = await exportDestination(data, exportContext, "Сохранить диагностику · 1C AI Core");
+    if (saved.cancelled) return { content: [{ type: "text", text: "Сохранение отменено." }], _meta: { data: saved } };
+    latestDiagnosticsExport = saved;
     diagnostic.event("support_export_saved", { path: saved.path, bytes: saved.bytes });
     // Only the settings app receives the saved path. File bytes do not cross
     // the app bridge, and a success response requires a completed disk write.
@@ -345,7 +427,7 @@ async function call(name, args, meta = {}) {
   }
   if (name === "settings.open_diagnostics_directory") {
     const { saved_support_report } = await import("../scripts/support_bundle.mjs");
-    const saved = saved_support_report(state);
+    const saved = latestDiagnosticsExport || saved_support_report(state);
     if (!saved) throw new Error("Сначала сохраните диагностический файл.");
     await folder_action("open", saved.directory);
     return { content: [{ type: "text", text: "Папка диагностики открыта." }] };
@@ -416,6 +498,23 @@ async function call(name, args, meta = {}) {
       selectedDirectory: selectedRoot, rootLocked, selectionRevision, instance: process.env.EDT_AI_INSTANCE || "default" });
     return result(operations.status(job.id));
   }
+  if (name === "settings.pick_java" || name === "settings.check_java") {
+    if (!selectedRoot) throw new Error("Выберите папку проекта.");
+    const job = operations.start(name === "settings.pick_java" ? "pick_java" : "check_java", args,
+      { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, selectionRevision, instance: process.env.EDT_AI_INSTANCE || "default" });
+    return result(operations.status(job.id));
+  }
+  if (name === "settings.pick_import_file") {
+    if (!selectedRoot) throw new Error("Выберите папку проекта.");
+    const job = operations.start("pick_import_file", args, { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, selectionRevision, instance: process.env.EDT_AI_INSTANCE || "default" });
+    return result(operations.status(job.id));
+  }
+  if (name === "settings.import_file") {
+    const file = pickedImports.get(args.fileId);
+    if (!file || file.selectionRevision !== selectionRevision || file.projectRoot !== selectedRoot) throw new Error("Выбранный файл устарел. Выберите его заново.");
+    pickedImports.delete(args.fileId);
+    return { content: [{ type: "text", text: "Файл прочитан." }], _meta: { data: { filename: file.filename, text: file.text } } };
+  }
   if (name === "settings.open_directory") {
     const current = await readValues();
     if (!current.values.projectRoot) throw new Error("Выберите папку проекта.");
@@ -446,22 +545,31 @@ async function call(name, args, meta = {}) {
   }
   if (name === "settings.open_export_directory") {
     const { saved_settings_export } = await import("../scripts/settings_export.mjs");
-    const saved = saved_settings_export(state);
+    const saved = latestSettingsExport || saved_settings_export(state);
     if (!saved) throw new Error("Сначала сохраните файл настроек.");
     await folder_action("open", saved.directory);
     return { content: [{ type: "text", text: "Папка с файлом настроек открыта." }] };
   }
   if (name === "settings.export_data" || name === "settings.edit" || name === "settings.save_export") {
     if (!selectedRoot) throw new Error("Выберите папку проекта.");
+    const exportContext = { revision: selectionRevision, projectRoot: selectedRoot, kind: "settings", limit: 2 * 1024 * 1024 };
     const data = await backend(name === "settings.edit" ? "edit" : "export", args);
     if (name === "settings.save_export") {
-      const { save_settings_export } = await import("../scripts/settings_export.mjs");
-      const saved = save_settings_export(state, data);
+      if (exportContext.revision !== selectionRevision) throw new Error("Профиль изменился во время подготовки экспорта. Повторите операцию.");
+      const saved = await exportDestination(data, exportContext, "Сохранить настройки · 1C AI Core");
+      if (saved.cancelled) return { content: [{ type: "text", text: "Сохранение отменено." }], _meta: { data: saved } };
+      latestSettingsExport = saved;
       return { content: [{ type: "text", text: "Файл настроек сохранён." }], _meta: { data: { ...saved, canOpenDirectory: process.platform === "win32" } } };
     }
     return { ...result(data), _meta: { data } };
   }
-  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.refresh_readiness": "refresh_readiness", "settings.rebuild_index": "rebuild_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load" };
+  if (name === "settings.profile_source" || name === "settings.repair_document") {
+    const revision = selectionRevision;
+    const data = await backend(name === "settings.profile_source" ? "profile_source" : "repair_document", args);
+    if (revision !== selectionRevision) throw new Error("Профиль изменился во время чтения. Повторите операцию.");
+    return { content: [{ type: "text", text: "Документ прочитан." }], _meta: { data } };
+  }
+  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.refresh_readiness": "refresh_readiness", "settings.rebuild_index": "rebuild_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load", "settings.rename_profile": "rename_profile" };
   if (!actions[name]) throw new Error("Неизвестный инструмент");
   if (["settings.run_check", "settings.refresh_readiness"].includes(name) && !selectedRoot) throw new Error("Выберите папку проекта.");
   // The backend resolves and authorizes the same root immediately before
@@ -478,7 +586,7 @@ async function call(name, args, meta = {}) {
     selectedRoot = data.values.projectRoot || null;
   }
   return result({ ...data, ...(["settings.create", "settings.load"].includes(name) ? { mode: "profile" } : {}) },
-    ["settings.create", "settings.load"].includes(name) ? JSON.stringify(data) : name === "settings.apply" ? "Настройки импортированы." : "Готово");
+    ["settings.create", "settings.load"].includes(name) ? JSON.stringify(data) : name === "settings.apply" ? args.mode === "layer" ? "Настройки сохранены." : "Настройки импортированы." : "Готово");
 }
 function validateArguments(schema, value) {
   if (schema.type === "object") {

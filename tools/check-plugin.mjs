@@ -238,10 +238,14 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
           assert.ok(tools.some(tool => tool.name === "settings.inspect"));
           assert.ok(tools.some(tool => tool.name === "settings.probe_connections"));
           assert.deepEqual(tools.find(tool => tool.name === "settings.export_diagnostics")._meta.ui.visibility, ["app"]);
-          const support = await client.call("settings.export_diagnostics", {});
-          assert.equal(support.structuredContent, undefined);
-          assert.equal(JSON.parse(fs.readFileSync(support._meta.data.path, "utf8")).format, "1c-ai-core-diagnostics");
-          assert.equal(support._meta.data.text, undefined);
+          // Packaging checks are noninteractive: validate collection and a
+          // caller-selected destination without presenting an OS dialog.
+          const journal = await client.call("settings.diagnostics", {});
+          assert.equal(journal.structuredContent, undefined);
+          const { support_bundle, save_support_bundle } = await import(pathToFileURL(path.join(root, "scripts/support_bundle.mjs")).href);
+          const bundle = await support_bundle({ state: env.EDT_AI_STATE_DIR, configPath: env.EDT_AI_SETTINGS, selectedRoot: null });
+          const support = save_support_bundle(env.EDT_AI_STATE_DIR, bundle, path.join(temp, "support.json"));
+          assert.equal(JSON.parse(fs.readFileSync(support.path, "utf8")).format, "1c-ai-core-diagnostics");
           const resource = await client.request("resources/read", { uri: app._meta.ui.resourceUri });
           assert.deepEqual(resource.contents[0]._meta["openai/ui"].availableDisplayModes,["fullscreen"]);
           const before = (await client.call("settings.read", {}))

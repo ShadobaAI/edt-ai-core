@@ -22,6 +22,7 @@ import {
   is_dir,
   ConfigError,
   path_identity,
+  contained,
 } from "./project_paths.mjs";
 export { locate_project };
 export function local_overrides(root) {
@@ -58,17 +59,42 @@ export function instance_files(config, root, state) {
   }
   return paths;
 }
+export function assert_settings_paths(config, root, data, state = null, settingsFile = process.env.EDT_AI_SETTINGS) {
+  if (!data?.roots) return;
+  const protectedPaths = [...new Set([...(data.roots.source || []), ...(data.roots.protected || [])])]
+    .map(relative => inside(root, relative));
+  const files = [path.join(root, ".ai/project.yaml"), path.join(root, ".ai/project.local.yaml"),
+    path.join(root, ".ai/instances", instance_name() + ".local.yaml"), instance_file(config, root, state)];
+  if (state || process.env.EDT_AI_STATE_DIR) files.push(state || process.env.EDT_AI_STATE_DIR);
+  if (settingsFile) files.push(settingsFile);
+  if (process.env.EDT_AI_CONNECTIONS_FILE) files.push(process.env.EDT_AI_CONNECTIONS_FILE);
+  for (const file of files) {
+    const nominal = path.resolve(file), actual = resolve(file);
+    if (protectedPaths.some(source => contained(source, actual) && !contained(source, nominal)))
+      throw new ConfigError("Settings path redirects into protected project source: " + nominal);
+  }
+}
 export function resolved_settings(
   config,
   root,
   data = null,
   instance_override = null,
   state = null,
+  local_override = null,
 ) {
+  assert_settings_paths(config, root, data, state);
   let overrides = { connections: data?.connections || {} };
-  const fieldSources = { openviking: Object.fromEntries(Object.keys(config.mcp.optional.openviking).map(key => [key, "settings"])) };
-  const record_sources = (connections, source) => {
+  const fieldSources = {
+    openviking: Object.fromEntries(Object.keys(config.mcp.optional.openviking).map(key => [key, "settings"])),
+    components: Object.fromEntries(Object.entries(config.mcp.managed).map(([name, item]) =>
+      [name, Object.fromEntries(Object.keys(item).map(key => [key, "settings"]))])),
+  };
+  const record_sources = (connections, source, components = {}) => {
     for (const key of Object.keys(connections?.openviking || {})) fieldSources.openviking[key] = source;
+    for (const [name, item] of Object.entries(components || {})) {
+      fieldSources.components[name] ||= {};
+      for (const key of Object.keys(item)) fieldSources.components[name][key] = source;
+    }
   };
   record_sources(data?.connections, "profile");
   // A credential map is one identity configuration. An explicit empty map
@@ -81,9 +107,10 @@ export function resolved_settings(
   const sources = Object.fromEntries(
     Object.entries(overrides.connections).filter(([, entry]) => Object.hasOwn(entry, "url")).map(([name]) => [name, "profile"]),
   );
-  const local = local_overrides(root);
+  const local = local_override === null ? local_overrides(root) : local_override;
+  if (local_override !== null) check_schema(local, "project-local.schema.json");
   merge_overrides(local);
-  record_sources(local.connections, "project_local");
+  record_sources(local.connections, "project_local", local.components);
   for (const [name, entry] of Object.entries(local.connections || {}))
     if (Object.hasOwn(entry, "url")) sources[name] = "project_local";
   const stateOverride = instance_file(config, root, state);
@@ -103,7 +130,7 @@ export function resolved_settings(
               file === resolve(process.env.EDT_AI_CONNECTIONS_FILE)
             ? "connections_file"
             : "repository_instance";
-      record_sources(extra.connections, source);
+      record_sources(extra.connections, source, extra.components);
       for (const [name, entry] of Object.entries(extra.connections || {}))
         if (Object.hasOwn(entry, "url")) sources[name] = source;
     }

@@ -138,6 +138,23 @@ try {
   assert.throws(() => checkFiles(loadProfile(profileFile)), /escapes/);
   write(raw);
 
+  {
+    const open = fs.openSync, writeFile = fs.writeFileSync, close = fs.closeSync;
+    let lockFd, lockPath, closed = false;
+    fs.openSync = (file, ...args) => { const fd = open(file, ...args); if (String(file).endsWith(".lock")) { lockFd = fd; lockPath = file; } return fd; };
+    fs.writeFileSync = (file, ...args) => { if (file === lockFd) throw new Error("simulated lock write failure"); return writeFile(file, ...args); };
+    fs.closeSync = fd => { if (fd === lockFd) closed = true; return close(fd); };
+    try {
+      await assert.rejects(withProfileLock(profile, async () => assert.fail("must not enter with an unwritten lock")), /simulated lock write failure/);
+      assert.notEqual(lockFd, undefined);
+      assert.equal(closed, true);
+      assert.equal(fs.existsSync(lockPath), false);
+    } finally {
+      fs.openSync = open; fs.writeFileSync = writeFile; fs.closeSync = close;
+      if (lockFd !== undefined && !closed) close(lockFd);
+      if (lockPath && fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+    }
+  }
   await withProfileLock(profile, async () => {
     const aliasedProfile = { ...profile, identity: "different-profile-identity", client: { ...profile.client, name: "OtherAlias" }, mcp: { ...profile.mcp, port: port + 1 } };
     assert.equal(clientControlKey(aliasedProfile), clientControlKey(profile));

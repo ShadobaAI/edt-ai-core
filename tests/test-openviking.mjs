@@ -14,6 +14,8 @@ import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { spawnSync } from "node:child_process";
+import { launch, stop_child } from "../scripts/processes.mjs";
+import { read_lines } from "../scripts/mcp_codec.mjs";
 import { all_pages } from "../scripts/mcp_pages.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
@@ -31,6 +33,26 @@ import { RemoteHttpError } from "../scripts/remote_client.mjs";
 
 const accessKeys = generateKeyPairSync("ed25519");
 const publicationKeys = generateKeyPairSync("ed25519");
+
+test("OpenViking EOF releases a request waiting for unanswered host roots", async t => {
+  const f = fixture(t);
+  const child = launch(process.execPath, [path.join(ROOT, "mcp/openviking.mjs")], {
+    cwd: f.root, env: { ...f.env, EDT_AI_PROJECT_ROOT: "" }, stdio: ["pipe", "pipe", "pipe"],
+  });
+  f.clients.push({ close: () => stop_child(child, 0) });
+  let markRoots;
+  const roots = new Promise(resolve => { markRoots = resolve; });
+  read_lines(child.stdout, message => { if (message.method === "roots/list") markRoots(); }, error => { throw error; });
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { capabilities: { roots: {} } } }) + "\n");
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+  await roots;
+  const exited = once(child, "close");
+  child.stdin.end(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "knowledge_status", arguments: {} } }) + "\n");
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("OpenViking retained a roots timer after host EOF")), 2000); })]);
+  } finally { clearTimeout(timer); }
+});
 
 test("addressed API card reading does not establish required search readiness", async t => {
   const f = adapterFixture(t), remote = await upstream(t, f), content = markdown(card());

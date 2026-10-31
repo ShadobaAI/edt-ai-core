@@ -3,6 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { ROOT, load, dump } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 export { ROOT };
@@ -80,4 +81,24 @@ export async function session(t, file, args, f, extra = {}) {
   f.clients.push(client);
   await client.initialize();
   return client;
+}
+
+// Exercise the real settings MCP and backend while substituting only the
+// user-operated OS dialog. This is not evidence of native window behavior.
+export async function dialog_session(t, f, { extra = {}, roots } = {}) {
+  const plugin = path.join(f.base, "dialog-plugin"), choice = path.join(f.base, "dialog-choice.json");
+  for (const dir of ["mcp", "scripts", "assets", "settings"]) fs.mkdirSync(path.join(plugin, dir), { recursive: true });
+  for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "assets/icon.svg", "settings/defaults.json"])
+    fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
+  for (const name of ["selection", "compatibility", "icons", "diagnostics", "project_paths", "common", "profile", "settings_export", "support_bundle"])
+    fs.writeFileSync(path.join(plugin, "scripts", name + ".mjs"), `export * from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts", name + ".mjs")).href)};`);
+  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `import fs from 'node:fs'; export async function folder_action() { return JSON.parse(fs.readFileSync(${JSON.stringify(choice)}, 'utf8')).path; }`);
+  fs.writeFileSync(path.join(plugin, "scripts/settings_backend.mjs"),
+    `import { SettingsBackend } from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/settings_backend.mjs")).href)}; let input=''; for await (const chunk of process.stdin) input+=chunk; try { console.log(JSON.stringify({ok:true,result:await new SettingsBackend().main(JSON.parse(input))})); } catch(error) { console.log(JSON.stringify({ok:false,error:error.message})); process.exitCode=1; }`);
+  // These tests exercise the Windows dialog branch even on non-Windows CI.
+  const entry = path.join(plugin, "dialog-entry.mjs");
+  fs.writeFileSync(entry, `Object.defineProperty(process, 'platform', { value: 'win32' }); await import('./mcp/settings.mjs');`);
+  const client = new McpClient([process.execPath, entry], f.root, { ...f.env, ...extra }, 10);
+  f.clients.push(client); if (roots !== undefined) client.roots = roots; await client.initialize();
+  return { client, choose: file => fs.writeFileSync(choice, JSON.stringify({ path: file })) };
 }
