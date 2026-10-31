@@ -13,6 +13,7 @@ import {
   settings,
   validate_settings,
   validate_url,
+  validate_openviking_url,
   parse,
   object,
   stable,
@@ -26,6 +27,7 @@ import {
   validate_at,
   create_profile,
   profile_state,
+  scoped_paths,
 } from "./profile.mjs";
 import { effective_policy } from "./action_policy.mjs";
 import {
@@ -41,6 +43,8 @@ import {
   locate_project,
   legacy_project_state,
   record_project_owner,
+  path_identity,
+  contained,
 } from "./project_paths.mjs";
 import {
   legacy_edt_matches,
@@ -48,9 +52,10 @@ import {
   effective_settings,
   instance_file,
   instance_files,
+  assert_settings_paths,
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
-import { directory_context, edt_connection, edt_port_suggestion } from "./directory_context.mjs";
+import { directory_context, edt_connection, edt_port_suggestion, edt_project_descriptors } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness } from "./setup_readiness.mjs";
 import { knowledge_status } from "./knowledge.mjs";
@@ -66,6 +71,7 @@ export const FIELDS = {
   codeIndexAllowPrerelease: ["mcp", "managed", "code-index", "allow_prerelease"],
   bslLsVersion: ["mcp", "managed", "bsl-ls", "version"],
   bslLsAllowPrerelease: ["mcp", "managed", "bsl-ls", "allow_prerelease"],
+  bslLsJava: ["mcp", "managed", "bsl-ls", "java"],
   openvikingEnabled: ["mcp", "optional", "openviking", "enabled"],
   openvikingUrl: ["mcp", "optional", "openviking", "url"],
   openvikingTimeout: ["mcp", "optional", "openviking", "timeout_seconds"],
@@ -77,6 +83,44 @@ const restore = (file, previous) => {
   if (previous === null) fs.rmSync(file, { force: true });
   else atomic_write(file, previous);
 };
+function layer_changes(before, after) {
+  const changes = [];
+  let truncated = false;
+  const visit = (oldValue, newValue, keys, present = true) => {
+    if (stable(oldValue) === stable(newValue) && present) return;
+    if (object(oldValue) && object(newValue) && present) {
+      for (const key of [...new Set([...Object.keys(oldValue), ...Object.keys(newValue)])].sort())
+        visit(oldValue[key], newValue[key], [...keys, key], Object.hasOwn(newValue, key));
+    } else if (changes.length < 100) changes.push({ path: keys.join("."), ...(present ? { value: newValue } : { removed: true }) });
+    else truncated = true;
+  };
+  visit(before, after, []);
+  return { changes, truncated };
+}
+function validate_override_urls(document) {
+  // Validate the document itself: a higher-priority override can hide an
+  // invalid or credential-bearing URL from effective-settings validation.
+  for (const [name, entry] of Object.entries(document.connections || {}))
+    if (entry.url) name === "openviking" ? validate_openviking_url(entry.url) : validate_url(entry.url, name);
+  for (const [name, entry] of Object.entries(document.components || {}))
+    if (entry.url) validate_url(entry.url, name);
+}
+function connection_url(name, value) {
+  if (!value) return "";
+  return name === "openviking" ? validate_openviking_url(value) : validate_url(value, name);
+}
+function import_compatibility(profile, root) {
+  if (!profile || !root) return { missingPaths: [], edtMappings: [] };
+  const missingPaths = [...new Set(scoped_paths(profile))].filter(relative => !exists(inside(root, relative)));
+  const repositories = profile.repositories.filter(repo => repo.edt_project);
+  const detected = repositories.length ? edt_project_descriptors(root) : [];
+  const edtMappings = repositories.map(repo => ({
+    repository: repo.id, project: repo.edt_project,
+    status: detected === null ? "unavailable" : detected.some(project =>
+      project.name === repo.edt_project && contained(inside(root, repo.path), project.directory)) ? "detected" : "not_detected",
+  }));
+  return { missingPaths, edtMappings };
+}
 export const preparation_scope = (root) =>
   root ? `${root}#${instance_name()}` : null;
 export const session_guidance = "Профиль определяется по папке текущего чата. Если подключения не видят проект, сообщите агенту путь к его папке в этом чате. Привязка подключений к проекту действует только в текущем чате. Для подготовки сервисов нажмите «Проверить готовность».";
@@ -172,6 +216,27 @@ export class SettingsBackend {
       );
     return config;
   }
+  setting_layers(config, profile) {
+    const root = config.active_project;
+    if (!root || profile.status !== "loaded") return {};
+    const files = { profile: profile_target(root), project_local: inside(root, ".ai/project.local.yaml"), instance: instance_file(config, root) };
+    const layers = {};
+    for (const [scope, file] of Object.entries(files)) {
+      const document = exists(file) ? load(file) : {}, fields = {};
+      if (scope !== "profile" && exists(file)) {
+        check_schema(document, "project-local.schema.json");
+        validate_override_urls(document);
+      }
+      for (const [key, parts] of Object.entries(FIELDS)) {
+        const name = key.startsWith("openviking") ? "openviking" : key === "edtUrl" ? "edt" : key === "v8stdUrl" ? "v8std" : null;
+        const entry = name ? document.connections?.[name] : parts[1] === "managed" ? document.components?.[parts[2]] : null;
+        if (entry && Object.hasOwn(entry, parts.at(-1))) fields[key] = structuredClone(entry[parts.at(-1)]);
+      }
+      layers[scope] = fields;
+    }
+    layers.global = Object.fromEntries(Object.entries(FIELDS).filter(([, parts]) => parts[1] === "managed").map(([key, parts]) => [key, structuredClone(config.mcp.managed[parts[2]]?.[parts.at(-1)])]).filter(([, value]) => value !== undefined));
+    return layers;
+  }
   store_shared_settings(config) {
     const saved = settings(this.CONFIG);
     saved.state_dir = this.STATE;
@@ -186,6 +251,13 @@ export class SettingsBackend {
     return this.revision(config, config.active_project ? profile_target(config.active_project) : null);
   }
   revision(config, target = null, payload = "") {
+    if (config.active_project) {
+      // A valid current profile defines the source boundary even when a
+      // candidate profile would remove it. Invalid profiles remain repairable.
+      let profile;
+      try { profile = project_profile(config.active_project); } catch { /* No usable profile yet. */ }
+      if (profile) assert_settings_paths(config, config.active_project, profile, this.STATE, this.CONFIG);
+    }
     const chunks = [
       Buffer.from(stable(config)),
       Buffer.from(payload),
@@ -221,6 +293,31 @@ export class SettingsBackend {
       throw new ConfigError("Допустим файл настроек размером до 2 МиБ.");
     const data = parse(text);
     const editing = request.mode === "edit";
+    let omittedTestingCommands = [];
+    if (request.layerScope !== undefined) throw new ConfigError("Выбор локального файла доступен только в режиме layer.");
+    // The app explicitly opts in before importing machine-specific addresses
+    // and executable paths. Calls predating this option retain their behavior.
+    if (!editing && request.includeMachineSettings === false) {
+      const omitProfileMachineSettings = profile => {
+        if (!object(profile)) return;
+        delete profile.connections;
+        // Command arguments have no reliable portable/machine-specific type:
+        // they can embed paths, addresses, or other machine-local data.
+        // Require an explicit opt-in for the whole command instead of guessing.
+        if (Array.isArray(profile.testing?.commands)) {
+          omittedTestingCommands = profile.testing.commands.map(command => command?.id).filter(id => typeof id === "string");
+          profile.testing.commands = [];
+        }
+      };
+      if (data.format === "1c-ai-core-settings") {
+        omitProfileMachineSettings(data.profile);
+        const mcp = data.settings?.mcp;
+        for (const entry of Object.values(mcp?.required || {})) if (object(entry)) { delete entry.url; delete entry.headers_env; }
+        for (const entry of Object.values(mcp?.managed || {})) if (object(entry))
+          for (const field of ["java", "node", "configuration", "mode", "url", "headers_env"]) delete entry[field];
+        if (object(mcp?.optional?.openviking)) { delete mcp.optional.openviking.url; delete mcp.optional.openviking.headers_env; }
+      } else omitProfileMachineSettings(data);
+    }
     if (request.mode !== undefined && !["import", "edit"].includes(request.mode))
       throw new ConfigError("Неизвестный режим сохранения настроек.");
     if (editing && request.baseRevision !== this.edit_revision())
@@ -330,10 +427,206 @@ export class SettingsBackend {
       });
       check_schema(overrides, "project-local.schema.json");
     }
-    return [config, imported, target, overrides];
+    return [config, imported, target, overrides, omittedTestingCommands];
   }
-  async main(request) {
+  async update_scoped(changes, scope, expectedRevision) {
+    if (!["profile", "project_local", "instance", "global"].includes(scope))
+      throw new ConfigError("Неизвестная область сохранения.");
+    const connectionFields = ["edtUrl", "v8stdUrl", "openvikingEnabled", "openvikingUrl", "openvikingTimeout", "openvikingMaxResponseBytes", "openvikingHeadersEnv"];
+    const componentFields = ["codeIndexEnabled", "bslLsEnabled", "bslLsJava", "codeIndexVersion", "bslLsVersion"];
+    const allowed = scope === "profile" ? connectionFields : scope === "global" ? ["bslLsJava", "codeIndexVersion", "bslLsVersion"] : [...connectionFields, ...componentFields];
+    if (Object.keys(changes).some(key => !allowed.includes(key)))
+      throw new ConfigError("Эти настройки нельзя сохранить в выбранную область.");
+    return operation_lock(this.STATE, () => {
+      const config = this.current(), root = config.active_project;
+      if (!root) throw new ConfigError("Выберите папку проекта.");
+      let profile;
+      try { profile = project_profile(root); } catch (error) { if (!(error instanceof ProfileNotFound)) throw error; }
+      if (profile) assert_settings_paths(config, root, profile, this.STATE, this.CONFIG);
+      const target = scope === "profile" ? profile_target(root) : scope === "project_local" ? inside(root, ".ai/project.local.yaml") : scope === "instance" ? instance_file(config, root) : this.CONFIG;
+      if (expectedRevision && expectedRevision !== this.revision(config, profile_target(root)))
+        throw new ConfigError("Настройки изменились после загрузки. Обновите сведения и повторите сохранение.");
+      let document;
+      if (scope === "profile") document = project_profile(root);
+      else if (scope === "global") document = config;
+      else {
+        document = exists(target) ? load(target) : {};
+        if (exists(target)) check_schema(document, "project-local.schema.json");
+      }
+      for (const [key, value] of Object.entries(changes)) {
+        const member = FIELDS[key].at(-1);
+        if (connectionFields.includes(key)) {
+          const name = key.startsWith("openviking") ? "openviking" : key === "edtUrl" ? "edt" : "v8std";
+          const connection = ((document.connections ||= {})[name] ||= {});
+          connection[member] = member === "url" ? connection_url(name, value) : structuredClone(value);
+        } else if (scope === "global") {
+          const parts = FIELDS[key]; let item = document;
+          for (const part of parts.slice(0, -1)) item = item[part];
+          item[parts.at(-1)] = value;
+        } else {
+          const name = key.startsWith("codeIndex") ? "code-index" : "bsl-ls";
+          ((document.components ||= {})[name] ||= {})[member] = value;
+        }
+      }
+      if (scope === "profile") validate_at(root, document);
+      else if (scope === "global") this.checked(document);
+      else { check_schema(document, "project-local.schema.json"); validate_override_urls(document); }
+      const previous = bytes(target), savedBackup = scope === "profile" ? backup(target) : null;
+      try {
+        if (scope === "instance") record_project_owner(this.STATE, root);
+        if (scope === "global") this.store_shared_settings(document);
+        else dump(document, target, previous !== null);
+        const persisted = load(target);
+        if (scope === "global") {
+          if (stable(persisted.mcp.managed) !== stable(document.mcp.managed) || stable(persisted.mcp.optional) !== stable(document.mcp.optional))
+            throw new ConfigError("Не удалось подтвердить сохранение настроек.");
+        } else if (stable(persisted) !== stable(document)) throw new ConfigError("Не удалось подтвердить сохранение настроек.");
+        const savedConfig = this.current(), effective = this.effective(savedConfig);
+        return { values: this.values(effective, false), savedTo: target, scope, backup: savedBackup,
+          settingsRevision: this.revision(savedConfig, profile_target(root)) };
+      } catch (error) { restore(target, previous); throw error; }
+    });
+  }
+  prepare_layer(request) {
+    if (!["project_local", "instance"].includes(request.layerScope)) throw new ConfigError("Выберите локальный файл проекта или экземпляра.");
+    if (request.includeMachineSettings !== undefined) throw new ConfigError("Параметры импорта не относятся к редактору локальных настроек.");
+    if (typeof request.text !== "string" || Buffer.byteLength(request.text) > 2 * 1024 * 1024) throw new ConfigError("Документ превышает 2 МиБ.");
+    const config = this.current(), root = config.active_project;
+    if (!root) throw new ConfigError("Выберите папку проекта.");
+    if (request.projectRoot !== undefined && configuration_root(request.projectRoot) !== root) throw new ConfigError("Редактор относится к другой папке.");
+    if (!request.baseRevision || request.baseRevision !== this.edit_revision()) throw new ConfigError("Настройки изменились после загрузки. Загрузите документ заново.");
+    const document = parse(request.text);
+    check_schema(document, "project-local.schema.json");
+    validate_override_urls(document);
+    const profile = project_profile(root), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
+    const [effective] = resolved_settings(config, root, profile, request.layerScope === "instance" ? document : null, this.STATE, request.layerScope === "project_local" ? document : null);
+    validate_settings(effective);
+    const payload = stable({ text: request.text, mode: "layer", baseRevision: request.baseRevision, layerScope: request.layerScope });
+    let previous = {};
+    try { if (exists(target)) previous = load(target); } catch { previous = null; }
+    const diff = previous === null ? { changes: [{ path: "Документ", replacedInvalid: true }], truncated: false } : layer_changes(previous, document);
+    const summary = { projectRoot: root, profileId: profile.profile_id,
+      repositories: profile.repositories.map(({ id, path, alias }) => ({ id, path, alias })), missingPaths: [], replacesProfile: false,
+      connectionUrls: Object.fromEntries(Object.entries(effective.mcp.required).map(([name, item]) => [name, item.url])),
+      openviking: structuredClone(effective.mcp.optional.openviking), writesInstanceConnections: false,
+      sharedRuntimeChanges: {}, sharedOptionalChanges: {}, layerPath: target, layerScope: request.layerScope, layerChanges: diff.changes, layerChangesTruncated: diff.truncated,
+      revision: this.revision(effective, target, payload) };
+    return { config, root, document, target, summary, payload };
+  }
+  async prepare_document_layer(request) {
+    if (!["profile", "global"].includes(request.layerScope)) throw new ConfigError("Неизвестный документ настроек.");
+    if (request.includeMachineSettings !== undefined) throw new ConfigError("Параметры импорта не относятся к редактору настроек.");
+    if (typeof request.text !== "string" || Buffer.byteLength(request.text) > 2 * 1024 * 1024) throw new ConfigError("Документ превышает 2 МиБ.");
+    const edit = await this.main({ action: "edit" });
+    if (!request.baseRevision || request.baseRevision !== edit.baseRevision) throw new ConfigError("Настройки изменились после загрузки. Загрузите документ заново.");
+    const envelope = JSON.parse(edit.text), document = parse(request.text);
+    const previous = request.layerScope === "profile" ? envelope.profile : envelope.settings;
+    if (request.layerScope === "profile") envelope.profile = document; else envelope.settings = document;
+    const input = { mode: "edit", baseRevision: request.baseRevision, text: JSON.stringify(envelope),
+      ...(request.projectRoot !== undefined ? { projectRoot: request.projectRoot } : {}) };
+    const preview = await this.main({ action: "preview", ...input });
+    const diff = layer_changes(previous, document), root = this.current().active_project;
+    const target = request.layerScope === "profile" ? profile_target(root) : this.CONFIG;
+    const revision = sha256(stable({ scope: request.layerScope, text: request.text, baseRevision: request.baseRevision,
+      projectRoot: request.projectRoot ?? null, preview: preview.revision }));
+    return { input, previewRevision: preview.revision, summary: { ...preview, layerScope: request.layerScope, layerPath: target,
+      layerChanges: diff.changes, layerChangesTruncated: diff.truncated, revision } };
+  }
+  async main(request, { profileDocumentOnly = false } = {}) {
     const action = request.action;
+    if (action === "edit" && ["profile", "global"].includes(request.layerScope)) {
+      const edit = await this.main({ action: "edit" }), config = this.current();
+      if (!config.active_project) throw new ConfigError("Выберите папку проекта.");
+      const envelope = JSON.parse(edit.text), document = request.layerScope === "profile" ? envelope.profile : envelope.settings;
+      return { text: JSON.stringify(document, null, 2), baseRevision: edit.baseRevision, layerScope: request.layerScope,
+        path: request.layerScope === "profile" ? profile_target(config.active_project) : this.CONFIG };
+    }
+    if (action === "edit" && request.layerScope !== undefined) {
+      if (!["project_local", "instance"].includes(request.layerScope)) throw new ConfigError("Неизвестный файл настроек.");
+      const config = this.current(), root = config.active_project;
+      if (!root) throw new ConfigError("Выберите папку проекта.");
+      project_profile(root);
+      const baseRevision = this.edit_revision(), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
+      let text;
+      if (!exists(target)) text = JSON.stringify({ schema_version: "0.1" }, null, 2);
+      else {
+        const stat = fs.statSync(target);
+        if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw new ConfigError("Документ недоступен или превышает 2 МиБ.");
+        const original = fs.readFileSync(target, "utf8");
+        try { const document = parse(original); check_schema(document, "project-local.schema.json"); text = JSON.stringify(document, null, 2); }
+        catch { text = original; } // A broken overlay must remain repairable.
+      }
+      if (baseRevision !== this.edit_revision()) throw new ConfigError("Настройки изменились во время загрузки. Загрузите документ заново.");
+      return { text, baseRevision, layerScope: request.layerScope, path: target };
+    }
+    if (["preview", "apply"].includes(action) && request.mode === "layer") {
+      if (["profile", "global"].includes(request.layerScope)) {
+        const prepared = await this.prepare_document_layer(request);
+        if (action === "preview") return prepared.summary;
+        if (request.revision !== prepared.summary.revision) throw new ConfigError("Настройки изменились после предпросмотра. Проверьте документ заново.");
+        const result = await this.main({ action: "apply", ...prepared.input, revision: prepared.previewRevision, replace: request.replace }, { profileDocumentOnly: request.layerScope === "profile" });
+        return { ...result, status: "saved", summary: prepared.summary, savedTo: prepared.summary.layerPath };
+      }
+      if (action === "preview") return this.prepare_layer(request).summary;
+      return operation_lock(this.STATE, () => {
+        const { config, root, document, target, summary } = this.prepare_layer(request);
+        if (request.revision !== summary.revision) throw new ConfigError("Настройки изменились после предпросмотра. Проверьте документ заново.");
+        const previous = bytes(target);
+        try {
+          if (request.layerScope === "instance") record_project_owner(this.STATE, root);
+          dump(document, target, previous !== null);
+          if (stable(load(target)) !== stable(document)) throw new ConfigError("Не удалось подтвердить сохранение настроек.");
+          const effective = this.effective(this.current()); validate_settings(effective);
+          return { status: "saved", summary, savedTo: target, values: this.values(effective, false), sessionGuidance: session_guidance };
+        } catch (error) { restore(target, previous); throw error; }
+      });
+    }
+    if (action === "java_probe") {
+      const { java_info, java_in_directory } = await import("./runtime.mjs");
+      return request.directory ? java_in_directory(request.directory) : java_info(request.command || "java");
+    }
+    if (action === "repair_document") {
+      const config = this.current(), root = config.active_project;
+      if (!root) throw new ConfigError("Выберите папку проекта.");
+      const file = profile_target(root), stat = fs.statSync(file);
+      if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw new ConfigError("Профиль недоступен или превышает 2 МиБ.");
+      return { text: fs.readFileSync(file, "utf8") };
+    }
+    if (action === "profile_source") {
+      const config = this.current(), target = config.active_project;
+      if (!target || typeof request.sourceRoot !== "string") throw new ConfigError("Выберите исходный и целевой профиль.");
+      const identity = path_identity(request.sourceRoot);
+      const source = profile_history(this.STATE, target).find(item => item.projectRoot === identity && item.status === "loaded");
+      if (!source || identity === path_identity(target)) throw new ConfigError("Выберите другой доступный профиль из списка.");
+      const profile = structuredClone(project_profile(identity));
+      assert_settings_paths(config, identity, profile, this.STATE, this.CONFIG);
+      if (request.includeConnections !== true) delete profile.connections;
+      const missingPaths = [...new Set(scoped_paths(profile))].filter(relative => !exists(inside(target, relative)));
+      return { text: JSON.stringify(profile, null, 2), sourceRoot: identity, missingPaths,
+        includesConnections: request.includeConnections === true, localOverridesIncluded: false };
+    }
+    if (action === "rename_profile") {
+      return operation_lock(this.STATE, () => {
+        const config = this.current(), root = config.active_project;
+        if (!root) throw new ConfigError("Выберите папку проекта.");
+        const target = profile_target(root), profile = project_profile(root);
+        if (request.expectedRevision !== this.revision(config, target)) throw new ConfigError("Профиль изменился. Обновите сведения перед переименованием.");
+        if (typeof request.projectId !== "string" || !request.projectId.trim()) throw new ConfigError("Укажите идентификатор проекта.");
+        const previousId = profile.project.id;
+        profile.project.id = request.projectId.trim();
+        validate_at(root, profile);
+        if (previousId === profile.project.id) return { status: "unchanged", profile: profile_state(root) };
+        const previous = bytes(target), savedBackup = backup(target);
+        try {
+          dump(profile, target);
+          if (stable(load(target)) !== stable(profile)) throw new ConfigError("Не удалось подтвердить переименование профиля.");
+          project_profile(root);
+        } catch (error) { restore(target, previous); throw error; }
+        remember_profile(this.STATE, root, profile_state(root));
+        return { status: "renamed", profile: profile_state(root), backup: savedBackup,
+          detail: "Разрешения Vanessa, привязанные к прежнему идентификатору проекта, потребуется получить заново." };
+      });
+    }
     if (action === "probe") {
       const config = this.effective(this.current()), root = config.active_project;
       if (!root) throw new ConfigError("Выберите папку проекта.");
@@ -388,6 +681,11 @@ export class SettingsBackend {
         connectionSources: sources,
         valueSources: Object.fromEntries(Object.entries(FIELDS).filter(([key]) => key.startsWith("openviking"))
           .map(([key, parts]) => [key, fieldSources.openviking?.[parts.at(-1)] || "settings"])),
+        managedValueSources: Object.fromEntries(Object.entries(FIELDS).filter(([key]) => key.startsWith("codeIndex") || key.startsWith("bslLs"))
+          .map(([key, parts]) => [key, fieldSources.components?.[parts.at(-2)]?.[parts.at(-1)] || "settings"])),
+        settingsRevision: config.active_project && profile.status === "loaded" ? this.revision(config, profile_target(config.active_project)) : null,
+        writePaths: config.active_project ? { profile: profile_target(config.active_project), project_local: inside(config.active_project, ".ai/project.local.yaml"), instance: instance_file(config, config.active_project), global: this.CONFIG } : {},
+        layerValues: this.setting_layers(config, profile),
         preparationScope: preparation_scope(actual.projectRoot),
         legacyState: legacy,
         profileHistory: profile_history(this.STATE, actual.projectRoot),
@@ -424,6 +722,11 @@ export class SettingsBackend {
       return operation_lock(this.STATE, () => {
         const config = this.current(), root = config.active_project;
         if (!root) throw new ConfigError("Выберите папку проекта.");
+        let profile;
+        try { profile = project_profile(root); } catch (error) { if (!(error instanceof ProfileNotFound)) throw error; }
+        if (profile) assert_settings_paths(config, root, profile, this.STATE, this.CONFIG);
+        if (request.expectedRevision && request.expectedRevision !== this.revision(config, profile_target(root)))
+          throw new ConfigError("Настройки изменились после загрузки. Обновите сведения и повторите сохранение.");
         const file = instance_file(config, root);
         if (exists(file)) {
           const local = load(file);
@@ -434,9 +737,14 @@ export class SettingsBackend {
           }
           check_schema(local, "project-local.schema.json");
           this.effective(config, local);
-          dump(local, file);
+          const previous = bytes(file);
+          try {
+            dump(local, file);
+            if (stable(load(file)) !== stable(local)) throw new ConfigError("Не удалось подтвердить восстановление наследования.");
+            this.effective(this.current());
+          } catch (error) { restore(file, previous); throw error; }
         }
-        return { values: this.values(config) };
+        return { values: this.values(config), settingsRevision: this.revision(config, profile_target(root)) };
       });
     }
     if (action === "update") {
@@ -454,6 +762,8 @@ export class SettingsBackend {
             : key === "openvikingHeadersEnv" ? "object" : "string")
         )
           throw new ConfigError("Некорректный тип настройки: " + key);
+      if (request.scope !== undefined) return this.update_scoped(changes, request.scope, request.expectedRevision);
+      if (request.expectedRevision !== undefined) throw new ConfigError("Для проверки ревизии укажите область сохранения.");
       const selected = this.lockedRoot();
       if (
         selected &&
@@ -491,7 +801,7 @@ export class SettingsBackend {
             const connections = instanceChanges.connections ||= {};
             const member = FIELDS[key].at(-1);
             connections[name] = { ...connections[name],
-              [member]: member === "url" ? value ? validate_url(value) : "" : value };
+              [member]: member === "url" ? connection_url(name, value) : value };
             continue;
           }
           if (["codeIndexEnabled", "bslLsEnabled"].includes(key)) {
@@ -507,6 +817,11 @@ export class SettingsBackend {
           target[parts.at(-1)] = value;
         }
         this.checked(config);
+        if (config.active_project) {
+          let profile;
+          try { profile = project_profile(config.active_project); } catch { /* No usable profile yet. */ }
+          if (profile) assert_settings_paths(config, config.active_project, profile, this.STATE, this.CONFIG);
+        }
         let file = null,
           overrides;
         if (instanceChanges.connections || instanceChanges.components) {
@@ -517,6 +832,7 @@ export class SettingsBackend {
           if (Object.hasOwn(changes, "openvikingHeadersEnv"))
             overrides.connections.openviking.headers_env = structuredClone(changes.openvikingHeadersEnv);
           check_schema(overrides, "project-local.schema.json");
+          validate_override_urls(overrides);
           effective_settings(
             config,
             root,
@@ -541,16 +857,26 @@ export class SettingsBackend {
       return { values: this.values(config) };
     }
     if (["preview", "apply"].includes(action)) {
-      const payload = stable({ text: request.text, mode: request.mode || "import", baseRevision: request.baseRevision || null });
-      let [config, profile, target, overrides] = this.parse_import(request);
+      const payload = stable({ text: request.text, mode: request.mode || "import", baseRevision: request.baseRevision || null, includeMachineSettings: request.includeMachineSettings ?? null });
+      let [config, profile, target, overrides, omittedTestingCommands] = this.parse_import(request);
       let applied = this.effective(config, overrides, profile);
       const shared = settings(this.CONFIG);
+      const compatibility = import_compatibility(profile, config.active_project);
       const summary = {
         projectRoot: config.active_project || "",
         profileId: profile?.profile_id || null,
+        projectId: profile?.project?.id || null,
         repositories: (profile?.repositories || []).map(
           ({ id, path, alias }) => ({ id, path, alias }),
         ),
+        missingPaths: compatibility.missingPaths,
+        omittedTestingCommands,
+        projectSpecific: profile ? { roots: profile.roots, edtRepositoryIds: profile.policy.edt_repository_ids || [],
+          unboundEdtRepositories: profile.policy.unbound_edt_repositories || [], edtMappings: compatibility.edtMappings,
+          testing: { yaxunit: profile.testing.yaxunit, vanessa: profile.testing.vanessa, commands: profile.testing.commands.length,
+            ...(profile.testing.yaxunit_config?.launch_configuration ? { yaxunitLaunchConfiguration: profile.testing.yaxunit_config.launch_configuration } : {}),
+            ...(profile.testing.vanessa_config ? { vanessaRuntimeProfile: profile.testing.vanessa_config.runtime_profile, vanessaServer: profile.testing.vanessa_config.server_name } : {}) },
+          knowledge: { mode: profile.knowledge.mode, provider: profile.knowledge.provider, manifest: profile.knowledge.manifest, collections: profile.knowledge.collections } } : null,
         edtConfigured: !!applied.mcp.required.edt.url,
         v8stdConfigured: !!applied.mcp.required.v8std.url,
         openviking: structuredClone(applied.mcp.optional.openviking),
@@ -568,13 +894,13 @@ export class SettingsBackend {
           ),
         ),
         sharedOptionalChanges: stable(config.mcp.optional) === stable(shared.mcp.optional) ? {} : config.mcp.optional,
-        revision: this.revision(applied, target, payload),
+        revision: this.revision(applied, target, stable({ payload, compatibility })),
       };
       if (action === "preview") return summary;
       const saved = await operation_lock(this.STATE, () => {
         [config, profile, target, overrides] = this.parse_import(request);
         applied = this.effective(config, overrides, profile);
-        if (request.revision !== this.revision(applied, target, payload))
+        if (request.revision !== this.revision(applied, target, stable({ payload, compatibility: import_compatibility(profile, config.active_project) })))
           throw new ConfigError(
             "Настройки изменились после предпросмотра. Проверьте файл заново.",
           );
@@ -586,16 +912,28 @@ export class SettingsBackend {
             : null;
         const previousConfig = bytes(this.CONFIG),
           previousProfile = bytes(target),
-          previousOverride = bytes(overridePath),
-          saved = target && exists(target) ? backup(target) : null;
+          previousOverride = bytes(overridePath);
+        const shared = settings(this.CONFIG), persistShared = !profileDocumentOnly;
+        if (profileDocumentOnly && (stable(shared.mcp.managed) !== stable(config.mcp.managed) || stable(shared.mcp.optional) !== stable(config.mcp.optional)))
+          throw new ConfigError("Общие настройки изменились. Загрузите профиль заново.");
+        const saved = target && exists(target) ? backup(target) : null;
         try {
           if (target) dump(profile, target, exists(target));
           if (overridePath) { record_project_owner(this.STATE, config.active_project); dump(overrides, overridePath); }
-          this.store_shared_settings(config);
+          if (persistShared) this.store_shared_settings(config);
+          // Confirm every written document before reporting success. If a
+          // write or subsequent read fails, restore the previous documents.
+          if (target && stable(load(target)) !== stable(profile)) throw new ConfigError("Не удалось подтвердить сохранение профиля.");
+          if (overridePath && stable(load(overridePath)) !== stable(overrides)) throw new ConfigError("Не удалось подтвердить сохранение настроек экземпляра.");
+          if (persistShared) {
+            const persisted = load(this.CONFIG);
+            if (stable(persisted.mcp.managed) !== stable(config.mcp.managed) || stable(persisted.mcp.optional) !== stable(config.mcp.optional))
+              throw new ConfigError("Не удалось подтвердить сохранение общих настроек.");
+          }
         } catch (error) {
           if (overridePath) restore(overridePath, previousOverride);
           if (target) restore(target, previousProfile);
-          restore(this.CONFIG, previousConfig);
+          if (persistShared) restore(this.CONFIG, previousConfig);
           throw error;
         }
         return saved;
@@ -620,6 +958,7 @@ export class SettingsBackend {
           // Repairing a parsed old/incompatible profile must be possible in the
           // editor. Preview/apply still validate the complete candidate.
           profile = action === "edit" ? load(file) : validate_at(config.active_project, load(file));
+        if (profile && action === "export") assert_settings_paths(config, config.active_project, profile, this.STATE, this.CONFIG);
       }
       if (action === "edit" && baseRevision !== this.edit_revision())
         throw new ConfigError("Настройки изменились во время загрузки. Загрузите их заново.");

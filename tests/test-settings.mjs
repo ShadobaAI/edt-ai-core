@@ -14,6 +14,31 @@ import { instance_file } from "../scripts/project_context.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { reconnect_file } from "../scripts/project_paths.mjs";
 
+test("settings import restores previous files when read-back verification fails", async t => {
+  const f = fixture(t); f.save(); environment(t, f.env);
+  const backend = new SettingsBackend(), target = path.join(f.root, ".ai", "project.yaml");
+  const original = fs.readFileSync(target), replacement = structuredClone(f.profile);
+  replacement.project.id = "replacement";
+  const input = { text: JSON.stringify(replacement), projectRoot: f.root };
+  const preview = await backend.main({ action: "preview", ...input });
+  const read = fs.readFileSync, rename = fs.renameSync;
+  let verifyNext = false;
+  fs.renameSync = (...args) => {
+    const result = rename(...args);
+    if (args[1] === target) verifyNext = true;
+    return result;
+  };
+  fs.readFileSync = (...args) => {
+    if (verifyNext && args[0] === target) { verifyNext = false; throw new Error("Injected verification read failure"); }
+    return read(...args);
+  };
+  try {
+    await assert.rejects(backend.main({ action: "apply", ...input, revision: preview.revision, replace: true }), /verification read failure/);
+  } finally { fs.readFileSync = read; fs.renameSync = rename; }
+  assert.deepEqual(fs.readFileSync(target), original);
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+});
+
 test("settings use the chat launch directory before a profile exists without host roots", async (t) => {
   const f = fixture(t), sub = path.join(f.root, "src");
   fs.mkdirSync(path.join(f.root, ".git"));
@@ -742,7 +767,9 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
   fs.copyFileSync(path.join(ROOT,"plugin.json"),path.join(plugin,"plugin.json"));
   for (const name of ["icons.mjs", "selection.mjs", "project_paths.mjs", "casefold.mjs", "compatibility.mjs", "diagnostics.mjs", "support_bundle.mjs"])
     fs.copyFileSync(path.join(ROOT, "scripts", name), path.join(plugin, "scripts", name));
-  fs.copyFileSync(path.join(ROOT, "scripts/settings_folder.mjs"), path.join(plugin, "scripts/settings_folder.mjs"));
+  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `export async function folder_action() { return ${JSON.stringify(path.join(f.base, "report.json"))}; }`);
+  for (const name of ["common", "profile", "settings_export"])
+    fs.writeFileSync(path.join(plugin, "scripts", name + ".mjs"), `export * from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts", name + ".mjs")).href)};`);
   fs.copyFileSync(path.join(ROOT, "assets/icon.svg"), path.join(plugin, "assets/icon.svg"));
   for (const name of ["settings.mjs", "settings-operations.mjs"])
     fs.copyFileSync(

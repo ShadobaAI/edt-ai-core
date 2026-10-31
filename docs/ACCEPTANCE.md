@@ -14,9 +14,6 @@
 | Без внешних баз и `provider: none` | `tests/test-setup.mjs`, `tests/test-production-regressions.mjs`, `tests/test-node-only-runtime.mjs` и disabled-cases knowledge: startup/status/фикстурные native workflows без сервера знаний; отсутствие сети проверяется отдельно |
 
 Команда: `node --test tests/test-knowledge.mjs tests/test-knowledge-settings.mjs tests/test-openviking.mjs`.
-Регрессии добавлены вместе с соответствующими изменениями; дублировать их
-ради отдельного этапа приёмки не требуется.
-
 Поведенческие задачи и скрытые от исполнителя эталоны:
 `tests/behavioral/` только в dev-checkout, не в ZIP. Проверяются выбор механизма,
 достаточность, L/M/H по последствиям и остановка поиска/декомпозиции. Это отдельный

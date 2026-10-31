@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { fixture, environment, ROOT } from "./helpers.mjs";
@@ -492,6 +493,26 @@ test("owned process tree termination leaves unrelated processes alive", async (t
   await stop_child(parent, 0);
   for (let i = 0; i < 100 && alive(childPid); i++) await sleep(10);
   assert.equal(alive(childPid), false);
+  assert.equal(alive(process.pid), true);
+});
+test("Windows releases descendants holding pipes after their parent exits", { skip: process.platform !== "win32" }, async t => {
+  const f = fixture(t), file = path.join(f.base, "exiting-parent.mjs");
+  fs.writeFileSync(file, `import {spawn} from 'node:child_process';
+    setTimeout(() => { const child=spawn(process.execPath,['-e','process.send("ready"); setInterval(()=>{},1000)'],{stdio:['ignore','inherit','inherit','ipc'],windowsHide:true});
+      child.once('message',()=>process.stdout.write(String(child.pid)+'\\n',()=>setTimeout(()=>process.exit(0),500))); }, 100);`);
+  const parent = launch(process.execPath, [file], { stdio: ["pipe", "pipe", "pipe"] });
+  f.clients.push({ close: async () => { parent.ownedJob?.close(); await stop_child(parent, 0); } });
+  const exited = once(parent, "close");
+  const [data] = await Promise.race([once(parent.stdout, "data"), exited.then(() => { throw new Error("fixture exited before reporting its descendant"); })]);
+  const descendant = Number(String(data).trim());
+  assert.ok(Number.isSafeInteger(descendant));
+  assert.equal(alive(descendant), true);
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("descendant retained the parent's pipes")), 2000); })]);
+  } finally { clearTimeout(timer); }
+  for (let i = 0; i < 100 && alive(descendant); i++) await sleep(10);
+  assert.equal(alive(descendant), false);
   assert.equal(alive(process.pid), true);
 });
 test(

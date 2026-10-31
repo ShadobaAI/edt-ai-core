@@ -21,7 +21,8 @@ let selection = launch_selection(), rootsPending = null, rootsSequence = 0, sele
 let rootsReady = Promise.resolve(), finishRoots = null;
 let adapter = null, connectingAdapter = null, binding = null, bindingContext = null;
 let bindingPromise = null, activeOperations = 0;
-const emit = message => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
+let closed = false;
+const emit = message => { if (!closed) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n"); };
 const rootProperty = { type: "string", minLength: 1 };
 const digestProperty = { type: "string", pattern: "^[a-f0-9]{64}$" };
 const continuationProperty = { type: "object", properties: { connectionId: { type: "string" }, bindingRevision: { type: "string" }, materialRevision: { type: "string" }, uri: { type: "string" }, collection: { type: "string" },
@@ -43,6 +44,7 @@ function detach(advance = true) {
 }
 const fingerprint = current => knowledge_binding_fingerprint(current.config, current.root, current.profile, state);
 function assertCurrent(expected, epoch) {
+  if (closed) throw new Error("Knowledge session closed");
   if (epoch !== generation || rootsPending) throw new Error("Knowledge binding changed during operation; discard this result");
   if (fingerprint(context({})) !== expected) {
     if (binding === expected) void detach();
@@ -105,6 +107,7 @@ function requestRoots() {
   emit({ id: rootsPending, method: "roots/list", params: {} });
 }
 async function dispatch(message) {
+  if (closed) return;
   if (rootsPending && message.id === rootsPending) {
     rootsPending = null;
     try { selection = roots_selection(message); selectionError = null; }
@@ -185,5 +188,17 @@ async function dispatch(message) {
   } catch (error) { emit({ id: message.id, error: { code: -32000, message: safe_error_message(error), data: { outcome: "error" } } }); }
   finally { if (admitted) activeOperations--; }
 }
-read_lines(process.stdin, message => { void dispatch(message).catch(error => process.stderr.write(safe_error_message(error) + "\n")); }, error => process.stderr.write(safe_error_message(error) + "\n"));
-process.stdin.once("end", () => { void detach(); });
+const shutdown = () => {
+  if (closed) return;
+  closed = true;
+  process.stdin.pause();
+  finishRoots?.(); finishRoots = null;
+  void detach().catch(error => process.stderr.write(safe_error_message(error) + "\n"));
+};
+read_lines(process.stdin, message => { void dispatch(message).catch(error => process.stderr.write(safe_error_message(error) + "\n")); }, error => { process.stderr.write(safe_error_message(error) + "\n"); shutdown(); });
+process.stdin.once("end", shutdown);
+process.stdin.once("close", shutdown);
+process.stdin.once("error", shutdown);
+process.stdout.once("error", shutdown);
+process.once("SIGTERM", shutdown);
+process.once("SIGINT", shutdown);

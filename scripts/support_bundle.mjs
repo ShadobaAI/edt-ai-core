@@ -2,17 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
 import { LOG_POLICY, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, environment_compatibility, verification_limits } from "./diagnostics.mjs";
+import { save_export_to_path } from "./settings_export.mjs";
 
 const FILE_LIMIT = 256 * 1024, SECTION_LIMIT = 128 * 1024;
 const REPORT_NAME = "1c-ai-core-diagnostics.json";
-function export_directory(state, create = false) {
+function export_directory(state) {
   let directory = path.resolve(state);
-  if (create) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   for (const part of ["diagnostics", "exports"]) {
     directory = path.join(directory, part);
-    if (create) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const stat = fs.lstatSync(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Diagnostic export directory is not a regular directory");
   }
@@ -25,23 +23,10 @@ export function saved_support_report(state) {
     return { filename: REPORT_NAME, path: file, directory, bytes: stat.size, savedAt: stat.mtime.toISOString() };
   } catch { return null; }
 }
-// One actual file, atomically replaced on the next export. Browser download
-// clicks cannot confirm that an embedded host saved anything to disk.
-export function save_support_bundle(state, bundle) {
-  if (typeof bundle?.text !== "string" || Buffer.byteLength(bundle.text) > 16 * 1024 * 1024)
-    throw new Error("Диагностический файл отсутствует или превышает 16 МиБ.");
-  const directory = export_directory(state, true), file = path.join(directory, REPORT_NAME), temporary = path.join(directory, `.support-${randomUUID()}.tmp`);
-  if (fs.existsSync(file)) {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Diagnostic export target is not a regular file");
-  }
-  try {
-    fs.writeFileSync(temporary, bundle.text, { flag: "wx", mode: 0o600 });
-    fs.renameSync(temporary, file);
-    const saved = saved_support_report(state);
-    if (!saved || saved.bytes !== Buffer.byteLength(bundle.text)) throw new Error("Не удалось подтвердить сохранение диагностического файла.");
-    return saved;
-  } finally { fs.rmSync(temporary, { force: true }); }
+// Legacy callers keep this entry point but must supply a destination.
+export function save_support_bundle(state, bundle, destination) {
+  if (!destination) throw new Error("Выберите место сохранения диагностического файла.");
+  return save_export_to_path(destination, bundle, 16 * 1024 * 1024);
 }
 // Deliberately no CLI or model tool. Only the settings app calls this collector.
 // Every section fails independently; invalid settings must still be exportable.

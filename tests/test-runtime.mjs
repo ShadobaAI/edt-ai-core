@@ -17,6 +17,7 @@ import {
   rebuild_index,
   path_key,
   ensure_daemon,
+  start_daemon,
   daemon_health,
   stop_daemon,
   project_home,
@@ -301,6 +302,26 @@ test("index rebuild targets exactly one repository and restores the owned servic
   assert.deepEqual(calls,["stop","restart"]);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
   await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>{throw new Error("unknown stop");}}),error=>error.outcomeUnknown===true);
   assert.equal(fs.existsSync(path.join(home,"maintenance.json")),true);
+});
+
+test("daemon launch closes its first log handle if opening the second fails", async t => {
+  const f = fixture(t), home = path.join(f.base, "daemon");
+  fs.mkdirSync(home);
+  const outFile = path.join(home, "stdout.log"), errFile = path.join(home, "stderr.log");
+  const open = fs.openSync, close = fs.closeSync;
+  let opened, closed = false;
+  t.mock.method(fs, "openSync", (file, ...args) => {
+    if (file === errFile) throw new Error("simulated stderr open failure");
+    const fd = open(file, ...args);
+    if (file === outFile) opened = fd;
+    return fd;
+  });
+  t.mock.method(fs, "closeSync", fd => { if (fd === opened) closed = true; return close(fd); });
+  try {
+    await assert.rejects(start_daemon(home, f.root, f.profile, process.execPath, { launch: () => assert.fail("must not launch") }), /simulated stderr open failure/);
+    assert.notEqual(opened, undefined);
+    assert.equal(closed, true);
+  } finally { if (opened !== undefined && !closed) close(opened); }
 });
 
 test("parallel readers share exactly one owned daemon per profile and preserve unrelated processes", async (t) => {

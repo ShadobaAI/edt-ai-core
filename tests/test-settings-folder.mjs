@@ -14,6 +14,18 @@ test("native folder dialog initializes for Unicode paths without displaying a wi
   dialog.dispose();
 });
 
+test("native Save As dialog initializes with a suggested Unicode filename", { skip: process.platform !== "win32" }, t => {
+  const f = fixture(t);
+  const api = windows_folder_api(), dialog = api.createDialog(f.root, { save: true, filename: "настройки.json" });
+  dialog.dispose();
+});
+
+test("native Open dialog initializes for an existing project directory", { skip: process.platform !== "win32" }, t => {
+  const f = fixture(t);
+  const api = windows_folder_api(), dialog = api.createDialog(f.root, { file: true, title: "Выберите файл настроек · 1C AI Core" });
+  dialog.dispose();
+});
+
 test("opening a folder rejects files and missing directories before launching Explorer", { skip: process.platform !== "win32" }, async t => {
   const f = fixture(t);
   await assert.rejects(folder_action("open", fileURLToPath(import.meta.url)), /папк|directory|ENOENT/i);

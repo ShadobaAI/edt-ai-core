@@ -22,11 +22,19 @@ export async function serve(component, selected, state, config) {
     });
     diagnostic.event("process_started", { projectRoot: root, childPid: child.pid, executable: command[0] });
     child.stderr.on("data", chunk => { diagnostic.event("runtime_stderr", { projectRoot: root, message: String(chunk) }, "warning"); process.stderr.write(chunk); });
-    const terminate = () => { void stop_child(child, 0); };
+    let stopping;
+    const reportShutdown = error => diagnostic.event("process_shutdown_failed", { projectRoot: root, error }, "error");
+    const inputEnded = () => {
+      if (!stopping) { stopping = stop_child(child); void stopping.catch(reportShutdown); }
+    };
+    const terminate = () => { void stop_child(child, 0).catch(reportShutdown); };
     process.once("SIGTERM", terminate);
     process.once("SIGINT", terminate);
     child.stdin.on("error", () => {});
     process.stdin.pipe(child.stdin);
+    process.stdin.once("end", inputEnded);
+    process.stdin.once("close", inputEnded);
+    process.stdin.once("error", inputEnded);
     child.stdout.pipe(process.stdout, { end: false });
     try {
       const [code] = await once(child, "close");
@@ -35,7 +43,10 @@ export async function serve(component, selected, state, config) {
     } finally {
       process.stdin.unpipe(child.stdin);
       process.stdin.pause();
-      await stop_child(child);
+      process.stdin.removeListener("end", inputEnded);
+      process.stdin.removeListener("close", inputEnded);
+      process.stdin.removeListener("error", inputEnded);
+      await (stopping || stop_child(child));
       process.removeListener("SIGTERM", terminate);
       process.removeListener("SIGINT", terminate);
     }

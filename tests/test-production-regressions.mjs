@@ -17,7 +17,7 @@ import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { launch, stop_child } from "../scripts/processes.mjs";
+import { launch, stop_child, alive } from "../scripts/processes.mjs";
 import { stop_daemon, platform_build, save_json, acquire_reader, installed_runtime } from "../scripts/runtime.mjs";
 const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href;
 async function managed(t, f, prepare = true, extra = {}) {
@@ -105,6 +105,54 @@ test("native client callbacks cross the relay while the original call is running
   const c=new McpClient([process.execPath,path.join(ROOT,"scripts/lazy_mcp.mjs"),"--component","code-index"],f.root,{...f.env,NODE_OPTIONS:"--import "+preload},10,{capabilities:{sampling:{}},onRequest:async message=>{assert.equal(message.method,"sampling/createMessage");callbacks++;return {model:"fixture-model",role:"assistant",content:{type:"text",text:"callback answered"}};}});
   f.clients.push(c);await c.initialize();
   const result=await c.call("ask_host",{});assert.equal(result.structuredContent.content.text,"callback answered");assert.equal(callbacks,1);
+});
+test("host EOF releases an unanswered native callback and its relay", async t => {
+  const f = fixture(t); environment(t, f.env); f.save(); grant_preparation(f.state, f.root, ["code-index"]);
+  let callbackStarted;
+  const started = new Promise(resolve => { callbackStarted = resolve; });
+  const c = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "code-index"], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + preload }, 10,
+    { capabilities: { sampling: {} }, onRequest: () => { callbackStarted(); return new Promise(() => {}); } });
+  f.clients.push(c); await c.initialize();
+  const pending = c.call("ask_host", {}).catch(() => {});
+  await started;
+  const exited = once(c.process, "close");
+  c.process.stdin.end();
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("relay remained alive after host EOF")), 2000); })]);
+  } finally { clearTimeout(timer); }
+  await pending;
+});
+test("managed relay bounds shutdown of a child that ignores host EOF", async t => {
+  const f = fixture(t); environment(t, f.env); f.save(); grant_preparation(f.state, f.root, ["bsl-ls"]);
+  dump({ mcp: { managed: { "bsl-ls": { enabled: true, java: process.execPath } } } }, f.env.EDT_AI_SETTINGS);
+  const jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", "bsl-language-server-exec.jar"), bytes = Buffer.from("fixture jar");
+  fs.mkdirSync(path.dirname(jar), { recursive: true }); fs.writeFileSync(jar, bytes);
+  save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": { release: "v1.2.3", sha256: sha256(bytes) } });
+  const preloadFile = path.join(f.base, "hang-preload.mjs");
+  const hanging = "process.stdout.write(String(process.pid)+'\\n'); process.stdin.resume(); setInterval(()=>{},1000);";
+  fs.writeFileSync(preloadFile, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    const spawn=cp.spawn, sync=cp.spawnSync;
+    cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(process.execPath,['-e',${JSON.stringify(hanging)}],options) : spawn(command,args,options);
+    cp.spawnSync=(command,args,options)=>args?.[0]==='-version' ? {status:0,stderr:'java version "21"',stdout:''} : sync(command,args,options);
+    syncBuiltinESMExports();`);
+  const child = launch(process.execPath, [path.join(ROOT, "scripts/managed_mcp.mjs"), "--component", "bsl-ls"], {
+    cwd: f.root, env: { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preloadFile).href }, stdio: ["pipe", "pipe", "pipe"],
+  });
+  f.clients.push({ close: () => stop_child(child, 0) });
+  let errors = ""; child.stderr.on("data", chunk => { errors += chunk; });
+  const exited = once(child, "close");
+  const [first] = await Promise.race([once(child.stdout, "data"), exited.then(() => { throw new Error("managed fixture exited: " + errors); })]);
+  const ownedPid = Number(String(first).trim());
+  assert.ok(Number.isSafeInteger(ownedPid), errors); assert.ok(alive(ownedPid));
+  child.stdin.end();
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("managed relay retained its child after host EOF")), 7000); })]);
+  } finally { clearTimeout(timer); }
+  for (let i = 0; i < 100 && alive(ownedPid); i++) await sleep(10);
+  assert.equal(alive(ownedPid), false);
 });
 for (const failure of ["crash","malformed"]) test("status reconnects a failed prepared child without discovery: "+failure, async t=>{
   const f=fixture(t), c=await managed(t,f), pid=(await c.call("inspect",{})).structuredContent.pid;

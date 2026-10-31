@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { fixture, session } from "./helpers.mjs";
@@ -64,6 +65,42 @@ async function endpoint(t, handler) {
   });
   return { calls, url: "http://127.0.0.1:" + server.address().port + "/mcp" };
 }
+
+test("an unbound relay does not keep a polling timer alive", async t => {
+  const f = fixture(t), preload = path.join(f.base, "idle-resources.mjs"), sample = path.join(f.base, "idle-resources.json");
+  fs.writeFileSync(preload, `import fs from 'node:fs'; setInterval(() => fs.writeFileSync(process.env.CORE_TEST_IDLE_SAMPLE, JSON.stringify(process.getActiveResourcesInfo())), 75).unref();`);
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f,
+    { NODE_OPTIONS: "--import " + pathToFileURL(preload).href, CORE_TEST_IDLE_SAMPLE: sample });
+  await sleep(200);
+  assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, false);
+  await sleep(150);
+  assert.ok(fs.existsSync(sample));
+  assert.equal(JSON.parse(fs.readFileSync(sample, "utf8")).filter(name => name === "Timeout").length, 0);
+});
+
+test("a bound relay still notices changed settings while idle", async t => {
+  const f = fixture(t);
+  const e = await endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    return reply({ tools: [] });
+  });
+  f.profile.connections = { edt: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, true);
+  let notify;
+  const changed = new Promise(resolve => { notify = resolve; });
+  client.options.onNotification = message => { if (message.method === "notifications/resources/list_changed") notify(); };
+  f.profile.connections.edt.url = e.url + "/changed"; f.save();
+  let timer;
+  try {
+    await Promise.race([changed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("idle relay did not notice the changed binding")), 2500); })]);
+  } finally { clearTimeout(timer); }
+  const status = (await client.call("core_runtime_status", {})).structuredContent;
+  assert.equal(status.ready, true);
+  assert.equal(status.binding.endpoint, e.url + "/changed");
+});
 
 test("workspace port changes rebind only the selected EDT relay", async t => {
   const first = fixture(t), other = fixture(t);
@@ -146,6 +183,97 @@ test("remote relay cancellation uses the upstream HTTP id before the response fi
   await c.call("core_runtime_status",{});const work=c.request("tools/call",{name:"slow"}),hostId=c.sequence;
   await sleep(70);c.notify("notifications/cancelled",{requestId:hostId});
   const result=(await work).structuredContent;assert.equal(result.cancelled,result.upstreamId);
+});
+
+test("host EOF closes a relay with an unanswered remote HTTP request", async t => {
+  const f = fixture(t);
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const e = await endpoint(t, ({ req, res, message, reply, error }) => {
+    if (req.method === "DELETE") return res.writeHead(204).end();
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } }, 200, { "Mcp-Session-Id": "pending-request" });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: [{ name: "slow", inputSchema: { type: "object" } }] });
+    markStarted();
+  });
+  f.profile.connections = { edt: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  await client.call("core_runtime_status", {});
+  const work = client.call("slow", {}).catch(() => {});
+  await started;
+  const exited = once(client.process, "close");
+  client.process.stdin.end();
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("relay retained the HTTP request after host EOF")), 2000); })]);
+  } finally { clearTimeout(timer); }
+  await work;
+  assert.ok(e.calls.some(call => call.method === "DELETE"));
+});
+
+test("closing a remote client aborts all in-flight requests with unknown outcomes", async t => {
+  let count = 0, markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const e = await endpoint(t, ({ res, message }) => {
+    if (message.method === "tools/call" && ++count === 2) markStarted();
+  });
+  const client = new RemoteMcp(e.url, 10);
+  const results = [client.request("tools/call", { name: "first" }), client.request("tools/call", { name: "second" })]
+    .map(promise => promise.then(() => null, error => error));
+  await started;
+  await client.close();
+  for (const error of await Promise.all(results)) assert.equal(error?.outcomeUnknown, true);
+  assert.equal(client.activeRequests.size, 0);
+});
+
+test("host EOF retires a session returned by an in-flight initialize", async t => {
+  const f = fixture(t), entered = Promise.withResolvers(), release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const e = await endpoint(t, async ({ req, res, message, reply, error }) => {
+    if (req.method === "DELETE") return res.writeHead(204).end();
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") {
+      entered.resolve(); await release.promise;
+      return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } }, 200, { "Mcp-Session-Id": "late-session" });
+    }
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    return reply({ tools: [] });
+  });
+  f.profile.connections = { edt: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const work = client.call("core_runtime_status", {}).catch(() => {});
+  await entered.promise;
+  const exited = once(client.process, "close"); client.process.stdin.end();
+  await sleep(50); release.resolve();
+  let timer;
+  try {
+    await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("relay retained a completed initialization")), 2000); })]);
+  } finally { clearTimeout(timer); }
+  await work;
+  assert.ok(e.calls.some(call => call.method === "DELETE" && call.headers["mcp-session-id"] === "late-session"));
+  assert.equal(e.calls.some(call => call.message.method === "tools/list"), false);
+});
+
+test("a closed client bounds the wait for an unanswered initialize", async t => {
+  const entered = Promise.withResolvers();
+  const e = await endpoint(t, ({ message }) => { if (message.method === "initialize") entered.resolve(); });
+  const client = new RemoteMcp(e.url, 10);
+  const pending = client.request("initialize", {}).then(() => null, error => error);
+  await entered.promise;
+  client.timeout = 250;
+  await client.close();
+  assert.equal((await pending)?.outcomeUnknown, true);
+  assert.equal(client.activeRequests.size, 0);
+});
+
+test("closing during initialization prevents a new transport from starting", async t => {
+  const e = await endpoint(t, ({ res }) => res.writeHead(500).end());
+  const client = new RemoteMcp(e.url, 10);
+  const pending = assert.rejects(client.initialize(), /closed during initialization/);
+  await client.close(); await pending;
+  assert.equal(e.calls.length, 0);
+  assert.equal(client.activeRequests.size, 0);
 });
 
 test("v8std relay distinguishes configuration, catalogue and read failures from connection", async t => {

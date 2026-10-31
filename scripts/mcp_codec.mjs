@@ -19,17 +19,21 @@ export function json_message(text, maxBytes = DEFAULT_MAX_BYTES) {
 }
 export function read_lines(stream, receive, fail, maxBytes = DEFAULT_MAX_BYTES) {
   let buffer = Buffer.alloc(0), failed = false;
-  const reject = error => { if (!failed) { failed = true; fail(error); } };
+  const reject = error => { if (!failed) { failed = true; buffer = Buffer.alloc(0); fail(error); } };
   stream.on("data", chunk => {
     if (failed) return;
     buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
-    let end;
+    let end, consumed = false;
     try {
       while ((end = buffer.indexOf(10)) !== -1) {
         const line = buffer.subarray(0, end); buffer = buffer.subarray(end + 1);
+        consumed = true;
         if (line.toString().trim()) receive(json_message(line.toString(), maxBytes));
       }
       if (buffer.length > maxBytes) throw new Error("MCP output budget exceeded; outcome unknown");
+      // A subarray retains its entire backing allocation, even when empty. Keep
+      // only the unfinished line after processing a potentially large message.
+      if (consumed) buffer = buffer.length ? Buffer.from(buffer) : Buffer.alloc(0);
     } catch (error) { reject(error); }
   });
   stream.on("end", () => { if (buffer.length) reject(new Error("Truncated MCP envelope; outcome unknown")); });
