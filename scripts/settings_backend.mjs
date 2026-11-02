@@ -23,6 +23,7 @@ import {
   backup,
   profile_target,
   project_profile,
+  merged_profile,
   validate,
   validate_at,
   create_profile,
@@ -53,6 +54,7 @@ import {
   instance_file,
   instance_files,
   assert_settings_paths,
+  check_instance_override,
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, edt_project_descriptors } from "./directory_context.mjs";
@@ -189,7 +191,7 @@ export class SettingsBackend {
       try {
         root = locate_project(config.active_project);
         if (data === null)
-          data = validate_at(root, load(path.join(root, ".ai/project.yaml")));
+          data = project_profile(root);
       } catch (error) {
         if (!(error instanceof ProfileNotFound)) throw error;
         root = configuration_root(config.active_project);
@@ -224,7 +226,7 @@ export class SettingsBackend {
     for (const [scope, file] of Object.entries(files)) {
       const document = exists(file) ? load(file) : {}, fields = {};
       if (scope !== "profile" && exists(file)) {
-        check_schema(document, "project-local.schema.json");
+        if (scope === "instance") check_instance_override(document); else check_schema(document, "project-local.schema.json");
         validate_override_urls(document);
       }
       for (const [key, parts] of Object.entries(FIELDS)) {
@@ -255,7 +257,12 @@ export class SettingsBackend {
       // A valid current profile defines the source boundary even when a
       // candidate profile would remove it. Invalid profiles remain repairable.
       let profile;
-      try { profile = project_profile(config.active_project); } catch { /* No usable profile yet. */ }
+      try { profile = project_profile(config.active_project); }
+      catch {
+        // A broken local layer must remain repairable without losing the
+        // independently valid shared profile's source boundaries.
+        try { profile = load(profile_target(config.active_project)); check_schema(profile, "project-local.schema.json"); } catch { /* No usable shared profile. */ }
+      }
       if (profile) assert_settings_paths(config, config.active_project, profile, this.STATE, this.CONFIG);
     }
     const chunks = [
@@ -301,6 +308,8 @@ export class SettingsBackend {
       const omitProfileMachineSettings = profile => {
         if (!object(profile)) return;
         delete profile.connections;
+        for (const entry of Object.values(profile.components || {})) if (object(entry))
+          for (const field of ["java", "node", "configuration", "mode", "url", "headers_env"]) delete entry[field];
         // Command arguments have no reliable portable/machine-specific type:
         // they can embed paths, addresses, or other machine-local data.
         // Require an explicit opt-in for the whole command instead of guessing.
@@ -367,7 +376,7 @@ export class SettingsBackend {
         }
       imported = data.profile == null ? null : structuredClone(data.profile);
       if (!editing) config = deep_merge(config, changes);
-    } else if (!editing && Object.hasOwn(data, "schema_version")) imported = data;
+    } else if (!editing) imported = data;
     else
       throw new ConfigError(
         "Это не экспорт настроек 1C AI Core и не профиль проекта.",
@@ -399,12 +408,11 @@ export class SettingsBackend {
     let target = null,
       overrides = null;
     if (imported !== null) {
-      validate(imported);
       if (!root)
         throw new ConfigError("Для импорта профиля выберите папку проекта.");
       target = profile_target(root);
-      validate_at(root, imported);
-      for (const repo of imported.repositories)
+      const effectiveProfile = merged_profile(root, imported, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
+      for (const repo of effectiveProfile.repositories)
         if (!is_dir(inside(root, repo.path)))
           throw new ConfigError(
             "В выбранной папке отсутствует репозиторий: " + repo.path,
@@ -434,7 +442,7 @@ export class SettingsBackend {
       throw new ConfigError("Неизвестная область сохранения.");
     const connectionFields = ["edtUrl", "v8stdUrl", "openvikingEnabled", "openvikingUrl", "openvikingTimeout", "openvikingMaxResponseBytes", "openvikingHeadersEnv"];
     const componentFields = ["codeIndexEnabled", "bslLsEnabled", "bslLsJava", "codeIndexVersion", "bslLsVersion"];
-    const allowed = scope === "profile" ? connectionFields : scope === "global" ? ["bslLsJava", "codeIndexVersion", "bslLsVersion"] : [...connectionFields, ...componentFields];
+    const allowed = scope === "global" ? ["bslLsJava", "codeIndexVersion", "bslLsVersion"] : [...connectionFields, ...componentFields];
     if (Object.keys(changes).some(key => !allowed.includes(key)))
       throw new ConfigError("Эти настройки нельзя сохранить в выбранную область.");
     return operation_lock(this.STATE, () => {
@@ -447,7 +455,7 @@ export class SettingsBackend {
       if (expectedRevision && expectedRevision !== this.revision(config, profile_target(root)))
         throw new ConfigError("Настройки изменились после загрузки. Обновите сведения и повторите сохранение.");
       let document;
-      if (scope === "profile") document = project_profile(root);
+      if (scope === "profile") document = load(target);
       else if (scope === "global") document = config;
       else {
         document = exists(target) ? load(target) : {};
@@ -468,9 +476,9 @@ export class SettingsBackend {
           ((document.components ||= {})[name] ||= {})[member] = value;
         }
       }
-      if (scope === "profile") validate_at(root, document);
+      if (scope === "profile") merged_profile(root, document, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
       else if (scope === "global") this.checked(document);
-      else { check_schema(document, "project-local.schema.json"); validate_override_urls(document); }
+      else { check_schema(document, "project-local.schema.json"); validate_override_urls(document); if (scope === "project_local") merged_profile(root, load(profile_target(root)), document); }
       const previous = bytes(target), savedBackup = scope === "profile" ? backup(target) : null;
       try {
         if (scope === "instance") record_project_owner(this.STATE, root);
@@ -497,8 +505,10 @@ export class SettingsBackend {
     if (!request.baseRevision || request.baseRevision !== this.edit_revision()) throw new ConfigError("Настройки изменились после загрузки. Загрузите документ заново.");
     const document = parse(request.text);
     check_schema(document, "project-local.schema.json");
+    if (request.layerScope === "instance") check_instance_override(document);
     validate_override_urls(document);
-    const profile = project_profile(root), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
+    const shared = load(profile_target(root));
+    const profile = request.layerScope === "project_local" ? merged_profile(root, shared, document) : project_profile(root), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
     const [effective] = resolved_settings(config, root, profile, request.layerScope === "instance" ? document : null, this.STATE, request.layerScope === "project_local" ? document : null);
     validate_settings(effective);
     const payload = stable({ text: request.text, mode: "layer", baseRevision: request.baseRevision, layerScope: request.layerScope });
@@ -545,7 +555,7 @@ export class SettingsBackend {
       if (!["project_local", "instance"].includes(request.layerScope)) throw new ConfigError("Неизвестный файл настроек.");
       const config = this.current(), root = config.active_project;
       if (!root) throw new ConfigError("Выберите папку проекта.");
-      project_profile(root);
+      if (request.layerScope === "instance") project_profile(root);
       const baseRevision = this.edit_revision(), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
       let text;
       if (!exists(target)) text = JSON.stringify({ schema_version: "0.1" }, null, 2);
@@ -598,10 +608,12 @@ export class SettingsBackend {
       const identity = path_identity(request.sourceRoot);
       const source = profile_history(this.STATE, target).find(item => item.projectRoot === identity && item.status === "loaded");
       if (!source || identity === path_identity(target)) throw new ConfigError("Выберите другой доступный профиль из списка.");
-      const profile = structuredClone(project_profile(identity));
-      assert_settings_paths(config, identity, profile, this.STATE, this.CONFIG);
+      const profile = structuredClone(load(profile_target(identity)));
+      assert_settings_paths(config, identity, project_profile(identity), this.STATE, this.CONFIG);
       if (request.includeConnections !== true) delete profile.connections;
-      const missingPaths = [...new Set(scoped_paths(profile))].filter(relative => !exists(inside(target, relative)));
+      const pathsProfile = { ...profile, roots: { source: [], protected: [], ...profile.roots },
+        repositories: profile.repositories || [], testing: profile.testing || {}, knowledge: profile.knowledge || {} };
+      const missingPaths = [...new Set(scoped_paths(pathsProfile))].filter(relative => !exists(inside(target, relative)));
       return { text: JSON.stringify(profile, null, 2), sourceRoot: identity, missingPaths,
         includesConnections: request.includeConnections === true, localOverridesIncluded: false };
     }
@@ -609,12 +621,13 @@ export class SettingsBackend {
       return operation_lock(this.STATE, () => {
         const config = this.current(), root = config.active_project;
         if (!root) throw new ConfigError("Выберите папку проекта.");
-        const target = profile_target(root), profile = project_profile(root);
+        const target = profile_target(root), profile = load(target);
         if (request.expectedRevision !== this.revision(config, target)) throw new ConfigError("Профиль изменился. Обновите сведения перед переименованием.");
         if (typeof request.projectId !== "string" || !request.projectId.trim()) throw new ConfigError("Укажите идентификатор проекта.");
-        const previousId = profile.project.id;
-        profile.project.id = request.projectId.trim();
-        validate_at(root, profile);
+        const previousId = project_profile(root).project.id;
+        (profile.project ||= {}).id = request.projectId.trim();
+        const candidate = merged_profile(root, profile, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
+        if (candidate.project.id !== profile.project.id) throw new ConfigError("Идентификатор переопределён локальным профилем; измените его там.");
         if (previousId === profile.project.id) return { status: "unchanged", profile: profile_state(root) };
         const previous = bytes(target), savedBackup = backup(target);
         try {
@@ -668,6 +681,7 @@ export class SettingsBackend {
       const knowledge = profile.status === "loaded" ? knowledge_status(project_profile(config.active_project), effective) : null;
       return {
         values: actual,
+        ...(["invalid", "ambiguous"].includes(profile.status) ? { configurationError: true } : {}),
         installedVersions: installed_versions(this.STATE, config.active_project),
         profile,
         directoryContext,
@@ -861,22 +875,23 @@ export class SettingsBackend {
       let [config, profile, target, overrides, omittedTestingCommands] = this.parse_import(request);
       let applied = this.effective(config, overrides, profile);
       const shared = settings(this.CONFIG);
-      const compatibility = import_compatibility(profile, config.active_project);
+      const effectiveProfile = profile ? merged_profile(config.active_project, profile, exists(inside(config.active_project, ".ai/project.local.yaml")) ? load(inside(config.active_project, ".ai/project.local.yaml")) : {}) : null;
+      const compatibility = import_compatibility(effectiveProfile, config.active_project);
       const summary = {
         projectRoot: config.active_project || "",
-        profileId: profile?.profile_id || null,
-        projectId: profile?.project?.id || null,
-        repositories: (profile?.repositories || []).map(
+        profileId: effectiveProfile?.profile_id || null,
+        projectId: effectiveProfile?.project?.id || null,
+        repositories: (effectiveProfile?.repositories || []).map(
           ({ id, path, alias }) => ({ id, path, alias }),
         ),
         missingPaths: compatibility.missingPaths,
         omittedTestingCommands,
-        projectSpecific: profile ? { roots: profile.roots, edtRepositoryIds: profile.policy.edt_repository_ids || [],
-          unboundEdtRepositories: profile.policy.unbound_edt_repositories || [], edtMappings: compatibility.edtMappings,
-          testing: { yaxunit: profile.testing.yaxunit, vanessa: profile.testing.vanessa, commands: profile.testing.commands.length,
-            ...(profile.testing.yaxunit_config?.launch_configuration ? { yaxunitLaunchConfiguration: profile.testing.yaxunit_config.launch_configuration } : {}),
-            ...(profile.testing.vanessa_config ? { vanessaRuntimeProfile: profile.testing.vanessa_config.runtime_profile, vanessaServer: profile.testing.vanessa_config.server_name } : {}) },
-          knowledge: { mode: profile.knowledge.mode, provider: profile.knowledge.provider, manifest: profile.knowledge.manifest, collections: profile.knowledge.collections } } : null,
+        projectSpecific: effectiveProfile ? { roots: effectiveProfile.roots, edtRepositoryIds: effectiveProfile.policy.edt_repository_ids || [],
+          unboundEdtRepositories: effectiveProfile.policy.unbound_edt_repositories || [], edtMappings: compatibility.edtMappings,
+          testing: { yaxunit: effectiveProfile.testing.yaxunit, vanessa: effectiveProfile.testing.vanessa, commands: effectiveProfile.testing.commands.length,
+            ...(effectiveProfile.testing.yaxunit_config?.launch_configuration ? { yaxunitLaunchConfiguration: effectiveProfile.testing.yaxunit_config.launch_configuration } : {}),
+            ...(effectiveProfile.testing.vanessa_config ? { vanessaRuntimeProfile: effectiveProfile.testing.vanessa_config.runtime_profile, vanessaServer: effectiveProfile.testing.vanessa_config.server_name } : {}) },
+          knowledge: { mode: effectiveProfile.knowledge.mode, provider: effectiveProfile.knowledge.provider, manifest: effectiveProfile.knowledge.manifest, collections: effectiveProfile.knowledge.collections } } : null,
         edtConfigured: !!applied.mcp.required.edt.url,
         v8stdConfigured: !!applied.mcp.required.v8std.url,
         openviking: structuredClone(applied.mcp.optional.openviking),
@@ -900,7 +915,7 @@ export class SettingsBackend {
       const saved = await operation_lock(this.STATE, () => {
         [config, profile, target, overrides] = this.parse_import(request);
         applied = this.effective(config, overrides, profile);
-        if (request.revision !== this.revision(applied, target, stable({ payload, compatibility: import_compatibility(profile, config.active_project) })))
+        if (request.revision !== this.revision(applied, target, stable({ payload, compatibility: import_compatibility(profile ? merged_profile(config.active_project, profile, exists(inside(config.active_project, ".ai/project.local.yaml")) ? load(inside(config.active_project, ".ai/project.local.yaml")) : {}) : null, config.active_project) })))
           throw new ConfigError(
             "Настройки изменились после предпросмотра. Проверьте файл заново.",
           );
@@ -957,8 +972,8 @@ export class SettingsBackend {
         if (exists(file))
           // Repairing a parsed old/incompatible profile must be possible in the
           // editor. Preview/apply still validate the complete candidate.
-          profile = action === "edit" ? load(file) : validate_at(config.active_project, load(file));
-        if (profile && action === "export") assert_settings_paths(config, config.active_project, profile, this.STATE, this.CONFIG);
+          profile = load(file);
+        if (profile && action === "export") assert_settings_paths(config, config.active_project, project_profile(config.active_project), this.STATE, this.CONFIG);
       }
       if (action === "edit" && baseRevision !== this.edit_revision())
         throw new ConfigError("Настройки изменились во время загрузки. Загрузите их заново.");

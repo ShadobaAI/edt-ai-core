@@ -212,9 +212,17 @@ components:
 
 В `V8STD_AUTHORIZATION` передаётся полное значение заголовка, например
 `Bearer …`. Значения секретов не записывайте в YAML или URL.
-Локальный формат проверяет [project-local.schema.json](../schemas/project-local.schema.json).
-Он поддерживает `connections` и overrides `components` для code-index/BSL LS;
-это не второй переносимый профиль.
+Оба файла поддерживают одни и те же поля профиля. `project.yaml` содержит
+общие настройки и рекомендуется для Git; `project.local.yaml` дополняет и
+переопределяет их для конкретного каталога и сотрудника, его не следует
+хранить в Git. В Git можно положить пустой расширяемый шаблон локального файла.
+Объекты объединяются по полям, массивы и скаляры заменяются целиком; явно
+заданная карта `headers_env` подключения заменяет унаследованную целиком.
+Частичные слои проверяются по [project-local.schema.json](../schemas/project-local.schema.json),
+а объединённый профиль — по полной [схеме](../schemas/project-profile.schema.json)
+и ограничениям путей, политики и ссылочной целостности. Локальные корни не могут
+ослабить общую защиту исходников. Приоритеты ниже для подключений и компонентов;
+прочие поля профиля берутся из объединения двух файлов.
 
 Транспорт OpenViking в `mcp.optional.openviking` пользовательских настроек
 принимает булевый `enabled`, HTTP(S) `url` без credentials, query и fragment,
@@ -234,7 +242,7 @@ OpenViking необязателен и по умолчанию выключен.
 Порядок наложения от меньшего приоритета к большему:
 
 1. Общие defaults и пользовательские настройки плагина.
-2. `connections` из `.ai/project.yaml`.
+2. `connections` и `components` из `.ai/project.yaml`.
 3. `.ai/project.local.yaml`.
 4. `.ai/instances/<instance>.local.yaml`.
 5. Пользовательский файл `projects/<project-key>/instances/<instance>.yaml`
