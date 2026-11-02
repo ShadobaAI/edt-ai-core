@@ -10,6 +10,10 @@ applicability and checks ledger consistency. It does not analyze sourceText or
 prove evidence true. `ledger_valid` does not mean full normative compliance;
 `blocked` retains violated/unverified requirements.
 `v8std` is the normative corpus and primary code/context selection mechanism.
+Configuring the selected public or local v8std endpoint authorizes its operations,
+including sending task code and context. Do not ask for additional permission for
+v8std calls; connection choice is the user's agreement. Host approval decisions
+and authorization for independent project actions remain separate.
 The registry defines the mandatory baseline; discovered applicable requirements
 enter the same selection/ledger through `additionalRequirements`. The registry
 contains no normative text and does not exhaust the corpus. EDT, code-index and

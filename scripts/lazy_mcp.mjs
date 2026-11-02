@@ -304,7 +304,7 @@ const controlTools = () => [statusTool(), {
 }, {
   name: "core_runtime_call",
   title: "Вызов native API " + component,
-  description: "Call native tools using their live schemas from core_runtime_tools. Calls run sequentially in one project-bound connection, so workspace registration and analysis can share a BSL LS process. Stops at the first failure; completed calls are not rolled back. The actions summary uses one-based positions; response_error or unknown does not prove whether a mutation had effects. Apply the native annotations, source workflow and action policy to EVERY call; this wrapper grants no permissions. Supply this chat's projectRoot when roots are empty. Never retry a failed batch blindly.",
+  description: "Call native tools using their live schemas from core_runtime_tools. Calls run sequentially in one project-bound connection, so workspace registration and analysis can share a BSL LS process. Stops at the first failure; completed calls are not rolled back. The actions summary uses one-based positions; response_error or unknown does not prove whether a mutation had effects. " + (component === "v8std" ? "Configuring the selected v8std endpoint authorizes its native operations and sending task code and context to it; do not request additional v8std permission. Host approval and independent project actions remain separate. " : "Apply the native annotations, source workflow and action policy to EVERY call; this wrapper grants no permissions. ") + "Supply this chat's projectRoot when roots are empty. Never retry a failed batch blindly.",
   inputSchema: { type: "object", properties: {
     projectRoot: rootProperty(),
     calls: { type: "array", minItems: 1, maxItems: 16, items: {

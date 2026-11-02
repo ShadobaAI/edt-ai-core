@@ -344,6 +344,9 @@ test("knowledge UI shows scoped setup publication and drops stale readiness with
   await ui.flush();
   assert.match(ui.elements.get("knowledgeDetails").textContent, /team, api/);
   assert.match(ui.elements.get("knowledgeDetails").textContent, /revision-fixture · индекс index-fixture/);
+  assert.match(ui.elements.get("knowledgeDetails").textContent, /Режим знаний: переходный · OpenViking/);
+  assert.match(ui.elements.get("knowledgeDetails").textContent, /Область блокировки: изменение/);
+  assert.deepEqual(current.knowledge.dependentActions, ["implementation"]);
   assert.match(ui.elements.get("openvikingTimeoutSource").textContent, /локальные настройки проекта/);
   const field = ui.elements.get("openvikingUrl"); field.value = "https://draft.example/mcp"; field.events.input();
   current.readiness.state = "stale"; current.readiness.reason = "Изменились полномочия";
@@ -510,7 +513,7 @@ test("settings export never reports success when the disk write fails or no path
       throw new Error(name);
     });await ui.flush();await ui.elements.get("downloadButton").onclick();
     assert.equal(ui.elements.get("exportSaved").hidden,true);
-    assert.match(ui.elements.get("status").textContent,/Disk unavailable|не подтверждено/);
+    assert.match(ui.elements.get("status").textContent,/Диск недоступен|не подтверждено/);
     assert.equal(ui.downloads.length,0);
   }
 });
@@ -615,15 +618,15 @@ test("the searchable version picker keeps independent drafts without changing ru
     if(name==="settings.read"||name==="settings.status")return {...read,values:{...values}};
     if(name==="settings.versions")return {component:args.component,versions:args.component==="bsl-ls"?[{version:"v1.1.0-rc.7"},{version:"v1.0.7"}]:[{version:"v1.14.1"}]};
     throw new Error(name);
-  });await ui.flush();assert.equal(ui.elements.get("versionValue").textContent,"latest");
+  });await ui.flush();assert.equal(ui.elements.get("versionValue").textContent,"Последняя стабильная версия");
   for(const id of ["codeIndexVersion","bslLsVersion","codeIndexAllowPrerelease","bslLsAllowPrerelease","saveVersionsButton"])assert.equal(ui.elements.has(id),false);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();
-  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.1.0-rc.7","v1.0.7"]);
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя стабильная версия","v1.1.0-rc.7","v1.0.7"]);
   ui.elements.get("versionSearch").value="rc.7";ui.elements.get("versionSearch").events.input();await ui.tick(8000);
   assert.equal(ui.elements.get("versionSearch").value,"rc.7");assert.equal(ui.elements.get("versionOptions").children.length,1);
   await ui.elements.get("versionOptions").children[0].onclick();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");assert.equal(ui.elements.get("versionPopup").hidden,true);
-  ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"latest");
-  await ui.elements.get("versionButton").onclick();assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.14.1"]);
+  ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"Последняя стабильная версия");
+  await ui.elements.get("versionButton").onclick();assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя стабильная версия","v1.14.1"]);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
   await ui.tick(8000);assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
   assert.equal(values.bslLsVersion,"latest");assert.equal(values.bslLsAllowPrerelease,true);
@@ -659,11 +662,11 @@ test("a failed version catalog can retry and a late response cannot replace anot
       if(args.component==="bsl-ls")return new Promise(resolve=>{finish=()=>resolve({component:"bsl-ls",versions:[{version:"v1.1.0-rc.7"}]});});
       if(++attempt===1)throw new Error("offline");return {component:"code-index",versions:[{version:"v1.14.1"}]};
     }throw new Error(name);
-  });await ui.flush();await ui.elements.get("versionButton").onclick();assert.match(ui.elements.get("versionHint").textContent,/offline/);
+  });await ui.flush();await ui.elements.get("versionButton").onclick();assert.match(ui.elements.get("versionHint").textContent,/Не удалось подключиться к серверу/);
   await ui.elements.get("refreshVersionsButton").onclick();assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();const pending=ui.elements.get("versionButton").onclick();await ui.flush();
   ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();finish();await pending;
-  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.14.1"]);
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя стабильная версия","v1.14.1"]);
 });
 
 test("an empty BSL LS catalog shows a retry and refreshes the server instead of reporting latest as the full list", async () => {
@@ -679,7 +682,7 @@ test("an empty BSL LS catalog shows a retry and refreshes the server instead of 
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();
   assert.match(ui.elements.get("versionHint").textContent,/пустой каталог/);assert.doesNotMatch(ui.elements.get("versionHint").textContent,/Найдено: 1/);
   assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);await ui.elements.get("refreshVersionsButton").onclick();
-  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["latest","v1.1.0-rc.7","v1.0.7"]);
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя стабильная версия","v1.1.0-rc.7","v1.0.7"]);
   assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);
 });
 
@@ -712,11 +715,11 @@ test("installation is disabled for the verified active version and latest resolv
     assert.equal(ui.elements.get("installUpdateButton").disabled,true);
     finish();await pending;
     assert.equal(ui.elements.get("installUpdateButton").disabled,true);
-    assert.match(ui.elements.get("installHint").textContent,/latest: v1\.0\.7/);
+    assert.match(ui.elements.get("installHint").textContent,/Последняя стабильная версия: v1\.0\.7/);
     assert.match(ui.elements.get("installUpdateButton").title,/уже установлена/);
     const choose=async version=>{
       if(ui.elements.get("versionPopup").hidden)await ui.elements.get("versionButton").onclick();
-      await ui.elements.get("versionOptions").children.find(option=>option.textContent===version).onclick();
+      await ui.elements.get("versionOptions").children.find(option=>option.textContent===(version==="latest"?"Последняя стабильная версия":version)).onclick();
     };
     await choose("v1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
     await choose("1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
@@ -736,7 +739,7 @@ test("an unresolved latest keeps installation disabled while exact versions rema
     throw new Error(name);
   });await ui.flush();await ui.elements.get("versionButton").onclick();
   assert.equal(ui.elements.get("installUpdateButton").disabled,true);
-  assert.match(ui.elements.get("installHint").textContent,/Не удалось определить latest/);
+  assert.match(ui.elements.get("installHint").textContent,/Не удалось определить последнюю стабильную версию/);
   await ui.elements.get("versionOptions").children.find(option=>option.textContent==="v2.0.0").onclick();
   assert.equal(ui.elements.get("installUpdateButton").disabled,false);
 });
@@ -794,9 +797,20 @@ test("a failed installation is reported without resubmitting or claiming success
     if(name==="settings.operation")return {id:"failed-install",action:"updates",projectRoot:read.values.projectRoot,instance:read.instance,status:"failed",error:"Candidate rejected; active artifact retained: bad API"};
     throw new Error(name);
   });await ui.flush();await ui.elements.get("installUpdateButton").onclick();
-  assert.match(ui.elements.get("status").textContent,/active artifact retained/);
+  assert.match(ui.elements.get("status").textContent,/Прежняя версия сохранена/);
   assert.doesNotMatch(ui.elements.get("updatesResult").textContent,/установлена версия/);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,1);
+});
+
+test("UI translates an uncertain operation without changing its diagnostic data", async () => {
+  const operation={id:"unknown",action:"updates",projectRoot:read.values.projectRoot,instance:read.instance,
+    status:"outcome_unknown",error:"External MCP rejected the request (HTTP 503); remote error text omitted"};
+  const ui=screen(async name=>{if(name==="settings.read")return read;if(name==="settings.operation")return operation;throw new Error(name);});
+  await ui.flush();await ui.context.pollOperation("unknown");
+  assert.match(ui.elements.get("status").textContent,/Внешний сервер MCP отклонил запрос \(HTTP 503\)/);
+  assert.match(ui.elements.get("status").textContent,/перед повтором/);
+  assert.equal(operation.error,"External MCP rejected the request (HTTP 503); remote error text omitted");
+  assert.equal(ui.context.userMessage("v24.20.0"),"v24.20.0");
 });
 
 test("installing an older draft saves it on success and a later failure clears the old success message", async () => {
@@ -818,7 +832,7 @@ test("installing an older draft saves it on success and a later failure clears t
   await ui.elements.get("versionOptions").children.find(option=>option.textContent==="v1.0.0").onclick();
   assert.equal(saved,"v2.0.0");await ui.elements.get("installUpdateButton").onclick();
   assert.equal(saved,"v1.0.0");assert.match(ui.elements.get("updatesResult").textContent,/установлена версия · v1.0.0/);
-  await ui.elements.get("installUpdateButton").onclick();assert.match(ui.elements.get("status").textContent,/offline/);
+  await ui.elements.get("installUpdateButton").onclick();assert.match(ui.elements.get("status").textContent,/Не удалось подключиться к серверу/);
   assert.doesNotMatch(ui.elements.get("updatesResult").textContent,/установлена версия/);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
 });
@@ -851,9 +865,9 @@ test("external connection button polls one read-only probe and displays project 
   });
   await ui.flush(); await ui.elements.get("probeButton").onclick();
   assert.equal(probes, 1);
-  assert.match(ui.elements.get("probeResult").textContent, /product: building/);
+  assert.match(ui.elements.get("probeResult").textContent, /product: сборка/);
   assert.match(ui.elements.get("probeResult").textContent, /v8std: подключение проверено/);
-  assert.match(ui.elements.get("probeResult").textContent, /Каталог инструментов и привязка relay текущего чата не проверены/);
+  assert.match(ui.elements.get("probeResult").textContent, /Каталог инструментов и подключение текущего чата не проверены/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });
 
@@ -1273,7 +1287,7 @@ test("a long OpenViking draft probe is polled by ID and preserves transport and 
   assert.equal(ui.elements.get("settingsText").value, "draft document");
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.update").length, 0);
-  assert.match(ui.elements.get("probeResult").textContent, /publication missing/);
+  assert.match(ui.elements.get("probeResult").textContent, /Не найдено подтверждение публикации/);
 });
 
 for (const changed of ["root", "instance"]) test(`late probe from another ${changed} never appears in the current profile`, async () => {
@@ -2136,7 +2150,7 @@ test("rename guards other profile selection and refreshes the displayed project 
   let current = { ...read, settingsRevision: "rename-revision" }, changed;
   const ui = screen(async (name, args) => {
     if (["settings.read", "settings.status"].includes(name)) return current;
-    if (name === "settings.rename_profile") { changed = args; current = { ...current, profile: { ...current.profile, projectId: args.projectId } }; return { detail: "Vanessa" }; }
+    if (name === "settings.rename_profile") { changed = args; current = { ...current, profile: { ...current.profile, projectId: args.projectId } }; return { detail: "Разрешения Vanessa потребуется получить заново." }; }
     throw new Error(name);
   }); await ui.flush();
   ui.elements.get("renameButton").onclick();
@@ -2269,7 +2283,11 @@ test("diagnostics show and filter safe text, stay available during an operation,
   const ui=screen(async name=>{if(name==="settings.read"||name==="settings.status")return {...read,operation};if(name==="settings.operation")return operation;if(name==="settings.diagnostics"){logs++;return data;}throw new Error(name);});await ui.flush();
   ui.elements.get("supportTab").onclick();await ui.flush();assert.equal(logs,1);
   assert.equal(ui.elements.get("diagnosticsRefreshButton").disabled,false);assert.equal(ui.elements.get("diagnosticJournal").children.length,2);
+  assert.match(ui.elements.get("diagnosticOperation").textContent,/Выполняется · проверка готовности/);
   assert.equal(ui.elements.get("diagnosticJournal").children[0].children[0].children[2].textContent,"edt · <failure>");
+  assert.equal(ui.elements.get("diagnosticJournal").children[0].children[0].children[1].textContent,"ошибка");
+  assert.match(ui.elements.get("diagnosticJournal").children[0].children[1].textContent,/ECONNREFUSED/);
+  assert.equal(data.events[0].level,"error");assert.equal(data.events[0].detail.message,"ECONNREFUSED");
   ui.elements.get("logLevel").value="error";ui.elements.get("logLevel").events.change();assert.equal(ui.elements.get("diagnosticJournal").children.length,1);
   ui.elements.get("logSearch").value="absent";ui.elements.get("logSearch").events.input();assert.match(ui.elements.get("diagnosticJournal").children[0].textContent,/Нет записей/);
   await ui.elements.get("diagnosticsRefreshButton").onclick();assert.equal(logs,2);

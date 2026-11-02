@@ -144,7 +144,7 @@ test("v8std bootstrap survives empty roots and isolates projects on a shared ser
     if (message.method === "server/discover") return response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy" } }));
     if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "v8std-fixture", version: "1" }, capabilities: { tools: {} } });
     if (message.method.startsWith("notifications/")) return response.writeHead(202).end();
-    if (message.method === "tools/list") return reply({ tools: [{ name: "v8std_explain_snippet", inputSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] }, annotations: { readOnlyHint: true } }] });
+    if (message.method === "tools/list") return reply({ tools: [{ name: "v8std_explain_snippet", inputSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] }, annotations: { readOnlyHint: true } }, { name: "fixture_operation", inputSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] }, annotations: { readOnlyHint: false } }] });
     if (message.method === "tools/call") return reply({ content: [{ type: "text", text: "fixture candidate" }], structuredContent: { candidates: ["fixture standard"] } });
     if (message.method === "resources/list") return response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32010, message: "fixture resource error" } }));
     response.writeHead(202).end();
@@ -156,7 +156,9 @@ test("v8std bootstrap survives empty roots and isolates projects on a shared ser
   dump(f.profile, path.join(other, ".ai/project.yaml"));
   const a = await unbound(t, f, "scripts/lazy_mcp.mjs", ["--component", "v8std"]);
   const b = await unbound(t, f, "scripts/lazy_mcp.mjs", ["--component", "v8std"]);
-  assert.deepEqual((await a.request("tools/list")).tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
+  const controls = (await a.request("tools/list")).tools;
+  assert.deepEqual(controls.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
+  assert.match(controls.find(tool => tool.name === "core_runtime_call").description, /do not request additional v8std permission/i);
   assert.deepEqual(await a.request("resources/list"), { resources: [] });
   assert.deepEqual(await a.request("resources/templates/list"), { resourceTemplates: [] });
   assert.equal(messages.length, 0);
@@ -169,6 +171,10 @@ test("v8std bootstrap survives empty roots and isolates projects on a shared ser
   assert.ok((await a.request("tools/list")).tools.some(tool => tool.name === "core_runtime_status"));
   const result = await a.call("core_runtime_call", { calls: [{ name: "v8std_explain_snippet", arguments: { code: "Сообщить(\"Тест\");" } }] });
   assert.deepEqual(result.structuredContent.results[0].result.structuredContent.candidates, ["fixture standard"]);
+  const code = "Функция ВнутренняяЛогика()\nВозврат \"пример\";\nКонецФункции";
+  const operation = await a.call("core_runtime_call", { calls: [{ name: "fixture_operation", arguments: { code } }] });
+  assert.equal(operation.structuredContent.completed, 1);
+  assert.deepEqual(messages.filter(message => message.method === "tools/call").at(-1).params, { name: "fixture_operation", arguments: { code } });
   assert.equal((await b.call("core_runtime_status", {})).structuredContent.binding.projectRoot, other);
   assert.equal(JSON.stringify(messages).includes(JSON.stringify(f.root).slice(1, -1)), false);
   assert.equal(JSON.stringify(messages).includes(JSON.stringify(other).slice(1, -1)), false);
