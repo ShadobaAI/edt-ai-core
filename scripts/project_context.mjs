@@ -25,6 +25,11 @@ import {
   contained,
 } from "./project_paths.mjs";
 export { locate_project };
+export function check_instance_override(data) {
+  check_schema(data, "project-local.schema.json");
+  if (Object.keys(data).some(key => !["schema_version", "connections", "components"].includes(key)))
+    throw new ConfigError("Instance overrides support only connections and components");
+}
 export function local_overrides(root) {
   const file = inside(root, ".ai/project.local.yaml");
   if (!exists(file)) return {};
@@ -83,7 +88,7 @@ export function resolved_settings(
   local_override = null,
 ) {
   assert_settings_paths(config, root, data, state);
-  let overrides = { connections: data?.connections || {} };
+  let overrides = { connections: data?.connections || {}, components: data?.components || {} };
   const fieldSources = {
     openviking: Object.fromEntries(Object.keys(config.mcp.optional.openviking).map(key => [key, "settings"])),
     components: Object.fromEntries(Object.entries(config.mcp.managed).map(([name, item]) =>
@@ -96,13 +101,15 @@ export function resolved_settings(
       for (const key of Object.keys(item)) fieldSources.components[name][key] = source;
     }
   };
-  record_sources(data?.connections, "profile");
+  record_sources(data?.connections, "profile", data?.components);
   // A credential map is one identity configuration. An explicit empty map
   // clears inherited headers rather than retaining credentials from old layers.
   const merge_overrides = extra => {
     overrides = deep_merge(overrides, extra);
-    if (Object.hasOwn(extra.connections?.openviking || {}, "headers_env"))
-      overrides.connections.openviking.headers_env = structuredClone(extra.connections.openviking.headers_env);
+    for (const section of ["connections", "components"])
+      for (const [name, entry] of Object.entries(extra[section] || {}))
+        if (Object.hasOwn(entry, "headers_env"))
+          overrides[section][name].headers_env = structuredClone(entry.headers_env);
   };
   const sources = Object.fromEntries(
     Object.entries(overrides.connections).filter(([, entry]) => Object.hasOwn(entry, "url")).map(([name]) => [name, "profile"]),
@@ -121,7 +128,7 @@ export function resolved_settings(
     else if (exists(file)) extra = load(file);
     else continue;
     if (extra !== null) {
-      check_schema(extra, "project-local.schema.json");
+      check_instance_override(extra);
       merge_overrides(extra);
       const source =
         file === stateOverride
@@ -177,6 +184,10 @@ export function resolved_settings(
     });
   if (Object.hasOwn(openviking || {}, "headers_env"))
     effective.mcp.optional.openviking.headers_env = structuredClone(openviking.headers_env);
+  for (const [name, entry] of Object.entries(overrides.components || {}))
+    if (Object.hasOwn(entry, "headers_env")) effective.mcp.managed[name].headers_env = structuredClone(entry.headers_env);
+  for (const [name, entry] of Object.entries(overlay))
+    if (Object.hasOwn(entry, "headers_env")) effective.mcp.required[name].headers_env = structuredClone(entry.headers_env);
   return [effective, sources, fieldSources];
 }
 export const effective_settings = (...args) => resolved_settings(...args)[0];

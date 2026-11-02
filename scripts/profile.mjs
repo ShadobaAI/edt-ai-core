@@ -32,11 +32,14 @@ import {
 import { effective_policy } from "./action_policy.mjs";
 import { core_version, satisfies_core } from "./compatibility.mjs";
 import { load_manifest, load_manifest_catalog } from "./knowledge.mjs";
+import { local_overrides } from "./project_context.mjs";
 export function validate(data) {
   check_schema(data, "project-profile.schema.json");
   if (!satisfies_core(data.compatibility.core)) throw new ConfigError(`Profile requires core ${data.compatibility.core}; running ${core_version}. Review the profile contract before changing compatibility.core.`);
   for (const [name, entry] of Object.entries(data.connections || {}))
     if (entry.url) name === "openviking" ? validate_openviking_url(entry.url) : validate_url(entry.url, name);
+  for (const [name, entry] of Object.entries(data.components || {}))
+    if (entry.url) validate_url(entry.url, name);
   const repos = new Map(data.repositories.map((repo) => [repo.id, repo]));
   if (
     repos.size !== data.repositories.length ||
@@ -161,7 +164,43 @@ export function validate_at(root, data, { knowledgeMaterials = true } = {}) {
 }
 export function project_profile(selected, options) {
   const root = locate_project(selected);
-  return validate_at(root, load(path.join(root, ".ai/project.yaml")), options);
+  const shared = load(path.join(root, ".ai/project.yaml"));
+  check_schema(shared, "project-local.schema.json");
+  const nominal = path.join(root, ".ai/project.local.yaml"), actual = resolve(nominal);
+  for (const relative of [...(shared.roots?.source || []), ...(shared.roots?.protected || [])]) {
+    const source = inside(root, relative);
+    if (contained(source, actual) && !contained(source, nominal))
+      throw new ConfigError("Settings path redirects into protected project source: " + nominal);
+  }
+  return merged_profile(root, shared, local_overrides(root), options);
+}
+export function merged_profile(root, shared, local, options) {
+  check_schema(shared, "project-local.schema.json");
+  check_schema(local, "project-local.schema.json");
+  if (Object.hasOwn(shared, "schema_version") && shared.schema_version !== "0.2")
+    throw Object.assign(new ConfigError("Unsupported contract version for project profile schema_version; expected 0.2."), { code: "UNSUPPORTED_CONTRACT_VERSION" });
+  for (const layer of [shared, local]) {
+    for (const [name, entry] of Object.entries(layer.connections || {}))
+      if (entry.url) name === "openviking" ? validate_openviking_url(entry.url) : validate_url(entry.url, name);
+    for (const [name, entry] of Object.entries(layer.components || {}))
+      if (entry.url) validate_url(entry.url, name);
+  }
+  const overlay = structuredClone(local);
+  // 0.1 identified the legacy local override format, not the profile schema.
+  if (overlay.schema_version === "0.1") delete overlay.schema_version;
+  const result = deep_merge(shared, overlay);
+  for (const key of ["source", "protected"]) {
+    for (const original of shared.roots?.[key] || []) {
+      const originalPath = inside(root, original);
+      if (!(result.roots?.[key] || []).some(candidate => contained(inside(root, candidate), originalPath)))
+        throw new ConfigError(`Local ${key} roots cannot weaken shared source protection: ${original}`);
+    }
+  }
+  for (const section of ["connections", "components"])
+    for (const [name, entry] of Object.entries(local[section] || {}))
+      if (Object.hasOwn(entry, "headers_env"))
+        result[section][name].headers_env = structuredClone(entry.headers_env);
+  return validate_at(root, result, options);
 }
 export function profile_target(root) {
   const target = path.join(resolve(root), ".ai/project.yaml");
@@ -244,7 +283,10 @@ export async function main() {
     ),
     [command, selected] = a._;
   if (command === "validate") {
-    validate(load(selected));
+    const file = path.resolve(selected);
+    if (path.basename(file) === "project.yaml" && path.basename(path.dirname(file)) === ".ai")
+      project_profile(path.dirname(path.dirname(file)));
+    else validate(load(file));
     console.log(JSON.stringify({ status: "valid", readiness: "not_checked" }));
     return;
   }
@@ -313,25 +355,28 @@ export async function main() {
       throw new ConfigError(
         "Export destination must differ from the active profile",
       );
-    dump(project_profile(root), output, a.replace || false);
+    project_profile(root); // Validate the effective profile without exporting local values.
+    dump(load(target), output, a.replace || false);
     result = { status: "exported", path: output };
   } else if (command === "import") {
     if (!a.input || (a.merge && a.replace))
       throw new ConfigError("Specify --input and choose --merge or --replace");
-    let incoming = validate(load(a.input));
+    let incoming = load(a.input);
     if (exists(target) && !(a.merge || a.replace))
       throw new ConfigError(
         "Profile exists: choose --merge or --replace (a backup will be saved)",
       );
     if (a.merge && exists(target)) {
-      const current = project_profile(root);
-      if (incoming.profile_id !== current.profile_id)
+      const current = load(target);
+      const effectiveId = project_profile(root).profile_id;
+      const candidate = deep_merge(current, incoming);
+      if (candidate.profile_id !== undefined && candidate.profile_id !== (current.profile_id ?? effectiveId))
         throw new ConfigError(
           "Cannot merge different profile types; use --replace",
         );
-      incoming = validate(deep_merge(current, incoming));
+      incoming = candidate;
     }
-    validate_at(root, incoming);
+    merged_profile(root, incoming, local_overrides(root));
     const saved = exists(target) ? backup(target) : null;
     dump(incoming, target, exists(target));
     result = {

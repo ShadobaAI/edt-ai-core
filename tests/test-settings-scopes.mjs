@@ -25,8 +25,9 @@ test("MCP saves supported fields in the chosen layer and reports masking and rev
   assert.equal(load(profile.savedTo).connections.edt.url, "http://127.0.0.1:8123/mcp");
   current = await read(); assert.equal(current.connectionSources.edt, "profile"); assert.equal(profile.settingsRevision, current.settingsRevision);
   await assert.rejects(client.call("settings.update", { set: { edtUrl: "http://127.0.0.1:8125/mcp" }, scope: "instance", expectedRevision: originalRevision }), /изменились/);
-  await assert.rejects(client.call("settings.update", { set: { bslLsEnabled: false }, scope: "profile" }), /нельзя сохранить/);
-  await assert.rejects(client.call("settings.update", { set: { edtUrl: "" }, scope: "profile" }), /pattern|шаблон/i);
+  await client.call("settings.update", { set: { bslLsEnabled: false }, scope: "profile" });
+  assert.equal(load(current.writePaths.profile).components["bsl-ls"].enabled, false);
+  current = await read();
 
   const local = (await client.call("settings.update", { set: { edtUrl: "http://127.0.0.1:8200/mcp", bslLsEnabled: false, bslLsJava: "local-java" }, scope: "project_local", expectedRevision: current.settingsRevision })).structuredContent;
   assert.equal(local.savedTo, current.writePaths.project_local);
