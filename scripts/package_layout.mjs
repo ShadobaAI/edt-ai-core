@@ -36,6 +36,7 @@ export const FILES = [
     "DEVELOPMENT",
     "USAGE",
     "PROFILES",
+    "PROFILE_FIELDS",
     "PROJECT_AGENTS",
     "REQUIREMENTS",
     "QUALITY_REQUIREMENTS",
