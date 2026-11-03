@@ -206,8 +206,12 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
     const { McpClient } = await import(
       pathToFileURL(path.join(root, "scripts/mcp_client.mjs")).href
     );
+    const { OPENVIKING_ENV_VARS } = await import(
+      pathToFileURL(path.join(root, "scripts/components.mjs")).href
+    );
     for (const [name, entry] of Object.entries(json("mcp.json").mcpServers)) {
       assert.equal(entry.command, "node");
+      if (name !== "policy") assert.deepEqual(entry.env_vars, OPENVIKING_ENV_VARS);
       const args = entry.args.map((arg) =>
         arg.replaceAll("${PLUGIN_ROOT}", root),
       );

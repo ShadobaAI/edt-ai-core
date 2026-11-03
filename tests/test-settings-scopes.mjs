@@ -9,6 +9,7 @@ import { dump, load } from "../scripts/common.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { java_info, java_in_directory } from "../scripts/runtime.mjs";
+import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { which } from "../scripts/processes.mjs";
 import { save_export_to_path } from "../scripts/settings_export.mjs";
 import { stringify } from "yaml";
@@ -318,6 +319,20 @@ test("Java probe failure never includes arbitrary process output or error text",
     childProcess.spawnSync = () => ({ status: 0, stderr: 'Picked up JAVA_TOOL_OPTIONS: -Dauth=version "2synthetic-private-value"\nopenjdk version "21.0.2"\n' });
     syncBuiltinESMExports();
     assert.equal(java_info(process.execPath).version, "21.0.2");
+  } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
+});
+
+test("Java probe remains available with invalid settings without inheriting credentials", async t => {
+  const f = fixture(t), backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  t.mock.method(backend, "current", () => { throw new Error("invalid settings"); });
+  const original = childProcess.spawnSync;
+  try {
+    childProcess.spawnSync = (_command, _args, options) => {
+      assert.deepEqual(options.env, {});
+      return { status: 0, stderr: 'java version "21"' };
+    };
+    syncBuiltinESMExports();
+    assert.equal((await backend.main({ action: "java_probe", command: process.execPath })).version, "21");
   } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
 });
 

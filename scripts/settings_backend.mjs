@@ -594,7 +594,10 @@ export class SettingsBackend {
     }
     if (action === "java_probe") {
       const { java_info, java_in_directory } = await import("./runtime.mjs");
-      return request.directory ? java_in_directory(request.directory) : java_info(request.command || "java");
+      let config, environment;
+      try { config = this.effective(this.current()); }
+      catch { environment = {}; } // Keep repair diagnostics usable without inheriting unknown credentials.
+      return request.directory ? java_in_directory(request.directory, config, environment) : java_info(request.command || "java", config, environment);
     }
     if (action === "repair_document") {
       const config = this.current(), root = config.active_project;

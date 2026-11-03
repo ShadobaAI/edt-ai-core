@@ -68,6 +68,16 @@ test("native instructions survive and unrelated settings preserve the reader ses
   dump({mcp:{required:{v8std:{url:"http://localhost:19999/mcp"}}}},f.env.EDT_AI_SETTINGS);
   assert.deepEqual((await c.call("inspect",{})).structuredContent,before);
 });
+test("managed relay does not pass knowledge credentials from any project to native children", async t => {
+  const f = fixture(t);
+  f.profile.connections = { openviking: { headers_env: { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" } } };
+  Object.assign(f.env, { OPENVIKING_SEARCH_TOKEN: "standard-token", EDT_AI_OPENVIKING_ACCESS_BINDING_KEY: "binding-key",
+    TEAM_KNOWLEDGE_TOKEN: "custom-token", OTHER_PROJECT_TOKEN: "other-token", FIXTURE_CHECK_KNOWLEDGE_ENV: "1" });
+  const c = await managed(t, f);
+  const result = (await c.call("inspect", {})).structuredContent;
+  assert.deepEqual(result.knowledgeEnvironmentPresent, []);
+  assert.equal(c.process.exitCode, null);
+});
 test("cancellation reaches the executing upstream request before completion with its mapped id", async t => {
   const f=fixture(t), c=await managed(t,f,true,{FIXTURE_SLOW_STARTED:"1"});
   let ready; const started=new Promise(resolve=>{ready=resolve;});
@@ -154,6 +164,36 @@ test("managed relay bounds shutdown of a child that ignores host EOF", async t =
   } finally { clearTimeout(timer); }
   for (let i = 0; i < 100 && alive(ownedPid); i++) await sleep(10);
   assert.equal(alive(ownedPid), false);
+});
+test("direct managed BSL launch excludes credentials from the Java probe and native child", async t => {
+  const f = fixture(t); environment(t, f.env);
+  f.profile.connections = { openviking: { headers_env: { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" } } };
+  f.save(); grant_preparation(f.state, f.root, ["bsl-ls"]);
+  dump({ mcp: { managed: { "bsl-ls": { enabled: true, java: process.execPath } } } }, f.env.EDT_AI_SETTINGS);
+  const jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", "bsl-language-server-exec.jar"), bytes = Buffer.from("fixture jar");
+  fs.mkdirSync(path.dirname(jar), { recursive: true }); fs.writeFileSync(jar, bytes);
+  save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": { release: "v1.2.3", sha256: sha256(bytes) } });
+  const report = path.join(f.base, "java-environment.json"), preloadFile = path.join(f.base, "native-env-preload.mjs");
+  const inspectEnv = `['OPENVIKING_SEARCH_TOKEN','EDT_AI_OPENVIKING_ACCESS_BINDING_KEY','TEAM_KNOWLEDGE_TOKEN','OTHER_PROJECT_TOKEN'].filter(name => Object.hasOwn(process.env,name))`;
+  fs.writeFileSync(preloadFile, `import cp from 'node:child_process'; import fs from 'node:fs'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    const spawn=cp.spawn, execFile=cp.execFile;
+    cp.execFile=(command,args,options,callback)=>args?.[0]==='-version' ? (fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify(Object.keys(options.env))),queueMicrotask(()=>callback(null,'','java version "21"'))) : execFile(command,args,options,callback);
+    cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(process.execPath,['-e',${JSON.stringify(`console.log(JSON.stringify(${inspectEnv}))`)}],options) : spawn(command,args,options);
+    syncBuiltinESMExports();`);
+  const child = launch(process.execPath, [path.join(ROOT, "scripts/managed_mcp.mjs"), "--component", "bsl-ls"], {
+    cwd: f.root, env: { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preloadFile).href,
+      OPENVIKING_SEARCH_TOKEN: "standard", EDT_AI_OPENVIKING_ACCESS_BINDING_KEY: "binding",
+      TEAM_KNOWLEDGE_TOKEN: "custom", OTHER_PROJECT_TOKEN: "other" }, stdio: ["pipe", "pipe", "pipe"],
+  });
+  f.clients.push({ close: () => stop_child(child, 0) });
+  let errors = ""; child.stderr.on("data", chunk => { errors += chunk; });
+  const exited = once(child, "close");
+  const [output] = await Promise.race([once(child.stdout, "data"), exited.then(() => { throw new Error("managed fixture exited: " + errors); })]);
+  assert.deepEqual(JSON.parse(String(output)), []);
+  const probeKeys = JSON.parse(fs.readFileSync(report));
+  for (const name of ["OPENVIKING_SEARCH_TOKEN", "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "TEAM_KNOWLEDGE_TOKEN", "OTHER_PROJECT_TOKEN"])
+    assert.ok(!probeKeys.includes(name), name);
+  child.stdin.end(); await exited;
 });
 for (const failure of ["crash","malformed"]) test("status reconnects a failed prepared child without discovery: "+failure, async t=>{
   const f=fixture(t), c=await managed(t,f), pid=(await c.call("inspect",{})).structuredContent.pid;

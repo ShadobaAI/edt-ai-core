@@ -24,7 +24,7 @@ import {
 import { validate_bsl_tools } from "./runtime.mjs";
 import { component_icons } from "./icons.mjs";
 import { launch_selection, roots_selection, explicit_selection } from "./selection.mjs";
-import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation } from "./components.mjs";
+import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation, native_environment } from "./components.mjs";
 import { index_repositories } from "./directory_context.mjs";
 import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
@@ -227,7 +227,7 @@ async function bind(refreshSurface, retryFailed, connect) {
         ],
         root,
         {
-          ...process.env,
+          ...native_environment(config),
           EDT_AI_STATE_DIR: state,
           EDT_AI_SETTINGS: configuration,
           EDT_AI_PROJECT_ROOT: root,

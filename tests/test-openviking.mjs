@@ -649,6 +649,45 @@ test("OpenViking registry uses optional settings and a dedicated bounded MCP ent
   success(node("scripts/runtime.mjs", ["config", "--output", output], { env: f.env }));
   assert.deepEqual(JSON.parse(fs.readFileSync(output)).mcpServers.openviking.args, [path.join(ROOT, COMPONENTS.openviking.adapter)]);
 });
+test("plugin MCP allowlist forwards the standard search token and leaves access checks enforced", async t => {
+  const f = fixture(t);
+  f.profile.knowledge = { provider: "openviking", mode: "transitional", manifest: null,
+    collections: ["architecture"], collection_uris: { architecture: "viking://resources/team/architecture" },
+    required: false, dependent_actions: [] };
+  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:1/mcp",
+    headers_env: { "X-Api-Key": "OPENVIKING_SEARCH_TOKEN" } } };
+  f.save();
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "mcp.json"))).mcpServers;
+  for (const name of ["openviking", "1c-ai-settings", "edt", "v8std", "code-index", "bsl-ls"]) {
+    assert.ok(manifest[name].env_vars.includes("OPENVIKING_SEARCH_TOKEN"), name);
+    for (const required of ["EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
+      "EDT_AI_OPENVIKING_ACCESS_RECEIPTS", "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY", "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"])
+      assert.ok(manifest[name].env_vars.includes(required), `${name}: ${required}`);
+  }
+  const parent = { ...f.env, OPENVIKING_SEARCH_TOKEN: "fixture-search-token" };
+  const sanitized = { ...f.env };
+  for (const key of manifest.openviking.env_vars) delete sanitized[key];
+  for (const forwarded of [false, true]) {
+    const env = { ...sanitized };
+    if (forwarded) for (const key of manifest.openviking.env_vars) if (key === "OPENVIKING_SEARCH_TOKEN") env[key] = parent[key];
+    const client = new McpClient([process.execPath, path.join(ROOT, "mcp/openviking.mjs")], f.root, env, 10);
+    f.clients.push(client); await client.initialize();
+    const status = (await client.call("knowledge_status", {})).structuredContent;
+    assert.match(status.detail, forwarded ? /access binding key is missing/ : /search credential is missing or invalid/);
+    assert.equal(status.connected, false);
+    assert.doesNotMatch(JSON.stringify(status), /fixture-search-token/);
+  }
+  const env = { ...sanitized };
+  for (const key of manifest["1c-ai-settings"].env_vars) if (key === "OPENVIKING_SEARCH_TOKEN") env[key] = parent[key];
+  const settingsClient = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root, env, 10);
+  f.clients.push(settingsClient); await settingsClient.initialize();
+  await settingsClient.call("settings.inspect", { projectRoot: f.root });
+  const started = (await settingsClient.call("settings.probe_connections", {})).structuredContent;
+  const result = (await settingsClient.call("settings.operation", { operationId: started.id, waitMs: 10000 })).structuredContent;
+  assert.match(result.result.external.openviking.detail, /access binding key is missing/);
+  assert.equal(result.result.external.openviking.connected, false);
+  assert.doesNotMatch(JSON.stringify(result), /fixture-search-token/);
+});
 test("OpenViking rejects malformed roots without exiting and honors the host's current selection", async t => {
   const f = fixture(t), other = fixture(t); f.save(); other.save();
   const client = new McpClient([process.execPath, path.join(ROOT, "mcp/openviking.mjs")], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);

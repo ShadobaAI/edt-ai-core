@@ -36,7 +36,7 @@ import { launch, alive, which, run_sync } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
-import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation } from "./components.mjs";
+import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, knowledge_env_vars, native_environment } from "./components.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
@@ -522,6 +522,7 @@ export async function start_daemon(
   io = {
     launch: process.platform === "win32" ? spawn_detached_windows : launch,
   },
+  environment = native_environment(),
 ) {
   const health = await daemon_health(home);
   index_config(home, root, data, health);
@@ -558,7 +559,7 @@ export async function start_daemon(
     proc = io.launch(exe, ["daemon", "run"], {
       cwd: home,
       env: {
-        ...process.env,
+        ...environment,
         CODE_INDEX_HOME: home,
         CODE_INDEX_DAEMON_DETACHED: "1",
       },
@@ -603,16 +604,16 @@ export async function start_daemon(
     proc.release?.();
   }
 }
-export async function ensure_daemon(state, root, data, exe, io) {
+export async function ensure_daemon(state, root, data, exe, io, environment) {
   record_project_owner(state, root);
   const home = path.join(project_home(state, root), "code-index");
   return operation_lock(
     home,
-    () => { check_maintenance(home, true); return start_daemon(home, root, data, exe, io); },
+    () => { check_maintenance(home, true); return start_daemon(home, root, data, exe, io, environment); },
     45,
   );
 }
-export function java_info(command = "java") {
+export function java_info(command = "java", config = null, environment = native_environment(config)) {
   const java = which(command || "java");
   if (!java)
     throw new ConfigError(
@@ -623,6 +624,7 @@ export function java_info(command = "java") {
     windowsHide: true,
     shell: false,
     timeout: 20000,
+    env: environment,
   });
   return parse_java_info(java, version);
 }
@@ -638,25 +640,25 @@ function parse_java_info(java, version) {
   }
   return { path: java, version: match[1] };
 }
-async function java_info_async(command = "java") {
+async function java_info_async(command = "java", config = null) {
   const java = which(command || "java");
   if (!java) throw new ConfigError("Java is required; set mcp.managed.bsl-ls.java in plugin settings");
   const version = await new Promise(resolve => execFile(java, ["-version"],
-    { encoding: "utf8", windowsHide: true, timeout: 20000, maxBuffer: 1024 * 1024 },
+    { encoding: "utf8", windowsHide: true, timeout: 20000, maxBuffer: 1024 * 1024, env: native_environment(config) },
     (error, stdout, stderr) => resolve({ error, status: error ? (Number.isInteger(error.code) ? error.code : null) : 0, stdout, stderr })));
   return parse_java_info(java, version);
 }
-export function java_in_directory(directory) {
+export function java_in_directory(directory, config = null, environment = native_environment(config)) {
   if (!path.isAbsolute(directory) || !is_dir(directory)) throw new ConfigError("Выберите существующий каталог Java.");
   const executable = process.platform === "win32" ? "java.exe" : "java";
   const java = [path.join(directory, "bin", executable), path.join(directory, executable)].find(file => {
     try { return fs.statSync(file).isFile(); } catch { return false; }
   });
   if (!java) throw new ConfigError(`В выбранном каталоге не найден bin/${executable}.`);
-  return java_info(java);
+  return java_info(java, config, environment);
 }
 export function java_command(config) {
-  return java_info(config.mcp.managed["bsl-ls"].java || "java").path;
+  return java_info(config.mcp.managed["bsl-ls"].java || "java", config).path;
 }
 export async function launch_command(
   state,
@@ -674,11 +676,11 @@ export async function launch_command(
     let exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
     const oldHome = path.join(project_home(state, root), "code-index"), owner = read_json(path.join(oldHome, "owner.json"), {});
     if (!selected_artifact && await daemon_health(oldHome) && owned_executable(state, owner)) exe = owner.executable;
-    const home = await ensure_daemon(state, root, data, exe);
+    const home = await ensure_daemon(state, root, data, exe, undefined, native_environment(config));
     return [
       [exe, "serve", "--config", path.join(home, "daemon.toml")],
       home,
-      { ...process.env, CODE_INDEX_HOME: home },
+      { ...native_environment(config), CODE_INDEX_HOME: home },
     ];
   }
   const bsl = config.mcp.managed["bsl-ls"],
@@ -695,7 +697,7 @@ export async function launch_command(
     if (!is_file(configuration))
       throw new ConfigError("Configured BSL LS configuration does not exist");
   }
-  const java = (await java_info_async(bsl.java || "java")).path,
+  const java = (await java_info_async(bsl.java || "java", config)).path,
     exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
   return [
     [
@@ -710,7 +712,7 @@ export async function launch_command(
       ...(configuration ? ["--configuration", resolve(configuration)] : []),
     ],
     resolve(root),
-    null,
+    native_environment(config),
   ];
 }
 export function validate_bsl_tools(tools) {
@@ -829,15 +831,16 @@ async function maintain_index(state, config, root, data, repo, io) {
       signal_component(state, root, "code-index", true);
       for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
       if (active_readers(state, root).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите действие.");
-      try { await (io.stop || stop_daemon)(state, root); stopped = true; }
+      const environment = native_environment(config);
+      try { await (io.stop || stop_daemon)(state, root, undefined, environment); stopped = true; }
       catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + safe_error_message(error)); }
-      if (repo) await (io.run || run_index)(exe, inside(root, repo.path), home);
-      await (io.restart || ensure_daemon)(state, root, data, exe); stopped = false;
+      if (repo) await (io.run || run_index)(exe, inside(root, repo.path), home, environment);
+      await (io.restart || ensure_daemon)(state, root, data, exe, undefined, environment); stopped = false;
       const checked = await (io.smoke || smoke)(state, config, root, data, "code-index", 90, false, exe);
       return { projectRoot: root, ...(repo ? { repository: repo.id, edtProject: repo.edt_project } : {}), state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
     } finally {
       try {
-        if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe); }
+        if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe, undefined, native_environment(config)); }
         catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }
         if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
         signal_component(state, root, "code-index", true);
@@ -845,10 +848,10 @@ async function maintain_index(state, config, root, data, repo, io) {
     }
   }, 180);
 }
-async function run_index(exe, directory, home) {
+async function run_index(exe, directory, home, environment = native_environment()) {
   const log = fs.openSync(path.join(home, "rebuild.log"), "a");
   try {
-    const child = launch(exe, ["index", directory, "--force"], { cwd: directory, env: { ...process.env, CODE_INDEX_HOME: home }, stdio: ["ignore", log, log] });
+    const child = launch(exe, ["index", directory, "--force"], { cwd: directory, env: { ...environment, CODE_INDEX_HOME: home }, stdio: ["ignore", log, log] });
     await new Promise((done, reject) => { child.once("error", reject); child.once("close", code => code === 0 ? done() : reject(new ConfigError("Пересоздание индекса завершилось с ошибкой; см. rebuild.log (код " + code + ")."))); });
   } finally { fs.closeSync(log); }
 }
@@ -919,7 +922,7 @@ export async function smoke(
     if (lease) fs.rmSync(lease, { force: true });
   }
 }
-export async function stop_daemon(state, root, io = { stop: run_sync }) {
+export async function stop_daemon(state, root, io = { stop: run_sync }, environment = native_environment()) {
   const home = path.join(project_home(state, root), "code-index");
   await operation_lock(
     home,
@@ -945,7 +948,7 @@ export async function stop_daemon(state, root, io = { stop: run_sync }) {
         throw new ConfigError("Daemon ownership mismatch; refusing to stop it");
       await io.stop(owner.executable, ["daemon", "stop"], {
         cwd: home,
-        env: { ...process.env, CODE_INDEX_HOME: home },
+        env: { ...environment, CODE_INDEX_HOME: home },
         timeout: 20000,
       });
       for (let i = 0; i < 40; i++) {
@@ -1000,7 +1003,12 @@ export async function main() {
     const selected = a.project_root || process.env.EDT_AI_PROJECT_ROOT || config.active_project;
     if (!selected) throw new ConfigError("Select the project root whose daemon should stop");
     const root = configuration_root(selected);
-    await stop_daemon(state, root);
+    // Stopping an owned daemon must still work after its profile is removed or
+    // damaged. With no reliable credential names, inherit no caller variables.
+    let environment = {};
+    try { environment = native_environment(effective_settings(config, root, project_profile(root), null, state)); }
+    catch { /* The stop operation checks daemon ownership independently. */ }
+    await stop_daemon(state, root, undefined, environment);
     result = { status: "stopped", project_root: root };
   } else {
     const [root, data] = project(a.project_root, config, false),
@@ -1023,7 +1031,7 @@ export async function main() {
         );
       project(root, effective); // code-index startup requires explicit mappings.
       const exe = await installed_runtime(state, effective, component),
-        home = await ensure_daemon(state, root, data, exe);
+        home = await ensure_daemon(state, root, data, exe, undefined, native_environment(effective));
       result = { status: "running", daemon: await daemon_health(home) };
     } else {
       if (!a.output) throw new ConfigError("config requires --output");
@@ -1040,6 +1048,7 @@ export async function main() {
             c,
           ],
           cwd: root,
+          env_vars: knowledge_env_vars(effective),
           env: { EDT_AI_PROJECT_ROOT: root, EDT_AI_STATE_DIR: state,
             EDT_AI_SETTINGS: resolve(a.settings || process.env.EDT_AI_SETTINGS || path.join(ROOT, "settings/local.yaml")) },
         };

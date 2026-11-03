@@ -6,6 +6,36 @@ import fs from "node:fs";
 import { access_revision, persisted_access_revision, access_receipt_epoch } from "./openviking_access.mjs";
 import { publication_revision, publication_receipt_epoch } from "./openviking_publication.mjs";
 import { index_repositories } from "./directory_context.mjs";
+// These names are forwarded by the plugin manifest. The CLI-generated MCP
+// configuration can additionally forward the profile's chosen credential name.
+export const OPENVIKING_ENV_VARS = Object.freeze([
+  "OPENVIKING_SEARCH_TOKEN",
+  "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
+  "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
+  "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
+  "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
+  "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS",
+]);
+export function knowledge_env_vars(config) {
+  return [...new Set([...OPENVIKING_ENV_VARS, ...Object.values(config?.mcp?.optional?.openviking?.headers_env || {})])];
+}
+// Native runtimes need system and JVM configuration, not the host's arbitrary
+// environment. A denylist alone misses credentials from another project or an
+// earlier binding after the selected header variable changes.
+const NATIVE_ENV_VARS = new Set([
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "HOME", "USERPROFILE",
+  "APPDATA", "LOCALAPPDATA", "TMP", "TEMP", "TMPDIR", "LANG", "LANGUAGE", "LC_ALL",
+  "LC_CTYPE", "TZ", "JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+  "CODEX_HOME", "EDT_AI_INSTANCE", "EDT_AI_STATE_DIR", "EDT_AI_SETTINGS", "EDT_AI_PROJECT_ROOT",
+  "EDT_AI_CONNECTIONS_FILE",
+]);
+export function native_environment(config, environment = process.env) {
+  const names = new Set(knowledge_env_vars(config).map(name => process.platform === "win32" ? name.toUpperCase() : name));
+  return Object.fromEntries(Object.entries(environment).filter(([name]) => {
+    const key = process.platform === "win32" ? name.toUpperCase() : name;
+    return NATIVE_ENV_VARS.has(key) && !names.has(key);
+  }));
+}
 export const COMPONENTS = Object.freeze({
   edt: { kind: "remote", title: "EDT" },
   v8std: { kind: "remote", title: "Стандарты" },
