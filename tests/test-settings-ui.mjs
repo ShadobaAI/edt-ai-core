@@ -29,11 +29,12 @@ function screen(handler, options = {}) {
     setAttribute(key, value) { (this.attributes ||= {})[key] = value; }
     removeAttribute(key) { delete (this.attributes ||= {})[key]; }
     contains(target) { return target===this||this.children.some(child=>child.contains?.(target)); }
-    replaceChildren(...children) { this.children = children; }
-    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { for (const child of this.children) { if (child.contains?.(document.activeElement)) document.activeElement = document.body; child.parentNode = null; } this.children = []; this.append(...children); }
+    append(...children) { for (const child of children) { if (child.parentNode) { if (child.contains?.(document.activeElement)) document.activeElement = document.body; child.parentNode.children = child.parentNode.children.filter(item => item !== child); } child.parentNode = this; this.children.push(child); } }
+    insertBefore(child, next) { this.append(child); this.children.splice(this.children.indexOf(child), 1); this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, child); }
     click() { if (this.tag === "a") downloads.push({ filename: this.download, href: this.href }); }
-    remove() {}
-    focus() {}
+    remove() { if (this.parentNode) { if (this.contains(document.activeElement)) document.activeElement = document.body; this.parentNode.children = this.parentNode.children.filter(item => item !== this); this.parentNode = null; } }
+    focus() { document.activeElement = this; }
     getBoundingClientRect() { return { height: options.height?.() ?? 500 }; }
   }
   for (const match of html.matchAll(/<(\w+)[^>]*\bid="([^"]+)"/g)) { const element = new Element(match[1]); element.id = match[2]; elements.set(match[2], element); }
@@ -1264,6 +1265,57 @@ test("index UI excludes feature-only repositories and applies mappings without r
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.restart_index").length,1);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.rebuild_index").length,0);
   assert.match(ui.elements.get("status").textContent,/Состав проектов индекса применён/);
+});
+
+test("service details keep index actions with code-index across status updates", async () => {
+  let stale = false;
+  const ui = screen(async name => {
+    assert.ok(["settings.read", "settings.status"].includes(name));
+    return { ...read, profile: { ...read.profile, repositories: [{ id: "main", path: "src" }, { id: "ext", path: "ext" }] },
+      values: { ...read.values, edtUrl: "http://localhost/mcp" },
+      readiness: { state: "ready", checks: [{ id: "edt", state: "ready" }] },
+      summary: { components: [{ id: "code-index", status: stale ? "stale" : "ready" }, { id: "bsl-ls", status: "ready" }] } };
+  });
+  await ui.flush();
+  const box = ui.elements.get("connections"), index = box.children.find(item => item.serviceName === "code-index"),
+    bsl = box.children.find(item => item.serviceName === "bsl-ls"), edt = box.children.find(item => item.serviceName === "edt");
+  assert.equal(index.tag, "details"); assert.equal(edt.tag, "details");
+  assert.equal(index.open, false); assert.equal(edt.open, false);
+  assert.ok(index.contains(ui.elements.get("indexActions")));
+  assert.equal(bsl.contains(ui.elements.get("indexActions")), false);
+  assert.match(edt.textNode.textContent, /Подключение проверено/);
+  assert.doesNotMatch(edt.textNode.textContent, /после проверки/);
+  const select = ui.elements.get("indexRepository"); ui.elements.get("indexActions").append(select);
+  index.open = true; edt.open = true; select.value = "ext"; const option = select.children[0]; select.focus();
+  stale = true; await ui.tick(8000);
+  const updatedIndex = box.children.find(item => item.serviceName === "code-index");
+  assert.equal(updatedIndex, index);
+  assert.equal(updatedIndex.open, true);
+  assert.equal(box.children.find(item => item.serviceName === "edt").open, true);
+  assert.ok(updatedIndex.contains(ui.elements.get("indexActions")));
+  assert.equal(select.value, "ext"); assert.equal(select.children[0], option); assert.equal(ui.document.activeElement, select);
+  edt.children[0].focus(); stale = false; await ui.tick(8000);
+  assert.equal(box.children.find(item => item.serviceName === "edt"), edt);
+  assert.equal(ui.document.activeElement, edt.children[0]);
+});
+
+test("index maintenance explains when an external or disabled component cannot be managed", async () => {
+  let enabled = true, state = "ready";
+  const ui = screen(async name => {
+    assert.ok(["settings.read", "settings.status"].includes(name));
+    return { ...read, profile: { ...read.profile, repositories: [{ id: "main", path: "src" }] },
+      values: { ...read.values, codeIndexEnabled: enabled },
+      summary: { components: [{ id: "code-index", mode: "external", status: enabled ? state : "disabled" }] } };
+  });
+  await ui.flush();
+  assert.equal(ui.elements.get("rebuildIndexButton").disabled, true);
+  assert.equal(ui.elements.get("restartIndexButton").disabled, true);
+  assert.match(ui.elements.get("indexActionsHint").textContent, /Внешний code-index/);
+  state = "stale"; await ui.tick(8000);
+  assert.match(ui.elements.get("connections").children[0].textNode.textContent, /средствами внешнего сервиса/);
+  enabled = false; await ui.tick(8000);
+  assert.match(ui.elements.get("indexActionsHint").textContent, /Компонент отключён/);
+  assert.match(ui.elements.get("connections").children[0].textNode.textContent, /отключён/);
 });
 
 test("connection checks use unsaved fields without saving and preserve drafts", async () => {

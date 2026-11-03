@@ -148,7 +148,7 @@ test("automatic readiness verifies live managed APIs instead of relying on saved
   assert.equal(indexChecks(),2,"a startup health response without freshness is observed again before completing the check");
   for(const component of ["code-index","bsl-ls"]){
     assert.equal(result.managed.find(item=>item.name===component).ready,true);
-    const summary=(await backend.main({action:"read"})).summary.components.find(item=>item.id===component);assert.equal(summary.status,"ready");assert.equal(summary.checkedAt,result.readiness.checkedAt);
+    const summary=(await backend.main({action:"read"})).summary.components.find(item=>item.id===component);assert.equal(summary.status,"ready");assert.equal(summary.mode,"external");assert.equal(summary.checkedAt,result.readiness.checkedAt);
   }
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });
