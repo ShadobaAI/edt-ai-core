@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ROOT, load, stable, atomic_write, inside } from "./common.mjs";
 import { exists, is_file, sha256, instance_directory, instance_name, reconnect_file, project_directory } from "./project_paths.mjs";
-import { edt_connection } from "./directory_context.mjs";
+import { edt_connection, repository_projects } from "./directory_context.mjs";
 import { setup_knowledge_status } from "./setup_probe.mjs";
 import { knowledge_evidence_revision } from "./components.mjs";
 import { verification_limits, sanitize_setup_result, register_diagnostic_secrets } from "./diagnostics.mjs";
@@ -46,7 +46,7 @@ export function setup_assets(pluginRoot = ROOT) {
 
 export function readiness_fingerprint(state, config, profile, assets = setup_assets()) {
   return sha256(Buffer.from(stable({ root: config.active_project, instance: instance_name(), config, profile, assets: assets.fingerprint,
-    runtime: digest(path.join(state, "runtime-lock.json")), edt: edt_connection(config.active_project), reconnect: digest(reconnect_file(state, config.active_project)),
+    runtime: digest(path.join(state, "runtime-lock.json")), edt: edt_connection(config.active_project), descriptors: repository_projects(config.active_project, profile.repositories), reconnect: digest(reconnect_file(state, config.active_project)),
     daemonOwner: digest(path.join(project_directory(state, config.active_project), "code-index/owner.json")),
     instructions: ["AGENTS.md", ".ai/PROJECT.md"].map(name => digest(inside(config.active_project, name))),
     knowledge: knowledge_evidence_revision(config, config.active_project, profile),

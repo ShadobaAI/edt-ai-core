@@ -38,6 +38,14 @@ test("installation requires authorization for the current project and instance b
   assert.equal(fs.existsSync(path.join(f.state,"projects")),false);
 });
 
+test("applying index mappings requires authorization for the selected project and instance", async t => {
+  const f=fixture(t);environment(t,f.env);f.save();
+  const backend=new SettingsBackend();
+  await assert.rejects(backend.main({action:"restart_index"}),/требует разрешения/);
+  await assert.rejects(backend.main({action:"restart_index",authorization:{scope:f.root+"#other-instance",effects:["launch"],evidence:"Apply index mappings"}}),/другой папке или экземпляру/);
+  assert.equal(fs.existsSync(path.join(f.state,"projects")),false);
+});
+
 test("installation commits the saved version only after validation and restores it if activation fails", async t => {
   const f=fixture(t);environment(t,f.env);f.save();
   dump({mcp:{managed:{"bsl-ls":{enabled:true,version:"v1.0.0",java:process.execPath}}}},f.env.EDT_AI_SETTINGS);

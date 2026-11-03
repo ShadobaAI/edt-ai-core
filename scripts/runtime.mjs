@@ -40,6 +40,7 @@ import { COMPONENTS, managed_components, component_enabled, component_settings, 
 import { RemoteMcp } from "./remote_client.mjs";
 import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
+import { index_repositories, index_selection } from "./directory_context.mjs";
 
 export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPONENTS[id].repository]));
 export async function list_versions(component, io = { fetch_json }, options = {}) {
@@ -459,7 +460,7 @@ export async function update_component(state, config, root, data, component, act
 }
 export function index_config(home, root, data, health = null) {
   let text = "[daemon]\nhttp_port = 0\nmax_concurrent_initial = 1\n";
-  for (const repo of data.repositories)
+  for (const repo of index_repositories(root, data))
     text +=
       "\n[[paths]]\nalias = " +
       JSON.stringify(repo.alias) +
@@ -470,7 +471,7 @@ export function index_config(home, root, data, health = null) {
   if (exists(file) && fs.readFileSync(file, "utf8") === text) return;
   if (exists(file) && health)
     throw new ConfigError(
-      "Repository mapping changed: stop this project's daemon before applying it",
+      "Repository mapping changed: нажмите «Применить состав проектов» в настройках индекса.",
     );
   atomic_write(file, text);
 }
@@ -489,7 +490,7 @@ const pathsMatch = (health, root, data) =>
   stable(
     [
       ...new Set(
-        data.repositories.map((repo) => path_key(inside(root, repo.path))),
+        index_repositories(root, data).map((repo) => path_key(inside(root, repo.path))),
       ),
     ].sort(),
   ) ===
@@ -647,7 +648,7 @@ export async function launch_command(
 ) {
   if (!component_enabled(config, component)) throw new ConfigError("Component is disabled: " + component);
   if (component === "code-index") {
-    if (!data.repositories.length) throw new ConfigError("Configure explicit repositories (id, relative path, alias) in the project profile");
+    if (!index_repositories(root, data).length) throw new ConfigError("В репозиториях профиля не найдены проекты EDT с файлом .project.");
     let exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
     const oldHome = path.join(project_home(state, root), "code-index"), owner = read_json(path.join(oldHome, "owner.json"), {});
     if (!selected_artifact && await daemon_health(oldHome) && owned_executable(state, owner)) exe = owner.executable;
@@ -716,16 +717,17 @@ export function validate_bsl_tools(tools) {
         "External servers must expose workspace registration and workspaceFolder parameters.",
     );
 }
-export function index_readiness(body, root, data) {
+export function index_readiness(body, root, data, selection = index_selection(root, data)) {
+  const { repositories, missingProjects } = selection;
   if (
     !body?.mcp ||
     !body?.daemon ||
     !Array.isArray(body.repos) ||
-    body.repos.length !== data.repositories.length
+    !repositories.length || missingProjects.length || body.repos.length !== repositories.length
   )
     return false;
   const expected = new Map(
-      data.repositories.map((repo) => [
+      repositories.map((repo) => [
         repo.alias,
         path_key(inside(root, repo.path)),
       ]),
@@ -759,7 +761,8 @@ export function index_readiness(body, root, data) {
   );
 }
 export function index_status(body, root, data) {
-  const repositories = data.repositories.map(repo => {
+  const selection = index_selection(root, data), indexed = selection.repositories;
+  const repositories = indexed.map(repo => {
     const directory = inside(root, repo.path), item = body?.repos?.find(item => item.repo === repo.alias);
     const present = is_file(path.join(directory, ".code-index/index.db"));
     let state = "not_checked";
@@ -771,22 +774,30 @@ export function index_status(body, root, data) {
     else if (!present) state = "missing";
     return { id: repo.id, edtProject: repo.edt_project, alias: repo.alias, present, state };
   });
-  const ready = index_readiness(body, root, data);
-  const state = ready ? "ready" : ["mismatch", "error", "stale", "indexing", "missing"].find(state => repositories.some(repo => repo.state === state)) || "not_checked";
+  const ready = index_readiness(body, root, data, selection);
+  const missingProjects = selection.missingProjects;
+  const state = ready ? "ready" : missingProjects.length ? "missing_project" : ["mismatch", "error", "stale", "indexing", "missing"].find(state => repositories.some(repo => repo.state === state)) || "not_checked";
   const retryable = state === "not_checked" && body?.mcp?.status === "ok" && body?.daemon?.status === "online" &&
-    body?.repos?.length === data.repositories.length && repositories.length > 0 &&
+    body?.repos?.length === indexed.length && repositories.length > 0 &&
     repositories.every(repo => repo.present && ["ready", "not_checked"].includes(repo.state)) && repositories.some(repo => repo.state === "not_checked");
-  return { ready, state, repositories, ...(retryable ? { retryable: true } : {}) };
+  return { ready, state, repositories, ...(missingProjects.length ? { missingProjects } : {}), ...(retryable ? { retryable: true } : {}) };
 }
 
 // The native CLI is the writer. Stop only the owned project daemon and never
 // delete databases or use a shell command to rebuild a selected repository.
 export async function rebuild_index(state, config, root, data, repositoryId, io = {}) {
-  const repo = data.repositories.find(repo => repo.id === repositoryId);
+  const repo = index_repositories(root, data).find(repo => repo.id === repositoryId);
   if (!repo) throw new ConfigError("Выберите EDT-проект из профиля.");
+  return maintain_index(state, config, root, data, repo, io);
+}
+export async function restart_index(state, config, root, data, io = {}) {
+  if (!index_repositories(root, data).length) throw new ConfigError("В репозиториях профиля не найдены проекты EDT с файлом .project.");
+  return maintain_index(state, config, root, data, null, io);
+}
+async function maintain_index(state, config, root, data, repo, io) {
   if (!component_enabled(config, "code-index") || component_settings(config, "code-index").mode === "external")
-    throw new ConfigError("Пересоздание доступно для управляемого индекса кода.");
-  const directory = inside(root, repo.path), home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
+    throw new ConfigError("Действие доступно для управляемого индекса кода.");
+  const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
   const exe = await (io.installed || installed_runtime)(state, config, "code-index");
   return operation_lock(state, async () => {
     if (!io.installed && artifact(state, "code-index") !== exe) throw new ConfigError("Версия индексатора изменилась. Повторите действие после завершения обновления.");
@@ -795,13 +806,13 @@ export async function rebuild_index(state, config, root, data, repositoryId, io 
     try {
       signal_component(state, root, "code-index", true);
       for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
-      if (active_readers(state, root).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите пересоздание.");
+      if (active_readers(state, root).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите действие.");
       try { await (io.stop || stop_daemon)(state, root); stopped = true; }
       catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + safe_error_message(error)); }
-      await (io.run || run_index)(exe, directory, home);
+      if (repo) await (io.run || run_index)(exe, inside(root, repo.path), home);
       await (io.restart || ensure_daemon)(state, root, data, exe); stopped = false;
       const checked = await (io.smoke || smoke)(state, config, root, data, "code-index", 90, false, exe);
-      return { projectRoot: root, repository: repo.id, edtProject: repo.edt_project, state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
+      return { projectRoot: root, ...(repo ? { repository: repo.id, edtProject: repo.edt_project } : {}), state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
     } finally {
       if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe); }
       catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }

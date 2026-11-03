@@ -1,4 +1,3 @@
-import path from "node:path";
 import { RemoteMcp } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
 import { resolve } from "./project_paths.mjs";
@@ -7,6 +6,7 @@ import { OpenVikingAdapter } from "./openviking_adapter.mjs";
 import { stable } from "./common.mjs";
 import { knowledge_evidence_revision } from "./components.mjs";
 import { connection_failure, verification_limits, safe_error_message, register_diagnostic_secrets, sanitize_diagnostics } from "./diagnostics.mjs";
+import { repository_projects } from "./directory_context.mjs";
 
 const observations = new WeakMap();
 function edt_project_detail(repositories) {
@@ -89,8 +89,11 @@ export async function probe_connections(config, root, profile) {
             if (!payload) try { payload = JSON.parse(response.content?.find(item => item.type === "text")?.text); } catch { /* no structured project evidence */ }
             const projects = Array.isArray(payload) ? payload : payload?.projects;
             if (Array.isArray(projects)) {
-              result.repositories = profile.repositories.map(repository => {
-                const project = projects.find(item => item.name === repository.edt_project && typeof item.path === "string" && resolve(item.path) === resolve(path.join(root, repository.path)));
+              const unbound = new Set(profile.policy.unbound_edt_repositories || []);
+              const candidates = repository_projects(root, profile.repositories.filter(repository => !unbound.has(repository.id)));
+              const configured = candidates.filter(({repository, projects}) => projects.length || repository.edt_project || (profile.policy.edt_repository_ids || []).includes(repository.id));
+              result.repositories = configured.map(({ repository, projects: localProjects }) => {
+                const project = localProjects.length === 1 && projects.find(item => item.name === repository.edt_project && typeof item.path === "string" && resolve(item.path) === resolve(localProjects[0].directory));
                 return { id: repository.id, matched: Boolean(project), ready: Boolean(project?.open === true && project?.state === "ready" && project?.edtProject === true), ...(project ? { state: project.state, open: project.open } : {}) };
               });
               result.projectReadiness = result.repositories.length && result.repositories.every(item => item.ready) ? "verified" : "not_ready";

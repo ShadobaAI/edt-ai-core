@@ -6,7 +6,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { fixture, environment } from "./helpers.mjs";
+import { edt_fixture as fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { setup_assets } from "../scripts/setup_readiness.mjs";
 import { instance_directory } from "../scripts/project_paths.mjs";

@@ -41,6 +41,14 @@ function xml_text(value) {
     return number > 0 && number <= 0x10ffff ? String.fromCodePoint(number) : entity;
   }).trim();
 }
+// Extract the declared name for local matching; this is not XML validation or
+// proof that EDT has loaded the descriptor. The live EDT probe is separate.
+function descriptor_name(file, root) {
+  const text = text_file(file, root)?.replace(/<!--[\s\S]*?-->/g, "");
+  if (!text || /<!DOCTYPE|<!ENTITY/i.test(text) || !/<\/projectDescription\s*>\s*$/.test(text)) return null;
+  const declared = text.match(/<projectDescription\s*>\s*<name\s*>([^<]+)<\/name>/)?.[1];
+  return declared ? xml_text(declared) : null;
+}
 export function edt_port_suggestion(effectiveUrl, detected) {
   if (!effectiveUrl || detected?.status !== "detected") return null;
   try {
@@ -63,9 +71,7 @@ export function edt_project_descriptors(selected) {
       if (!is_file(descriptor) || !contained(root, resolve(descriptor))) continue;
       let name = path.basename(directory);
       try {
-        const text = text_file(descriptor, root)?.replace(/<!--[\s\S]*?-->/g, "");
-        const declared = text?.match(/<projectDescription\s*>\s*<name\s*>([^<]+)<\/name>/)?.[1];
-        if (declared && !/<!DOCTYPE|<!ENTITY/i.test(text)) name = xml_text(declared);
+        name = descriptor_name(descriptor, root) || name;
       } catch { /* The descriptor still establishes the project directory. */ }
       projects.push({ directory, name, descriptor });
     }
@@ -74,6 +80,31 @@ export function edt_project_descriptors(selected) {
 }
 export function edt_project_count(selected) {
   return edt_project_descriptors(selected)?.length ?? null;
+}
+// A repository can contain an EDT project below its root (for example an
+// extension in a framework repository). Never infer an EDT connection from
+// this local metadata; live readiness is checked separately.
+export function repository_projects(root, repositories, descriptors) {
+  return repositories.map(repository => {
+    const directory = resolve(path.join(root, repository.path));
+    if (!contained(resolve(root), directory)) throw new Error("Repository directory leaves project root: " + repository.path);
+    const found = descriptors ?? edt_project_descriptors(directory);
+    if (!found) throw new Error("Не удалось проверить файлы .project: " + repository.path);
+    const projects = found.filter(item => contained(directory, item.directory) && contained(directory, resolve(item.descriptor)) && (!repository.edt_project ||
+      (() => { try { return descriptor_name(item.descriptor, directory) === repository.edt_project; } catch { return false; } })()));
+    return { repository, projects };
+  });
+}
+export function index_repositories(root, data, descriptors) {
+  return repository_projects(root, data.repositories, descriptors).filter(item => item.projects.length).map(item => item.repository);
+}
+export function index_selection(root, data) {
+  const unbound = new Set(data.policy?.unbound_edt_repositories || []);
+  const found = repository_projects(root, data.repositories);
+  return { repositories: found.filter(item => item.projects.length).map(item => item.repository),
+    missingProjects: found.filter(({repository, projects}) => !unbound.has(repository.id) &&
+      (repository.edt_project || (data.policy?.edt_repository_ids || []).includes(repository.id)) && projects.length !== 1)
+      .map(item => item.repository.id) };
 }
 export function edt_projects(selected) {
   const root = resolve(selected), projects = [], errors = [], found = new Set();

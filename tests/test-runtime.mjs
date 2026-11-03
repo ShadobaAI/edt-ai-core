@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixture, environment, ROOT, node, success } from "./helpers.mjs";
+import { edt_fixture as fixture, environment, ROOT, node, success } from "./helpers.mjs";
 import { settings, sleep, operation_lock } from "../scripts/common.mjs";
 import {
   platform_build,
@@ -12,9 +12,12 @@ import {
   save_json,
   read_json,
   validate_bsl_tools,
+  index_config,
   index_readiness,
   index_status,
   rebuild_index,
+  restart_index,
+  acquire_reader,
   path_key,
   ensure_daemon,
   start_daemon,
@@ -288,11 +291,76 @@ test("index status distinguishes existing ready data, active indexing, stale dat
   body.repos[0].root_path=f.base;assert.equal(index_status(body,f.root,f.profile).state,"mismatch");
 });
 
+test("index selects repositories with matching nested EDT descriptors and ignores feature-only repositories", async t => {
+  const f=fixture(t), ui=path.join(f.root,"ui"), framework=path.join(f.root,"framework"), nested=path.join(framework,"exts/core");
+  fs.mkdirSync(ui); fs.mkdirSync(nested,{recursive:true});
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Core</name></projectDescription>");
+  f.profile.repositories.push({id:"ui",path:"ui",alias:"ui"},{id:"framework",path:"framework",alias:"framework",edt_project:"Core"});
+  f.profile.policy.unbound_edt_repositories=["ui"];
+  const home=path.join(f.base,"index-home");fs.mkdirSync(home);
+  index_config(home,f.root,f.profile);
+  const config=fs.readFileSync(path.join(home,"daemon.toml"),"utf8");
+  assert.match(config,/alias = "framework"/);assert.doesNotMatch(config,/alias = "ui"/);
+  const body={mcp:{status:"ok"},daemon:{status:"online"},repos:[
+    {repo:"product",root_path:f.root,path_status:{status:"ready"},data_version:{stale:false}},
+    {repo:"framework",root_path:framework,path_status:{status:"ready"},data_version:{stale:false}}]};
+  assert.equal(index_status(body,f.root,f.profile).state,"ready");
+  assert.deepEqual(index_status(body,f.root,f.profile).repositories.map(item=>item.id),["product","framework"]);
+  await assert.rejects(rebuild_index(f.state,settings(),f.root,f.profile,"ui"),/EDT-проект/);
+  fs.rmSync(path.join(nested,".project"));
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+  assert.deepEqual(index_status(body,f.root,f.profile).missingProjects,["framework"]);
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Core</name>");
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+});
+
+test("applying index mappings waits for readers and restarts without rebuilding", async t => {
+  const f=fixture(t), calls=[], config=settings();
+  const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async()=>assert.fail("must not rebuild"),restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true})};
+  const lease=await acquire_reader(f.state,f.root);
+  await assert.rejects(restart_index(f.state,config,f.root,f.profile,io),/Завершите текущие запросы/);
+  assert.deepEqual(calls,[]);fs.rmSync(lease);
+  assert.equal((await restart_index(f.state,config,f.root,f.profile,io)).state,"ready");
+  assert.deepEqual(calls,["stop","restart"]);
+});
+
+test("applying changed mappings replaces the owned live daemon without rebuilding", async t => {
+  const f=fixture(t), digest=sha256(fs.readFileSync(process.execPath)), exe=path.join(f.state,"runtime/code-index/fixture",digest,"node.exe"), children=[];
+  fs.mkdirSync(path.dirname(exe),{recursive:true});fs.copyFileSync(process.execPath,exe);
+  const launchIo={launch:(command,args,options)=>{
+    const child=launch(command,[path.join(ROOT,"tests/fixtures/index-daemon.mjs")],options);
+    children.push(child);f.clients.push({close:()=>stop_child(child,0)});return child;
+  }};
+  const home=await ensure_daemon(f.state,f.root,f.profile,exe,launchIo), old=(await daemon_health(home)).pid;
+  fs.mkdirSync(path.join(f.root,"extension"));
+  fs.writeFileSync(path.join(f.root,"extension/.project"),"<projectDescription><name>Extension</name></projectDescription>");
+  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"Extension"});
+  const result=await restart_index(f.state,settings(),f.root,f.profile,{
+    installed:async()=>exe,
+    stop:(state,root)=>stop_daemon(state,root,{stop:async()=>stop_child(children[0],0)}),
+    restart:(state,root,data,binary)=>ensure_daemon(state,root,data,binary,launchIo),
+    run:async()=>assert.fail("must not rebuild"),smoke:async()=>({index_ready:true}),
+  });
+  assert.equal(result.state,"ready");assert.notEqual((await daemon_health(home)).pid,old);
+  assert.match(fs.readFileSync(path.join(home,"daemon.toml"),"utf8"),/alias = "extension"/);
+});
+
+test("a .project link to another repository cannot make feature files indexable", t => {
+  const f=fixture(t), ui=path.join(f.root,"ui");fs.mkdirSync(ui);
+  try { fs.symlinkSync(path.join(f.root,".project"),path.join(ui,".project"),"file"); }
+  catch (error) { if (["EPERM","EACCES","ENOTSUP"].includes(error.code)) return t.skip("file symlinks unavailable"); throw error; }
+  f.profile.repositories.push({id:"ui",path:"ui",alias:"ui"});
+  const home=path.join(f.base,"index-home");fs.mkdirSync(home);index_config(home,f.root,f.profile);
+  assert.doesNotMatch(fs.readFileSync(path.join(home,"daemon.toml"),"utf8"),/alias = "ui"/);
+});
+
 test("index rebuild targets exactly one repository and restores the owned service", async t => {
   const f=fixture(t), config=settings(), calls=[];
-  f.profile.repositories.push({id:"extension",path:"src",alias:"extension",edt_project:"Extension"});f.save();
+  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"Extension"});f.save();
+  fs.mkdirSync(path.join(f.root,"extension"));
+  fs.writeFileSync(path.join(f.root,"extension/.project"),"<projectDescription><name>Extension</name></projectDescription>");
   const before=fs.readFileSync(path.join(f.root,".ai/project.yaml")), home=path.join(project_home(f.state,f.root),"code-index");
-  const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async(exe,directory)=>{assert.equal(exe,"fixture-exe");assert.equal(directory,path.join(f.root,"src"));calls.push("run");},restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true,index_state:"ready"})};
+  const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async(exe,directory)=>{assert.equal(exe,"fixture-exe");assert.equal(directory,path.join(f.root,"extension"));calls.push("run");},restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true,index_state:"ready"})};
   const result=await rebuild_index(f.state,config,f.root,f.profile,"extension",io);
   assert.equal(result.repository,"extension");assert.equal(result.state,"ready");assert.deepEqual(calls,["stop","run","restart"]);
   assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
@@ -347,6 +415,7 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
   assert.equal(launches, 1);
   const anotherRoot = path.join(f.base, "other");
   fs.mkdirSync(anotherRoot);
+  fs.writeFileSync(path.join(anotherRoot,".project"),"<projectDescription><name>Product</name></projectDescription>");
   const other = await ensure_daemon(
     f.state,
     anotherRoot,
@@ -360,7 +429,9 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
     otherHealth = await daemon_health(other);
   assert.notEqual(health.pid, otherHealth.pid);
   const changed = structuredClone(f.profile);
-  changed.repositories.push({ id: "extra", path: "src", alias: "extra" });
+  fs.mkdirSync(path.join(f.root,"extra"));
+  fs.writeFileSync(path.join(f.root,"extra/.project"),"<projectDescription><name>Extra</name></projectDescription>");
+  changed.repositories.push({ id: "extra", path: "extra", alias: "extra", edt_project: "Extra" });
   await assert.rejects(
     ensure_daemon(f.state, f.root, changed, process.execPath, io),
     /mapping changed/,

@@ -569,7 +569,7 @@ async function call(name, args, meta = {}) {
     if (revision !== selectionRevision) throw new Error("Профиль изменился во время чтения. Повторите операцию.");
     return { content: [{ type: "text", text: "Документ прочитан." }], _meta: { data } };
   }
-  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.refresh_readiness": "refresh_readiness", "settings.rebuild_index": "rebuild_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load", "settings.rename_profile": "rename_profile" };
+  const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.refresh_readiness": "refresh_readiness", "settings.rebuild_index": "rebuild_index", "settings.restart_index": "restart_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load", "settings.rename_profile": "rename_profile" };
   if (!actions[name]) throw new Error("Неизвестный инструмент");
   if (["settings.run_check", "settings.refresh_readiness"].includes(name) && !selectedRoot) throw new Error("Выберите папку проекта.");
   // The backend resolves and authorizes the same root immediately before
@@ -579,7 +579,7 @@ async function call(name, args, meta = {}) {
   const context = { projectRoot: proposedRoot === undefined ? selectedRoot : proposedRoot || null,
     selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" };
   if (["settings.run_check", "settings.refresh_readiness"].includes(name)) return result(operations.status(operations.start(actions[name], args, context).id));
-  if (name === "settings.rebuild_index") return result(operations.status(operations.start("rebuild_index", args, context).id));
+  if (["settings.rebuild_index", "settings.restart_index"].includes(name)) return result(operations.status(operations.start(actions[name], args, context).id));
   if (name === "settings.updates") return result(operations.status(operations.start("updates", args, context).id));
   const data = await (name === "settings.preview" ? backend(actions[name], args, context) : operations.execute(actions[name], args, context));
   if (revision === selectionRevision && !rootLocked && !selectionError && data.values && Object.hasOwn(data.values, "projectRoot")) {
@@ -618,6 +618,9 @@ tools.push({ name: "settings.run_check", title: "Проверить готовн
 tools.push({ name: "settings.rebuild_index", title: "Пересоздать индекс EDT-проекта", description: "Rebuild only one configured repository with the native index --force CLI, after scoped authorization. Stops the owned project daemon and requires current readers to finish. Does not edit the profile or source files. Poll settings.operation; do not retry a running operation.",
   inputSchema: { type: "object", properties: { repository: { type: "string", minLength: 1 }, authorization: preparationAuthorization }, required: ["repository", "authorization"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
+tools.push({ name: "settings.restart_index", title: "Применить состав проектов индекса", description: "Safely restart the owned code-index daemon with current repository mappings, without rebuilding indexes. Requires scoped authorization and waits for active readers. Poll settings.operation.",
+  inputSchema: { type: "object", properties: { authorization: preparationAuthorization }, required: ["authorization"], additionalProperties: false },
+  annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly });
 tools.push({ name: "settings.updates", title: "Обновления компонентов", description: "Install the component's saved version in one operation: download a candidate, validate its live protocol and activate it. An explicit version can upgrade or downgrade. Stable releases are the default for latest. Separate check, download, apply and rollback operations remain available. Mutating operations require scoped authorization. Poll settings.operation; do not retry a running operation.",
   inputSchema: { type: "object", properties: {
     operation: { enum: ["install", "check", "download", "apply", "rollback"] },

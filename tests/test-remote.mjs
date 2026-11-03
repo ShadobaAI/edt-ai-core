@@ -135,6 +135,7 @@ test("workspace port changes rebind only the selected EDT relay", async t => {
 
 test("external code-index preparation checks scoped health without installing a managed runtime", async t => {
   const f = fixture(t), config = settings();
+  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
   let unhealthy = false;
   const e = await endpoint(t, ({ res, message, reply, error }) => {
     if (message.method === "server/discover") return error(-32601);

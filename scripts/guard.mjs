@@ -18,7 +18,7 @@ const escapeRE = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const setupMethods = new Set([
   "create", "load", "import", "export", "select_profile", "forget_profile", "status", "refresh_readiness", "reset_connection", "open", "inspect", "probe_connections", "profile", "read", "pick_directory",
   "open_directory", "update", "preview", "apply", "export_data", "save_export", "open_export_directory", "export_diagnostics", "diagnostics",
-  "open_diagnostics_directory", "edit", "document", "operation", "check", "run_check", "rebuild_index", "updates", "versions",
+  "open_diagnostics_directory", "edit", "document", "operation", "check", "run_check", "rebuild_index", "restart_index", "updates", "versions",
   "pick_java", "check_java", "pick_import_file", "import_file", "profile_source", "rename_profile", "repair_document",
 ]);
 function setup_control(name) {

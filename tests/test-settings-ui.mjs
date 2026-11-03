@@ -1248,6 +1248,20 @@ test("rebuilding an index uses the selected EDT repository and never repeats the
   assert.match(ui.elements.get("status").textContent,/Extension.*пересоздан.*Готов/);
 });
 
+test("index UI excludes feature-only repositories and applies mappings without rebuilding", async () => {
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return {...read,profile:{...read.profile,indexRepositories:["core"],repositories:[{id:"ui",path:"ui"},{id:"core",path:"framework",edt_project:"Core"}]}};
+    if(name==="settings.restart_index"){assert.equal(args.authorization.scope,read.preparationScope);return {id:"restart",status:"running"};}
+    if(name==="settings.operation")return {id:"restart",action:"restart_index",projectRoot:read.values.projectRoot,instance:read.instance,status:"completed",result:{state:"ready"}};
+    throw new Error(name);
+  });await ui.flush();
+  assert.deepEqual(ui.elements.get("indexRepository").children.map(item=>item.value),["core"]);
+  await ui.elements.get("restartIndexButton").onclick();
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.restart_index").length,1);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.rebuild_index").length,0);
+  assert.match(ui.elements.get("status").textContent,/Состав проектов индекса применён/);
+});
+
 test("connection checks use unsaved fields without saving and preserve drafts", async () => {
   let checked;
   const ui=screen(async(name,args)=>{

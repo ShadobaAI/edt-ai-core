@@ -6,12 +6,14 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
-import { fixture, ROOT, environment } from "./helpers.mjs";
+import { edt_fixture as fixture, ROOT, environment } from "./helpers.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
 import { dump, sleep } from "../scripts/common.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";
+import { probe_connections } from "../scripts/setup_probe.mjs";
+import { settings } from "../scripts/common.mjs";
 
 async function unbound(t, f, file = "mcp/settings.mjs", args = []) {
   const client = new McpClient([process.execPath, path.join(ROOT, file), ...args], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
@@ -132,6 +134,23 @@ test("one bounded setup probe verifies external connections and refuses a wrong 
   assert.equal((await run()).external.edt.repositories[0].matched, false);
   await assert.rejects(client.call("settings.operation", { waitMs: 10001 }), /диапазона/);
   await assert.rejects(client.call("settings.operation", { waitMs: 0.5 }), /тип/);
+});
+
+test("EDT probe matches a nested .project and skips an explicitly unbound feature repository", async t => {
+  const f=fixture(t), nested=path.join(f.root,"framework/exts/core");
+  fs.mkdirSync(nested,{recursive:true});fs.mkdirSync(path.join(f.root,"ui"));
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Product</name></projectDescription>");
+  f.profile.repositories=[{id:"ui",path:"ui",alias:"ui"},{id:"framework",path:"framework",alias:"framework",edt_project:"Product"}];
+  f.profile.policy.unbound_edt_repositories=["ui"];
+  const upstream=await endpoint(t,nested),config=settings();
+  config.mcp.required.edt.url=upstream.url;config.mcp.required.v8std.url=upstream.url;
+  const first=await probe_connections(config,f.root,f.profile);
+  assert.equal(first.external.edt.projectReadiness,"verified",JSON.stringify(first.external.edt));
+  assert.deepEqual(first.external.edt.repositories.map(item=>item.id),["framework"]);
+  fs.rmSync(path.join(nested,".project"));
+  const missing=await probe_connections(config,f.root,f.profile);
+  assert.equal(missing.external.edt.projectReadiness,"not_ready");
+  assert.equal(missing.external.edt.repositories[0].matched,false);
 });
 
 test("v8std bootstrap survives empty roots and isolates projects on a shared server", async t => {

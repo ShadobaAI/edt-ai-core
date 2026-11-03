@@ -5,6 +5,7 @@ import { instance_directory, instance_name, exists, resolve, record_project_owne
 import fs from "node:fs";
 import { access_revision, persisted_access_revision, access_receipt_epoch } from "./openviking_access.mjs";
 import { publication_revision, publication_receipt_epoch } from "./openviking_publication.mjs";
+import { index_repositories } from "./directory_context.mjs";
 export const COMPONENTS = Object.freeze({
   edt: { kind: "remote", title: "EDT" },
   v8std: { kind: "remote", title: "Стандарты" },
@@ -17,7 +18,7 @@ export const component_settings = (config, id) => config.mcp[COMPONENTS[id].opti
 export const component_enabled = (config, id) => component_settings(config, id).enabled !== false;
 export function binding_fingerprint(config, id, root, profile, reconnect = "") {
   return stable([root, instance_name(), component_settings(config, id),
-    id === "code-index" ? profile.repositories : id === "openviking" ? [profile.knowledge,
+    id === "code-index" ? index_repositories(root, profile) : id === "openviking" ? [profile.knowledge,
       profile.knowledge.manifest ? sha256(fs.readFileSync(inside(root, profile.knowledge.manifest))) : null,
       access_revision(component_settings(config, id)), publication_revision(component_settings(config, id))] : null, reconnect]);
 }

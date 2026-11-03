@@ -57,6 +57,11 @@ export function environment(t, env) {
     Object.assign(process.env, previous);
   });
 }
+export function edt_fixture(t) {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
+  return f;
+}
 export function node(file, args = [], options = {}) {
   return spawnSync(process.execPath, [path.resolve(ROOT, file), ...args], {
     encoding: "utf8",

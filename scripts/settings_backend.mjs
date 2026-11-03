@@ -57,7 +57,7 @@ import {
   check_instance_override,
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
-import { directory_context, edt_connection, edt_port_suggestion, edt_project_descriptors } from "./directory_context.mjs";
+import { directory_context, edt_connection, edt_port_suggestion, edt_project_descriptors, index_repositories } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness } from "./setup_readiness.mjs";
 import { knowledge_status } from "./knowledge.mjs";
@@ -677,6 +677,10 @@ export class SettingsBackend {
       const directoryContext = directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project);
       const profileDirectoryContext = config.active_project && directoryContext?.directory !== config.active_project
         ? directory_context(config.active_project) : directoryContext;
+      if (profile.status === "loaded") {
+        try { profile.indexRepositories = index_repositories(config.active_project, profile).map(repo => repo.id); }
+        catch { profile.indexRepositories = []; }
+      }
       const readiness = await read_readiness(this.STATE, effective, profile);
       const knowledge = profile.status === "loaded" ? knowledge_status(project_profile(config.active_project), effective) : null;
       return {
@@ -1040,11 +1044,11 @@ export class SettingsBackend {
       });
       return { ...result, projectRoot };
     }
-    if (action === "rebuild_index") {
+    if (action === "rebuild_index" || action === "restart_index") {
       const runtime = await import("./runtime.mjs"), config = this.effective(this.current()), [root, data] = runtime.project(config.active_project, config, true);
       authorize_preparation(request, root);
       grant_preparation(this.STATE, root, ["code-index"]);
-      return runtime.rebuild_index(this.STATE, config, root, data, request.repository);
+      return action === "rebuild_index" ? runtime.rebuild_index(this.STATE, config, root, data, request.repository) : runtime.restart_index(this.STATE, config, root, data);
     }
     if (action === "check" || action === "refresh_readiness") {
       const runtime = await import("./runtime.mjs"),
@@ -1080,7 +1084,7 @@ export class SettingsBackend {
             name: component,
             ready,
             state: ready ? "ready" : item.index_state || "not_checked",
-            ...(item.index ? { repositories: item.index.repositories, ...(item.index.retryable ? { retryable: true, detail: "Индекс найден; сервис ещё не подтвердил актуальность данных." } : {}) } : {}),
+            ...(item.index ? { repositories: item.index.repositories, ...(item.index.missingProjects?.length ? { detail: "Не найден или неоднозначен .project для: " + item.index.missingProjects.join(", ") } : {}), ...(item.index.retryable ? { retryable: true, detail: "Индекс найден; сервис ещё не подтвердил актуальность данных." } : {}) } : {}),
             version: item.server?.version,
           };
         } catch (error) {
