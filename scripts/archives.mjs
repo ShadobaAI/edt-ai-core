@@ -19,6 +19,14 @@ export function zip_entries(bytes, maxBytes = 100_000_000) {
     bytes.readUInt16LE(eocd + 8) !== bytes.readUInt16LE(eocd + 10)
   )
     throw new Error("Invalid or unsupported ZIP");
+  // fflate locates the last EOCD signature without checking the comment length
+  // and recognizes ZIP64 from a locator immediately before it. Reject both
+  // ambiguities so its directory is exactly the one validated below.
+  for (let i = eocd + 1; i <= bytes.length - 22; i++)
+    if (bytes.readUInt32LE(i) === 0x06054b50)
+      throw new Error("Ambiguous ZIP end record");
+  if (eocd >= 20 && bytes.readUInt32LE(eocd - 20) === 0x07064b50)
+    throw new Error("ZIP64 is unsupported");
   const count = bytes.readUInt16LE(eocd + 10),
     offset = bytes.readUInt32LE(eocd + 16);
   if (count === 65535 || offset + bytes.readUInt32LE(eocd + 12) !== eocd)

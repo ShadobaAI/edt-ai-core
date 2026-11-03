@@ -26,7 +26,7 @@ import {
   project_home,
 } from "../scripts/runtime.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
-import { zip, extract_binary } from "../scripts/archives.mjs";
+import { zip, unzip, extract_binary } from "../scripts/archives.mjs";
 import { launch, stop_child, alive } from "../scripts/processes.mjs";
 import { inspect } from "../scripts/doctor.mjs";
 import { gzipSync } from "node:zlib";
@@ -182,6 +182,28 @@ test("ZIP binary extraction accepts only one regular known executable", () => {
       ),
     /Unsafe/,
   );
+});
+test("ZIP validation and decompression use the same end record and directory", () => {
+  const original = Buffer.from(zip({ "bsl-indexer.exe": Buffer.from("binary") }));
+  const end = original.length - 22;
+  const fakeEnd = Buffer.alloc(22);
+  fakeEnd.writeUInt32LE(0x06054b50);
+  fakeEnd.writeUInt16LE(1, 20);
+  const commented = Buffer.concat([original, fakeEnd]);
+  commented.writeUInt16LE(fakeEnd.length, end + 20);
+  assert.throws(() => unzip(commented), /Ambiguous ZIP/);
+
+  const directory = original.readUInt32LE(end + 16);
+  const locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50);
+  const zip64 = Buffer.concat([original.subarray(0, end), locator, original.subarray(end)]);
+  zip64.writeUInt16LE(locator.length, directory + 32);
+  zip64.writeUInt32LE(original.readUInt32LE(end + 12) + locator.length, end + locator.length + 12);
+  assert.throws(() => unzip(zip64), /ZIP64 is unsupported/);
+
+  const normalComment = Buffer.concat([original, Buffer.from("release")]);
+  normalComment.writeUInt16LE(7, end + 20);
+  assert.equal(Buffer.from(unzip(normalComment)["bsl-indexer.exe"]).toString(), "binary");
 });
 test("tar.gz binary extraction checks checksum and refuses links or duplicate executables", () => {
   const make = (type = "0") => {
@@ -379,6 +401,7 @@ test("index rebuild targets exactly one repository and restores the owned servic
   assert.deepEqual(calls,["stop","restart"]);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
   await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>{throw new Error("unknown stop");}}),error=>error.outcomeUnknown===true);
   assert.equal(fs.existsSync(path.join(home,"maintenance.json")),true);
+  await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>assert.fail("must not retry an uncertain stop")}),/interrupted/);
 });
 
 test("daemon launch closes its first log handle if opening the second fails", async t => {

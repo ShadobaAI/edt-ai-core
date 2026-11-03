@@ -76,6 +76,9 @@ test("installation commits the saved version only after validation and restores 
     return spawn(command,args,options);
   });
   t.mock.method(childProcess,"spawnSync",(command,args,options)=>args?.[0]==="-version"?{status:0,stderr:'java version "21"'}:spawnSync(command,args,options));
+  const execFile=childProcess.execFile;
+  t.mock.method(childProcess,"execFile",(command,args,options,callback)=>args?.[0]==="-version"
+    ? queueMicrotask(()=>callback(null,"",'java version "21"')) : execFile(command,args,options,callback));
   syncBuiltinESMExports();
   t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
   t.mock.method(fs,"renameSync",(from,to)=>{

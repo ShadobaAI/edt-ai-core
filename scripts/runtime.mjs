@@ -343,6 +343,7 @@ export const installed_runtime = (state, config, component, refresh = false, all
   );
 const active_entry = ({ candidate, previous, ...entry } = {}) => entry;
 const runtimeOwner = randomUUID();
+const activeMaintenance = new Set();
 const uncertain_update = message => Object.assign(new ConfigError(message), { outcomeUnknown: true });
 function owned_executable(state, owner) {
   if (!owner.executable || !is_file(owner.executable)) return false;
@@ -378,9 +379,20 @@ export function active_readers(state, root) {
   const directory = path.join(project_home(state, root), "code-index/readers");
   return exists(directory) ? fs.readdirSync(directory).filter(file => file.endsWith(".json")).map(file => read_json(path.join(directory, file), {})).filter(reader => reader.root === resolve(root) && alive(reader.pid)) : [];
 }
-function check_maintenance(home) {
-  const record = read_json(path.join(home, "maintenance.json"));
-  if (record && (record.pid !== process.pid || record.ownerId !== runtimeOwner)) throw new ConfigError("Component update is in progress or was interrupted; inspect settings.operation before connecting readers");
+function check_maintenance(home, allowOwned = false) {
+  const file = path.join(home, "maintenance.json");
+  if (!exists(file)) return;
+  let record;
+  if (allowOwned && activeMaintenance.has(home)) {
+    try { record = read_json(file); } catch { /* An unreadable marker remains a barrier. */ }
+  }
+  if (!allowOwned || !activeMaintenance.has(home) || record?.pid !== process.pid || record?.ownerId !== runtimeOwner)
+    throw new ConfigError("Component update is in progress or was interrupted; inspect settings.operation before connecting readers");
+}
+function begin_maintenance(home, root) {
+  check_maintenance(home);
+  save_json(path.join(home, "maintenance.json"), { pid: process.pid, root: resolve(root), ownerId: runtimeOwner });
+  activeMaintenance.add(home);
 }
 export async function acquire_reader(state, root) {
   record_project_owner(state, root);
@@ -413,11 +425,7 @@ export async function update_component(state, config, root, data, component, act
         throw new ConfigError("Downloaded candidate does not match the current release settings; download a new candidate before applying");
     }
     const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
-    if (component === "code-index") await operation_lock(home, () => {
-      const old = read_json(maintenance);
-      if (old && old.pid !== process.pid && alive(old.pid)) throw new ConfigError("Another component update is still running");
-      save_json(maintenance, { pid: process.pid, root: resolve(root), ownerId: runtimeOwner });
-    });
+    if (component === "code-index") await operation_lock(home, () => begin_maintenance(home, root));
     let leaveMaintenance = false;
     try {
     signal_component(state, root, component, true);
@@ -454,7 +462,10 @@ export async function update_component(state, config, root, data, component, act
       throw new ConfigError("Candidate rejected; active artifact retained: " + safe_error_message(error));
     }
     } finally {
-      if (component === "code-index" && !leaveMaintenance && read_json(maintenance)?.pid === process.pid) fs.rmSync(maintenance, { force: true });
+      if (component === "code-index") {
+        activeMaintenance.delete(home);
+        if (!leaveMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
+      }
     }
   }, 180);
 }
@@ -597,7 +608,7 @@ export async function ensure_daemon(state, root, data, exe, io) {
   const home = path.join(project_home(state, root), "code-index");
   return operation_lock(
     home,
-    () => { check_maintenance(home); return start_daemon(home, root, data, exe, io); },
+    () => { check_maintenance(home, true); return start_daemon(home, root, data, exe, io); },
     45,
   );
 }
@@ -812,7 +823,7 @@ async function maintain_index(state, config, root, data, repo, io) {
   const exe = await (io.installed || installed_runtime)(state, config, "code-index");
   return operation_lock(state, async () => {
     if (!io.installed && artifact(state, "code-index") !== exe) throw new ConfigError("Версия индексатора изменилась. Повторите действие после завершения обновления.");
-    await operation_lock(home, () => { check_maintenance(home); save_json(maintenance, { pid: process.pid, root: resolve(root), ownerId: runtimeOwner }); });
+    await operation_lock(home, () => begin_maintenance(home, root));
     let keepMaintenance = false, stopped = false;
     try {
       signal_component(state, root, "code-index", true);
@@ -825,10 +836,12 @@ async function maintain_index(state, config, root, data, repo, io) {
       const checked = await (io.smoke || smoke)(state, config, root, data, "code-index", 90, false, exe);
       return { projectRoot: root, ...(repo ? { repository: repo.id, edtProject: repo.edt_project } : {}), state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
     } finally {
-      if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe); }
-      catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }
-      if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
-      signal_component(state, root, "code-index", true);
+      try {
+        if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe); }
+        catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }
+        if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
+        signal_component(state, root, "code-index", true);
+      } finally { activeMaintenance.delete(home); }
     }
   }, 180);
 }

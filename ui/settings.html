@@ -969,6 +969,8 @@ window.addEventListener("beforeunload",event=>{if(dirtyFields.size||hasProfileDr
     $("profileTitle").textContent="Предпросмотр настроек";$("profileState").textContent="Без подключения";$("instance").textContent="—";
     $("profileDescription").textContent="Поля показаны без данных пользователя. Для редактирования откройте настройки плагина в Codex.";
     $("profileEmpty").hidden=true;$("connectionSettings").hidden=false;
+    $("importTarget").textContent="не выбран";$("editorDestination").textContent="недоступен";
+    $("journalCount").textContent="Недоступен в предпросмотре";
     initializing=false;renderVersion();syncControls();show("profile");notice("Предпросмотр формы. Настройки пользователя не загружены.");return;
   }
   try{

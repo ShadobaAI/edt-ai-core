@@ -379,6 +379,9 @@ test("opening the HTML directly allows every preview tab without a host or profi
 
 test("standalone preview keeps saving, updates and service launches unavailable after navigation", async () => {
   const ui=screen(()=>{throw new Error("No plugin calls in preview");},{standalone:true});await ui.flush();
+  assert.equal(ui.elements.get("importTarget").textContent,"не выбран");
+  assert.equal(ui.elements.get("editorDestination").textContent,"недоступен");
+  assert.equal(ui.elements.get("journalCount").textContent,"Недоступен в предпросмотре");
   for(const mode of ["check","import","editor","support"]){
     ui.elements.get(mode+"Tab").onclick();
     for(const id of ["saveButton","saveComponentsButton","readinessButton","rebuildIndexButton","installUpdateButton","refreshVersionsButton","downloadButton","previewButton","applyButton","diagnosticsButton"])

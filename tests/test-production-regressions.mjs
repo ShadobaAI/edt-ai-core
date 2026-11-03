@@ -133,9 +133,10 @@ test("managed relay bounds shutdown of a child that ignores host EOF", async t =
   const preloadFile = path.join(f.base, "hang-preload.mjs");
   const hanging = "process.stdout.write(String(process.pid)+'\\n'); process.stdin.resume(); setInterval(()=>{},1000);";
   fs.writeFileSync(preloadFile, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
-    const spawn=cp.spawn, sync=cp.spawnSync;
+    const spawn=cp.spawn, sync=cp.spawnSync, execFile=cp.execFile;
     cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(process.execPath,['-e',${JSON.stringify(hanging)}],options) : spawn(command,args,options);
     cp.spawnSync=(command,args,options)=>args?.[0]==='-version' ? {status:0,stderr:'java version "21"',stdout:''} : sync(command,args,options);
+    cp.execFile=(command,args,options,callback)=>args?.[0]==='-version' ? queueMicrotask(()=>callback(null,'','java version "21"')) : execFile(command,args,options,callback);
     syncBuiltinESMExports();`);
   const child = launch(process.execPath, [path.join(ROOT, "scripts/managed_mcp.mjs"), "--component", "bsl-ls"], {
     cwd: f.root, env: { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preloadFile).href }, stdio: ["pipe", "pipe", "pipe"],
@@ -224,9 +225,15 @@ test("rejected code-index candidate restores the previous daemon; uncertain clea
   });
   save_json(path.join(f.state,"runtime-lock.json"),{"code-index":{...entries[0],candidate:entries[1]}});
   let stops=0,restarted=null;
-  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>{stops++;},smoke:async()=>{throw new Error("native contract missing");},restart:async(...args)=>{restarted=args.at(-1);}}),/active artifact retained/);
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>{stops++;await assert.rejects(acquire_reader(f.state,f.root),/interrupted/);},smoke:async()=>{throw new Error("native contract missing");},restart:async(...args)=>{restarted=args.at(-1);}}),/active artifact retained/);
   assert.equal(stops,2);assert.equal(restarted,artifact(f.state,"code-index"));
   const maintenance=path.join(project_home(f.state,f.root),"code-index/maintenance.json");assert.equal(fs.existsSync(maintenance),false);
   await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>{throw new Error("timeout");}}),error=>error.outcomeUnknown===true);
   assert.equal(fs.existsSync(maintenance),true);assert.equal(read_json(path.join(f.state,"runtime-lock.json"))["code-index"].release,"v1.0.0");
+  await assert.rejects(acquire_reader(f.state,f.root),/interrupted/);
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>assert.fail("must not retry an uncertain stop")}),/interrupted/);
+  save_json(maintenance,{pid:99999999,root:f.root,ownerId:"previous-process"});
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>assert.fail("must not replace interrupted maintenance")}),/interrupted/);
+  fs.writeFileSync(maintenance,"invalid JSON");
+  await assert.rejects(acquire_reader(f.state,f.root),/interrupted/);
 });
