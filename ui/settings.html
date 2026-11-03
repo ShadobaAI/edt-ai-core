@@ -153,7 +153,7 @@ const standalone=window.parent===window;
 let initialData=null,lastPreview=null,fileText="",editBaseRevision=null,editLayerScope=null,editorLayerPath=null,editorDocument="profile",checkTimer=null,activeOperation=null,inputRevision=0,polling=false,currentData=null,lastHeight=0,resizeTimer=null,containerDimensions={},initializing=true,entryProjectRoot=null,interacted=false,busyActive=false,diagnosticsBusy=false;
 $("editorDocument").value=editorDocument;
 const dirtyFields=new Set();let statusTimer=null,statusPolling=false,disposed=false,historySignature="",viewRevision=0,editorOriginal="",previewMode="import",navigationMode="project",activeMode="profile",diagnosticsLoading=false,diagnosticsData=null,journalSignature="";const expandedLogs=new Set();let profilesOpen=false;const profileMedia=window.matchMedia?.("(max-width:900px)");
-let readinessScope=null,readinessPending=false,automaticStarting=false,readinessRetryTimer=null,readinessUnknownRetries=0,inlineImport=false,importDraft=false,renameDirty=false,pendingScope=null,nativeImport=null,settingsDraftRevision=null,renameBaseRevision=null;
+let readinessScope=null,readinessPending=false,automaticStarting=false,readinessRetryTimer=null,readinessUnknownRetries=0,staleRefreshKey=null,inlineImport=false,importDraft=false,renameDirty=false,pendingScope=null,nativeImport=null,settingsDraftRevision=null,renameBaseRevision=null;
 const automaticOperationIds=new Set();
 const treeErrors=new Map();let jsonInputs=[];
 const updateResults=new Map();
@@ -517,14 +517,14 @@ function scheduleStatus(){if(statusTimer)clearTimeout(statusTimer);statusTimer=n
 async function refreshStatus(){
   if(statusTimer)clearTimeout(statusTimer);statusTimer=null;if(disposed||document.hidden)return;if(statusPolling||busyActive||initializing){scheduleStatus();return;}
   statusPolling=true;const revision=viewRevision;
-  try{const current=await tool("settings.status",currentData?.viewOnly?{projectRoot:currentData.values.projectRoot}:{});if(disposed||revision!==viewRevision||busyActive)return;renderCurrent(current,{preserveDraft:true});if(activeMode==="support")await loadDiagnostics();if(current.operation?.status==="running"&&!polling&&!checkTimer)await pollOperation(current.operation.id);}
-  catch{if(!disposed)$("autoRefreshState").textContent="Нет свежих данных · повторим автоматически";}
+  try{const current=await tool("settings.status",currentData?.viewOnly?{projectRoot:currentData.values.projectRoot}:{});if(disposed||revision!==viewRevision||busyActive)return false;renderCurrent(current,{preserveDraft:true});if(current.readiness?.state==="stale"){const key=JSON.stringify([current.preparationScope,current.readiness.checkedAt,current.readiness.reason]);if(key!==staleRefreshKey){staleRefreshKey=key;readinessPending=true;}}else staleRefreshKey=null;if(activeMode==="support")await loadDiagnostics();if(current.operation?.status==="running"&&!polling&&!checkTimer)await pollOperation(current.operation.id);return true;}
+  catch{if(!disposed&&revision===viewRevision&&!busyActive)$("autoRefreshState").textContent="Нет свежих данных · повторим автоматически";return false;}
   finally{statusPolling=false;scheduleStatus();await refreshReadinessAutomatically();}
 }
 function syncControls(){
   if(standalone){for(const control of document.querySelectorAll("button,input,textarea,select"))control.disabled=!(control.id||"").endsWith("Tab")&&!control.versionOption&&!["updateComponent","versionButton","versionSearch","moreVersionsButton"].includes(control.id);return;}
   const observing=automaticStarting||(activeOperation?.status==="running"&&activeOperation.action==="refresh_readiness"),running=activeOperation?.status==="running"&&!observing;
-  for(const control of document.querySelectorAll("button,input,textarea,select"))control.disabled=busyActive||control.profileUnavailable||Boolean(control.resetField&&dirtyFields.has(control.resetField))||(running&&!(control.id||"").endsWith("Tab"))||(observing&&Boolean(control.settingsMutation));
+  for(const control of document.querySelectorAll("button,input,textarea,select"))control.disabled=busyActive||control.profileUnavailable||Boolean(control.resetField&&dirtyFields.has(control.resetField))||(running&&!(control.id||"").endsWith("Tab"));
   $("profileToggleButton").disabled=false;$("closeProfilesButton").disabled=false;
   $("diagnosticsRefreshButton").disabled=!connected||diagnosticsLoading;
   $("logSearch").disabled=false;$("logLevel").disabled=false;
@@ -550,7 +550,7 @@ function syncControls(){
   $("editorTab").disabled||=!loaded&&currentData?.profile?.status!=="invalid";
   for(const id of ["createButton","repairButton","loadButton","previewButton","applyButton","file","pickImportFileButton","importSource","sourceProfile","includeProfileConnections","includeMachineSettings","reviewEditButton","migrateConnectionsButton"])$(id).disabled||=blocked||!currentData?.values?.projectRoot;
   $("applyButton").disabled||=!lastPreview||Boolean(lastPreview?.replacesProfile&&!$("replace").checked);
-  if(observing)for(const id of ["saveButton","probeButton","saveComponentsButton","saveJavaButton","pickJavaButton","checkJavaButton","renameSaveButton","readinessButton","installUpdateButton","rebuildIndexButton","restartIndexButton","createButton","repairButton","loadButton","applyButton","migrateConnectionsButton","useEdtPortButton","downloadButton","openDirectoryButton","pickDirectoryButton","pickImportFileButton"])$(id).disabled=true;
+  if(observing)for(const id of ["probeButton","pickJavaButton","checkJavaButton","readinessButton","installUpdateButton","rebuildIndexButton","restartIndexButton","pickDirectoryButton","pickImportFileButton"])$(id).disabled=true;
   $("editSettingsButton").disabled||=!currentData?.values?.projectRoot||draftRoot||editorChanged();$("settingsText").disabled||=!currentData?.values?.projectRoot||draftRoot;$("settingsText").readOnly=Boolean(currentData?.viewOnly);
   $("editorDocument").disabled||=!currentData?.values?.projectRoot||draftRoot||Boolean(currentData?.viewOnly)||(currentData?.profile?.status!=="loaded"&&!currentData?.configurationError);
   for(const input of jsonInputs){input.disabled=Boolean($("settingsText").disabled||(input.treeType&&$("settingsText").readOnly));input.readOnly=$("settingsText").readOnly;}
@@ -627,7 +627,7 @@ for(const field of ["projectRoot","edtUrl","v8stdUrl","codeIndexEnabled","bslLsE
 $("selectProfileButton").onclick=()=>selectProfile($("projectRoot").value.trim());
 $("projectRoot").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();selectProfile($("projectRoot").value.trim());}});
 $("addProfileButton").onclick=()=>{if(navigationMode!=="profiles")return;$("directoryChooser").open=true;if(!$("pickDirectoryButton").hidden&&!$("pickDirectoryButton").disabled)return $("pickDirectoryButton").onclick();$("projectRoot").focus();};
-$("refreshButton").onclick=()=>busy("Обновляем сведения…",async()=>{await refresh();readinessUnknownRetries=0;readinessPending=true;notice("Сведения обновлены.");}).catch(()=>{});
+$("refreshButton").onclick=async()=>{interacted=true;readinessUnknownRetries=0;readinessPending=true;await refreshStatus();};
 $("resolveChatButton").onclick=()=>busy("Запрашиваем проект текущего чата…",async()=>{await rpc("ui/message",{role:"user",content:[{type:"text",text:"Открой настройки 1C AI Core для проекта этого чата. Используй каталог текущего чата, не выбирай другой профиль из истории."}]});notice("Запрос отправлен в текущий чат. Настройки откроются с каталогом проекта.");}).catch(()=>{});
 $("historySearch").addEventListener("input",()=>{interacted=true;if(currentData){renderHistory(currentData);syncControls();}});
 $("discardDraftButton").onclick=()=>{const deferred=pendingScope;pendingScope=null;dirtyFields.clear();settingsDraftRevision=null;renameBaseRevision=null;importDraft=false;nativeImport=null;$("nativeImportFileName").textContent="";renameDirty=false;$("renameArea").hidden=true;$("settingsText").value="";editorOriginal="";resetJsonEditor();$("file").value="";$("fileName").textContent="Выбрать файл";editBaseRevision=null;editLayerScope=null;invalidate();if(deferred){renderCurrent(deferred);show("profile");}else if(currentData)renderCurrent(currentData);notice("Несохранённые изменения отменены.");};
@@ -906,7 +906,7 @@ async function pollOperation(operationId){
       }else{if(operation.action==="apply")invalidate();await refresh();}
       const text={load:"Профиль загружен.",create:"Профиль создан.",update:"Подключения сохранены.",apply:"Настройки импортированы.",pick_directory:"Папка выбрана."}[operation.action]||"Операция завершена.";
       notice(text+" "+(operation.result?.sessionGuidance||currentData?.sessionGuidance||""));return;
-    }if(operation.action!=="refresh_readiness"||operationMatchesProfile(operation))renderCheck(operation.result,operation);await refresh();retryPendingReadiness(operation.result,operation);
+    }if(!operation.result?.superseded&&(operation.action!=="refresh_readiness"||operationMatchesProfile(operation)))renderCheck(operation.result,operation);await refresh();if(operation.result?.superseded&&operationMatchesProfile(operation))readinessPending=true;else retryPendingReadiness(operation.result,operation);
   }finally{polling=false;syncControls();resize();refreshReadinessAutomatically();}
 }
 function icon(id){const svg=document.createElementNS("http://www.w3.org/2000/svg","svg"),use=document.createElementNS("http://www.w3.org/2000/svg","use");svg.setAttribute("class","icon");svg.setAttribute("aria-hidden","true");use.setAttribute("href","#i-"+id);svg.append(use);return svg;}
@@ -919,8 +919,9 @@ function renderServiceSnapshot(current){
     return {name:item.id,state:item.status,ready:item.status==="ready"||item.status==="disabled",detail:item.detail||({running:"Процесс индекса работает; готовность индекса ещё не подтверждена.",stopped:"Процесс индекса не запущен.",not_checked:"Проверка компонента ещё не выполнена.",check_stale:"Повторите проверку готовности."}[item.status]),checkedAt:item.checkedAt,
       repositories:Array.isArray(repositories)?repositories.filter(repo=>repo&&typeof repo==="object"):undefined};
   });
-  const policy=checks.find(item=>item.id==="policy");if(policy)managed.push({name:"policy",state:fresh?policy.state:"check_stale",ready:fresh&&policy.state==="ready",detail:fresh?policy.detail:readiness.reason,checkedAt:readiness.checkedAt});
-  const external=Object.fromEntries(checks.filter(item=>["edt","v8std","openviking"].includes(item.id)).map(item=>[item.id,{state:fresh?item.state:"check_stale",ready:fresh&&item.state==="ready",configured:Boolean(current.values?.[item.id+"Url"]),connected:["ready","not_verified"].includes(item.state),detail:fresh?item.detail:readiness.reason}]));
+  const unchecked=readiness.state==="stale"?"check_stale":"not_checked";
+  const policy=checks.find(item=>item.id==="policy");if(policy)managed.push({name:"policy",state:fresh?policy.state:unchecked,ready:fresh&&policy.state==="ready",detail:fresh?policy.detail:readiness.reason,checkedAt:readiness.checkedAt});
+  const external=Object.fromEntries(checks.filter(item=>["edt","v8std","openviking"].includes(item.id)).map(item=>[item.id,{state:fresh?item.state:unchecked,ready:fresh&&item.state==="ready",configured:Boolean(current.values?.[item.id+"Url"]),connected:fresh&&["ready","not_verified"].includes(item.state),detail:fresh?item.detail:readiness.reason}]));
   const signature=JSON.stringify([current.values.projectRoot,current.instance,managed,external]);if($("connections").snapshotSignature===signature)return;
   renderCheck({managed,external,readiness},{projectRoot:current.values.projectRoot,instance:current.instance},{announce:false});$("connections").snapshotSignature=signature;
 }
@@ -941,7 +942,7 @@ function renderCheck(result,operation,{announce=true}={}){
     if(item.repositories)text.textContent+="\n"+item.repositories.map(repo=>(repo.edtProject||repo.id)+": "+({ready:"готов",indexing:"индексируется",missing:"индекс не найден",stale:"устарел",error:"ошибка",mismatch:"не совпадает путь или псевдоним",not_checked:"не проверен"}[repo.state]||"состояние не определено")+(repo.present?" · индекс на диске найден":"")).join("\n");
   }
   for(const[name,item]of Object.entries(result.external)){
-    const service=serviceRow(name,name==="v8std"?"book":"code"),value=service.valueNode;value.className=item.ready?"good":"warning";value.textContent=item.state==="check_stale"?"Проверка устарела":item.ready?"Проверено":!item.configured?"Укажите адрес сервера":item.connected?"Готовность не подтверждена":"Нет подключения";service.textNode.textContent=item.detail?userMessage(item.detail):item.ready?"Подключение проверено.":item.state==="check_stale"?"Повторите проверку готовности.":!item.configured?"Укажите адрес сервера в подключениях.":item.connected?"Проверьте результаты готовности.":"Проверьте настройки и доступность сервера.";rows.push(service);
+    const service=serviceRow(name,name==="v8std"?"book":"code"),value=service.valueNode;value.className=item.ready?"good":"warning";value.textContent=item.state==="check_stale"?"Проверка устарела":item.state==="not_checked"?"Не проверено":item.ready?"Проверено":!item.configured?"Укажите адрес сервера":item.connected?"Готовность не подтверждена":"Нет подключения";service.textNode.textContent=item.detail?userMessage(item.detail):item.ready?"Подключение проверено.":item.state==="check_stale"?"Повторите проверку готовности.":item.state==="not_checked"?"Проверка подключения ещё не выполнена.":!item.configured?"Укажите адрес сервера в подключениях.":item.connected?"Проверьте результаты готовности.":"Проверьте настройки и доступность сервера.";rows.push(service);
   }
   if(!rows.some(row=>row.serviceName==="code-index")||!currentScope)$("indexActionsHolding").append($("indexActions"));
   for(const child of [...box.children])if(!rows.includes(child))child.remove();

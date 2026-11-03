@@ -484,7 +484,8 @@ async function call(name, args, meta = {}) {
     return result(snapshot, `Профиль: ${snapshot.profile.status}. Следующие шаги: ${snapshot.nextSteps.join(", ") || "нет"}.`);
   }
   if (selectionError && !readOnlyEntry) throw new Error(selectionError);
-  if (operations.status().status === "running" && !readOnlyEntry && !(operations.status().action === "refresh_readiness" && ["settings.edit", "settings.preview", "settings.export_data"].includes(name))) throw new Error(
+  const duringRefresh = ["settings.edit", "settings.preview", "settings.export_data", "settings.save_export", "settings.open_export_directory", "settings.profile_source", "settings.repair_document", "settings.import_file", "settings.update", "settings.reset_connection", "settings.rename_profile", "settings.create", "settings.load", "settings.apply", "settings.open_directory"].includes(name);
+  if (operations.status().status === "running" && !readOnlyEntry && !(operations.status().action === "refresh_readiness" && duringRefresh)) throw new Error(
     operations.status().action === "pick_directory"
       ? "Завершите или отмените выбор папки в системном окне."
       : "Операция ещё выполняется. Дождитесь её завершения.");

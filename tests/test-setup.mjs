@@ -9,6 +9,18 @@ import { pathToFileURL } from "node:url";
 import { edt_fixture as fixture, ROOT, environment } from "./helpers.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
+
+test("background readiness and foreground saves retain independent operation results", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const operations = new SettingsOperations(async action => { if (action === "refresh_readiness") await gate; return { action }; });
+  const background = operations.start("refresh_readiness", {}, {});
+  await operations.execute("update", {}, {});
+  assert.equal(operations.status().id, background.id);
+  release(); await operations.wait(background.id, 10000);
+  assert.equal(operations.status().id, background.id);
+  assert.equal(operations.status().status, "completed");
+});
 import { dump, sleep } from "../scripts/common.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";

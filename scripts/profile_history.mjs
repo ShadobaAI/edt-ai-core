@@ -73,24 +73,27 @@ export async function profile_summary(state, config, profile, readiness = {}, kn
   const root = config.active_project, components = [];
   for (const id of ["code-index", "bsl-ls"]) {
     const options = config.mcp.managed[id];
+    let observationDetail;
     let status = options.enabled === false ? "disabled" : options.mode === "external" ? "external" : "not_checked";
     if (id === "code-index" && status === "not_checked" && root && profile.status === "loaded") {
       const home = path.join(project_directory(state, root), "code-index");
       try {
         const { daemon_health } = await import("./runtime.mjs");
         const health = await daemon_health(home);
-        status = health ? "running" : "stopped";
+        status = health ? "running" : "not_checked";
+        if (!health) observationDetail = "Не удалось подтвердить доступность процесса индекса.";
       } catch {
         // Auxiliary runtime metadata must not block opening valid settings.
         status = "not_checked";
+        observationDetail = "Не удалось подтвердить доступность процесса индекса.";
       }
     }
     const check = readiness.checks?.find(item => item.id === id);
     const checked = check && profile.status === "loaded" && status !== "disabled" &&
       (id === "bsl-ls" || status === "running" || status === "external");
-    if (checked) status = ["ready", "blocked"].includes(readiness.state) ? check.state : "check_stale";
+    if (checked) status = ["ready", "blocked"].includes(readiness.state) ? check.state : readiness.state === "stale" ? "check_stale" : "not_checked";
     components.push({ id, status, mode: options.mode || "auto", ...(checked ? { checkedAt: readiness.checkedAt,
-      detail: readiness.state === "stale" ? readiness.reason : check.detail } : {}) });
+      detail: readiness.state === "stale" ? readiness.reason : check.detail } : observationDetail ? { detail: observationDetail } : {}) });
   }
   const observed = ["ready", "blocked"].includes(readiness.state) ? readiness.knowledge : null;
   return { observedAt: new Date().toISOString(), profile: profile.status, components,

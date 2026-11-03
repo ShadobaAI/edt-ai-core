@@ -117,8 +117,8 @@ test("automatic readiness never prepares unapproved components or downloads miss
   // Supply a Java probe fixture so Node-only PATH reaches the missing-JAR check.
   const config=backend.current();config.mcp.managed["bsl-ls"].java=process.execPath;
   fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
-  const spawnSync=childProcess.spawnSync;
-  t.mock.method(childProcess,"spawnSync",(command,args,options)=>command===process.execPath&&args?.[0]==="-version"?{status:0,stderr:'java version "21"'}:spawnSync(command,args,options));
+  const execFile=childProcess.execFile;
+  t.mock.method(childProcess,"execFile",(command,args,options,callback)=>command===process.execPath&&args?.[0]==="-version"?queueMicrotask(()=>callback(null,"",'java version "21"')):execFile(command,args,options,callback));
   syncBuiltinESMExports();
   t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
   const download=t.mock.method(globalThis,"fetch",async()=>{throw new Error("Unexpected download");});
@@ -133,6 +133,29 @@ test("automatic readiness never prepares unapproved components or downloads miss
   process.env.EDT_AI_INSTANCE="another";
   const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.match(other.managed.find(item=>item.name==="code-index").detail,/не подготовлен/);
   assert.equal(download.mock.callCount(),0);
+});
+
+test("a slow Java version probe does not block independent connection checks", async t => {
+  const {f,backend,count}=await ready_fixture(t);
+  const config=backend.current();config.mcp.managed["bsl-ls"].java=process.execPath;
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
+  await backend.main({action:"update",set:{bslLsEnabled:true}});
+  grant_preparation(f.state,f.root,["bsl-ls"]);
+  let release,entered;
+  const started=new Promise(resolve=>{entered=resolve;});
+  const original=childProcess.execFile;
+  t.mock.method(childProcess,"execFile",(command,args,options,callback)=>{
+    if(command===process.execPath&&args?.[0]==="-version"){release=()=>callback(null,"",'java version "21"');entered();return;}
+    return original(command,args,options,callback);
+  });
+  syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  const check=backend.main({action:"refresh_readiness",scope:f.root+"#first"});
+  await started;
+  try {
+    const deadline=Date.now()+3000;
+    while(count()===0&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+    assert.ok(count()>0,"external probes must progress while Java is pending");
+  } finally {release();await check;}
 });
 
 test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{
@@ -165,6 +188,10 @@ test("readiness includes enabled optional MCP and invalidates changed settings, 
   const {f,backend,authorization}=await ready_fixture(t);
   await backend.main({action:"check",authorization});
   const file=path.join(instance_directory(f.state,f.root),"first.readiness.json"),receipt=JSON.parse(fs.readFileSync(file));
+  for (const invalid of [value => { value.result.checkedAt="invalid"; }, value => { value.result.checkedAt=new Date(Date.now()+60000).toISOString(); }, value => { delete value.fingerprint; }]) {
+    const damaged=structuredClone(receipt);invalid(damaged);fs.writeFileSync(file,JSON.stringify(damaged));
+    assert.equal((await backend.main({action:"read"})).readiness.state,"not_checked");
+  }
   receipt.result.checkedAt=new Date(Date.now()-16*60*1000).toISOString();fs.writeFileSync(file,JSON.stringify(receipt));
   assert.equal((await backend.main({action:"read"})).readiness.state,"stale");
   fs.writeFileSync(file,'{"version":1,"result":{"state":"ready","checks":[null]}}');assert.equal((await backend.main({action:"read"})).readiness.state,"not_checked");

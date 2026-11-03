@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   ROOT,
@@ -613,6 +613,9 @@ export function java_info(command = "java") {
     shell: false,
     timeout: 20000,
   });
+  return parse_java_info(java, version);
+}
+function parse_java_info(java, version) {
   const output = (version.stderr || "") + (version.stdout || "");
   const match = /^(?:java|openjdk) version "([0-9][A-Za-z0-9._+-]{0,127})"/m.exec(output);
   if (version.error || version.status !== 0 || !match) {
@@ -623,6 +626,14 @@ export function java_info(command = "java") {
     throw new ConfigError(`Java could not start; configure mcp.managed.bsl-ls.java${code}.`);
   }
   return { path: java, version: match[1] };
+}
+async function java_info_async(command = "java") {
+  const java = which(command || "java");
+  if (!java) throw new ConfigError("Java is required; set mcp.managed.bsl-ls.java in plugin settings");
+  const version = await new Promise(resolve => execFile(java, ["-version"],
+    { encoding: "utf8", windowsHide: true, timeout: 20000, maxBuffer: 1024 * 1024 },
+    (error, stdout, stderr) => resolve({ error, status: error ? (Number.isInteger(error.code) ? error.code : null) : 0, stdout, stderr })));
+  return parse_java_info(java, version);
 }
 export function java_in_directory(directory) {
   if (!path.isAbsolute(directory) || !is_dir(directory)) throw new ConfigError("Выберите существующий каталог Java.");
@@ -673,7 +684,7 @@ export async function launch_command(
     if (!is_file(configuration))
       throw new ConfigError("Configured BSL LS configuration does not exist");
   }
-  const java = java_command(config),
+  const java = (await java_info_async(bsl.java || "java")).path,
     exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
   return [
     [

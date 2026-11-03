@@ -1215,6 +1215,14 @@ test("a stale readiness result cannot display ready", async () => {
   await ui.flush();assert.match(ui.elements.get("readinessTitle").textContent,/повторить/);assert.match(ui.elements.get("readinessDetail").textContent,/Изменился порт/);
 });
 
+test("an unchecked connection is not reported as stale or disconnected", async () => {
+  const ui=screen(async()=>({...read,readiness:{state:"not_checked",checks:[{id:"edt",label:"EDT",state:"ready"}]},summary:{components:[]}}));
+  await ui.flush();
+  const contents=node=>[node.textContent,...node.children.map(contents)].join(" ");
+  const text=contents(ui.elements.get("connections"));
+  assert.match(text,/Не проверено/);assert.doesNotMatch(text,/Проверка устарела|Нет подключения/);
+});
+
 test("EDT port suggestion is adjacent, explicit, and saves only the instance URL", async () => {
   let saved,applied=false;
   const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
@@ -1653,6 +1661,82 @@ test("automatic checks leave navigation and drafts usable and do not release ano
   const editing=ui.elements.get("editSettingsButton").onclick();await ui.flush();
   releaseCheck();await ui.flush();assert.equal(ui.elements.get("edtUrl").disabled,true,"document loading still owns its busy state");
   releaseEditor();await editing;assert.equal(ui.elements.get("edtUrl").disabled,false);assert.equal(ui.elements.get("edtUrl").value,"draft");
+});
+
+test("a changed connection can be saved while automatic readiness is still running", async () => {
+  let releaseCheck, saved="saved";
+  const snapshot=()=>({...read,instance:"default",values:{...read.values,edtUrl:saved},readiness:{state:"not_checked",checks:[]}});
+  const ui=screen(async (name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return snapshot();
+    if(name==="settings.refresh_readiness")return {id:"background",action:"refresh_readiness",status:"running"};
+    if(name==="settings.operation"){await new Promise(resolve=>{releaseCheck=resolve;});return {id:"background",action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{},superseded:true}};}
+    if(name==="settings.update"){saved=args.set.edtUrl;return {settingsRevision:"new"};}
+    throw new Error(name);
+  });
+  await ui.flush();
+  ui.elements.get("edtUrl").value="http://127.0.0.1:8123/mcp";ui.elements.get("edtUrl").events.input();
+  assert.equal(ui.elements.get("saveButton").disabled,false);
+  await ui.elements.get("saveButton").onclick();
+  assert.equal(saved,"http://127.0.0.1:8123/mcp");
+  assert.equal(ui.elements.get("edtUrl").value,saved);
+  releaseCheck();await ui.flush();
+});
+
+test("a manual status refresh leaves the form usable and preserves edits made while waiting", async () => {
+  let release;
+  const snapshot={...read,instance:"default",values:{...read.values,edtUrl:"saved"}};
+  const ui=screen(async name=>{
+    if(name==="settings.read")return snapshot;
+    if(name==="settings.status"){await new Promise(resolve=>{release=resolve;});return snapshot;}
+    throw new Error(name);
+  });
+  await ui.flush();
+  const pending=ui.elements.get("refreshButton").onclick();await ui.flush();
+  assert.equal(ui.elements.get("edtUrl").disabled,false);
+  ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
+  release();await pending;
+  assert.equal(ui.elements.get("edtUrl").value,"draft");
+});
+
+test("a manual status refresh reports failure without overwriting a later action's notice", async () => {
+  let release;
+  const ui=screen(async name=>{
+    if(name==="settings.read")return {...read,instance:"default"};
+    if(name==="settings.status"){await new Promise(resolve=>{release=resolve;});throw new Error("unavailable");}
+    throw new Error(name);
+  });
+  await ui.flush();const pending=ui.elements.get("refreshButton").onclick();await ui.flush();
+  ui.context.notice("Настройки сохранены.");release();await pending;
+  assert.equal(ui.elements.get("status").textContent,"Настройки сохранены.");
+  assert.match(ui.elements.get("autoRefreshState").textContent,/Нет свежих данных/);
+});
+
+test("a failed status request for the previous profile does not mark the selected profile stale", async () => {
+  let release;
+  const ui=screen(async (name,args)=>{
+    if(name==="settings.read")return {...read,instance:"default"};
+    if(name==="settings.status"){await new Promise(resolve=>{release=resolve;});throw new Error("unavailable");}
+    if(name==="settings.select_profile")return {...read,instance:"default",values:{projectRoot:args.projectRoot}};
+    throw new Error(name);
+  });
+  await ui.flush();const pending=ui.elements.get("refreshButton").onclick();await ui.flush();
+  await ui.context.selectProfile("C:/fixture/other");
+  const indicator=ui.elements.get("autoRefreshState").textContent;
+  release();await pending;assert.equal(ui.elements.get("autoRefreshState").textContent,indicator);
+});
+
+test("an explicitly expired observation triggers one automatic refresh", async () => {
+  let stale=false,checks=0;
+  const snapshot=()=>({...read,instance:"default",readiness:{state:stale?"stale":"ready",checkedAt:"2026-10-22T12:00:00Z",reason:stale?"Истёк срок проверки":undefined,checks:[]}});
+  const ui=screen(async name=>{
+    if(name==="settings.read"||name==="settings.status")return snapshot();
+    if(name==="settings.refresh_readiness"){checks++;return {id:"background-"+checks,action:"refresh_readiness",status:"running"};}
+    if(name==="settings.operation")return {id:"background-"+checks,action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};
+    throw new Error(name);
+  });
+  await ui.flush();assert.equal(checks,1);
+  stale=true;await ui.tick(8000);await ui.flush();assert.equal(checks,2);
+  await ui.tick(8000);await ui.flush();assert.equal(checks,2);
 });
 
 test("a profile can be selected while the previous automatic check is still running", async () => {

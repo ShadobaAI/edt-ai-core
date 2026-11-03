@@ -30,7 +30,7 @@ test("the app readiness refresh returns a scoped operation and cannot prepare an
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });
 
-test("profile selection stays available during background readiness while writes remain serialized", async t => {
+test("settings can be saved during background readiness without publishing the old observation", async t => {
   const f=fixture(t);f.save();let release,entered;
   const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});t.after(()=>release());
   const server=createServer(async(req,res)=>{
@@ -48,15 +48,30 @@ test("profile selection stays available during background readiness while writes
   await client.call("settings.select_profile",{projectRoot:f.root});
   await client.call("settings.update",{set:{codeIndexEnabled:false,bslLsEnabled:false,edtUrl:"http://127.0.0.1:"+server.address().port+"/edt",v8stdUrl:""}});
   const job=(await client.call("settings.refresh_readiness",{scope:f.root+"#first"})).structuredContent;await started;
+  const saved=(await client.call("settings.update",{set:{edtUrl:""}})).structuredContent;
+  assert.equal(saved.values.edtUrl,"");
+  await assert.rejects(client.call("settings.run_check",{authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"}}),/ещё выполняется/);
   const other=path.join(f.base,"other");fs.mkdirSync(other);dump(f.profile,path.join(other,".ai/project.yaml"));
   const selected=(await client.call("settings.select_profile",{projectRoot:other})).structuredContent;
   assert.equal(selected.viewOnly,false);assert.equal(selected.values.projectRoot,other);
-  await assert.rejects(client.call("settings.update",{set:{edtUrl:""}}),/ещё выполняется/);
+  await client.call("settings.update",{set:{edtUrl:""}});
   assert.equal((await client.call("settings.edit",{})).isError,undefined);
   release();
   const done=(await client.call("settings.operation",{operationId:job.id,waitMs:10000})).structuredContent;
-  assert.equal(done.status,"completed");assert.equal(done.projectRoot,f.root);assert.equal(done.result.projectRoot,f.root);
+  assert.equal(done.status,"completed");assert.equal(done.projectRoot,f.root);assert.equal(done.result.projectRoot,f.root);assert.equal(done.result.superseded,true);
   const current=(await client.call("settings.read",{})).structuredContent;assert.equal(current.values.projectRoot,other);assert.equal(current.readiness.state,"not_checked");
+});
+
+test("an unavailable managed index does not make the saved check stale or claim readiness", async t => {
+  const f=fixture(t);environment(t,f.env);f.save();
+  const backend=new SettingsBackend(),config=backend.effective(backend.current());
+  const managed=[{name:"code-index",ready:true,state:"ready"},{name:"bsl-ls",ready:true,state:"ready"},{name:"policy",ready:true,state:"ready"}];
+  const external={edt:{configured:true,connected:true,ready:true},v8std:{configured:true,connected:true,ready:true}};
+  assert.equal(save_readiness(f.state,config,f.profile,managed,external).state,"ready");
+  const current=await backend.main({action:"status"});
+  assert.equal(current.readiness.state,"blocked");
+  assert.equal(current.readiness.checks.find(item=>item.id==="code-index").state,"not_checked");
+  assert.equal(current.summary.components.find(item=>item.id==="code-index").status,"not_checked");
 });
 
 test("profile status restores both managed checks and expires their scoped evidence", async t => {
@@ -87,7 +102,7 @@ test("profile status restores both managed checks and expires their scoped evide
   assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "not_checked");
   process.env.EDT_AI_INSTANCE = f.env.EDT_AI_INSTANCE;
   fs.rmSync(metadata);
-  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "code-index").status, "stopped");
+  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "code-index").status, "not_checked");
   f.profile.project.id = "changed"; f.save();
   assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "check_stale");
   managed[1] = { name: "bsl-ls", ready: false, state: "error", detail: "API unavailable" };
@@ -121,7 +136,7 @@ test("loading settings returns fresh service status without a separate status re
   const f = fixture(t); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
   const initial = (await client.call("settings.read", {})).structuredContent;
-  assert.equal(initial.summary?.components.find(item => item.id === "code-index")?.status, "stopped");
+  assert.equal(initial.summary?.components.find(item => item.id === "code-index")?.status, "not_checked");
   assert.equal(initial.values.codeIndexEnabled, true);
   assert.equal(initial.values.bslLsEnabled, true);
   assert.equal(initial.summary.components.find(item => item.id === "bsl-ls").status, "not_checked");
@@ -146,7 +161,7 @@ test("loading settings returns fresh service status without a separate status re
   await client.call("settings.load", {});
   fs.rmSync(path.join(home, "daemon.json"));
   const reloaded = (await client.call("settings.read", {})).structuredContent;
-  assert.equal(reloaded.summary.components.find(item => item.id === "code-index").status, "stopped");
+  assert.equal(reloaded.summary.components.find(item => item.id === "code-index").status, "not_checked");
   assert.deepEqual(requests, ["/health", "/health", "/health"]);
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
 });
@@ -164,7 +179,7 @@ test("unavailable daemon metadata does not prevent loading a valid profile or it
       assert.equal(current.profile.status, "loaded", name);
       assert.notEqual(current.configurationError, true);
       assert.equal(current.values.projectRoot, f.root);
-      assert.equal(current.summary?.components.find(item => item.id === "code-index")?.status, content === null ? "stopped" : "not_checked");
+      assert.equal(current.summary?.components.find(item => item.id === "code-index")?.status, "not_checked");
       assert.equal(current.operation.status, "idle");
     }
   }
@@ -205,12 +220,12 @@ test("history selection previews another project without rebinding the chat or l
   const client=await session(t,"mcp/settings.mjs",[],f);
   const preview=(await client.call("settings.select_profile",{projectRoot:other})).structuredContent;
   assert.equal(preview.viewOnly,true);assert.equal(preview.profile.projectId,"other");
-  assert.equal(preview.summary?.components.find(item=>item.id==="code-index")?.status,"stopped");
+  assert.equal(preview.summary?.components.find(item=>item.id==="code-index")?.status,"not_checked");
   assert.equal(preview.chatProjectRoot,f.root);
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   const status=(await client.call("settings.status",{projectRoot:other})).structuredContent;
   assert.equal(status.viewOnly,true);assert.equal(status.values.projectRoot,other);
-  assert.equal(status.summary.components.find(item=>item.id==="code-index").status,"stopped");
+  assert.equal(status.summary.components.find(item=>item.id==="code-index").status,"not_checked");
   const document=await client.call("settings.document",{projectRoot:other});
   assert.equal(document.structuredContent,undefined);
   assert.equal(JSON.parse(document._meta.data.text).profile.project.id,"other");
@@ -269,7 +284,7 @@ test("an unbound settings window selects a profile explicitly and remembers it w
   f.clients.push(client);client.roots=[];await client.initialize();
   const selected=(await client.call("settings.select_profile",{projectRoot:f.root})).structuredContent;
   assert.equal(selected.viewOnly,false);assert.equal(selected.values.projectRoot,f.root);
-  assert.equal(selected.summary?.components.find(item=>item.id==="code-index")?.status,"stopped");
+  assert.equal(selected.summary?.components.find(item=>item.id==="code-index")?.status,"not_checked");
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   assert.equal(profile_history(f.state).length,1);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS),false);

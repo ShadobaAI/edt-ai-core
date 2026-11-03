@@ -9,6 +9,7 @@ import { verification_limits, sanitize_setup_result, register_diagnostic_secrets
 
 const digest = file => is_file(file) ? sha256(fs.readFileSync(file)) : "missing";
 const receipt_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".readiness.json");
+export const readiness_receipt_revision = (state, root) => digest(receipt_file(state, root));
 const passed = item => ["ready", "disabled"].includes(item.state);
 
 // Verify the installed workflow files, not whether a host/model has invoked a
@@ -44,10 +45,10 @@ export function setup_assets(pluginRoot = ROOT) {
   return { checks, fingerprint: sha256(Buffer.from(stable([...files].sort().map(name => [name, digest(inside(pluginRoot, name))])))) };
 }
 
-export function readiness_fingerprint(state, config, profile, assets = setup_assets()) {
+export function readiness_fingerprint(state, config, profile, assets = setup_assets(), { includeDaemonOwner = true } = {}) {
   return sha256(Buffer.from(stable({ root: config.active_project, instance: instance_name(), config, profile, assets: assets.fingerprint,
     runtime: digest(path.join(state, "runtime-lock.json")), edt: edt_connection(config.active_project), descriptors: repository_projects(config.active_project, profile.repositories), reconnect: digest(reconnect_file(state, config.active_project)),
-    daemonOwner: digest(path.join(project_directory(state, config.active_project), "code-index/owner.json")),
+    ...(includeDaemonOwner ? { daemonOwner: digest(path.join(project_directory(state, config.active_project), "code-index/owner.json")) } : {}),
     instructions: ["AGENTS.md", ".ai/PROJECT.md"].map(name => digest(inside(config.active_project, name))),
     knowledge: knowledge_evidence_revision(config, config.active_project, profile),
   })));
@@ -84,12 +85,10 @@ export async function read_readiness(state, config, profile) {
     if (result?.scope !== "setup" || !Number.isFinite(Date.parse(result.expiresAt)) || !Array.isArray(result?.checks) || !result.checks.length || !["ready", "blocked"].includes(result.state) || result.checks.some(item => !item || typeof item.id !== "string" || typeof item.label !== "string" || typeof item.state !== "string") || (result.state === "ready") !== result.checks.every(passed)) return empty;
     const age = Date.now() - Date.parse(result.checkedAt);
     const data = profile.status ? load(profile.path) : profile;
-    if (!Number.isFinite(age) || age < 0 || age > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt) || receipt.fingerprint !== readiness_fingerprint(state, config, data))
+    if (!Number.isFinite(age) || age < 0 || typeof receipt.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(receipt.fingerprint))
+      return { ...empty, reason: "Не удалось подтвердить сохранённую проверку готовности. Повторите проверку." };
+    if (age > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt) || receipt.fingerprint !== readiness_fingerprint(state, config, data))
       return { ...result, state: "stale", verificationLimits: verification_limits(), reason: "Настройки или файлы изменились либо проверка устарела. Повторите проверку готовности." };
-    if (result.state === "ready" && config.mcp.managed["code-index"].enabled !== false && config.mcp.managed["code-index"].mode !== "external") {
-      const { daemon_health, project_home } = await import("./runtime.mjs");
-      if (!await daemon_health(path.join(project_home(state, config.active_project), "code-index"))) return { ...result, state: "stale", verificationLimits: verification_limits(), reason: "Сервис индекса остановлен. Повторите проверку готовности." };
-    }
     return { ...result, verificationLimits: verification_limits(result.knowledge?.ready === true) };
   } catch { return empty; }
 }
