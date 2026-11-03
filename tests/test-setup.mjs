@@ -137,9 +137,9 @@ test("one bounded setup probe verifies external connections and refuses a wrong 
 });
 
 test("EDT probe matches a nested .project and skips an explicitly unbound feature repository", async t => {
-  const f=fixture(t), nested=path.join(f.root,"framework/exts/core");
+  const f=fixture(t), nested=path.join(f.root,"framework/exts/Product");
   fs.mkdirSync(nested,{recursive:true});fs.mkdirSync(path.join(f.root,"ui"));
-  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Product</name></projectDescription>");
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Different.Internal.Name</name></projectDescription>");
   f.profile.repositories=[{id:"ui",path:"ui",alias:"ui"},{id:"framework",path:"framework",alias:"framework",edt_project:"Product"}];
   f.profile.policy.unbound_edt_repositories=["ui"];
   const upstream=await endpoint(t,nested),config=settings();
@@ -147,6 +147,12 @@ test("EDT probe matches a nested .project and skips an explicitly unbound featur
   const first=await probe_connections(config,f.root,f.profile);
   assert.equal(first.external.edt.projectReadiness,"verified",JSON.stringify(first.external.edt));
   assert.deepEqual(first.external.edt.repositories.map(item=>item.id),["framework"]);
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name></name></projectDescription>");
+  assert.equal((await probe_connections(config,f.root,f.profile)).external.edt.projectReadiness,"verified");
+  const duplicate=path.join(f.root,"framework/other/Product");fs.mkdirSync(duplicate,{recursive:true});
+  fs.writeFileSync(path.join(duplicate,".project"),"<projectDescription><name>Another</name></projectDescription>");
+  assert.equal((await probe_connections(config,f.root,f.profile)).external.edt.projectReadiness,"not_ready");
+  fs.rmSync(path.join(duplicate,".project"));
   fs.rmSync(path.join(nested,".project"));
   const missing=await probe_connections(config,f.root,f.profile);
   assert.equal(missing.external.edt.projectReadiness,"not_ready");

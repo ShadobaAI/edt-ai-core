@@ -421,12 +421,13 @@ test("JSON tree keeps strings as strings and rejects malformed numbers without d
 });
 
 test("profile table and header show detected EDT projects separately from the shared Git repository", async () => {
-  const projects=[{name:"Base",directory:"C:/fixture/project/configuration"},{name:"<Extension>",directory:"C:/fixture/project/extension"}];
-  const ui=screen(async()=>({...read,profile:{...read.profile,repositories:[{id:"shared",path:read.values.projectRoot}]},directoryContext:{edt:{detectedProjects:projects.slice(0,1),projectCount:1},git:{status:"not_repository"}},profileDirectoryContext:{edt:{detectedProjects:projects,projectCount:2},git:{status:"detected",root:read.values.projectRoot}}}));
-  await ui.flush();assert.equal(ui.elements.get("profileEdtProjectCount").textContent,"EDT-проектов: 2");
-  const rows=ui.elements.get("profileEdtProjects").children;assert.equal(rows.length,2);
-  assert.deepEqual(rows.map(row=>row.children.map(cell=>cell.textContent)),projects.map(project=>[project.name,project.directory]));
+  const projects=[{name:"configuration",displayName:"Base",directory:"C:/fixture/project/configuration"},{name:"extension",displayName:"<Extension>",directory:"C:/fixture/project/extension"},{name:"other",directory:"C:/fixture/project/other"}];
+  const ui=screen(async()=>({...read,profile:{...read.profile,repositories:[{id:"shared",path:read.values.projectRoot}]},directoryContext:{edt:{detectedProjects:projects.slice(0,1),projectCount:1},git:{status:"not_repository"}},profileDirectoryContext:{edt:{detectedProjects:projects,projectCount:3},git:{status:"detected",root:read.values.projectRoot}}}));
+  await ui.flush();assert.equal(ui.elements.get("profileEdtProjectCount").textContent,"EDT-проектов: 3");
+  const rows=ui.elements.get("profileEdtProjects").children;assert.equal(rows.length,3);
+  assert.deepEqual(rows.map(row=>row.children.map(cell=>cell.textContent)),projects.map(project=>[project.name,project.displayName||"—",project.directory]));
   assert.equal(ui.elements.get("profileGitRoot").textContent,"Git-репозиторий каталога профиля: "+read.values.projectRoot);
+  assert.match(ui.context.describeProjectImport({edtMappings:[{repository:"repo",project:"examples",status:"ambiguous"}]}),/найдено несколько подходящих каталогов/);
 });
 
 test("invalid tree values guard preview, import and profile changes until corrected or discarded", async () => {
@@ -811,6 +812,9 @@ test("UI translates an uncertain operation without changing its diagnostic data"
   assert.match(ui.elements.get("status").textContent,/перед повтором/);
   assert.equal(operation.error,"External MCP rejected the request (HTTP 503); remote error text omitted");
   assert.equal(ui.context.userMessage("v24.20.0"),"v24.20.0");
+  const missing="Не найден или неоднозначен .project для: base, examples, unit";
+  assert.equal(ui.context.userMessage(missing),missing);
+  assert.match(ui.context.userMessage("Ошибка: External MCP rejected the request (HTTP 503)"),/Внешний сервер MCP отклонил запрос/);
 });
 
 test("installing an older draft saves it on success and a later failure clears the old success message", async () => {

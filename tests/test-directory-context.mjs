@@ -181,7 +181,7 @@ test("EDT counts use .project files independently of enrichment metadata and ign
     write(path.join(f.root, directory, "fixture/.project"), "ignored");
   assert.equal(edt_project_count(f.root), 2);
   assert.equal(directory_context(f.root).edt.projectCount, 2);
-  assert.deepEqual(edt_project_descriptors(f.root).map(item=>item.name),["Base","Extension"]);
+  assert.deepEqual(edt_project_descriptors(f.root).map(item=>item.name),[path.basename(f.root),"extension"]);
   assert.equal(edt_project_count(path.join(f.root, "absent")), null);
 });
 
@@ -190,10 +190,11 @@ test("one shared Git repository contains two descriptor-backed EDT projects inde
   const base=path.join(f.root,"configuration"),extension=path.join(f.root,"extension");
   write(path.join(base,".project"),"<projectDescription><!-- comment --><name>Base &amp; Shared</name></projectDescription>");
   write(path.join(extension,".project"),"<projectDescription><name>Extension</name><buildSpec><name>Wrong</name></buildSpec></projectDescription>");
-  const context=directory_context(f.root);
+  const context=directory_context(f.root, { includeDisplayName: true });
   assert.equal(context.git.status,"detected");assert.equal(context.git.root,f.root);
   assert.equal(context.edt.projectCount,2);
-  assert.deepEqual(context.edt.detectedProjects.map(item=>[item.name,item.directory]),[["Base & Shared",base],["Extension",extension]]);
+  assert.deepEqual(context.edt.detectedProjects.map(item=>[item.name,item.directory]),[["configuration",base],["extension",extension]]);
+  assert.deepEqual(context.edt.detectedProjects.map(item=>item.displayName),["Base & Shared","Extension"]);
   assert.equal(context.edt.projects.length,0); // No PMF is needed for the displayed inventory.
   fs.rmSync(path.join(extension,".project"));assert.equal(directory_context(f.root).edt.projectCount,1);
 });
@@ -208,7 +209,7 @@ test("EDT inventory skips configuration sources while retaining nested extension
     return readdir(directory,...args);
   });
   const projects=edt_project_descriptors(f.root);
-  assert.deepEqual(projects.map(project=>project.name),["Large configuration","Extension"]);
+  assert.deepEqual(projects.map(project=>project.name),[path.basename(f.root),"extension"]);
   assert.equal(edt_project_count(f.root),2);assert.equal(sourceReads,0);
 });
 
@@ -224,13 +225,13 @@ test("profile inventory stays rooted at the canonical profile when the chat open
   assert.equal(view.profileDirectoryContext.directory,f.root);
   assert.equal(view.profileDirectoryContext.edt.projectCount,2);
   assert.equal(view.profileDirectoryContext.git.root,f.root);
-  assert.deepEqual(view.profileDirectoryContext.edt.detectedProjects.map(project=>project.name),["Base","Extension"]);
+  assert.deepEqual(view.profileDirectoryContext.edt.detectedProjects.map(project=>project.name),["configuration","extension"]);
   assert.equal(view.profileHistory[0].edtProjectCount,2);
   const status=(await client.call("settings.status",{})).structuredContent;
   assert.equal(status.profileDirectoryContext.edt.projectCount,2);
 });
 
-test("EDT descriptors enrich the selected directory, without assuming folder names or reading sources", async t => {
+test("EDT descriptors enrich the selected directory using folder names without reading sources", async t => {
   const f = fixture(t), first = path.join(f.root, "configuration"), second = path.join(f.root, "extension");
   configuration(first, "Base &amp; Library");
   configuration(second, "Расширение", "8.3.27");
@@ -241,8 +242,8 @@ test("EDT descriptors enrich the selected directory, without assuming folder nam
   write(path.join(first, "src/source.bsl"), "source contents are irrelevant");
   write(prefs(f.base), "mcpServerPort=19801");
   const before = fs.readFileSync(path.join(first, ".project")),
-    context = directory_context(f.root);
-  assert.deepEqual(context.edt.projects.map(item => [item.name, item.runtimeVersion]), [["Base & Library", "8.5.1"], ["Расширение", "8.3.27"]]);
+    context = directory_context(f.root, { includeDisplayName: true });
+  assert.deepEqual(context.edt.projects.map(item => [item.name, item.runtimeVersion]), [["configuration", "8.5.1"], ["extension", "8.3.27"]]);
   assert.equal(context.edt.projects[0].source, path.join(first, "src"));
   assert.equal(context.edt.projects[0].settingsDirectory, path.join(first, ".settings"));
   assert.equal(context.edt.projects[1].settingsDirectory, null);
@@ -252,7 +253,8 @@ test("EDT descriptors enrich the selected directory, without assuming folder nam
   assert.equal(view.profile.status, "missing");
   assert.deepEqual(view.directoryContext, context);
   const hook = success(node("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
-  assert.match(hook, /Base & Library/);
+  assert.match(hook, /configuration/);
+  assert.doesNotMatch(hook, /displayName|Base & Library/);
   assert.match(hook, /8\.5\.1/);
   assert.deepEqual(fs.readFileSync(path.join(first, ".project")), before);
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);

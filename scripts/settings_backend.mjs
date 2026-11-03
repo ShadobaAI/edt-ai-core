@@ -45,7 +45,6 @@ import {
   legacy_project_state,
   record_project_owner,
   path_identity,
-  contained,
 } from "./project_paths.mjs";
 import {
   legacy_edt_matches,
@@ -57,7 +56,7 @@ import {
   check_instance_override,
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
-import { directory_context, edt_connection, edt_port_suggestion, edt_project_descriptors, index_repositories } from "./directory_context.mjs";
+import { directory_context, edt_connection, edt_port_suggestion, index_repositories, repository_projects } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness } from "./setup_readiness.mjs";
 import { knowledge_status } from "./knowledge.mjs";
@@ -115,12 +114,14 @@ function import_compatibility(profile, root) {
   if (!profile || !root) return { missingPaths: [], edtMappings: [] };
   const missingPaths = [...new Set(scoped_paths(profile))].filter(relative => !exists(inside(root, relative)));
   const repositories = profile.repositories.filter(repo => repo.edt_project);
-  const detected = repositories.length ? edt_project_descriptors(root) : [];
-  const edtMappings = repositories.map(repo => ({
-    repository: repo.id, project: repo.edt_project,
-    status: detected === null ? "unavailable" : detected.some(project =>
-      project.name === repo.edt_project && contained(inside(root, repo.path), project.directory)) ? "detected" : "not_detected",
-  }));
+  const edtMappings = repositories.map(repo => {
+    let status = "unavailable";
+    try {
+      const count = repository_projects(root, [repo])[0].projects.length;
+      status = count === 1 ? "detected" : count > 1 ? "ambiguous" : "not_detected";
+    } catch { /* Keep unavailable distinct from missing. */ }
+    return { repository: repo.id, project: repo.edt_project, status };
+  });
   return { missingPaths, edtMappings };
 }
 export const preparation_scope = (root) =>
@@ -674,9 +675,9 @@ export class SettingsBackend {
         try { const data = load(file); check_schema(data, "project-local.schema.json"); legacy.connections = data.connections || {}; }
         catch { legacy.connections = {}; }
       }
-      const directoryContext = directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project);
+      const directoryContext = directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project, { includeDisplayName: true });
       const profileDirectoryContext = config.active_project && directoryContext?.directory !== config.active_project
-        ? directory_context(config.active_project) : directoryContext;
+        ? directory_context(config.active_project, { includeDisplayName: true }) : directoryContext;
       if (profile.status === "loaded") {
         try { profile.indexRepositories = index_repositories(config.active_project, profile).map(repo => repo.id); }
         catch { profile.indexRepositories = []; }

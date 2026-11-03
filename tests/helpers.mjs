@@ -11,7 +11,7 @@ export function fixture(t) {
   const base = fs.realpathSync.native(
       fs.mkdtempSync(path.join(os.tmpdir(), "core fixture Юникод ")),
     ),
-    root = path.join(base, "project"),
+    root = path.join(base, "Product"),
     state = path.join(base, "state");
   fs.mkdirSync(root);
   fs.mkdirSync(state);

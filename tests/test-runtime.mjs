@@ -292,9 +292,9 @@ test("index status distinguishes existing ready data, active indexing, stale dat
 });
 
 test("index selects repositories with matching nested EDT descriptors and ignores feature-only repositories", async t => {
-  const f=fixture(t), ui=path.join(f.root,"ui"), framework=path.join(f.root,"framework"), nested=path.join(framework,"exts/core");
+  const f=fixture(t), ui=path.join(f.root,"ui"), framework=path.join(f.root,"framework"), nested=path.join(framework,"exts/Core");
   fs.mkdirSync(ui); fs.mkdirSync(nested,{recursive:true});
-  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Core</name></projectDescription>");
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Different.Internal.Name</name></projectDescription>");
   f.profile.repositories.push({id:"ui",path:"ui",alias:"ui"},{id:"framework",path:"framework",alias:"framework",edt_project:"Core"});
   f.profile.policy.unbound_edt_repositories=["ui"];
   const home=path.join(f.base,"index-home");fs.mkdirSync(home);
@@ -306,7 +306,16 @@ test("index selects repositories with matching nested EDT descriptors and ignore
     {repo:"framework",root_path:framework,path_status:{status:"ready"},data_version:{stale:false}}]};
   assert.equal(index_status(body,f.root,f.profile).state,"ready");
   assert.deepEqual(index_status(body,f.root,f.profile).repositories.map(item=>item.id),["product","framework"]);
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name></name></projectDescription>");
+  assert.equal(index_status(body,f.root,f.profile).state,"ready");
   await assert.rejects(rebuild_index(f.state,settings(),f.root,f.profile,"ui"),/EDT-проект/);
+  const duplicate=path.join(framework,"other/Core");fs.mkdirSync(duplicate,{recursive:true});
+  fs.writeFileSync(path.join(duplicate,".project"),"<projectDescription><name>Another</name></projectDescription>");
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+  fs.rmSync(path.join(duplicate,".project"));
+  f.profile.repositories.find(repo=>repo.id==="framework").edt_project="Different.Internal.Name";
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+  f.profile.repositories.find(repo=>repo.id==="framework").edt_project="Core";
   fs.rmSync(path.join(nested,".project"));
   assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
   assert.deepEqual(index_status(body,f.root,f.profile).missingProjects,["framework"]);
@@ -334,7 +343,7 @@ test("applying changed mappings replaces the owned live daemon without rebuildin
   const home=await ensure_daemon(f.state,f.root,f.profile,exe,launchIo), old=(await daemon_health(home)).pid;
   fs.mkdirSync(path.join(f.root,"extension"));
   fs.writeFileSync(path.join(f.root,"extension/.project"),"<projectDescription><name>Extension</name></projectDescription>");
-  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"Extension"});
+  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"extension"});
   const result=await restart_index(f.state,settings(),f.root,f.profile,{
     installed:async()=>exe,
     stop:(state,root)=>stop_daemon(state,root,{stop:async()=>stop_child(children[0],0)}),
@@ -356,7 +365,7 @@ test("a .project link to another repository cannot make feature files indexable"
 
 test("index rebuild targets exactly one repository and restores the owned service", async t => {
   const f=fixture(t), config=settings(), calls=[];
-  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"Extension"});f.save();
+  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"extension"});f.save();
   fs.mkdirSync(path.join(f.root,"extension"));
   fs.writeFileSync(path.join(f.root,"extension/.project"),"<projectDescription><name>Extension</name></projectDescription>");
   const before=fs.readFileSync(path.join(f.root,".ai/project.yaml")), home=path.join(project_home(f.state,f.root),"code-index");
@@ -413,8 +422,8 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
   ]);
   assert.equal(a, b);
   assert.equal(launches, 1);
-  const anotherRoot = path.join(f.base, "other");
-  fs.mkdirSync(anotherRoot);
+  const anotherRoot = path.join(f.base, "other", "Product");
+  fs.mkdirSync(anotherRoot, { recursive: true });
   fs.writeFileSync(path.join(anotherRoot,".project"),"<projectDescription><name>Product</name></projectDescription>");
   const other = await ensure_daemon(
     f.state,
@@ -431,7 +440,7 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
   const changed = structuredClone(f.profile);
   fs.mkdirSync(path.join(f.root,"extra"));
   fs.writeFileSync(path.join(f.root,"extra/.project"),"<projectDescription><name>Extra</name></projectDescription>");
-  changed.repositories.push({ id: "extra", path: "extra", alias: "extra", edt_project: "Extra" });
+  changed.repositories.push({ id: "extra", path: "extra", alias: "extra", edt_project: "extra" });
   await assert.rejects(
     ensure_daemon(f.state, f.root, changed, process.execPath, io),
     /mapping changed/,
