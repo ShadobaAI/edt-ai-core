@@ -17,7 +17,7 @@
         "session_capture": { "const": false }, "personal_areas": { "const": false }
       }
     },
-    "credential_binding": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "credential_binding": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "HMAC-SHA256 over UTF-8 domain 1c-ai-core/openviking-credential/v2 followed by NUL and stable([[lowercase header name, full credential value]]), keyed by the shared connection binding key." },
     "tools_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "operations": {
       "type": "object", "additionalProperties": false, "required": ["search", "read"],

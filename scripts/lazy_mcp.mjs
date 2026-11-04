@@ -117,6 +117,7 @@ async function waitForRoots() {
 }
 function configContext() {
   const config = settings(configuration);
+  config.state_dir = state;
   if (selectionError) throw new ConfigError(selectionError);
   const directory = selected;
   if (!directory) throw new ConfigError("Выберите каталог проекта с .ai/project.yaml.");

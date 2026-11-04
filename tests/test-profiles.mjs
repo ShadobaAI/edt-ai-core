@@ -438,6 +438,7 @@ test("operation lock excludes concurrent writers without deleting their lock", a
 });
 test("guard rejects reads, writes, patches, traversal, broad discovery, shell and aliases", (t) => {
   const f = fixture(t);
+  environment(t, f.env);
   f.save();
   for (const [tool_name, tool_input] of [
     ["Read", { path: "src/Module.bsl" }],

@@ -22,7 +22,7 @@ import { McpClient } from "../scripts/mcp_client.mjs";
 test("errors, retained operations, readiness cache and exports exclude credential representations", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const secret = 'search-credential-9831/"'; process.env.PLAIN_VALUE = secret;
-  const refs = { openvikingHeadersEnv: { "X-Search": "PLAIN_VALUE" } };
+  const refs = { headers_env: { "X-Search": "PLAIN_VALUE" } };
   register_diagnostic_secrets(refs);
   const encoded = Buffer.from(secret).toString("base64"), arbitrary = [...secret].join(".");
   const logger = create_diagnostic_logger("fixture", f.state);

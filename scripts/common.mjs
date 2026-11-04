@@ -154,7 +154,7 @@ export function validate_url(value, name = "MCP") {
 export function validate_openviking_url(value) {
   validate_url(value, "OpenViking");
   if (new URL(value).search)
-    throw new ConfigError("OpenViking endpoint query parameters are not supported; authorization must use headers_env.");
+    throw new ConfigError("OpenViking endpoint query parameters are not supported; configure authorization in the settings form.");
   return value;
 }
 export function state_path(config, override) {

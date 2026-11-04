@@ -7,13 +7,13 @@
 | Область | Воспроизводимая проверка |
 | --- | --- |
 | Провайдер включён/отключён, выбранная часть коллекций | `tests/test-knowledge.mjs`: mode/provider/transport matrix, отсутствие сети при disabled; `tests/test-openviking.mjs`: выбранные коллекции и независимые профили на одном сервере |
-| Overrides и параллельные сессии | `tests/test-knowledge-settings.mjs`: все уровни precedence, замена/очистка credential mappings, instance isolation; `tests/test-openviking.mjs`: разные directory/instance/session, отключение одного клиента сохраняет другой |
+| Overrides и параллельные сессии | `tests/test-knowledge-settings.mjs`: уровни precedence, код подключения и instance isolation; `tests/test-openviking-store.mjs`: общие записи, разделение ключей и конкурентная запись; `tests/test-openviking.mjs`: разные directory/instance/session, отключение одного клиента сохраняет другой |
 | Неподтверждённый индекс и несовместимые материалы | `tests/test-knowledge.mjs`: setup readiness не открывает workflow; `tests/test-openviking.mjs`: saved connection/publication не доказывают search readiness, несовместимые contracts/metadata отвергаются |
 | Доступ, scope и инструкции в контенте | `tests/test-openviking.mjs`: signed access обязателен до сети, foreign collections/URI и mutation запрещены; опубликованные инструкции возвращаются как недоверенные данные без изменения профиля/полномочий |
 | Статусы, смена публикации, partial и старый binding | `tests/test-openviking.mjs`: API statuses/review pointers/obsolete filtering, publication rotation/expiry during read, incomplete search, late connection/status/retrieval и roots-change responses |
 | Без внешних баз и `provider: none` | `tests/test-setup.mjs`, `tests/test-production-regressions.mjs`, `tests/test-node-only-runtime.mjs` и disabled-cases knowledge: startup/status/фикстурные native workflows без сервера знаний; отсутствие сети проверяется отдельно |
 
-Команда: `node --test tests/test-knowledge.mjs tests/test-knowledge-settings.mjs tests/test-openviking.mjs`.
+Команда: `node --test tests/test-knowledge.mjs tests/test-knowledge-settings.mjs tests/test-openviking-store.mjs tests/test-openviking.mjs tests/test-publication.mjs`.
 Поведенческие задачи и скрытые от исполнителя эталоны:
 `tests/behavioral/` только в dev-checkout, не в ZIP. Проверяются выбор механизма,
 достаточность, L/M/H по последствиям и остановка поиска/декомпозиции. Это отдельный

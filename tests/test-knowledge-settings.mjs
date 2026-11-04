@@ -19,7 +19,7 @@ test("OpenViking form/chat transport fields use validated instance overrides", a
   const client = await session(t, "mcp/settings.mjs", [], f);
   const set = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
     openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
-    openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
+    openvikingConnectionId: "team" };
   const update = await client.call("settings.update", { set });
   assert.equal(update.isError, undefined);
   const backend = new SettingsBackend();
@@ -28,7 +28,7 @@ test("OpenViking form/chat transport fields use validated instance overrides", a
   assert.equal(view.values.openvikingEnabled, true);
   const file = instance_file(backend.current(), f.root), before = fs.readFileSync(file);
   for (const change of [{ openvikingTimeout: 0 }, { openvikingMaxResponseBytes: 2048.5 },
-    { openvikingHeadersEnv: { Authorization: "Bearer secret" } }, { openvikingHeadersEnv: null }]) {
+    { openvikingConnectionId: "../bad" }, { openvikingConnectionId: null }]) {
     await assert.rejects(backend.main({ action: "update", set: change }));
     assert.deepEqual(fs.readFileSync(file), before);
   }
@@ -37,31 +37,30 @@ test("OpenViking form/chat transport fields use validated instance overrides", a
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
 });
 
-test("OpenViking credential maps replace and clear inherited and saved header identities", async t => {
+test("OpenViking connection identifiers override and clear inherited values", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
-  f.profile.connections = { openviking: { headers_env: { Authorization: "OLD_AUTH", "X-Key": "OLD_KEY" } } }; f.save();
+  f.profile.connections = { openviking: { connection_id: "profile" } }; f.save();
   const backend = new SettingsBackend();
-  for (const headers of [{ Authorization: "NEW_AUTH", "X-Key": "NEW_KEY" }, { Authorization: "NEW_AUTH" }, {}]) {
-    await backend.main({ action: "update", set: { openvikingHeadersEnv: headers } });
-    assert.deepEqual((await backend.main({ action: "read" })).values.openvikingHeadersEnv, headers);
-    assert.deepEqual(load(instance_file(backend.current(), f.root)).connections.openviking.headers_env, headers);
+  for (const id of ["named", ""]) {
+    await backend.main({ action: "update", set: { openvikingConnectionId: id } });
+    assert.equal((await backend.main({ action: "read" })).values.openvikingConnectionId, id);
+    assert.equal(load(instance_file(backend.current(), f.root)).connections.openviking.connection_id, id);
   }
   process.env.EDT_AI_INSTANCE = "second";
-  assert.deepEqual((await backend.main({ action: "read" })).values.openvikingHeadersEnv,
-    { Authorization: "OLD_AUTH", "X-Key": "OLD_KEY" });
+  assert.equal((await backend.main({ action: "read" })).values.openvikingConnectionId, "profile");
 });
 
 test("OpenViking exposes the effective source of each independently inherited field", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
-  f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp", headers_env: { Authorization: "PROFILE_AUTH" } } }; f.save();
+  f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp", connection_id: "profile" } }; f.save();
   dump({ connections: { openviking: { timeout_seconds: 3 } } }, path.join(f.root, ".ai/project.local.yaml"));
   const backend = new SettingsBackend();
   await backend.main({ action: "update", set: { openvikingMaxResponseBytes: 4096 } });
   const explicit = path.join(f.base, "connections.yaml");
-  dump({ connections: { openviking: { headers_env: {} } } }, explicit);
+  dump({ connections: { openviking: { connection_id: "explicit" } } }, explicit);
   process.env.EDT_AI_CONNECTIONS_FILE = explicit; process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
-  const expected = { openvikingEnabled: "profile", openvikingUrl: "environment:EDT_AI_OPENVIKING_URL",
-    openvikingTimeout: "project_local", openvikingMaxResponseBytes: "instance", openvikingHeadersEnv: "connections_file" };
+  const expected = { openvikingEnabled: "profile", openvikingUrl: "profile",
+    openvikingTimeout: "project_local", openvikingMaxResponseBytes: "instance", openvikingConnectionId: "connections_file" };
   assert.deepEqual((await backend.main({ action: "read" })).valueSources, expected);
   const client = await session(t, "mcp/settings.mjs", [], f, {
     EDT_AI_CONNECTIONS_FILE: explicit, EDT_AI_OPENVIKING_URL: process.env.EDT_AI_OPENVIKING_URL });
@@ -69,7 +68,7 @@ test("OpenViking exposes the effective source of each independently inherited fi
     const view = (await client.call(name, {})).structuredContent;
     assert.deepEqual(view.valueSources, expected);
     if (view.schema) {
-      assert.equal(view.schema.properties.openvikingHeadersEnv.readOnly, true);
+      assert.equal(view.schema.properties.openvikingConnectionId.readOnly, true);
       assert.equal(view.schema.properties.openvikingTimeout.readOnly, undefined);
     }
   }
@@ -88,9 +87,9 @@ for (const source of ["profile", "local", "repository_instance", "instance", "ex
     process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
     const view = await backend.main({ action: "read" });
     assert.equal(view.values.openvikingEnabled, false);
-    assert.equal(view.values.openvikingUrl, process.env.EDT_AI_OPENVIKING_URL);
+    assert.equal(view.values.openvikingUrl, "https://profile.example/mcp");
     assert.equal(view.valueSources.openvikingEnabled, source === "local" ? "project_local" : source === "explicit" ? "connections_file" : source);
-    assert.equal(view.valueSources.openvikingUrl, "environment:EDT_AI_OPENVIKING_URL");
+    assert.equal(view.valueSources.openvikingUrl, "profile");
     const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network"); });
     assert.equal((await backend.main({ action: "probe" })).external.openviking.connected, false);
     assert.equal(network.mock.callCount(), 0);
@@ -109,7 +108,7 @@ test("OpenViking URL edits do not enable the optional transport and portable def
   const live = (await client.call("settings.read", {})).structuredContent;
   assert.equal(live.values.openvikingEnabled, false);
   assert.equal(live.schema.properties.openvikingEnabled.readOnly, undefined);
-  assert.equal(live.schema.properties.openvikingUrl.readOnly, true);
+  assert.equal(live.schema.properties.openvikingUrl.readOnly, undefined);
   dump({ mcp: { optional: { openviking: { enabled: false, url: "https://portable.example/mcp" } } } }, f.env.EDT_AI_SETTINGS);
   const exported = await backend.main({ action: "export" });
   assert.deepEqual(JSON.parse(exported.text).settings.mcp.optional.openviking.enabled, false);
@@ -161,7 +160,7 @@ test("unsaved knowledge probe transport is validated without persisting or chang
   const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
   const backend = new SettingsBackend(), before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
   const draft = { enabled: false, url: "https://draft.example/mcp", timeout_seconds: 1, max_response_bytes: 4096,
-    headers_env: { Authorization: "OV_AUTHORIZATION" } };
+    connection_id: "team" };
   const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network without access proof"); });
   const probe = await backend.main({ action: "probe", connections: { openviking: draft } });
   assert.equal(probe.external.openviking.configured, false);
@@ -184,7 +183,7 @@ test("OpenViking settings validate endpoint, environment credentials and bounded
   assert.equal(config.mcp.optional.openviking.timeout_seconds, 20);
   assert.equal(config.mcp.optional.openviking.max_response_bytes, 2097152);
   const valid = { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 2.5,
-    max_response_bytes: 4096, headers_env: { Authorization: "OV_AUTHORIZATION" } };
+    max_response_bytes: 4096, connection_id: "team" };
   config.mcp.optional.openviking = valid; validate_settings(config);
   for (const [enabled, url, expected] of [[false, valid.url, false], [true, "", true]]) {
     config.mcp.optional.openviking = { ...valid, enabled, url };
@@ -205,7 +204,7 @@ test("OpenViking setup probe refuses credentials without external access confirm
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   const config = settings();
   config.mcp.optional.openviking = { enabled: true, url: "https://knowledge.example/mcp",
-    timeout_seconds: 0.0015, max_response_bytes: 1024, headers_env: { Authorization: "OV_AUTHORIZATION" } };
+    timeout_seconds: 0.0015, max_response_bytes: 1024, connection_id: "team" };
   const calls = [];
   f.profile.knowledge.collection_uris = { team: "viking://resources/team" };
   t.mock.method(globalThis, "fetch", async (_url, options) => {
@@ -227,7 +226,7 @@ test("OpenViking setup probe refuses credentials without external access confirm
 test("OpenViking resolves profile, local, repository instance, state instance, explicit file and environment per field", t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp",
-    headers_env: { Authorization: "OV_AUTHORIZATION" } } }; f.save();
+    connection_id: "team" } }; f.save();
   const config = settings();
   config.mcp.optional.openviking.url = "https://settings.example/mcp";
   const read = () => {
@@ -242,7 +241,7 @@ test("OpenViking resolves profile, local, repository instance, state instance, e
   config.mcp.optional.openviking.url = "https://settings.example/mcp";
   f.profile.connections.openviking.url = "https://profile.example/mcp";
   assert.equal(read()[1], "profile");
-  dump({ connections: { openviking: { timeout_seconds: 3, headers_env: { Authorization: "OV_LOCAL_AUTH" } } } }, path.join(f.root, ".ai/project.local.yaml"));
+  dump({ connections: { openviking: { timeout_seconds: 3, connection_id: "local" } } }, path.join(f.root, ".ai/project.local.yaml"));
   assert.equal(read()[0].timeout_seconds, 3);
   dump({ connections: { openviking: { url: "https://repository-instance.example/mcp" } } }, path.join(f.root, ".ai/instances/first.local.yaml"));
   assert.equal(read()[1], "repository_instance");
@@ -255,14 +254,12 @@ test("OpenViking resolves profile, local, repository instance, state instance, e
   const [effective, source] = read();
   assert.equal(source, "connections_file");
   assert.deepEqual(effective, { enabled: true, url: "https://explicit.example/mcp", timeout_seconds: 5,
-    max_response_bytes: 8192, headers_env: { Authorization: "OV_LOCAL_AUTH" } });
+    max_response_bytes: 8192, connection_id: "local" });
   process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
-  assert.equal(read()[0].url, process.env.EDT_AI_OPENVIKING_URL);
-  assert.equal(read()[1], "environment:EDT_AI_OPENVIKING_URL");
+  assert.equal(read()[0].url, "https://explicit.example/mcp");
+  assert.equal(read()[1], "connections_file");
   dump({ connections: { openviking: { url_env: "CUSTOM_OV_URL" } } }, explicit);
-  process.env.CUSTOM_OV_URL = "https://custom.example/mcp";
-  assert.equal(read()[0].url, process.env.CUSTOM_OV_URL);
-  assert.equal(read()[1], "environment:CUSTOM_OV_URL");
+  assert.throws(() => read());
   delete process.env.EDT_AI_CONNECTIONS_FILE; delete process.env.EDT_AI_OPENVIKING_URL;
   process.env.EDT_AI_INSTANCE = "second";
   assert.equal(read()[0].url, "https://profile.example/mcp");
@@ -287,9 +284,9 @@ test("OpenViking settings updates belong to the selected instance and MCP expose
   const environmentClient = await session(t, "mcp/settings.mjs", [], f, { EDT_AI_OPENVIKING_URL: "https://environment.example/mcp" });
   for (const name of ["settings.read", "settings.status"]) {
     const inherited = (await environmentClient.call(name, {})).structuredContent;
-    assert.equal(inherited.schema.properties.openvikingUrl.readOnly, true);
+    assert.equal(inherited.schema.properties.openvikingUrl.readOnly, undefined);
     assert.equal(inherited.schema.properties.v8stdUrl.readOnly, undefined);
-    assert.equal(inherited.values.openvikingUrl, "https://environment.example/mcp");
+    assert.equal(inherited.values.openvikingUrl, "https://instance.example/mcp");
   }
   process.env.EDT_AI_INSTANCE = "second";
   assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "");
@@ -298,7 +295,7 @@ test("OpenViking settings updates belong to the selected instance and MCP expose
 test("OpenViking portable export/import preserves public transport defaults without credentials or local overrides", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   f.profile.connections = { openviking: { enabled: true, url: "https://public.example/mcp", timeout_seconds: 4,
-    max_response_bytes: 4096, headers_env: { Authorization: "OV_AUTHORIZATION" } } }; f.save();
+    max_response_bytes: 4096, connection_id: "team" } }; f.save();
   process.env.OV_AUTHORIZATION = "Bearer fixture-secret";
   process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
   dump({ connections: { openviking: { url: "https://private-local.example/mcp" } } }, path.join(f.root, ".ai/project.local.yaml"));
@@ -314,7 +311,7 @@ test("OpenViking portable export/import preserves public transport defaults with
   assert.equal(preview.openviking.url, "https://public.example/mcp");
   assert.equal(preview.openviking.timeout_seconds, 4);
   assert.equal(preview.openviking.max_response_bytes, 4096);
-  assert.deepEqual(preview.openviking.headers_env, { Authorization: "OV_AUTHORIZATION" });
+  assert.equal(preview.openviking.connection_id, "team");
   assert.equal(JSON.stringify(preview).includes("fixture-secret"), false);
   const applied = await backend.main({ action: "apply", ...request, revision: preview.revision });
   assert.equal(applied.values.openvikingUrl, preview.openviking.url);
@@ -364,7 +361,7 @@ test("OpenViking import rejects inline credentials and credential-bearing URLs b
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
 });
 
-for (const source of ["profile", "local", "repository_instance", "instance", "explicit", "environment"])
+for (const source of ["profile", "local", "repository_instance", "instance", "explicit"])
   test(`OpenViking empty ${source} URL remains an explicit disconnect above saved defaults`, async t => {
     const f = fixture(t); environment(t, f.env); enable_knowledge(f);
     f.profile.connections = { openviking: { enabled: true, url: source === "profile" ? "" : "https://profile.example/mcp" } }; f.save();
@@ -397,7 +394,7 @@ test("OpenViking reset preserves the disabled flag while restoring the inherited
   f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp" } }; f.save();
   const backend = new SettingsBackend();
   const file = instance_file(backend.current(), f.root);
-  const retained = { enabled: false, timeout_seconds: 3, max_response_bytes: 4096, headers_env: { Authorization: "OV_AUTHORIZATION" } };
+  const retained = { enabled: false, timeout_seconds: 3, max_response_bytes: 4096, connection_id: "team" };
   dump({ connections: { openviking: { ...retained, url: "" } } }, file);
   const client = await session(t, "mcp/settings.mjs", [], f);
   await client.call("settings.reset_connection", { connection: "openviking" });

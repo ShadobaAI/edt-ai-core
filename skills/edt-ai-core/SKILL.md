@@ -61,8 +61,7 @@ another chat before correcting the actual connection problem.
   with changed fields only; respect read-only/environment/connection-file sources.
   Both form entrypoints, chat tools and the Node CLI use SettingsBackend with
   the same selected root, instance and precedence. OpenViking transport fields
-  are openvikingEnabled/Url/Timeout/MaxResponseBytes/HeadersEnv; HeadersEnv is a
-  complete map of header names to environment variable names, never secrets.
+  are openvikingEnabled/Url/Timeout/MaxResponseBytes/ConnectionId. Shared OpenViking credentials and signed confirmations are entered in the settings form and never in project profiles or ordinary agent responses.
   OpenViking is optional and disabled by default. Its enabled flag is independent
   of the URL: to connect under the user's request, explicitly set
   openvikingEnabled=true. Changing a URL does not enable a disabled transport.
@@ -86,8 +85,7 @@ Keep the profile's explicit knowledge choice: disabled (`provider: none`),
 transitional with selected collections, or KORA with mandatory knowledge for
 the whole workflow. Change that choice only under the user's settings request.
 Use inspect.knowledge/knowledgeSetup and valueSources. For OpenViking obtain
-the assigned MCP endpoint, collection IDs/URIs, environment variable names for
-search credentials and external access/publication confirmations from the team.
+the assigned MCP endpoint, collection IDs/URIs and external access/publication confirmations from the team. Direct the user to enter the search credential, binding key, public keys and confirmations in the shared connection form.
 Connect that existing server; do not install OpenViking, create a corpus, index,
 publish, guess a URL or substitute another authority when readiness fails.
 Use edit/preview/apply to set the project knowledge contract and update for

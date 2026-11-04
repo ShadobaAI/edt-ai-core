@@ -67,7 +67,7 @@ test("native instructions survive and unrelated settings preserve the reader ses
 });
 test("managed relay does not pass knowledge credentials from any project to native children", async t => {
   const f = fixture(t);
-  f.profile.connections = { openviking: { headers_env: { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" } } };
+  f.profile.connections = { openviking: { connection_id: "team" } };
   Object.assign(f.env, { OPENVIKING_SEARCH_TOKEN: "standard-token", EDT_AI_OPENVIKING_ACCESS_BINDING_KEY: "binding-key",
     TEAM_KNOWLEDGE_TOKEN: "custom-token", OTHER_PROJECT_TOKEN: "other-token", FIXTURE_CHECK_KNOWLEDGE_ENV: "1" });
   const c = await managed(t, f);
@@ -164,7 +164,7 @@ test("managed relay bounds shutdown of a child that ignores host EOF", async t =
 });
 test("direct managed BSL launch excludes credentials from the Java probe and native child", async t => {
   const f = fixture(t); environment(t, f.env);
-  f.profile.connections = { openviking: { headers_env: { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" } } };
+  f.profile.connections = { openviking: { connection_id: "team" } };
   f.save(); grant_preparation(f.state, f.root, ["bsl-ls"]);
   dump({ mcp: { managed: { "bsl-ls": { enabled: true, java: process.execPath } } } }, f.env.EDT_AI_SETTINGS);
   const bytes = Buffer.from("fixture jar"), digest = sha256(bytes), jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", digest, "bsl-language-server-exec.jar");

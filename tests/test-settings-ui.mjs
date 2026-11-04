@@ -276,7 +276,7 @@ test("OpenViking editable transport fields save typed values through the shared 
   let updated;
   const current = structuredClone(read);
   current.values = { ...current.values, openvikingEnabled: false, openvikingUrl: "",
-    openvikingTimeout: 20, openvikingMaxResponseBytes: 2097152, openvikingHeadersEnv: {} };
+    openvikingTimeout: 20, openvikingMaxResponseBytes: 2097152, openvikingConnectionId: "" };
   const ui = screen(async (name, args) => {
     if (["settings.read", "settings.status"].includes(name)) return current;
     if (name === "settings.update") { updated = args.set; Object.assign(current.values, args.set); return {}; }
@@ -285,7 +285,7 @@ test("OpenViking editable transport fields save typed values through the shared 
   assert.equal(ui.elements.get("openvikingEnabled").checked, false);
   const values = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
     openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
-    openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
+    openvikingConnectionId: "team" };
   for (const [key, value] of Object.entries(values)) {
     const field = ui.elements.get(key); assert.equal(field.disabled, false);
     if (typeof value === "boolean") { field.checked = value; field.events.change(); }
@@ -293,6 +293,28 @@ test("OpenViking editable transport fields save typed values through the shared 
   }
   await ui.elements.get("saveButton").onclick();
   assert.deepEqual(JSON.parse(JSON.stringify(updated)), values);
+});
+
+test("a delayed shared-record load cannot overwrite a draft and external scope changes keep an escape", async () => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const current = { ...read, instance: "one", values: { ...read.values, openvikingUrl: "https://example.org/mcp", openvikingConnectionId: "team" } };
+  const ui = screen(async name => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.openviking_read") return pending;
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.flush();
+  const credential = ui.elements.get("ovCredential"); credential.value = "draft"; credential.events.input();
+  assert.equal(ui.elements.get("probeButton").disabled, true);
+  release({ revision: "saved", values: { credential: "saved", bindingKey: "", accessPublicKey: "", accessReceipts: "", publicationPublicKey: "", publicationReceipts: "" } });
+  await ui.flush(); await ui.flush(); assert.equal(credential.value, "draft");
+  vm.runInContext(`renderCurrent(${JSON.stringify({ ...current, instance: "two", values: { ...current.values, projectRoot: "C:/fixture/other" } })})`, ui.context);
+  assert.equal(ui.elements.get("unsavedHint").hidden, false);
+  assert.equal(ui.elements.get("openvikingRecordDiscard").disabled, true);
+  ui.elements.get("discardDraftButton").onclick();
+  assert.equal(ui.elements.get("projectRoot").value, "C:/fixture/other");
+  assert.equal(ui.elements.get("probeButton").disabled, false);
 });
 
 test("OpenViking can be disabled and enabled without changing its saved URL", async () => {
@@ -338,7 +360,7 @@ test("knowledge UI shows scoped setup publication and drops stale readiness with
   const current = structuredClone(read);
   current.knowledge = { mode: "transitional", provider: "openviking", collections: ["team", "api"], required: true,
     workflowScope: "dependent_actions", dependentActions: ["implementation"], state: "not_verified", detail: "Search not verified" };
-  current.valueSources = { openvikingTimeout: "project_local", openvikingHeadersEnv: "connections_file" };
+  current.valueSources = { openvikingTimeout: "project_local", openvikingConnectionId: "connections_file" };
   current.readiness = { state: "blocked", checks: [], knowledge: { ready: true,
     readiness: { publication: { state: "verified", gitRevision: "revision-fixture", snapshot: "index-fixture" } } } };
   const ui = screen(async name => { if (["settings.read", "settings.status"].includes(name)) return current; throw new Error(name); });

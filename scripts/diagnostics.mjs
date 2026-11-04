@@ -36,7 +36,7 @@ const registered = new Set();
 export function register_diagnostic_secrets(value) {
   if (!value || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value)) {
-    if (["headers_env", "openvikingHeadersEnv"].includes(key) && child && typeof child === "object") {
+    if (key === "headers_env" && child && typeof child === "object") {
       for (const variable of Object.values(child)) if (process.env[variable]) registered.add(process.env[variable]);
     }
     else if (secretKey.test(key) && typeof child === "string" && child.length >= 4) registered.add(child);

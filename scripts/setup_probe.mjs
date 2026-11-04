@@ -24,11 +24,11 @@ function edt_project_detail(repositories) {
 }
 // Setup evidence is a bounded observation of a closed probe, never a workflow
 // capability. Caller-supplied ready flags and deserialized JSON prove nothing.
-export function setup_knowledge_status(profile, config, root, observation) {
+export function setup_knowledge_status(profile, config, root, observation, state) {
   const knowledge = { ...knowledge_status(profile, config), readinessScope: "setup", koraReady: false };
   const proof = observation && observations.get(observation);
   if (knowledge.state !== "not_verified" || !proof || proof.key !== stable([resolve(root), profile, config]) ||
-      proof.evidence !== knowledge_evidence_revision(config, root, profile) ||
+      proof.evidence !== knowledge_evidence_revision(config, root, profile, state) ||
       Date.now() < Date.parse(proof.status.readiness.checkedAt) || Date.now() >= Date.parse(proof.status.readiness.expiresAt)) return knowledge;
   return { ...knowledge, state: "ready", ready: true, lifecycle: "ready", searchReadiness: "ready",
     readiness: structuredClone(proof.status.readiness), detail: "Поиск по выбранным коллекциям подтверждён проверкой настройки; рабочий процесс должен проверить собственную сессию." };
@@ -36,7 +36,7 @@ export function setup_knowledge_status(profile, config, root, observation) {
 
 // Read-only external acceptance for setup, without launching managed services,
 // publishing their schemas to the model, or inventing native tool arguments.
-export async function probe_connections(config, root, profile) {
+export async function probe_connections(config, root, profile, state) {
   register_diagnostic_secrets(config);
   const observationKey = stable([resolve(root), profile, config]);
   const knowledge = knowledge_status(profile, config);
@@ -50,13 +50,13 @@ export async function probe_connections(config, root, profile) {
     if (name === "openviking") {
       const bounded = structuredClone(config);
       bounded.mcp.optional.openviking.timeout_seconds = Math.min(options.timeout_seconds || 20, 30);
-      const adapter = new OpenVikingAdapter(profile, bounded, null, null, root);
+      const adapter = new OpenVikingAdapter(profile, bounded, null, null, root, state);
       const result = { configured: true, connected: false, ready: false, access: "not_verified",
         searchReadiness: "not_verified", collections: knowledge.collections, detail: knowledge.detail };
       try {
-        const evidence = knowledge_evidence_revision(config, root, profile);
+        const evidence = knowledge_evidence_revision(config, root, profile, state);
         Object.assign(result, await adapter.connect()); Object.assign(result, await adapter.verifyReadiness());
-        if (evidence !== knowledge_evidence_revision(config, root, profile)) throw new Error("Knowledge evidence changed during the setup probe; repeat readiness");
+        if (evidence !== knowledge_evidence_revision(config, root, profile, state)) throw new Error("Knowledge evidence changed during the setup probe; repeat readiness");
         observations.set(result, { key: observationKey, evidence, status: structuredClone(result) });
       }
       catch (error) { Object.assign(result, adapter.status(), { ready: false, lifecycle: adapter.connected ? "connected" : "configured",
@@ -108,7 +108,7 @@ export async function probe_connections(config, root, profile) {
     finally { await client.close().catch(() => {}); }
     return [name, result];
   })));
-  const status = setup_knowledge_status(profile, config, root, external.openviking);
+  const status = setup_knowledge_status(profile, config, root, external.openviking, state);
   return { projectRoot: root, external, knowledge: status, verificationLimits: verification_limits(status.ready),
     scope: "setup_probe", fullReadiness: "not_verified", chatRelay: "not_verified",
     detail: "Проверено отдельное подключение к серверам; каталог инструментов и привязка relay текущего чата не проверены." };

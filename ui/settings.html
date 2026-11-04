@@ -96,8 +96,15 @@ details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer
 <div id="openvikingTimeoutSource" class="muted"></div>
 <label class="field" for="openvikingMaxResponseBytes">Лимит ответа, байт (1024–16777216)</label><input id="openvikingMaxResponseBytes" type="text" inputmode="numeric" aria-describedby="openvikingMaxResponseBytesSource">
 <div id="openvikingMaxResponseBytesSource" class="muted"></div>
-<label class="field" for="openvikingHeadersEnv">Заголовки → имена переменных окружения (JSON)</label><input id="openvikingHeadersEnv" type="text" placeholder='{"Authorization":"OV_AUTHORIZATION"}' autocomplete="off" aria-describedby="openvikingHeadersEnvSource"><p>Укажите имена переменных. Данные авторизации задаются вне формы.</p>
-<div id="openvikingHeadersEnvSource" class="muted"></div>
+<label class="field" for="openvikingConnectionId">Код подключения (необязательно)</label><input id="openvikingConnectionId" type="text" autocomplete="off" aria-describedby="openvikingConnectionIdSource"><div id="openvikingConnectionIdSource" class="muted"></div>
+<p>Общая запись определяется точным URL и кодом подключения. Её изменение действует на все проекты и экземпляры с тем же URL и кодом.</p>
+<div class="actions"><button id="openvikingRecordLoad">Открыть запись</button><button id="openvikingRecordSave">Сохранить общую запись</button><button id="openvikingRecordDiscard">Отменить изменения записи</button></div><p id="openvikingRecordStatus" class="muted" role="status"></p>
+<label class="field" for="ovCredential">X-Api-Key или полное значение Bearer</label><input id="ovCredential" type="text" autocomplete="off">
+<label class="field" for="ovBindingKey">Ключ привязки подтверждения доступа</label><input id="ovBindingKey" type="text" autocomplete="off">
+<label class="field" for="ovAccessPublicKey">Открытый ключ доступа (PEM)</label><textarea id="ovAccessPublicKey" rows="4" spellcheck="false"></textarea>
+<label class="field" for="ovAccessReceipts">Подтверждения доступа (JSON)</label><textarea id="ovAccessReceipts" rows="6" spellcheck="false"></textarea>
+<label class="field" for="ovPublicationPublicKey">Открытый ключ публикации (PEM)</label><textarea id="ovPublicationPublicKey" rows="4" spellcheck="false"></textarea>
+<label class="field" for="ovPublicationReceipts">Подтверждения публикации (JSON)</label><textarea id="ovPublicationReceipts" rows="6" spellcheck="false"></textarea>
 </fieldset>
 <div class="notice-box" id="knowledgeSummary" role="status" aria-live="polite"><pre id="knowledgeDetails"></pre></div>
 <div class="actions"><button id="probeButton"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>Проверить подключения</button></div><p class="muted">Проверяются значения в доступных полях; для недоступных полей — действующие значения. Проверка не сохраняет изменения.</p><pre id="probeResult" hidden></pre></div>
@@ -160,11 +167,25 @@ const selectedVersions=new Map();
 const versionCatalogs=new Map();let versionOpen=false,versionLimit=50,versionIndex=-1,visibleVersions=[];
 const versionField=component=>component==="bsl-ls"?"bslLsVersion":"codeIndexVersion";
 const checkboxField=field=>field.endsWith("Enabled")||field.endsWith("AllowPrerelease");
-const openvikingFields=["openvikingEnabled","openvikingUrl","openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"];
-const openvikingMembers=["enabled","url","timeout_seconds","max_response_bytes","headers_env"];
+const openvikingFields=["openvikingEnabled","openvikingUrl","openvikingTimeout","openvikingMaxResponseBytes","openvikingConnectionId"];
+const openvikingMembers=["enabled","url","timeout_seconds","max_response_bytes","connection_id"];
+const ovRecordFields={credential:"ovCredential",bindingKey:"ovBindingKey",accessPublicKey:"ovAccessPublicKey",accessReceipts:"ovAccessReceipts",publicationPublicKey:"ovPublicationPublicKey",publicationReceipts:"ovPublicationReceipts"};
+let ovRecordKey=null,ovRecordRevision=null,ovRecordDirty=false,ovRecordLoading=null,ovOriginal=null,ovDraftVersion=0;
+const ovIdentity=()=>({url:$("openvikingUrl").value.trim(),connectionId:$("openvikingConnectionId").value.trim()});
+const ovKey=()=>JSON.stringify(ovIdentity());
+async function loadOvRecord(){
+  const identity=ovIdentity(),key=JSON.stringify(identity),version=ovDraftVersion;if(!identity.url)throw new Error("Укажите URL OpenViking.");
+  const result=await tool("settings.openviking_read",identity);if(key!==ovKey()||version!==ovDraftVersion||ovRecordDirty)return;
+  for(const [name,id] of Object.entries(ovRecordFields))$(id).value=result.values[name];
+  ovRecordKey=key;ovRecordRevision=result.revision;ovOriginal={...result.values};ovRecordDirty=false;$("openvikingRecordStatus").textContent=result.revision==="missing"?"Новая общая запись.":"Общая запись загружена.";syncControls();
+}
+function maybeLoadOvRecord(){
+  if(!connected||!ovIdentity().url||ovRecordDirty||ovRecordLoading||ovRecordKey===ovKey())return;
+  const key=ovKey();ovRecordLoading=loadOvRecord().catch(error=>{if(key===ovKey())$("openvikingRecordStatus").textContent=userMessage(error.message);}).finally(()=>{ovRecordLoading=null;if(key!==ovKey())maybeLoadOvRecord();});
+}
 const connectionFields=["edtUrl","v8stdUrl",...openvikingFields],componentFields=["codeIndexEnabled","bslLsEnabled"];
-const transportValue=key=>checkboxField(key)?$(key).checked:key==="openvikingHeadersEnv"?JSON.parse($(key).value):["openvikingTimeout","openvikingMaxResponseBytes"].includes(key)?Number($(key).value):$(key).value.trim();
-const savedField=(values,field)=>checkboxField(field)?Boolean(values?.[field]):field==="openvikingHeadersEnv"?JSON.stringify(values?.[field]||{}):String(values?.[field]??(field.endsWith("Version")?"latest":""));
+const transportValue=key=>checkboxField(key)?$(key).checked:["openvikingTimeout","openvikingMaxResponseBytes"].includes(key)?Number($(key).value):$(key).value.trim();
+const savedField=(values,field)=>checkboxField(field)?Boolean(values?.[field]):String(values?.[field]??(field.endsWith("Version")?"latest":""));
 function fieldScope(field){return connectionFields.includes(field)?$("connectionScope").value:componentFields.includes(field)?$("componentScope").value:field==="bslLsJava"?$("javaScope").value:null;}
 function scopedField(current,field){const layer=current?.layerValues?.[fieldScope(field)];return layer&&Object.hasOwn(layer,field)?layer[field]:current?.values?.[field];}
 function absentFromScope(current,field){const scope=fieldScope(field),layer=current?.layerValues?.[scope];return Boolean(scope&&layer&&!Object.hasOwn(layer,field));}
@@ -357,7 +378,7 @@ function renderCurrent(current,{preserveDraft=false}={}){
   pendingScope=null;
   if(changedScope){cancelReadinessRetry();dirtyFields.clear();settingsDraftRevision=null;renameBaseRevision=null;importDraft=false;nativeImport=null;$("nativeImportFileName").textContent="";renameDirty=false;$("renameArea").hidden=true;invalidate();$("settingsText").value="";editorOriginal="";editBaseRevision=null;editLayerScope=null;editorDocument="profile";$("editorDocument").value="profile";resetJsonEditor();$("probeResult").hidden=true;$("connections").hidden=true;$("exportSaved").hidden=true;$("javaResult").textContent="";updateResults.clear();selectedVersions.clear();renderUpdates();}
   for(const field of ["codeIndexEnabled","bslLsEnabled","openvikingEnabled"])if(!preserveDraft||!dirtyFields.has(field))$(field).checked=Boolean(scopedField(current,field));
-  for(const field of ["openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"])if(!preserveDraft||!dirtyFields.has(field))$(field).value=scopedSaved(current,field);
+  for(const field of ["openvikingTimeout","openvikingMaxResponseBytes","openvikingConnectionId"])if(!preserveDraft||!dirtyFields.has(field))$(field).value=scopedSaved(current,field);
   if(!preserveDraft||!dirtyFields.has("bslLsJava"))$("bslLsJava").value=scopedSaved(current,"bslLsJava");
   $("bslLsJava").readOnly=Boolean(current.schema?.properties?.bslLsJava?.readOnly)||current.viewOnly;
   for(const field of openvikingFields){
@@ -421,7 +442,7 @@ function renderCurrent(current,{preserveDraft=false}={}){
   $("profileEdtProjects").replaceChildren(...projects.map(project=>{const row=document.createElement("tr"),name=document.createElement("td"),displayName=document.createElement("td"),directory=document.createElement("td");name.textContent=project.name;displayName.textContent=project.displayName||"—";directory.textContent=project.directory;row.append(name,displayName,directory);return row;}));
   if(!projects.length){const row=document.createElement("tr"),cell=document.createElement("td");cell.setAttribute("colspan","3");cell.textContent=profileContext?.edt?.projectCount===null?"Не удалось проверить файлы .project.":"EDT-проекты с файлом .project не найдены.";row.append(cell);$("profileEdtProjects").append(row);}
   $("profileGitRoot").textContent=profileContext?.git?.status==="detected"?"Git-репозиторий каталога профиля: "+profileContext.git.root:profileContext?.git?.status==="not_repository"?"Каталог профиля не находится в Git-репозитории.":"Git-репозиторий каталога профиля не определён. Подробнее — в сведениях об EDT и Git.";
-  renderHistory(current);renderSummary(current);renderServiceSnapshot(current);renderSettingSources(current);renderDestinations();syncControls();
+  renderHistory(current);renderSummary(current);renderServiceSnapshot(current);renderSettingSources(current);renderDestinations();syncControls();maybeLoadOvRecord();
   if(!loaded||current.viewOnly){cancelReadinessRetry();readinessScope=null;readinessPending=false;}
   else if(current.readiness&&current.preparationScope&&current.preparationScope!==readinessScope){readinessScope=current.preparationScope;readinessUnknownRetries=0;readinessPending=true;}
   if(current.operation?.status==="running"&&operationMatchesProfile(current.operation)&&["check","refresh_readiness"].includes(current.operation.action))readinessPending=false;
@@ -532,6 +553,9 @@ function syncControls(){
   $("openExportButton").disabled||=$("exportSaved").hidden;
   const loaded=currentData?.profile?.status==="loaded",draftRoot=dirtyFields.has("projectRoot"),blocked=currentData?.viewOnly||draftRoot;
   for(const id of ["saveButton","probeButton","saveComponentsButton","updateComponent","versionButton","versionSearch","moreVersionsButton","refreshVersionsButton","readinessButton","installUpdateButton","downloadButton","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled","connectionScope","componentScope","bslLsJava","javaScope","pickJavaButton","checkJavaButton","saveJavaButton","renameButton",...openvikingFields])$(id).disabled||=!loaded||blocked;
+  for(const id of ["openvikingRecordLoad","openvikingRecordSave","openvikingRecordDiscard",...Object.values(ovRecordFields)])$(id).disabled||=!loaded||blocked;
+  $("probeButton").disabled||=ovRecordDirty;
+  $("openvikingRecordDiscard").disabled||=!ovRecordDirty;
   $("saveButton").disabled||=!connectionFields.some(field=>dirtyFields.has(field)&&!$(field).readOnly);
   $("saveComponentsButton").disabled||=!componentFields.some(field=>dirtyFields.has(field)&&!currentData?.schema?.properties?.[field]?.readOnly);
   for(const field of componentFields)$(field).disabled||=Boolean(currentData?.schema?.properties?.[field]?.readOnly);
@@ -561,8 +585,8 @@ function syncControls(){
   $("edtPortText").textContent=portSuggestion?"В настройках workspace EDT порт "+portSuggestion.detectedPort+", в URL — "+portSuggestion.configuredPort+". Проверьте, что это нужный экземпляр EDT.":"";
   $("useEdtPortButton").hidden=$("edtUrl").readOnly;
   $("useEdtPortButton").disabled||=!portSuggestion||blocked||dirtyFields.has("edtUrl");
-  $("unsavedHint").hidden=!dirtyFields.size&&!editorChanged()&&!lastPreview&&!importDraft&&!renameDirty;
-  if(pendingScope){for(const id of ["saveButton","saveComponentsButton","saveJavaButton","renameSaveButton","pickJavaButton","checkJavaButton","createButton","repairButton","loadButton","previewButton","reviewEditButton","applyButton","pickDirectoryButton","pickImportFileButton","selectProfileButton","probeButton","readinessButton","installUpdateButton","rebuildIndexButton","restartIndexButton","downloadButton"])$(id).disabled=true;$("discardDraftButton").disabled=false;}
+  $("unsavedHint").hidden=!ovRecordDirty&&!dirtyFields.size&&!editorChanged()&&!lastPreview&&!importDraft&&!renameDirty;
+  if(pendingScope){for(const id of ["saveButton","saveComponentsButton","saveJavaButton","renameSaveButton","pickJavaButton","checkJavaButton","createButton","repairButton","loadButton","previewButton","reviewEditButton","applyButton","pickDirectoryButton","pickImportFileButton","selectProfileButton","probeButton","readinessButton","installUpdateButton","rebuildIndexButton","restartIndexButton","downloadButton","openvikingRecordLoad","openvikingRecordSave","openvikingRecordDiscard"])$(id).disabled=true;$("discardDraftButton").disabled=false;}
   renderReadiness();
 }
 async function busy(label,action){
@@ -621,15 +645,26 @@ $("formatJsonButton").onclick=()=>{
   try{$("settingsText").value=JSON.stringify(JSON.parse($("settingsText").value),null,2);interacted=true;invalidate();renderJsonEditor();syncControls();}
   catch(error){editorFeedback("Не удалось форматировать JSON: "+error.message,true);}
 };
-function hasProfileDraft(){return [...dirtyFields].some(field=>field!=="projectRoot")||editorChanged()||lastPreview||importDraft||renameDirty;}
+function hasProfileDraft(){return ovRecordDirty||[...dirtyFields].some(field=>field!=="projectRoot")||editorChanged()||lastPreview||importDraft||renameDirty;}
 for(const field of ["projectRoot","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled","bslLsJava",...openvikingFields])$(field).addEventListener(checkboxField(field)?"change":"input",()=>{interacted=true;const changed=absentFromScope(currentData,field)||(checkboxField(field)?$(field).checked:$(field).value.trim())!==scopedSaved(currentData,field);changed?dirtyFields.add(field):dirtyFields.delete(field);rememberSettingsRevision();if(field==="projectRoot")invalidate();if(field==="bslLsJava")$("javaResult").textContent="";if(field!=="projectRoot"){renderSettingSources(currentData,[field]);renderDestinations();}syncControls();});
+for(const id of Object.values(ovRecordFields))$(id).addEventListener("input",()=>{ovRecordDirty=true;ovDraftVersion++;$("openvikingRecordStatus").textContent="Есть несохранённые изменения общей записи.";syncControls();});
+for(const id of ["openvikingUrl","openvikingConnectionId"])$(id).addEventListener("change",()=>{if(ovRecordDirty&&ovRecordKey!==ovKey())$("openvikingRecordStatus").textContent="Ключ изменился. Сначала откройте нужную запись; текущий черновик будет заменён.";else maybeLoadOvRecord();});
+$("openvikingRecordLoad").onclick=()=>busy("Открываем общую запись OpenViking…",async()=>{if(ovRecordDirty)throw new Error("Сохраните или отмените изменения текущей записи перед открытием другой.");await loadOvRecord();notice("Общая запись открыта.");}).catch(()=>{});
+function discardOvRecord(){for(const [name,id]of Object.entries(ovRecordFields))$(id).value=ovOriginal?.[name]||"";ovRecordDirty=false;ovDraftVersion++;$("openvikingRecordStatus").textContent="Изменения записи отменены.";syncControls();maybeLoadOvRecord();}
+$("openvikingRecordDiscard").onclick=discardOvRecord;
+$("openvikingRecordSave").onclick=()=>busy("Сохраняем общую запись OpenViking…",async()=>{
+  if(ovRecordKey!==ovKey()||!ovRecordRevision)throw new Error("Сначала откройте запись для указанного URL и кода.");
+  const values=Object.fromEntries(Object.entries(ovRecordFields).map(([name,id])=>[name,$(id).value]));
+  const result=await tool("settings.openviking_save",{...ovIdentity(),values,expectedRevision:ovRecordRevision});ovRecordRevision=result.revision;ovOriginal={...values};ovRecordDirty=false;
+  $("openvikingRecordStatus").textContent="Сохранено для всех проектов и экземпляров с этим URL и кодом. Готовность не подтверждена.";await refresh();notice("Общая запись сохранена. Проверьте подключение.");
+}).catch(()=>{});
 $("selectProfileButton").onclick=()=>selectProfile($("projectRoot").value.trim());
 $("projectRoot").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();selectProfile($("projectRoot").value.trim());}});
 $("addProfileButton").onclick=()=>{if(navigationMode!=="profiles")return;$("directoryChooser").open=true;if(!$("pickDirectoryButton").hidden&&!$("pickDirectoryButton").disabled)return $("pickDirectoryButton").onclick();$("projectRoot").focus();};
 $("refreshButton").onclick=async()=>{interacted=true;readinessUnknownRetries=0;readinessPending=true;await refreshStatus();};
 $("resolveChatButton").onclick=()=>busy("Запрашиваем проект текущего чата…",async()=>{await rpc("ui/message",{role:"user",content:[{type:"text",text:"Открой настройки 1C AI Core для проекта этого чата. Используй каталог текущего чата, не выбирай другой профиль из истории."}]});notice("Запрос отправлен в текущий чат. Настройки откроются с каталогом проекта.");}).catch(()=>{});
 $("historySearch").addEventListener("input",()=>{interacted=true;if(currentData){renderHistory(currentData);syncControls();}});
-$("discardDraftButton").onclick=()=>{const deferred=pendingScope;pendingScope=null;dirtyFields.clear();settingsDraftRevision=null;renameBaseRevision=null;importDraft=false;nativeImport=null;$("nativeImportFileName").textContent="";renameDirty=false;$("renameArea").hidden=true;$("settingsText").value="";editorOriginal="";resetJsonEditor();$("file").value="";$("fileName").textContent="Выбрать файл";editBaseRevision=null;editLayerScope=null;invalidate();if(deferred){renderCurrent(deferred);show("profile");}else if(currentData)renderCurrent(currentData);notice("Несохранённые изменения отменены.");};
+$("discardDraftButton").onclick=()=>{const deferred=pendingScope;pendingScope=null;dirtyFields.clear();if(ovRecordDirty)discardOvRecord();settingsDraftRevision=null;renameBaseRevision=null;importDraft=false;nativeImport=null;$("nativeImportFileName").textContent="";renameDirty=false;$("renameArea").hidden=true;$("settingsText").value="";editorOriginal="";resetJsonEditor();$("file").value="";$("fileName").textContent="Выбрать файл";editBaseRevision=null;editLayerScope=null;invalidate();if(deferred){renderCurrent(deferred);show("profile");}else if(currentData)renderCurrent(currentData);notice("Несохранённые изменения отменены.");};
 $("pickDirectoryButton").onclick=()=>{if(navigationMode!=="profiles")return;if(hasProfileDraft()){notice("Сохраните изменения или отмените их перед выбором другого профиля.",true);return;}return busy("Выберите папку в открывшемся окне…",async()=>{
   const operation=await tool("settings.pick_directory",{projectRoot:$("projectRoot").value.trim()});
   activeOperation=operation;await pollOperation(operation.id);

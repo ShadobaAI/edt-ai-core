@@ -147,12 +147,10 @@ export function resolved_settings(
   }
   for (const name of ["edt", "v8std", "openviking"]) {
     const defaults = name === "openviking" ? config.mcp.optional[name] : config.mcp.required[name];
-    const variable =
-      connections[name]?.url_env || `EDT_AI_${name.toUpperCase()}_URL`;
-    if (Object.hasOwn(process.env, variable)) {
+    const variable = name === "openviking" ? null : connections[name]?.url_env || `EDT_AI_${name.toUpperCase()}_URL`;
+    if (variable && Object.hasOwn(process.env, variable)) {
       overlay[name] = { ...overlay[name], url: process.env[variable] };
       sources[name] = "environment:" + variable;
-      if (name === "openviking") fieldSources.openviking.url = sources[name];
     } else
       sources[name] ||=
         defaults?.url && name !== "edt"
@@ -170,8 +168,6 @@ export function resolved_settings(
       mcp: { required: overlay, managed: overrides.components || {},
         ...(openviking ? { optional: { openviking } } : {}) },
     });
-  if (Object.hasOwn(openviking || {}, "headers_env"))
-    effective.mcp.optional.openviking.headers_env = structuredClone(openviking.headers_env);
   for (const [name, entry] of Object.entries(overrides.components || {}))
     if (Object.hasOwn(entry, "headers_env")) effective.mcp.managed[name].headers_env = structuredClone(entry.headers_env);
   for (const [name, entry] of Object.entries(overlay))

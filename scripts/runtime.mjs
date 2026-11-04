@@ -36,7 +36,7 @@ import { launch, alive, which, run_sync } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
-import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, knowledge_env_vars, native_environment } from "./components.mjs";
+import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, native_environment } from "./components.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
@@ -1089,7 +1089,6 @@ export async function main() {
             c,
           ],
           cwd: root,
-          env_vars: knowledge_env_vars(effective),
           env: { EDT_AI_PROJECT_ROOT: root, EDT_AI_STATE_DIR: state,
             EDT_AI_SETTINGS: resolve(a.settings || process.env.EDT_AI_SETTINGS || path.join(ROOT, "settings/local.yaml")) },
         };

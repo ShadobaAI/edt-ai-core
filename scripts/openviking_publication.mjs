@@ -2,14 +2,14 @@ import { stable } from "./common.mjs";
 import { createPublicKey, verify } from "node:crypto";
 import { sha256 } from "./project_paths.mjs";
 import { validate_publication_receipt, publication_inventory, parse_material, knowledge_material_active } from "./knowledge.mjs";
+import { read_openviking_record } from "./openviking_store.mjs";
 
 // Trust is provisioned by the external operator, never a profile, returned
 // document, MCP ready flag or project-owned public key.
-const RECEIPTS = "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS";
-const PUBLIC_KEY = "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY";
-export function publication_receipt_epoch(options, now = Date.now()) {
+const record = (options, state) => options.url ? read_openviking_record(options.url, options.connection_id || "", state) : { revision: "missing", values: {} };
+export function publication_receipt_epoch(options, now = Date.now(), state) {
   try {
-    const entries = JSON.parse(process.env[RECEIPTS] || "");
+    const entries = JSON.parse(record(options, state).values.publicationReceipts || "");
     if (Array.isArray(entries)) return entries.filter(entry => entry?.payload?.server?.endpoint === options.url).map(entry => {
       const start = Date.parse(entry?.payload?.verified_at), end = Date.parse(entry?.payload?.expires_at);
       return !Number.isFinite(start) || !Number.isFinite(end) ? "invalid" : now < start ? "future" : now >= end ? "expired" : "current";
@@ -17,14 +17,8 @@ export function publication_receipt_epoch(options, now = Date.now()) {
   } catch {}
   return "invalid";
 }
-export function publication_revision(options) {
-  const raw = process.env[RECEIPTS] || "";
-  let relevant = raw;
-  try {
-    const all = JSON.parse(raw);
-    if (Array.isArray(all)) relevant = all.filter(entry => entry?.payload?.server?.endpoint === options.url);
-  } catch { /* Invalid operator state must invalidate a pinned confirmation. */ }
-  return sha256(stable([relevant, process.env[PUBLIC_KEY] || ""]));
+export function publication_revision(options, state) {
+  return sha256(stable([options.url, options.connection_id || "", record(options, state).revision]));
 }
 
 export class PublicationConfirmation {
@@ -34,13 +28,14 @@ export class PublicationConfirmation {
   #nextActivation = Infinity;
   constructor(expected, now = Date.now()) {
     this.#expected = structuredClone(expected);
+    const initialRevision = publication_revision({ url: expected.endpoint, connection_id: expected.connectionId }, expected.state);
     let envelopes, key;
     try {
-      const raw = process.env[RECEIPTS];
+      const values = record({ url: expected.endpoint, connection_id: expected.connectionId }, expected.state).values, raw = values.publicationReceipts;
       if (!raw || raw.length > 262144) throw new Error();
       envelopes = JSON.parse(raw);
       if (!Array.isArray(envelopes) || !envelopes.length || envelopes.length > 64) throw new Error();
-      key = createPublicKey(process.env[PUBLIC_KEY] || "");
+      key = createPublicKey(values.publicationPublicKey || "");
       if (key.asymmetricKeyType !== "ed25519") throw new Error();
     } catch { throw new Error("Publication requires external signed receipts and an operator Ed25519 trust key"); }
     const matches = [], current = [];
@@ -76,10 +71,11 @@ export class PublicationConfirmation {
           })) throw new Error("Conflicting signed publication snapshots for overlapping collection areas");
     }
     this.#receipt = structuredClone(matches[0]);
-    this.#revision = publication_revision({ url: expected.endpoint });
+    this.#revision = publication_revision({ url: expected.endpoint, connection_id: expected.connectionId }, expected.state);
+    if (this.#revision !== initialRevision) throw new Error("Publication confirmation or trust key changed; reconnect required");
   }
   check(now = Date.now()) {
-    if (this.#revision !== publication_revision({ url: this.#expected.endpoint }))
+    if (this.#revision !== publication_revision({ url: this.#expected.endpoint, connection_id: this.#expected.connectionId }, this.#expected.state))
       throw new Error("Publication confirmation or trust key changed; reconnect required");
     if (!Number.isFinite(now) || now < Date.parse(this.#receipt.verified_at) || now >= Date.parse(this.#receipt.expires_at))
       throw new Error("Publication confirmation is no longer current; reconnect required");

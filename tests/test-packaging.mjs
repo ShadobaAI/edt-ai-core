@@ -457,7 +457,7 @@ test("switching fresh plugin copies preserves external user settings, bindings a
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, "settings/defaults.json")));
   Object.assign(config, { state_dir: f.state, active_project: f.root });
   config.mcp.required.edt.url = "http://localhost:18201/mcp";
-  config.mcp.optional.openviking.headers_env = { Authorization: "USER_KNOWLEDGE_AUTH" };
+  config.mcp.optional.openviking.connection_id = "team";
   const settingsFile = path.join(f.state, "settings.json");
   fs.writeFileSync(settingsFile, JSON.stringify(config));
   const sentinels = [path.join(f.root, ".ai/project.local.yaml"),

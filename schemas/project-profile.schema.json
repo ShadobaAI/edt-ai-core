@@ -690,19 +690,9 @@
               "minimum": 1024,
               "maximum": 16777216
             },
-            "headers_env": {
-              "type": "object",
-              "propertyNames": {
-                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
-              },
-              "additionalProperties": {
-                "type": "string",
-                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-              }
-            },
-            "url_env": {
+            "connection_id": {
               "type": "string",
-              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              "pattern": "^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$"
             }
           },
           "additionalProperties": false

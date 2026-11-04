@@ -1,7 +1,7 @@
 // Protocol translation, not an upstream tool catalogue. Unknown dialects fail
 // closed. Only the connected server's validated descriptors authorize a call.
 import { Ajv, Ajv2020 } from "../vendor/deps.mjs";
-import { object, stable } from "./common.mjs";
+import { object, stable, state_path } from "./common.mjs";
 import { sha256 } from "./project_paths.mjs";
 import { RemoteMcp, RemoteContractError } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
@@ -40,10 +40,11 @@ const line_count = text => {
   return breaks.length + Number(!last || last.index + last[0].length < text.length);
 };
 export class OpenVikingAdapter {
-  constructor(profile, config, client = null, validateBinding = null, projectRoot = null) {
+  constructor(profile, config, client = null, validateBinding = null, projectRoot = null, state = state_path(config)) {
     this.profile = structuredClone(profile);
     this.config = structuredClone(config);
     this.options = this.config.mcp.optional.openviking;
+    this.state = state;
     this.requirements = search_requirements(profile);
     this.validateBinding = validateBinding;
     this.projectRoot = projectRoot;
@@ -67,10 +68,12 @@ export class OpenVikingAdapter {
     }));
     let phase = "authorization";
     try {
-      this.credentialHeaders = search_credential_headers(this.options);
+      const initialRevision = access_revision(this.options, this.state);
+      this.credentialHeaders = search_credential_headers(this.options, this.state);
       phase = "access_scope";
-      this.access = verify_search_access(this.options, this.collections);
-      this.accessRevision = access_revision(this.options);
+      this.access = verify_search_access(this.options, this.collections, Date.now(), this.state);
+      this.accessRevision = access_revision(this.options, this.state);
+      if (initialRevision !== this.accessRevision) throw new Error("OpenViking connection credentials changed during authorization; reconnect required");
       phase = "transport";
       await this.client.initialize();
       if (this.closed) {
@@ -85,7 +88,7 @@ export class OpenVikingAdapter {
       this.confirmPublication();
       this.connected = true;
       return this.status();
-    } catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders, phase); }
+    } catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders, phase, this.state); }
   }
   status() {
     const publication = this.publicationStatus();
@@ -109,7 +112,7 @@ export class OpenVikingAdapter {
         throw new Error("Search readiness expired or connection context changed; repeat the readiness check");
       if (!this.checkPublication()) throw new Error("Search readiness requires a confirmed publication snapshot");
       return { ...structuredClone(this.readiness), state: "ready" };
-    } catch (error) { return { state: "not_verified", detail: access_error(error, this.options, this.credentialHeaders).message }; }
+    } catch (error) { return { state: "not_verified", detail: access_error(error, this.options, this.credentialHeaders, "server_contract", this.state).message }; }
   }
   async verifyReadiness() {
     if (this.readinessPromise) return this.readinessPromise;
@@ -137,7 +140,7 @@ export class OpenVikingAdapter {
       return status;
     })();
     try { return await this.readinessPromise; }
-    catch (error) { this.readiness = null; throw access_error(error, this.options, this.credentialHeaders, "index"); }
+    catch (error) { this.readiness = null; throw access_error(error, this.options, this.credentialHeaders, "index", this.state); }
     finally { this.readinessPromise = null; }
   }
   confirmPublication() {
@@ -148,7 +151,7 @@ export class OpenVikingAdapter {
       const scope = this.access.team_roots.filter(root => [...this.collections.values()].every(uri => uri === root || uri.startsWith(root + "/")))
         .sort((a, b) => b.length - a.length)[0];
       if (!scope) throw new Error("Publication requires one assigned team area containing the selected collections");
-      this.publication = new PublicationConfirmation({ endpoint: this.options.url, scope,
+      this.publication = new PublicationConfirmation({ endpoint: this.options.url, connectionId: this.options.connection_id || "", state: this.state, scope,
         deploymentId: this.access.verification.deployment_id, manifest, collections: this.collections });
       this.publicationManifestSha256 = manifest.sha256;
     } catch (error) { this.publicationError = error.message; }
@@ -174,8 +177,8 @@ export class OpenVikingAdapter {
   }
   checkAccess() {
     try {
-    const access = verify_search_access(this.options, this.collections);
-    if (this.accessRevision && this.accessRevision !== access_revision(this.options))
+    const access = verify_search_access(this.options, this.collections, Date.now(), this.state);
+    if (this.accessRevision && this.accessRevision !== access_revision(this.options, this.state))
       throw new Error("OpenViking access confirmation or identity changed; reconnect required");
     if (this.access && this.access.credential_binding !== access.credential_binding)
       throw new Error("OpenViking connection credentials changed; reconnect required");
@@ -213,7 +216,7 @@ export class OpenVikingAdapter {
       this.contractRevision = revision;
     })();
     try { await this.refreshPromise; }
-    catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders, "server_contract"); }
+    catch (error) { await this.close(); throw access_error(error, this.options, this.credentialHeaders, "server_contract", this.state); }
     finally { this.refreshPromise = null; }
   }
   async ensureContract(force = false) {
@@ -240,7 +243,7 @@ export class OpenVikingAdapter {
       if (method === "tools/call") this.checkPublication();
       return result;
     } catch (error) {
-      await this.close(); throw access_error(error, this.options, this.credentialHeaders, "transport");
+      await this.close(); throw access_error(error, this.options, this.credentialHeaders, "transport", this.state);
     } finally {
       const next = this.waiters.shift();
       if (next) next.resolve(); else this.active--;

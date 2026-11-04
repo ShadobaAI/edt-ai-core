@@ -67,16 +67,16 @@ const primitive = {
   bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   bslLsJava: { type: "string", minLength: 1, title: "Java для BSL LS" },
   openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Включает подключение для текущего каталога и экземпляра. При выключении сохранённый URL остаётся; режим и обязательность знаний не изменяются." },
-  openvikingUrl: { type: "string", title: "URL OpenViking", description: "Override текущего каталога и экземпляра. Пустое значение отключает транспорт; окружение имеет высший приоритет." },
+  openvikingUrl: { type: "string", title: "URL OpenViking", description: "Пустое значение отключает транспорт." },
   openvikingTimeout: { type: "number", title: "Таймаут OpenViking, с", exclusiveMinimum: 0, maximum: 300 },
   openvikingMaxResponseBytes: { type: "integer", title: "Лимит ответа OpenViking, байт", minimum: 1024, maximum: 16777216 },
-  openvikingHeadersEnv: { type: "object", title: "Заголовки → переменные окружения", additionalProperties: { type: "string" }, description: "Только имена переменных, без значений credentials." },
+  openvikingConnectionId: { type: "string", title: "Код подключения OpenViking", pattern: "^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,63})?$" },
 };
 const versionCatalogs = new Map();
 const openvikingTransport = { type: "object", additionalProperties: false, properties: {
   enabled: primitive.openvikingEnabled, url: primitive.openvikingUrl,
   timeout_seconds: primitive.openvikingTimeout, max_response_bytes: primitive.openvikingMaxResponseBytes,
-  headers_env: primitive.openvikingHeadersEnv,
+  connection_id: primitive.openvikingConnectionId,
 } };
 
 function values(c) {
@@ -91,7 +91,7 @@ function values(c) {
     openvikingUrl: c.mcp.optional?.openviking?.url || "",
     openvikingTimeout: c.mcp.optional?.openviking?.timeout_seconds,
     openvikingMaxResponseBytes: c.mcp.optional?.openviking?.max_response_bytes,
-    openvikingHeadersEnv: c.mcp.optional?.openviking?.headers_env || {},
+    openvikingConnectionId: c.mcp.optional?.openviking?.connection_id || "",
   };
 }
 async function readValues(remember = false) {
@@ -236,6 +236,15 @@ const tools = [
   { name: "settings.check", title: "Проверка готовности", description: "Read the compact profile inspection and saved readiness, like settings.inspect, without opening a form or launching services. Use settings.probe_connections for live external checks, core_runtime_status for the required chat relay, or settings.run_check for authorized preparation.",
     inputSchema: inspectInput, annotations: annotations(), _meta: shared },
 ];
+const ovIdentity = { url: { type: "string", minLength: 1, maxLength: 2048 }, connectionId: primitive.openvikingConnectionId };
+const ovValues = { type: "object", additionalProperties: false,
+  properties: Object.fromEntries(["credential", "bindingKey", "accessPublicKey", "accessReceipts", "publicationPublicKey", "publicationReceipts"].map(name => [name, { type: "string", maxLength: 262144 }])),
+  required: ["credential", "bindingKey", "accessPublicKey", "accessReceipts", "publicationPublicKey", "publicationReceipts"] };
+tools.push({ name: "settings.openviking_read", title: "Открыть общую запись OpenViking", description: "Read connection values for the settings app only.",
+  inputSchema: { type: "object", properties: ovIdentity, required: ["url", "connectionId"], additionalProperties: false }, annotations: annotations(), _meta: appOnly });
+tools.push({ name: "settings.openviking_save", title: "Сохранить общую запись OpenViking", description: "Save this user's shared connection record with an optimistic revision check.",
+  inputSchema: { type: "object", properties: { ...ovIdentity, values: ovValues, expectedRevision: { type: "string", minLength: 1 } },
+    required: ["url", "connectionId", "values", "expectedRevision"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly });
 
 function backend(action, args, context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }, readDeadline = 0) {
   register_diagnostic_secrets(args);
@@ -387,6 +396,12 @@ async function call(name, args, meta = {}) {
     const selection = explicit_selection({ directory: selectedRoot }, requestedRoot, selectionError);
     if (selection.directory !== selectedRoot) { selectedRoot = selection.directory; selectionRevision += 1; }
     rootLocked ||= ["settings.profile", "settings.import", "settings.export", "settings.check"].includes(name) || meta?.["1c-ai-core/navigation"] !== "profiles";
+  }
+  if (name === "settings.openviking_read" || name === "settings.openviking_save") {
+    const { read_openviking_record, save_openviking_record } = await import("../scripts/openviking_store.mjs");
+    const data = name === "settings.openviking_read" ? read_openviking_record(args.url, args.connectionId, state)
+      : await save_openviking_record(args.url, args.connectionId, args.values, args.expectedRevision, state);
+    return { content: [{ type: "text", text: name === "settings.openviking_read" ? "Запись открыта." : "Общая запись сохранена." }], _meta: { data } };
   }
   if (name === "settings.document") {
     const revision = selectionRevision;

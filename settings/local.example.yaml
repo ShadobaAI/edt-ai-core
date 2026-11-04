@@ -21,15 +21,14 @@ mcp:
     openviking:
       enabled: false
       url: ''
-      headers_env: {}
+      connection_id: ''
       timeout_seconds: 20
       max_response_bytes: 8388608
 # OpenViking также требует явно выбранных режима знаний, провайдера
 # и коллекций в профиле проекта. Для подключения нужны enabled: true и непустой URL.
 # enabled: false сохраняет URL и запрещает подключение.
 # Настройка транспорта сама по себе не изменяет provider: none.
-# В сопоставлении авторизации указываются имена переменных окружения, без значений:
-# headers_env: { Authorization: TEAM_KNOWLEDGE_AUTH }
+# Credentials и подтверждения задаются в общей записи OpenViking через форму.
 # latest выбирает стабильные релизы, если не задано allow_prerelease: true.
 # Для закрепления релиза задайте version точным тегом, включая предварительный релиз.
 # Для внешнего режима задайте mode: external и url. Дополнительные поля подключения:

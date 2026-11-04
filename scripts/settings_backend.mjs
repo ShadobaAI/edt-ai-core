@@ -75,7 +75,7 @@ export const FIELDS = {
   openvikingUrl: ["mcp", "optional", "openviking", "url"],
   openvikingTimeout: ["mcp", "optional", "openviking", "timeout_seconds"],
   openvikingMaxResponseBytes: ["mcp", "optional", "openviking", "max_response_bytes"],
-  openvikingHeadersEnv: ["mcp", "optional", "openviking", "headers_env"],
+  openvikingConnectionId: ["mcp", "optional", "openviking", "connection_id"],
 };
 const bytes = (file) => (file && exists(file) ? fs.readFileSync(file) : null);
 const restore = (file, previous) => {
@@ -449,7 +449,7 @@ export class SettingsBackend {
   async update_scoped(changes, scope, expectedRevision) {
     if (!["profile", "project_local", "instance", "global"].includes(scope))
       throw new ConfigError("Неизвестная область сохранения.");
-    const connectionFields = ["edtUrl", "v8stdUrl", "openvikingEnabled", "openvikingUrl", "openvikingTimeout", "openvikingMaxResponseBytes", "openvikingHeadersEnv"];
+    const connectionFields = ["edtUrl", "v8stdUrl", "openvikingEnabled", "openvikingUrl", "openvikingTimeout", "openvikingMaxResponseBytes", "openvikingConnectionId"];
     const componentFields = ["codeIndexEnabled", "bslLsEnabled", "bslLsJava", "codeIndexVersion", "bslLsVersion"];
     const allowed = scope === "global" ? ["bslLsJava", "codeIndexVersion", "bslLsVersion"] : [...connectionFields, ...componentFields];
     if (Object.keys(changes).some(key => !allowed.includes(key)))
@@ -670,7 +670,7 @@ export class SettingsBackend {
         }
       }
       const { probe_connections } = await import("./setup_probe.mjs");
-      return probe_connections(config, root, project_profile(root));
+      return probe_connections(config, root, project_profile(root), this.STATE);
     }
     if (action === "read" || action === "status") {
       const { installed_versions } = await import("./runtime.mjs");
@@ -787,7 +787,7 @@ export class SettingsBackend {
         if (
           typeof value !== (key.endsWith("Enabled") || key.endsWith("AllowPrerelease") ? "boolean"
             : ["openvikingTimeout", "openvikingMaxResponseBytes"].includes(key) ? "number"
-            : key === "openvikingHeadersEnv" ? "object" : "string")
+            : "string")
         )
           throw new ConfigError("Некорректный тип настройки: " + key);
       if (request.scope !== undefined) return this.update_scoped(changes, request.scope, request.expectedRevision);
@@ -857,8 +857,6 @@ export class SettingsBackend {
           overrides = exists(file) ? load(file) : { connections: {} };
           check_schema(overrides, "project-local.schema.json");
           overrides = deep_merge(overrides, instanceChanges);
-          if (Object.hasOwn(changes, "openvikingHeadersEnv"))
-            overrides.connections.openviking.headers_env = structuredClone(changes.openvikingHeadersEnv);
           check_schema(overrides, "project-local.schema.json");
           validate_override_urls(overrides);
           effective_settings(
@@ -1133,14 +1131,14 @@ export class SettingsBackend {
         // wait for each managed process and then every external connection.
         const [checks, probes] = await Promise.all([
           Promise.all([...managed_components.map(check_component), check_policy()]),
-          probe_connections(config, root, data),
+          probe_connections(config, root, data, this.STATE),
         ]);
         managed = checks; external = probes.external;
       } else {
         atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
         const [components, policyResult, probes] = await Promise.all([
           (async () => { const items = []; for (const component of managed_components) items.push(await check_component(component)); return items; })(),
-          check_policy(), probe_connections(config, root, data),
+          check_policy(), probe_connections(config, root, data, this.STATE),
         ]);
         managed = [...components, policyResult]; external = probes.external;
       }

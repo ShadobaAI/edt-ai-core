@@ -1,25 +1,11 @@
 // Trusted providers live in the plugin, never in imported project commands.
 import path from "node:path";
-import { stable, atomic_write, ConfigError, inside } from "./common.mjs";
-import { instance_directory, instance_name, exists, resolve, record_project_owner, sha256, state_root, reconnect_file } from "./project_paths.mjs";
+import { stable, atomic_write, ConfigError, inside, state_path } from "./common.mjs";
+import { instance_directory, instance_name, exists, resolve, record_project_owner, sha256, reconnect_file } from "./project_paths.mjs";
 import fs from "node:fs";
 import { access_revision, persisted_access_revision, access_receipt_epoch } from "./openviking_access.mjs";
 import { publication_revision, publication_receipt_epoch } from "./openviking_publication.mjs";
 import { index_repositories } from "./directory_context.mjs";
-// The CLI's JSON bindings list these names and the profile's chosen credential
-// name for translation into host configuration. Portable mcp.json does not
-// support the Codex config.toml env_vars field.
-export const OPENVIKING_ENV_VARS = Object.freeze([
-  "OPENVIKING_SEARCH_TOKEN",
-  "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
-  "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-  "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
-  "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
-  "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS",
-]);
-export function knowledge_env_vars(config) {
-  return [...new Set([...OPENVIKING_ENV_VARS, ...Object.values(config?.mcp?.optional?.openviking?.headers_env || {})])];
-}
 // Native runtimes need system and JVM configuration, not the host's arbitrary
 // environment. A denylist alone misses credentials from another project or an
 // earlier binding after the selected header variable changes.
@@ -31,10 +17,9 @@ const NATIVE_ENV_VARS = new Set([
   "EDT_AI_CONNECTIONS_FILE",
 ]);
 export function native_environment(config, environment = process.env) {
-  const names = new Set(knowledge_env_vars(config).map(name => process.platform === "win32" ? name.toUpperCase() : name));
   return Object.fromEntries(Object.entries(environment).filter(([name]) => {
     const key = process.platform === "win32" ? name.toUpperCase() : name;
-    return NATIVE_ENV_VARS.has(key) && !names.has(key);
+    return NATIVE_ENV_VARS.has(key);
   }));
 }
 export const COMPONENTS = Object.freeze({
@@ -47,22 +32,22 @@ export const COMPONENTS = Object.freeze({
 export const managed_components = Object.keys(COMPONENTS).filter(id => COMPONENTS[id].kind === "managed");
 export const component_settings = (config, id) => config.mcp[COMPONENTS[id].optional ? "optional" : COMPONENTS[id].kind === "managed" ? "managed" : "required"][id];
 export const component_enabled = (config, id) => component_settings(config, id).enabled !== false;
-export function binding_fingerprint(config, id, root, profile, reconnect = "") {
+export function binding_fingerprint(config, id, root, profile, reconnect = "", state = state_path(config)) {
   return stable([root, instance_name(), component_settings(config, id),
     id === "code-index" ? index_repositories(root, profile) : id === "openviking" ? [profile.knowledge,
       profile.knowledge.manifest ? sha256(fs.readFileSync(inside(root, profile.knowledge.manifest))) : null,
-      access_revision(component_settings(config, id)), publication_revision(component_settings(config, id))] : null, reconnect]);
+      access_revision(component_settings(config, id), state), publication_revision(component_settings(config, id), state)] : null, reconnect]);
 }
-export function knowledge_binding_fingerprint(config, root, profile, state = state_root()) {
+export function knowledge_binding_fingerprint(config, root, profile, state = state_path(config)) {
   const file = reconnect_file(state, root), reconnect = exists(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-  return binding_fingerprint(config, "openviking", root, profile, reconnect.openviking || reconnect.id || "");
+  return binding_fingerprint(config, "openviking", root, profile, reconnect.openviking || reconnect.id || "", state);
 }
-export function knowledge_evidence_revision(config, root, profile) {
+export function knowledge_evidence_revision(config, root, profile, state = state_path(config)) {
   if (profile.knowledge.provider === "none") return "disabled";
   const options = component_settings(config, "openviking");
   return sha256(stable([root, instance_name(), profile.knowledge, options,
     profile.knowledge.manifest ? sha256(fs.readFileSync(inside(root, profile.knowledge.manifest))) : null,
-    persisted_access_revision(options), access_receipt_epoch(options), publication_revision(options), publication_receipt_epoch(options)]));
+    persisted_access_revision(options, state), access_receipt_epoch(options, Date.now(), state), publication_revision(options, state), publication_receipt_epoch(options, Date.now(), state)]));
 }
 const preparation_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".preparation.json");
 export function grant_preparation(state, root, components) {

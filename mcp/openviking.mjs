@@ -95,6 +95,7 @@ function context(args) {
   try {
     const root = locate_project(selection.directory), profile = project_profile(root, { knowledgeMaterials: false });
     const config = effective_settings(settings(configuration), root, profile, null, state);
+    config.state_dir = state;
     return { root, profile, config };
   } catch (error) { void detach(); throw error; }
 }

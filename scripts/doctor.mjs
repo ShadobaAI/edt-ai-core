@@ -27,6 +27,7 @@ export async function inspect(
   const root = locate_project(selected),
     data = project_profile(root);
   config = effective_settings(config, root, data, null, state);
+  config.state_dir = state;
   register_diagnostic_secrets(config);
   const report = {
     status: "configured",
@@ -61,7 +62,7 @@ export async function inspect(
     "EDT/v8std live acceptance requires the user's running servers",
   );
   if (live && !managed_only) {
-    const probe = await probe_connections(config, root, data);
+    const probe = await probe_connections(config, root, data, state);
     report.external = probe.external;
     report.knowledge = probe.knowledge;
     report.verificationLimits = probe.verificationLimits;

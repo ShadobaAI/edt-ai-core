@@ -50,14 +50,14 @@ export function readiness_fingerprint(state, config, profile, assets = setup_ass
     runtime: digest(path.join(state, "runtime-lock.json")), edt: edt_connection(config.active_project), descriptors: repository_projects(config.active_project, profile.repositories), reconnect: digest(reconnect_file(state, config.active_project)),
     ...(includeDaemonOwner ? { daemonOwner: digest(path.join(project_directory(state, config.active_project), "code-index/owner.json")) } : {}),
     instructions: ["AGENTS.md", ".ai/PROJECT.md"].map(name => digest(inside(config.active_project, name))),
-    knowledge: knowledge_evidence_revision(config, config.active_project, profile),
+    knowledge: knowledge_evidence_revision(config, config.active_project, profile, state),
   })));
 }
 
 export function save_readiness(state, config, profile, managed, external) {
   register_diagnostic_secrets(config);
   const assets = setup_assets();
-  const knowledge = setup_knowledge_status(profile, config, config.active_project, external.openviking);
+  const knowledge = setup_knowledge_status(profile, config, config.active_project, external.openviking, state);
   const checks = [{ id: "profile", label: "Профиль и проекты", state: profile.repositories.length ? "ready" : "error", detail: "Настроено проектов: " + profile.repositories.length },
     { id: "knowledge", label: "Режим знаний", state: knowledge.state === "disabled" ? "disabled" : knowledge.state === "ready" ? "ready" : knowledge.state === "invalid" ? "error" : "not_verified", detail: knowledge.detail },
     ...managed.map(item => ({ id: item.name, label: ({ "code-index": "Индекс кода", "bsl-ls": "BSL LS", policy: "Политика" })[item.name] || item.name, state: item.state === "disabled" ? "disabled" : item.ready ? "ready" : item.state || "error", detail: item.detail,

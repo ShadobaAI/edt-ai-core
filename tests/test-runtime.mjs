@@ -34,7 +34,7 @@ import { inspect } from "../scripts/doctor.mjs";
 import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { native_environment, OPENVIKING_ENV_VARS } from "../scripts/components.mjs";
+import { native_environment } from "../scripts/components.mjs";
 
 test("BSL release selection prefers a supported stable release and falls back to the latest supported RC", async () => {
   let stable = { tag_name: "v1.0.7", prerelease: false };
@@ -561,26 +561,23 @@ test("CLI installation and exported bindings respect disabled components without
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });
 
-test("exported MCP bindings list the selected OpenViking credential name, not its value", t => {
+test("exported MCP bindings do not list OpenViking credential variables", t => {
   const f = fixture(t);
-  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:1/mcp",
-    headers_env: { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" } } };
+  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:1/mcp", connection_id: "team" } };
   f.save(); f.env.TEAM_KNOWLEDGE_TOKEN = "fixture-private-token";
   const output = path.join(f.base, "mcp.json");
   success(node("scripts/runtime.mjs", ["config", "--output", output], { env: f.env }));
   const contents = fs.readFileSync(output, "utf8"), exported = JSON.parse(contents), bindings = exported.mcpServers;
   assert.equal(Object.hasOwn(exported, "$schema"), false);
   for (const name of ["openviking", "edt", "v8std", "code-index", "bsl-ls"]) {
-    assert.ok(bindings[name].env_vars.includes("TEAM_KNOWLEDGE_TOKEN"), name);
-    assert.ok(bindings[name].env_vars.includes("EDT_AI_OPENVIKING_ACCESS_RECEIPTS"), name);
+    assert.equal(Object.hasOwn(bindings[name], "env_vars"), false, name);
   }
   assert.doesNotMatch(contents, /fixture-private-token/);
 });
 
 test("native environments remove standard and configured knowledge variables without changing the caller", () => {
   const config = settings();
-  config.mcp.optional.openviking.headers_env = { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" };
-  const source = Object.fromEntries([...OPENVIKING_ENV_VARS, "TEAM_KNOWLEDGE_TOKEN"].map(name => [name, "fixture-secret"]));
+  const source = Object.fromEntries(["OPENVIKING_SEARCH_TOKEN", "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "TEAM_KNOWLEDGE_TOKEN"].map(name => [name, "fixture-secret"]));
   source.PATH = "kept"; source.OTHER_PROJECT_TOKEN = "removed";
   if (process.platform === "win32") source.team_knowledge_token = "also-secret";
   assert.deepEqual(native_environment(config, source), { PATH: "kept" });
@@ -589,7 +586,7 @@ test("native environments remove standard and configured knowledge variables wit
 
 test("daemon startup passes a sanitized environment to its native launcher", async t => {
   const f = fixture(t), home = path.join(f.base, "daemon"); fs.mkdirSync(home);
-  const config = settings(); config.mcp.optional.openviking.headers_env = { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" };
+  const config = settings();
   const source = { ...process.env, OPENVIKING_SEARCH_TOKEN: "fixture-token", TEAM_KNOWLEDGE_TOKEN: "custom-token", PATH: "native-path" };
   const environment = native_environment(config, source);
   await assert.rejects(start_daemon(home, f.root, f.profile, process.execPath, { launch: (_exe, _args, options) => {
@@ -603,7 +600,6 @@ test("daemon startup passes a sanitized environment to its native launcher", asy
 
 test("index maintenance passes the sanitized environment to stop, rebuild and restart", async t => {
   const f = fixture(t), config = settings(); f.save();
-  config.mcp.optional.openviking.headers_env = { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" };
   Object.assign(f.env, { OPENVIKING_SEARCH_TOKEN: "standard", TEAM_KNOWLEDGE_TOKEN: "custom", OTHER_PROJECT_TOKEN: "other" });
   environment(t, f.env);
   const calls = [], verify = (action, env) => {

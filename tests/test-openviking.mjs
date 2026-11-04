@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fixture, session, ROOT, node, success, environment } from "./helpers.mjs";
-import { COMPONENTS, OPENVIKING_ENV_VARS, component_settings, managed_components, binding_fingerprint } from "../scripts/components.mjs";
+import { COMPONENTS, component_settings, managed_components, binding_fingerprint } from "../scripts/components.mjs";
 import { settings, dump, load } from "../scripts/common.mjs";
 import { OpenVikingAdapter, WorkflowKnowledge, OPENVIKING_LIMITS } from "../scripts/openviking_adapter.mjs";
 import { SEARCH_REQUIREMENTS, publication_inventory } from "../scripts/knowledge.mjs";
@@ -21,7 +21,8 @@ import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
 import { RemoteMcp } from "../scripts/remote_client.mjs";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
+import { read_openviking_record } from "../scripts/openviking_store.mjs";
 import { credential_binding, surface_fingerprint, operation_fingerprint, access_error } from "../scripts/openviking_access.mjs";
 import { stable } from "../scripts/common.mjs";
 import { knowledge_gate } from "../scripts/knowledge.mjs";
@@ -33,6 +34,21 @@ import { RemoteHttpError } from "../scripts/remote_client.mjs";
 
 const accessKeys = generateKeyPairSync("ed25519");
 const publicationKeys = generateKeyPairSync("ed25519");
+// Fixture publisher: write synthetic records synchronously so changes can be
+// injected inside a mocked native response. Production writes use the locked API.
+function updateRecord(f, patch, endpoint = f.config.mcp.optional.openviking.url) {
+  const state = f.env.EDT_AI_STATE_DIR, id = f.config.mcp.optional.openviking.connection_id || "";
+  const directory = path.join(state, "openviking-private"); fs.mkdirSync(directory, { recursive: true });
+  const file = path.join(directory, sha256(JSON.stringify([endpoint, id])) + ".json");
+  const previous = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).values :
+    { credential: "", bindingKey: "", accessPublicKey: "", accessReceipts: "", publicationPublicKey: "", publicationReceipts: "" };
+  const temp = path.join(directory, randomUUID() + ".tmp");
+  fs.writeFileSync(temp, JSON.stringify({ version: 1, identity: [endpoint, id], revision: randomUUID(), values: { ...previous, ...patch } }));
+  fs.renameSync(temp, file);
+}
+function fixtureRecord(f, endpoint = f.config.mcp.optional.openviking.url) {
+  return read_openviking_record(endpoint, f.config.mcp.optional.openviking.connection_id || "", f.env.EDT_AI_STATE_DIR).values;
+}
 
 test("OpenViking EOF releases a request waiting for unanswered host roots", async t => {
   const f = fixture(t);
@@ -87,8 +103,10 @@ test("published instructions inside knowledge remain data and cannot widen the s
 test("knowledge failures distinguish authorization, access scope, transport, contract and index", async t => {
   for (const category of ["authorization", "access_scope", "transport", "server_contract", "index"]) {
     const f = adapterFixture(t);
-    if (category === "authorization") f.config.mcp.optional.openviking.headers_env = { Authorization: "ABSENT_TEST_CREDENTIAL" };
-    if (category === "access_scope") f.config.mcp.optional.openviking.url = "https://unapproved.example/mcp";
+    if (category === "authorization") updateRecord(f, { credential: "" });
+    if (category === "access_scope") {
+      const old = fixtureRecord(f); f.config.mcp.optional.openviking.url = "https://unapproved.example/mcp"; updateRecord(f, old);
+    }
     if (category === "transport") f.client.initialize = async () => { throw new RemoteHttpError(503, "unavailable"); };
     if (category === "server_contract") f.client.tools = [];
     const adapter = f.adapter();
@@ -155,22 +173,22 @@ test("a delayed knowledge setup probe has one session operation and bounded poll
 });
 test("overlapping access receipts cannot retain readiness across a new identity or policy activation", async t => {
   const f = adapterFixture(t); grantPublication(t, f);
-  const original = JSON.parse(process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS).find(item => item.payload.endpoint === f.config.mcp.optional.openviking.url).payload;
+  const original = JSON.parse(fixtureRecord(f).accessReceipts).find(item => item.payload.endpoint === f.config.mcp.optional.openviking.url).payload;
   let now = Date.now(); t.mock.method(Date, "now", () => now);
   const next = { ...original, principal: "new-principal", verified_at: new Date(now + 1000).toISOString() };
-  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = JSON.stringify([original, next].map(payload => ({ payload,
-    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") })));
+  updateRecord(f, { accessReceipts: JSON.stringify([original, next].map(payload => ({ payload,
+    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") }))) });
   const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
   await adapter.connect(); await adapter.verifyReadiness(); assert.equal(adapter.status().ready, true);
   now += 1500; assert.equal(adapter.status().ready, false);
   await assert.rejects(new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root).connect(), /conflicting/);
   const narrower = { ...original, team_roots: ["viking://resources/other-team"] };
-  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = JSON.stringify([original, narrower].map(payload => ({ payload,
-    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") })));
+  updateRecord(f, { accessReceipts: JSON.stringify([original, narrower].map(payload => ({ payload,
+    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") }))) });
   await assert.rejects(new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root).connect(), /conflicting/);
   const unsafe = { ...original, permissions: { ...original.permissions, write: true } };
-  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = JSON.stringify([original, unsafe].map(payload => ({ payload,
-    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") })));
+  updateRecord(f, { accessReceipts: JSON.stringify([original, unsafe].map(payload => ({ payload,
+    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") }))) });
   await assert.rejects(new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root).connect(), /consistent current signed grant/);
 });
 test("saved readiness invalidates rotated identity, access, manifest and snapshot without exposing secrets", async t => {
@@ -187,21 +205,30 @@ test("saved readiness invalidates rotated identity, access, manifest and snapsho
     `import fs from 'node:fs'; import {readiness_fingerprint} from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/setup_readiness.mjs")).href)}; const f=JSON.parse(fs.readFileSync(process.argv[1])); process.stdout.write(readiness_fingerprint(f.state,f.config,f.profile));`, input],
     { env: process.env, encoding: "utf8", windowsHide: true, shell: false });
   assert.equal(child.status, 0, child.stderr); assert.equal(child.stdout, fingerprint);
-  for (const variable of ["EDT_AI_TEST_SEARCH_TOKEN", "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY", "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY"]) {
-    const old = process.env[variable]; process.env[variable] = old + "rotated";
-    assert.equal((await read_readiness(f.state, f.config, f.profile)).state, "stale", variable);
-    process.env[variable] = old;
+  const refreshReadiness = async () => {
+    const fresh = await probe_connections(f.config, f.root, f.profile);
+    save_readiness(f.state, f.config, f.profile, [], { ...fresh.external, edt: { ready: true }, v8std: { ready: true } });
+    assert.equal((await read_readiness(f.state, f.config, f.profile)).state, "ready");
+  };
+  for (const field of ["credential", "bindingKey", "accessPublicKey", "publicationPublicKey"]) {
+    await refreshReadiness();
+    const old = fixtureRecord(f, remote.url)[field]; updateRecord(f, { [field]: old + "rotated" }, remote.url);
+    assert.equal((await read_readiness(f.state, f.config, f.profile)).state, "stale", field);
+    updateRecord(f, { [field]: old }, remote.url);
   }
-  const oldAccess = process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS;
+  const oldAccess = fixtureRecord(f, remote.url).accessReceipts;
+  await refreshReadiness();
   grantAccess(f, remote.url, { principal: "new-search-identity" });
   assert.equal((await read_readiness(f.state, f.config, f.profile)).state, "stale");
-  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = oldAccess;
+  updateRecord(f, { accessReceipts: oldAccess }, remote.url);
+  await refreshReadiness();
   publication.publish({ index_revision: "snapshot-2" });
   assert.equal((await read_readiness(f.state, f.config, f.profile)).state, "stale"); publication.publish();
+  await refreshReadiness();
   const manifest = fs.readFileSync(publication.file); fs.appendFileSync(publication.file, "\n");
   assert.equal((await read_readiness(f.state, f.config, f.profile)).state, "stale"); fs.writeFileSync(publication.file, manifest);
   const output = JSON.stringify(probe) + child.stdout + JSON.stringify(await read_readiness(f.state, f.config, f.profile));
-  for (const secret of [process.env.EDT_AI_TEST_SEARCH_TOKEN, process.env.EDT_AI_TEST_SEARCH_TOKEN.slice(7), process.env.EDT_AI_OPENVIKING_ACCESS_BINDING_KEY]) assert.equal(output.includes(secret), false);
+  for (const secret of [accessEnv.EDT_AI_TEST_SEARCH_TOKEN, accessEnv.EDT_AI_TEST_SEARCH_TOKEN.slice(7), accessEnv.EDT_AI_OPENVIKING_ACCESS_BINDING_KEY]) assert.equal(output.includes(secret), false);
 });
 test("setup receipt expires with its signed evidence and rejects evidence rotated between probe and save", async t => {
   const f = adapterFixture(t), remote = await upstream(t, f), publication = grantPublication(t, f, remote.url);
@@ -263,7 +290,7 @@ test("workflow recovery reprobes after receipt, manifest, settings, instance and
   const initial = remote.requests.filter(item => item.method === "tools/call").length;
   assert.equal(initial, 2); await require();
   assert.equal(remote.requests.filter(item => item.method === "tools/call").length, initial);
-  process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = "[]";
+  updateRecord(f, { publicationReceipts: "[]" }, remote.url);
   await assert.rejects(require(), /Knowledge workflow blocked/);
   publication.publish({ index_revision: "snapshot-2" });
   assert.equal((await require()).knowledge.ready, true);
@@ -454,9 +481,6 @@ test("readiness requires every selected collection and is exposed by the MCP sta
   assert.equal(probe.external.openviking.ready, true);
 });
 function grantPublication(t, f, endpoint = f.config.mcp.optional.openviking.url, { catalog, content = markdown() } = {}) {
-  const names = ["EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY", "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"];
-  const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
-  t.after(() => { for (const name of names) { if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name]; } });
   f.profile.knowledge.manifest ||= "knowledge/catalog.json";
   catalog ||= { schema_version: "0.1", kind: "catalog", provider: "openviking", collections: [{ id: "architecture", description: "Design" }],
     materials: [{ id: "design", collection: "architecture", path: "design.md", sha256: sha256(content) }] };
@@ -472,9 +496,9 @@ function grantPublication(t, f, endpoint = f.config.mcp.optional.openviking.url,
       deleted_materials: "absent", changed_materials: "matched", delivery: "immutable_endpoint", deployment_id: "fixture-deployment" },
     verified_at: receiptStart, expires_at: receiptEnd, evidence_ref: "https://example.org/isolated-publication" };
   const publish = (patch = {}) => {
-    const next = { ...payload, ...patch }, env = { EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY: publicationKeys.publicKey.export({ type: "spki", format: "pem" }),
-      EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS: JSON.stringify([{ payload: next, signature: sign(null, Buffer.from(stable(next)), publicationKeys.privateKey).toString("base64") }]) };
-    Object.assign(process.env, env); Object.assign(f.env, env); return next;
+    const next = { ...payload, ...patch };
+    updateRecord(f, { publicationPublicKey: publicationKeys.publicKey.export({ type: "spki", format: "pem" }),
+      publicationReceipts: JSON.stringify([{ payload: next, signature: sign(null, Buffer.from(stable(next)), publicationKeys.privateKey).toString("base64") }]) }, endpoint); return next;
   };
   publish();
   return { payload, publish, file };
@@ -513,7 +537,7 @@ test("a configured publication rejects unsigned, mismatched and stale evidence b
     await adapter.close();
   }
   for (const value of ["", JSON.stringify([{ payload: original, ready: true }]), JSON.stringify([{ ready: true }])]) {
-    process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = value;
+    updateRecord(f, { publicationReceipts: value });
     const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
     assert.equal((await adapter.connect()).publication, "not_verified");
     await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /publication/i);
@@ -563,14 +587,13 @@ test("publication rotation and expiry during reads discard in-flight responses",
 test("an automatically selected new access receipt cannot retain a publication bound to the old deployment", async t => {
   const f = adapterFixture(t); grantPublication(t, f);
   let clock = Date.now(); t.mock.method(Date, "now", () => clock);
-  const previous = process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS;
-  t.after(() => { process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = previous; });
+  const previous = fixtureRecord(f).accessReceipts;
   const original = JSON.parse(previous).find(envelope => envelope.payload.endpoint === f.config.mcp.optional.openviking.url).payload;
   const first = { ...original, verified_at: new Date(clock - 10000).toISOString(), expires_at: new Date(clock + 1000).toISOString() };
   const second = { ...first, verified_at: first.expires_at, expires_at: new Date(clock + 10000).toISOString(),
     verification: { ...first.verification, deployment_id: "deployment-2" } };
-  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = JSON.stringify([first, second].map(payload => ({ payload,
-    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") })));
+  updateRecord(f, { accessReceipts: JSON.stringify([first, second].map(payload => ({ payload,
+    signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") }))) });
   const adapter = new OpenVikingAdapter(f.profile, f.config, f.client, null, f.root);
   assert.equal((await adapter.connect()).publication, "verified");
   clock += 1500;
@@ -608,10 +631,12 @@ function operationGrants(tools) {
   }));
 }
 function grantAccess(f, endpoint = f.config.mcp.optional.openviking.url, change = {}) {
-  Object.assign(process.env, accessEnv);
+  const options = { ...f.config.mcp.optional.openviking, url: endpoint };
+  updateRecord(f, { credential: f.fixtureCredential || accessEnv.EDT_AI_TEST_SEARCH_TOKEN, bindingKey: accessEnv.EDT_AI_OPENVIKING_ACCESS_BINDING_KEY,
+    accessPublicKey: accessEnv.EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY }, endpoint);
   const payload = { schema_version: "0.1", endpoint, principal: "isolated-search", purpose: "search_readonly",
     permissions: { search: true, read: true, write: false, delete: false, publish: false, acl: false, session_capture: false, personal_areas: false },
-    credential_binding: credential_binding(f.config.mcp.optional.openviking), team_roots: ["viking://resources/team"],
+    credential_binding: credential_binding(options, f.env.EDT_AI_STATE_DIR), team_roots: ["viking://resources/team"],
     tools_sha256: surface_fingerprint(f.client?.tools || nativeTools()),
     operations: operationGrants(f.client?.tools || nativeTools()),
     verification: { verifier: "isolated-external-reviewer", deployment_id: "fixture-deployment", policy_revision: "fixture-policy-1",
@@ -624,8 +649,7 @@ function grantAccess(f, endpoint = f.config.mcp.optional.openviking.url, change 
   accessReceipts.delete(endpoint);
   accessReceipts.set(endpoint, { payload, signature: sign(null, Buffer.from(stable(payload)), accessKeys.privateKey).toString("base64") });
   while (accessReceipts.size > 3) accessReceipts.delete(accessReceipts.keys().next().value);
-  Object.assign(process.env, { EDT_AI_OPENVIKING_ACCESS_RECEIPTS: JSON.stringify([...accessReceipts.values()]) });
-  Object.assign(f.env, accessEnv, { EDT_AI_OPENVIKING_ACCESS_RECEIPTS: process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS });
+  updateRecord(f, { accessReceipts: JSON.stringify([...accessReceipts.values()]) }, endpoint);
   return payload;
 }
 
@@ -654,22 +678,21 @@ test("portable MCP entries omit unsupported env_vars and forwarded search tokens
   f.profile.knowledge = { provider: "openviking", mode: "transitional", manifest: null,
     collections: ["architecture"], collection_uris: { architecture: "viking://resources/team/architecture" },
     required: false, dependent_actions: [] };
-  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:1/mcp",
-    headers_env: { "X-Api-Key": "OPENVIKING_SEARCH_TOKEN" } } };
+  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:1/mcp" } };
   f.save();
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "mcp.json"))).mcpServers;
   for (const name of ["openviking", "1c-ai-settings", "edt", "v8std", "code-index", "bsl-ls"])
     assert.equal(Object.hasOwn(manifest[name], "env_vars"), false, name);
   const parent = { ...f.env, OPENVIKING_SEARCH_TOKEN: "fixture-search-token" };
   const sanitized = { ...f.env };
-  for (const name of OPENVIKING_ENV_VARS) delete sanitized[name];
+  for (const name of ["OPENVIKING_SEARCH_TOKEN", "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY", "EDT_AI_OPENVIKING_ACCESS_RECEIPTS", "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY", "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"]) delete sanitized[name];
   for (const forwarded of [false, true]) {
     const env = { ...sanitized };
     if (forwarded) env.OPENVIKING_SEARCH_TOKEN = parent.OPENVIKING_SEARCH_TOKEN;
     const client = new McpClient([process.execPath, path.join(ROOT, "mcp/openviking.mjs")], f.root, env, 10);
     f.clients.push(client); await client.initialize();
     const status = (await client.call("knowledge_status", {})).structuredContent;
-    assert.match(status.detail, forwarded ? /access binding key is missing/ : /search credential is missing or invalid/);
+    assert.match(status.detail, /search credential is missing or invalid/);
     assert.equal(status.connected, false);
     assert.doesNotMatch(JSON.stringify(status), /fixture-search-token/);
   }
@@ -680,7 +703,7 @@ test("portable MCP entries omit unsupported env_vars and forwarded search tokens
   await settingsClient.call("settings.inspect", { projectRoot: f.root });
   const started = (await settingsClient.call("settings.probe_connections", {})).structuredContent;
   const result = (await settingsClient.call("settings.operation", { operationId: started.id, waitMs: 10000 })).structuredContent;
-  assert.match(result.result.external.openviking.detail, /access binding key is missing/);
+  assert.match(result.result.external.openviking.detail, /search credential is missing or invalid/);
   assert.equal(result.result.external.openviking.connected, false);
   assert.doesNotMatch(JSON.stringify(result), /fixture-search-token/);
 });
@@ -711,8 +734,9 @@ const card = () => ({ ...metadata(), kind: "api_card", status: "confirmed", inte
 const textResult = text => ({ content: [{ type: "text", text }] });
 function adapterFixture(t) {
   const f = fixture(t), config = settings(f.env.EDT_AI_SETTINGS), calls = [];
+  environment(t, f.env);
   f.profile.knowledge = { provider: "openviking", mode: "transitional", manifest: null, collections: ["architecture"], required: false, dependent_actions: [], collection_uris: { architecture: "viking://resources/team/architecture" } };
-  config.mcp.optional.openviking = { ...config.mcp.optional.openviking, enabled: true, url: "https://example.org/mcp", headers_env: { Authorization: "EDT_AI_TEST_SEARCH_TOKEN" } };
+  config.mcp.optional.openviking = { ...config.mcp.optional.openviking, enabled: true, url: "https://example.org/mcp" };
   grantAccess({ config, env: f.env });
   const client = { tools: nativeTools(), initialized: 0, closed: 0, tools_revision: 0,
     async initialize() { this.initialized++; }, async close() { this.closed++; },
@@ -753,7 +777,7 @@ async function upstream(t, f) {
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
   const url = "http://127.0.0.1:" + server.address().port + "/mcp";
-  f.profile.connections = { openviking: { enabled: true, url, headers_env: f.config.mcp.optional.openviking.headers_env } }; f.save();
+  f.profile.connections = { openviking: { enabled: true, url } }; f.save();
   grantAccess(f, url);
   return { requests, closed, url };
 }
@@ -766,27 +790,26 @@ test("search credentials require an external scoped grant before any network req
     await assert.rejects(f.adapter().connect(), /signed grant/);
     assert.equal(f.client.initialized, 0); assert.equal(f.calls.length, 0);
   }
-  for (const headers of [{}, { "Mcp-Session-Id": "EDT_AI_TEST_SEARCH_TOKEN" },
-    { Authorization: "MISSING_SEARCH_CREDENTIAL" }, { Authorization: "EDT_AI_TEST_SEARCH_TOKEN", "X-Api-Key": "EDT_AI_TEST_SEARCH_TOKEN" }]) {
-    const f = adapterFixture(t); f.config.mcp.optional.openviking.headers_env = headers;
+  for (const credential of ["", "Bearer ", "Bearer a b", "key\ninvalid"]) {
+    const f = adapterFixture(t); updateRecord(f, { credential });
     await assert.rejects(f.adapter().connect(), /credential/); assert.equal(f.client.initialized, 0);
   }
   const f = adapterFixture(t), adapter = f.adapter(); await adapter.connect();
-  process.env.EDT_AI_TEST_SEARCH_TOKEN = "Bearer rotated-token";
+  updateRecord(f, { credential: "Bearer rotated-token" });
   await assert.rejects(adapter.search({ query: "x", collection: "architecture" }), /signed grant/);
   assert.equal(f.calls.filter(call => call.method === "tools/call").length, 0);
 });
 test("search access is checked between HTTP negotiation requests and cleanup pins its credentials", async t => {
   const f = adapterFixture(t), remote = await upstream(t, f);
   f.config.mcp.optional.openviking.url = remote.url;
-  f.client.before = message => { if (message.method === "server/discover") process.env.EDT_AI_TEST_SEARCH_TOKEN = "Bearer rotated-token"; };
+  f.client.before = message => { if (message.method === "server/discover") updateRecord(f, { credential: "Bearer rotated-token" }, remote.url); };
   await assert.rejects(new OpenVikingAdapter(f.profile, f.config).connect(), /signed grant/);
   assert.equal(remote.requests.some(value => value.method === "initialize"), false);
   grantAccess(f, remote.url); f.client.before = null;
   const adapter = new OpenVikingAdapter(f.profile, f.config); await adapter.connect();
   let cleanupCredential;
   f.client.beforeClose = req => { cleanupCredential = req.headers.authorization; };
-  process.env.EDT_AI_TEST_SEARCH_TOKEN = "Bearer rotated-token";
+  updateRecord(f, { credential: "Bearer rotated-token" }, remote.url);
   await adapter.close();
   assert.equal(cleanupCredential, accessEnv.EDT_AI_TEST_SEARCH_TOKEN);
 });
@@ -924,7 +947,8 @@ test("profiles share one external read server with independent collections, cont
   const f = adapterFixture(t), other = adapterFixture(t), remote = await upstream(t, f);
   other.profile.knowledge.collections = ["bsp"];
   other.profile.knowledge.collection_uris = { bsp: "viking://resources/team/bsp" };
-  other.profile.connections = { openviking: { enabled: true, url: remote.url, headers_env: other.config.mcp.optional.openviking.headers_env } }; other.save();
+  other.env.EDT_AI_STATE_DIR = f.state;
+  other.profile.connections = { openviking: { enabled: true, url: remote.url } }; other.save();
   grantAccess(other, remote.url);
   f.client.respond = params => {
     if (params.name === "read") return textResult(markdown({ ...metadata(), scope: [params.arguments.uris] }));
@@ -998,7 +1022,7 @@ test("late connection, status and retrieval responses cannot survive an effectiv
 });
 test("a roots change discards a delayed response without attaching the new chat binding", async t => {
   const f = adapterFixture(t), other = adapterFixture(t), remote = await upstream(t, f);
-  other.profile.connections = { openviking: { enabled: true, url: remote.url, headers_env: f.config.mcp.optional.openviking.headers_env } }; other.save();
+  other.profile.connections = { openviking: { enabled: true, url: remote.url } }; other.save();
   const client = new McpClient([process.execPath, path.join(ROOT, "mcp/openviking.mjs")], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
   f.clients.push(client); client.roots = [{ uri: pathToFileURL(f.root).href }];
   await client.initialize(); await client.request("tools/list");
@@ -1334,9 +1358,9 @@ test("external access verification is mandatory, signed, bounded and tied to con
   grantAccess(f, undefined, { expires_at: new Date(Date.now() + 2 * 86400000).toISOString() });
   await assert.rejects(f.adapter().connect(), /signed grant/);
   grantAccess(f);
-  const forged = JSON.parse(process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS);
+  const forged = JSON.parse(fixtureRecord(f).accessReceipts);
   forged.find(item => item.payload.endpoint === f.config.mcp.optional.openviking.url).payload.principal = "forged-principal";
-  process.env.EDT_AI_OPENVIKING_ACCESS_RECEIPTS = JSON.stringify(forged);
+  updateRecord(f, { accessReceipts: JSON.stringify(forged) });
   await assert.rejects(f.adapter().connect(), /signed grant/); assert.equal(f.client.initialized, 0);
   grantAccess(f);
   const adapter = f.adapter(), status = await adapter.connect();
@@ -1467,11 +1491,11 @@ test("invalid material metadata never echoes remote parser excerpts", async t =>
   assert.equal(remote.requests.filter(value => value.method === "tools/call").every(value => value.params.name === "read"), true);
 });
 
-test("local errors redact JSON-escaped current and pinned API keys", () => {
+test("local errors redact JSON-escaped current and pinned API keys", t => {
   const current = 'review"credential\\value', pinned = 'previous"key\\value';
-  process.env.EDT_AI_TEST_ESCAPED_KEY = current;
+  const f = adapterFixture(t); updateRecord(f, { credential: current });
   try {
-    const options = { headers_env: { "X-Api-Key": "EDT_AI_TEST_ESCAPED_KEY" } };
+    const options = f.config.mcp.optional.openviking;
     for (const secret of [current, pinned]) {
       const diagnostic = access_error(new Error(JSON.stringify({ "x-api-key": secret })), options, { "x-api-key": pinned }).message;
       assert.equal(JSON.parse(diagnostic)["x-api-key"], "[redacted]");
@@ -1482,7 +1506,7 @@ test("local errors redact JSON-escaped current and pinned API keys", () => {
     const remote = new RemoteMcp("https://example.org/mcp");
     assert.throws(() => remote.result({ result: { resultType: Buffer.from(current).toString("base64") } }), error =>
       access_error(error, options).message === "Unsupported MCP result type; operation is not confirmed complete");
-  } finally { delete process.env.EDT_AI_TEST_ESCAPED_KEY; }
+  } finally { /* fixture cleanup */ }
 });
 
 test("invalid negotiated protocol never reflects a remote value in access diagnostics", async t => {
@@ -1512,17 +1536,10 @@ test("guarded HTTP reads still enforce response and timeout budgets", async t =>
   assert.equal(timed.connected, false); release.resolve();
 });
 
-test("OpenViking MCP sends the configured environment token to the isolated HTTP server", async t => {
+test("OpenViking MCP sends the stored search token to the isolated HTTP server", async t => {
   const f = adapterFixture(t);
   const token = "isolated-openviking-search-token";
-  const previousToken = process.env.OPENVIKING_SEARCH_TOKEN;
-  process.env.OPENVIKING_SEARCH_TOKEN = token;
-  t.after(() => {
-    if (previousToken === undefined) delete process.env.OPENVIKING_SEARCH_TOKEN;
-    else process.env.OPENVIKING_SEARCH_TOKEN = previousToken;
-  });
-  f.env.OPENVIKING_SEARCH_TOKEN = token;
-  f.config.mcp.optional.openviking.headers_env = { "X-Api-Key": "OPENVIKING_SEARCH_TOKEN" };
+  f.fixtureCredential = token;
   const received = [];
   let descriptors = nativeTools();
   const server = createServer(async (req, res) => {
@@ -1538,9 +1555,9 @@ test("OpenViking MCP sends the configured environment token to the isolated HTTP
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
-  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:" + server.address().port + "/mcp", headers_env: f.config.mcp.optional.openviking.headers_env } }; f.save();
+  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:" + server.address().port + "/mcp" } }; f.save();
   grantAccess(f, f.profile.connections.openviking.url);
-  const missing = await session(t, "mcp/openviking.mjs", [], f, { OPENVIKING_SEARCH_TOKEN: "" });
+  const missing = await session(t, "mcp/openviking.mjs", [], f, { EDT_AI_STATE_DIR: path.join(f.base, "empty-state"), OPENVIKING_SEARCH_TOKEN: token });
   const missingStatus = (await missing.call("knowledge_status", {})).structuredContent;
   assert.equal(missingStatus.connected, false);
   assert.match(missingStatus.detail, /search credential is missing or invalid/);
