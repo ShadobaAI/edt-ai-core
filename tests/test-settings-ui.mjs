@@ -2122,6 +2122,7 @@ test("the profile chooser gates scoped settings until a profile is loaded", asyn
   const ui=screen(async name=>{assert.equal(name,"settings.read");return {...read,profile:{status:"missing"}};});
   await ui.flush();assert.equal(ui.elements.get("connectionSettings").hidden,true);
   for(const id of ["saveButton","readinessButton","saveComponentsButton","transferExport"])assert.equal(ui.elements.get(id).disabled,true);
+  for(const id of ["connectionSharedButton","connectionLocalButton","componentSharedButton","componentLocalButton","javaSharedButton","javaLocalButton","javaGlobalButton"])assert.equal(ui.elements.get(id).disabled,true,id);
   assert.equal(ui.elements.get("createButton").hidden,false);assert.equal(ui.elements.get("openMissingTransfer").disabled,false);
 });
 
@@ -2136,6 +2137,7 @@ test("history previews another profile read-only without selecting it for chat o
   await ui.flush();await ui.elements.get("profileHistory").children.find(item=>item.children[0].children[0].textContent==="Other").children[0].onclick();
   assert.equal(ui.elements.get("profileTitle").textContent,"Other");assert.equal(ui.elements.get("viewOnlyHint").hidden,false);
   for(const id of ["saveButton","probeButton","readinessButton","transferExport"])assert.equal(ui.elements.get(id).disabled,true);
+  for(const id of ["connectionSharedButton","connectionLocalButton","componentSharedButton","componentLocalButton","javaSharedButton","javaLocalButton","javaGlobalButton"])assert.equal(ui.elements.get(id).disabled,true,id);
   assert.equal(ui.elements.get("editSettingsButton").disabled,false);
   assert.equal(ui.elements.get("settingsText").readOnly,true);
   ui.elements.get("editorTab").onclick();await ui.flush();
@@ -2462,13 +2464,17 @@ test("scoped connection edits show the destination and preserve higher-priority 
   assert.equal(field.value, "http://project/mcp");
 });
 
-test("scope controls keep each selector and save action together", () => {
+test("scope controls use accessible segments beside the save action", () => {
+  assert.doesNotMatch(html, /Изменять в/);
   for (const [scope, save] of [["connectionScope", "saveButton"], ["componentScope", "saveComponentsButton"], ["javaScope", "saveJavaButton"]]) {
-    const toolbar = html.match(new RegExp(`<div class="scope-toolbar">[^]*?id="${scope}"[^]*?</div>`))?.[0];
+    const toolbar = html.split('<div class="scope-toolbar">').slice(1).map(part => part.slice(0, part.indexOf('</div><p'))).find(part => part.includes(`id="${scope}"`));
     assert.ok(toolbar?.includes(`id="${save}"`), `${scope} and its save action should share a toolbar`);
-    assert.match(toolbar, new RegExp(`<label for="${scope}">Изменять в</label>`));
+    assert.match(toolbar, /role="group" aria-label="[^"]+" aria-describedby="[^"]+"/);
+    assert.match(toolbar, />Общий · Git<\/button>/);
+    assert.match(toolbar, />Локальный<\/button>/);
+    assert.match(toolbar, new RegExp(`<select id="${scope}" hidden`));
   }
-  const editor = html.match(/<label for="editorDocument">Изменять в<\/label><select id="editorDocument">([\s\S]*?)<\/select>/)?.[1];
+  const editor = html.match(/<select id="editorDocument"[^>]*>([\s\S]*?)<\/select>/)?.[1];
   assert.ok(editor);
   assert.deepEqual([...editor.matchAll(/<option value="([^"]+)"[^>]*>([^<]+)<\/option>/g)].map(match => [match[1], match[2]]), [
     ["project_local", "Локальные настройки проекта"], ["profile", "Профиль проекта"],
@@ -2482,12 +2488,21 @@ test("project scopes keep drafts isolated and save through the real MCP", async 
   const ui=screen((name,args,meta)=>client.request("tools/call",{name,arguments:args,...(meta?{_meta:meta}:{})}),{navigation:"project",rawResults:true});ui.document.hidden=true;
   const until=async predicate=>{const end=Date.now()+10000;while(!predicate()){if(Date.now()>end)throw new Error("Timed out waiting for project scope");await new Promise(resolve=>setTimeout(resolve,20));}};
   await until(()=>ui.elements.get("edtUrl").value==="http://localhost:8222/mcp");
-  ui.elements.get("connectionScope").value="profile";ui.elements.get("connectionScope").events.change();
+  assert.equal(ui.elements.get("connectionLocalButton").attributes["aria-pressed"],"true");
+  ui.elements.get("connectionSharedButton").onclick();
+  assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"true");
+  assert.equal(ui.elements.get("connectionLocalButton").attributes["aria-pressed"],"false");
   assert.equal(ui.elements.get("edtUrl").value,"http://localhost:8111/mcp");assert.match(ui.elements.get("edtSource").textContent,/приоритет выше/);
   ui.elements.get("edtUrl").value="http://localhost:8333/mcp";ui.elements.get("edtUrl").events.input();
-  ui.elements.get("connectionScope").value="project_local";ui.elements.get("connectionScope").events.change();assert.equal(ui.elements.get("connectionScope").value,"profile");
+  ui.elements.get("connectionSharedButton").onclick();
+  ui.elements.get("connectionLocalButton").onclick();assert.equal(ui.elements.get("connectionScope").value,"profile");
+  assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"true");
+  assert.equal(ui.elements.get("connectionLocalButton").attributes["aria-pressed"],"false");
   await ui.elements.get("saveButton").onclick();assert.equal(load(path.join(f.root,".ai/project.yaml")).connections.edt.url,"http://localhost:8333/mcp");
-  assert.equal(load(path.join(f.root,".ai/project.local.yaml")).connections.edt.url,"http://localhost:8222/mcp");ui.lifecycle.pagehide();
+  assert.equal(load(path.join(f.root,".ai/project.local.yaml")).connections.edt.url,"http://localhost:8222/mcp");
+  ui.elements.get("connectionLocalButton").onclick();
+  assert.equal(ui.elements.get("edtUrl").value,"http://localhost:8222/mcp");
+  assert.equal(ui.elements.get("connectionLocalButton").attributes["aria-pressed"],"true");ui.lifecycle.pagehide();
 });
 
 test("environment URLs remain read-only and explain the higher-priority source", async () => {
@@ -2527,15 +2542,25 @@ test("Java selection checks the chosen executable and saves only after an explic
     if (["settings.read", "settings.status"].includes(name)) return current;
     if (name === "settings.pick_java") return { id: "java", status: "running" };
     if (name === "settings.operation") return { id: "java", status: "completed", action: "pick_java", projectRoot: read.values.projectRoot, instance: "first", result: { path: "C:/Java/bin/java.exe", version: "21.0.2" } };
-    if (name === "settings.update") { saved = args; current = { ...current, values: { ...current.values, bslLsJava: args.set.bslLsJava } }; return { savedTo: current.writePaths.project_local }; }
+    if (name === "settings.update") { saved = args; current = { ...current, values: { ...current.values, bslLsJava: args.set.bslLsJava } }; return { savedTo: current.writePaths[args.scope] }; }
     throw new Error(name);
   }); await ui.flush();
-  ui.elements.get("javaScope").value = "project_local"; ui.elements.get("javaScope").events.change();
+  ui.elements.get("javaLocalButton").onclick();
+  assert.equal(ui.elements.get("javaLocalButton").attributes["aria-pressed"], "true");
   await ui.elements.get("pickJavaButton").onclick();
   assert.match(ui.elements.get("javaResult").textContent, /21\.0\.2/);
   assert.equal(saved, undefined); assert.equal(ui.elements.get("saveJavaButton").disabled, false);
+  ui.elements.get("javaGlobalButton").onclick();
+  assert.equal(ui.elements.get("javaLocalButton").attributes["aria-pressed"], "true");
+  assert.equal(ui.elements.get("javaGlobalButton").attributes["aria-pressed"], "false");
   await ui.elements.get("saveJavaButton").onclick();
   assert.equal(saved.scope, "project_local"); assert.equal(saved.set.bslLsJava, "C:/Java/bin/java.exe");
+  ui.elements.get("javaGlobalButton").onclick();
+  assert.equal(ui.elements.get("javaGlobalButton").attributes["aria-pressed"], "true");
+  assert.match(ui.elements.get("javaDestination").textContent, /settings\.json/);
+  ui.elements.get("bslLsJava").value = "C:/SharedJava/bin/java.exe"; ui.elements.get("bslLsJava").events.input();
+  await ui.elements.get("saveJavaButton").onclick();
+  assert.equal(saved.scope, "global"); assert.equal(saved.set.bslLsJava, "C:/SharedJava/bin/java.exe");
 });
 
 test("Windows file import uses the native picker and previews its returned document", async () => {
@@ -2609,16 +2634,23 @@ test("background refresh cannot replace the revision on which a settings draft w
 });
 
 test("saving one group preserves other drafts and rebases them only to the confirmed revision", async () => {
-  let current = { ...read, settingsRevision: "one", values: { ...read.values, edtUrl: "http://old", bslLsEnabled: false } }; const revisions = [];
+  let current = { ...read, settingsRevision: "one", values: { ...read.values, edtUrl: "http://old", bslLsEnabled: false } }; const revisions = [], scopes = [];
   const ui = screen(async (name, args) => {
     if (["settings.read", "settings.status"].includes(name)) return current;
-    if (name === "settings.update") { revisions.push(args.expectedRevision); current = { ...current, settingsRevision: revisions.length === 1 ? "two" : "three", values: { ...current.values, ...args.set } }; return { settingsRevision: current.settingsRevision }; }
+    if (name === "settings.update") { revisions.push(args.expectedRevision); scopes.push(args.scope); current = { ...current, settingsRevision: revisions.length === 1 ? "two" : "three", values: { ...current.values, ...args.set } }; return { settingsRevision: current.settingsRevision }; }
     throw new Error(name);
   }); await ui.flush();
   const url = ui.elements.get("edtUrl"), enabled = ui.elements.get("bslLsEnabled");
+  ui.elements.get("componentLocalButton").onclick();
+  assert.equal(ui.elements.get("componentLocalButton").attributes["aria-pressed"], "true");
   url.value = "http://draft"; url.events.input(); enabled.checked = true; enabled.events.change();
+  ui.elements.get("componentSharedButton").onclick();
+  assert.equal(enabled.checked, true); assert.equal(ui.elements.get("componentLocalButton").attributes["aria-pressed"], "true");
   await ui.elements.get("saveButton").onclick(); assert.equal(enabled.checked, true);
   await ui.elements.get("saveComponentsButton").onclick(); assert.deepEqual(revisions, ["one", "two"]);
+  assert.deepEqual(scopes, ["project_local", "project_local"]);
+  ui.elements.get("componentSharedButton").onclick();
+  assert.equal(ui.elements.get("componentSharedButton").attributes["aria-pressed"], "true");
 });
 
 test("late update or index results from another profile are not shown as current", async () => {
