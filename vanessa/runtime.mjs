@@ -50,9 +50,9 @@ export function checkOwner(profile, { required = false } = {}) {
   if (!fs.existsSync(file)) { if (required) fail("endpoint is not owned by this profile; external managers are not adopted"); return null; }
   const owner = readJson(file, 4096);
   if (owner.profile !== profile.identity) fail("endpoint belongs to another profile");
-  const { userEnv: clientUserEnv, computerName: clientComputer, ...clientCore } = profile.client;
+  const { userEnv: clientUserEnv, computerName: clientComputer, ...clientCore } = profile.ownerClient ?? profile.client;
   const priorClientSchemas = [clientCore, { ...clientCore, ...(clientUserEnv ? { userEnv: clientUserEnv } : {}) }];
-  const compatibleClientDefaults = priorClientSchemas.some(client => owner.fingerprint === fingerprint({ ...profile, client }));
+  const compatibleClientDefaults = priorClientSchemas.some(client => owner.fingerprint === fingerprint({ ...profile, ownerClient: undefined, client }));
   if (owner.fingerprint !== fingerprint(profile) && !compatibleClientDefaults) {
     if (owner.status === "starting" || !Number.isInteger(owner.pid) || owner.pid < 1 || alive(owner.pid)) fail("profile launch settings changed; active or indeterminate manager ownership must be reviewed");
     // A confirmed dead, own process may be replaced with the current settings.
@@ -60,7 +60,7 @@ export function checkOwner(profile, { required = false } = {}) {
   }
   return owner;
 }
-function fingerprint(profile) { return digest(JSON.stringify([profile.platform, profile.runtime, profile.manager, profile.client, profile.stateDir, interactiveParameters(profile)])); }
+function fingerprint(profile) { return digest(JSON.stringify([profile.platform, profile.runtime, profile.manager, profile.ownerClient ?? profile.client, profile.stateDir, interactiveParameters(profile)])); }
 export function checkClaims(profile) {
   const root = registryDir();
   if (!fs.existsSync(root)) return;
@@ -100,13 +100,15 @@ export async function start(profile) {
     }
     if (owner?.status === "starting") fail("previous launch outcome is indeterminate; verify manager state manually before restarting");
     if (!await portAvailable(profile)) fail("endpoint port is occupied; external managers are not adopted");
+    const startupLog = path.join(profile.stateDir, `startup-${randomUUID()}.log`);
+    // Validate authentication and command-line construction before recording a launch claim.
+    const commandLine = platformCommandLine(startArguments(profile, process.env, { startupLog }));
     fs.mkdirSync(profile.stateDir, { recursive: true });
     const stateFile = path.join(profile.stateDir, "manager.json");
     if (fs.existsSync(stateFile)) {
       const state = readJson(stateFile, 4096);
       if (state.profile !== profile.identity) fail("state directory belongs to another profile");
     }
-    const startupLog = path.join(profile.stateDir, `startup-${randomUUID()}.log`);
     const claim = { profile: profile.identity, fingerprint: fingerprint(profile), client: clientKey(profile), clientKeyVersion: 2, startupLog, status: "starting" };
     // Reserve an explicit state directory before launch, also for different endpoints.
     if (!fs.existsSync(stateFile)) {
@@ -119,7 +121,6 @@ export async function start(profile) {
     const ownerFile = path.join(registryDir(), `${endpointKey(profile)}.owner.json`);
     fs.writeFileSync(ownerFile, JSON.stringify(claim));
     // Preserve the platform's doubled quote contract in the raw Windows command line.
-    const commandLine = platformCommandLine(startArguments(profile, process.env, { startupLog }));
     // The user-visible interactive test manager needs its normal application window.
     let launched;
     try {

@@ -1,9 +1,9 @@
 import path from "node:path";
 import os from "node:os";
 import { callTool } from "./mcp.mjs";
-import { connectionString, clientAdditionalParameters } from "./profile.mjs";
+import { connectionString, clientAdditionalParameters, configuredUser } from "./profile.mjs";
 import { invalidateObservedIdle } from "./recording.mjs";
-import { runtimeContract } from "./runtime-contract.mjs";
+import { runtimeContract, platformTokens } from "./runtime-contract.mjs";
 export { runtimeContract } from "./runtime-contract.mjs";
 
 // Runtime-specific parsers are deliberately separate from orchestration. They must be
@@ -55,9 +55,12 @@ export async function inspectSession(profile, client, tools, contract = runtimeC
   if (!matches.length && allowMissingProfile && !state.connected && !state.recording) return { status: "profile_missing" };
   if (matches.length !== 1 || !sameInfobase(profile.client.infobase, matches[0].infobase)) return error("client_profile_mismatch_or_ambiguous");
   if (!taxiCompatible(matches[0].additionalParameters)) return error("client_interface_mismatch_or_unverified");
-  if (profile.client.userEnv) {
-    const expectedAuth = clientAdditionalParameters(profile).slice("/iTaxi ".length);
-    if (!matches[0].additionalParameters.split(/\s+(?=\/)/).includes(expectedAuth)) return error("client_authentication_profile_mismatch");
+  const expectedUser = configuredUser(profile.client, "client");
+  if (expectedUser !== undefined) {
+    const tokens = platformTokens(matches[0].additionalParameters);
+    const users = [];
+    if (tokens) for (let i = 0; i < tokens.length; i++) if (/^\/N/i.test(tokens[i])) users.push(tokens[i].length === 2 ? tokens[++i] : tokens[i].slice(2));
+    if (!tokens || users.length !== 1 || users[0] !== expectedUser) return error("client_authentication_profile_mismatch");
   }
   if (matches[0].computerName !== profile.client.computerName) {
     if (repairComputer && !state.recording && (!state.connected || state.clientName === profile.client.name)) return { status: "computer_name_mismatch" };
@@ -72,7 +75,7 @@ export async function inspectSession(profile, client, tools, contract = runtimeC
   if (!inventory || inventory.filter !== "/TESTCLIENT" || inventory.matchedCount !== 1 || inventory.processes.length !== 1) return unverified("unique_actual_test_client_process_not_verified", evidence);
   const clientProcess = inventory.processes[0];
   if (!clientProcess.launch || !Number.isInteger(clientProcess.pid) || clientProcess.pid < 1 || !clientProcess.startedAt || !sameInfobase(profile.client.infobase, clientProcess.launch.infobase) || clientProcess.launch.interface !== "taxi") return unverified("actual_test_client_launch_mismatch_or_unverified", evidence);
-  if (profile.client.userEnv && clientProcess.launch.user !== process.env[profile.client.userEnv]) return error("actual_test_client_user_mismatch");
+  if (expectedUser !== undefined && clientProcess.launch.user !== expectedUser) return error("actual_test_client_user_mismatch");
   evidence.extensions = await callTool(client, tools, "get_extension_list", {});
   const extensions = contract.extensions(evidence.extensions);
   if (!Array.isArray(extensions)) return unverified("extensions_response_contract_unverified", evidence);

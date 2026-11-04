@@ -4,51 +4,265 @@
   "title": "Vanessa UI local profile",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "id", "projectRoot", "platform", "runtime", "manager", "client", "mcp", "features", "results"],
+  "required": [
+    "version",
+    "id",
+    "projectRoot",
+    "platform",
+    "runtime",
+    "manager",
+    "client",
+    "mcp",
+    "features",
+    "results"
+  ],
   "properties": {
-    "version": { "const": 1 },
-    "id": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$" },
-    "projectRoot": { "$ref": "#/$defs/path" },
-    "platform": { "$ref": "#/$defs/path" },
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$"
+    },
+    "projectRoot": {
+      "$ref": "#/$defs/path"
+    },
+    "platform": {
+      "$ref": "#/$defs/path"
+    },
     "runtime": {
-      "type": "object", "additionalProperties": false,
-      "oneOf": [{ "required": ["epf"], "not": { "required": ["navigationUrl"] } }, { "required": ["navigationUrl"], "not": { "anyOf": [{ "required": ["epf"] }, { "required": ["manifest"] }] } }],
-      "properties": { "epf": { "$ref": "#/$defs/path" }, "navigationUrl": { "type": "string", "pattern": "^e1cib/app/[^\\s;\"]+$" }, "paramsFile": { "$ref": "#/$defs/path" }, "manifest": { "$ref": "#/$defs/path" } }
-    },
-    "manager": {
-      "type": "object", "additionalProperties": false, "required": ["infobase"],
-      "properties": { "infobase": { "$ref": "#/$defs/infobase" }, "userEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "interface": { "enum": ["taxi"], "default": "taxi" } }
-    },
-    "client": {
-      "type": "object", "additionalProperties": false, "required": ["name", "infobase"],
-      "properties": { "name": { "$ref": "#/$defs/path" }, "infobase": { "$ref": "#/$defs/infobase" }, "interface": { "enum": ["taxi"], "default": "taxi" }, "userEnv": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }, "computerName": { "type": "string", "minLength": 1, "default": "localhost" } }
-    },
-    "mcp": {
-      "type": "object", "additionalProperties": false, "required": ["url", "port"],
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "epf"
+          ],
+          "not": {
+            "required": [
+              "navigationUrl"
+            ]
+          }
+        },
+        {
+          "required": [
+            "navigationUrl"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "epf"
+                ]
+              },
+              {
+                "required": [
+                  "manifest"
+                ]
+              }
+            ]
+          }
+        }
+      ],
       "properties": {
-        "serverName": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$", "default": "vanessa" },
-        "url": { "type": "string", "format": "uri", "description": "Loopback HTTP only; explicit port must match port field. No credentials, query or fragment." },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "epf": {
+          "$ref": "#/$defs/path"
+        },
+        "navigationUrl": {
+          "type": "string",
+          "pattern": "^e1cib/app/[^\\s;\"]+$"
+        },
+        "paramsFile": {
+          "$ref": "#/$defs/path"
+        },
+        "manifest": {
+          "$ref": "#/$defs/path"
+        }
       }
     },
-    "features": { "$ref": "#/$defs/path" },
-    "results": { "$ref": "#/$defs/path" },
-    "stateDir": { "$ref": "#/$defs/path" },
-    "limits": {
-      "type": "object", "additionalProperties": false,
+    "manager": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "infobase"
+      ],
       "properties": {
-        "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 120000, "default": 30000 },
-        "maxBytes": { "type": "integer", "minimum": 1024, "maximum": 8388608, "default": 1048576 }
+        "infobase": {
+          "$ref": "#/$defs/infobase"
+        },
+        "userEnv": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "interface": {
+          "enum": [
+            "taxi"
+          ],
+          "default": "taxi"
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001f]+$"
+        }
+      },
+      "not": {
+        "required": [
+          "user",
+          "userEnv"
+        ]
+      }
+    },
+    "client": {
+      "$ref": "#/$defs/client"
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "port"
+      ],
+      "properties": {
+        "serverName": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "default": "vanessa"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Loopback HTTP only; explicit port must match port field. No credentials, query or fragment."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "features": {
+      "$ref": "#/$defs/path"
+    },
+    "results": {
+      "$ref": "#/$defs/path"
+    },
+    "stateDir": {
+      "$ref": "#/$defs/path"
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 120000,
+          "default": 30000
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 8388608,
+          "default": 1048576
+        }
+      }
+    },
+    "clients": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/client"
       }
     }
   },
   "$defs": {
-    "path": { "type": "string", "minLength": 1, "pattern": "^[^\\u0000-\\u001f]+$" },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001f]+$"
+    },
     "infobase": {
       "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["type", "path"], "properties": { "type": { "const": "file" }, "path": { "$ref": "#/$defs/path" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "server", "database"], "properties": { "type": { "const": "server" }, "server": { "$ref": "#/$defs/path" }, "database": { "$ref": "#/$defs/path" } } }
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "path"
+          ],
+          "properties": {
+            "type": {
+              "const": "file"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "server",
+            "database"
+          ],
+          "properties": {
+            "type": {
+              "const": "server"
+            },
+            "server": {
+              "$ref": "#/$defs/path"
+            },
+            "database": {
+              "$ref": "#/$defs/path"
+            }
+          }
+        }
       ]
+    },
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "infobase"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/path"
+        },
+        "infobase": {
+          "$ref": "#/$defs/infobase"
+        },
+        "interface": {
+          "enum": [
+            "taxi"
+          ],
+          "default": "taxi"
+        },
+        "userEnv": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "computerName": {
+          "type": "string",
+          "minLength": 1,
+          "default": "localhost"
+        },
+        "user": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?=.*\\S)[^\\u0000-\\u001f]+$"
+        }
+      },
+      "not": {
+        "required": [
+          "user",
+          "userEnv"
+        ]
+      }
     }
   }
 }

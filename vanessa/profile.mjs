@@ -20,7 +20,7 @@ export function readJson(file, maxBytes = 1024 * 1024, expectedHash) {
   try { return JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); }
   catch { fail("invalid JSON file"); }
 }
-export function loadProfile(file, expectedHash) {
+export function loadProfile(file, expectedHash, clientName) {
   file = path.resolve(file);
   const bytes = fs.readFileSync(file);
   if (bytes.length > 65536) fail("JSON file exceeds size limit");
@@ -28,7 +28,7 @@ export function loadProfile(file, expectedHash) {
   let raw;
   try { raw = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); } catch { fail("invalid JSON file"); }
   const base = path.dirname(file);
-  object(raw, ["version", "id", "projectRoot", "platform", "runtime", "manager", "client", "mcp", "features", "results", "stateDir", "limits"], "profile");
+  object(raw, ["version", "id", "projectRoot", "platform", "runtime", "manager", "client", "clients", "mcp", "features", "results", "stateDir", "limits"], "profile");
   if (raw.version !== 1) fail("unsupported profile version");
   if (typeof raw.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(raw.id)) fail("invalid profile id");
   const resolve = (value, label) => path.resolve(base, text(value, label));
@@ -45,13 +45,28 @@ export function loadProfile(file, expectedHash) {
   if (Object.hasOwn(raw.runtime, "epf") === Object.hasOwn(raw.runtime, "navigationUrl") || (Object.hasOwn(raw.runtime, "navigationUrl") && Object.hasOwn(raw.runtime, "manifest"))) fail("runtime requires exactly one EPF or embedded navigationUrl");
   for (const key of ["epf", "navigationUrl", "paramsFile", "manifest"]) if (Object.hasOwn(raw.runtime, key)) text(raw.runtime[key], `runtime ${key}`);
   if (raw.runtime.navigationUrl && !/^e1cib\/app\/[^\s;"\x00-\x1f]+$/i.test(raw.runtime.navigationUrl)) fail("invalid embedded runtime navigationUrl");
-  object(raw.manager, ["infobase", "userEnv", "interface"], "manager");
+  object(raw.manager, ["infobase", "user", "userEnv", "interface"], "manager");
   if (raw.manager.interface !== undefined && raw.manager.interface !== "taxi") fail("unsupported manager interface; taxi is required");
-  if (Object.hasOwn(raw.manager, "userEnv") && (typeof raw.manager.userEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw.manager.userEnv))) fail("invalid manager user environment variable");
-  object(raw.client, ["name", "infobase", "interface", "userEnv", "computerName"], "client");
-  if (Object.hasOwn(raw.client, "computerName")) text(raw.client.computerName, "client computer name");
-  if (Object.hasOwn(raw.client, "userEnv") && (typeof raw.client.userEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(raw.client.userEnv))) fail("invalid client user environment variable");
-  if (raw.client.interface !== undefined && raw.client.interface !== "taxi") fail("unsupported client interface; taxi is required");
+  const auth = (value, label) => {
+    if (Object.hasOwn(value, "user")) text(value.user, `${label} user`);
+    if (Object.hasOwn(value, "userEnv") && (typeof value.userEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value.userEnv))) fail(`invalid ${label} user environment variable`);
+    if (Object.hasOwn(value, "user") && Object.hasOwn(value, "userEnv")) fail(`${label} user and userEnv are mutually exclusive`);
+    return { ...(value.user !== undefined ? { user: value.user } : {}), ...(value.userEnv !== undefined ? { userEnv: value.userEnv } : {}) };
+  };
+  const managerAuth = auth(raw.manager, "manager");
+  const parseClient = value => {
+    object(value, ["name", "infobase", "interface", "user", "userEnv", "computerName"], "client");
+    if (Object.hasOwn(value, "computerName")) text(value.computerName, "client computer name");
+    if (value.interface !== undefined && value.interface !== "taxi") fail("unsupported client interface; taxi is required");
+    return { name: text(value.name, "client name"), infobase: infobase(value.infobase), interface: "taxi", ...auth(value, "client"), computerName: value.computerName ?? "localhost" };
+  };
+  if (raw.clients !== undefined && (!Array.isArray(raw.clients) || raw.clients.length === 0)) fail("invalid additional clients");
+  const clients = [raw.client, ...(raw.clients ?? [])].map(parseClient);
+  if (new Set(clients.map(client => client.name)).size !== clients.length) fail("duplicate client name");
+  const baseKey = base => base.type === "file" ? `file:${process.platform === "win32" ? base.path.toLowerCase() : base.path}` : `server:${base.server.toLowerCase()}\u0000${base.database.toLowerCase()}`;
+  if (clients.some(client => baseKey(client.infobase) !== baseKey(clients[0].infobase))) fail("additional clients must use the same infobase as the default client");
+  const selectedClient = clientName === undefined ? clients[0] : clients.find(client => client.name === clientName);
+  if (!selectedClient) fail("unknown client name");
   object(raw.mcp, ["serverName", "url", "port"], "mcp");
   let url;
   try { url = new URL(raw.mcp.url); } catch { fail("invalid MCP URL"); }
@@ -68,7 +83,7 @@ export function loadProfile(file, expectedHash) {
   return { version: 1, id: raw.id, file, identity,
     projectRoot: resolve(raw.projectRoot, "project root"), platform: resolve(raw.platform, "platform"),
     runtime: { ...(raw.runtime.epf ? { epf: resolve(raw.runtime.epf, "runtime epf") } : { navigationUrl: raw.runtime.navigationUrl }), ...(raw.runtime.paramsFile ? { paramsFile: resolve(raw.runtime.paramsFile, "runtime paramsFile") } : {}), ...(raw.runtime.manifest ? { manifest: resolve(raw.runtime.manifest, "runtime manifest") } : {}) },
-    manager: { infobase: infobase(raw.manager.infobase), interface: "taxi", ...(raw.manager.userEnv ? { userEnv: raw.manager.userEnv } : {}) }, client: { name: text(raw.client.name, "client name"), infobase: infobase(raw.client.infobase), interface: "taxi", ...(raw.client.userEnv ? { userEnv: raw.client.userEnv } : {}), computerName: raw.client.computerName ?? "localhost" },
+    manager: { infobase: infobase(raw.manager.infobase), interface: "taxi", ...managerAuth }, client: selectedClient, ...(raw.clients ? { ownerClient: clients[0] } : {}),
     mcp: { url: url.href, port: raw.mcp.port, serverName }, features: resolve(raw.features, "features"), results: resolve(raw.results, "results"),
     stateDir: raw.stateDir ? resolve(raw.stateDir, "stateDir") : path.join(base, ".vanessa", `${raw.id}-${identity.slice(0, 12)}`), limits };
 }
@@ -80,9 +95,14 @@ export function connectionString(base) {
   }
   return `Srvr="${base.server}";Ref="${base.database}";`;
 }
+export function configuredUser(config, label, env = process.env) {
+  if (config.user !== undefined && config.userEnv !== undefined) fail(`${label} user and userEnv are mutually exclusive`);
+  if (config.user !== undefined) return text(config.user, `${label} user`);
+  return config.userEnv !== undefined ? text(env[config.userEnv], `${label} user environment value`) : undefined;
+}
 export function clientAdditionalParameters(profile, env = process.env) {
-  if (!profile.client.userEnv) return "/iTaxi";
-  const user = text(env[profile.client.userEnv], "client user environment value");
+  const user = configuredUser(profile.client, "client", env);
+  if (user === undefined) return "/iTaxi";
   return `/iTaxi /N"${user.replaceAll('"', '""')}"`;
 }
 export function startArguments(profile, env = process.env, { startupLog = path.join(profile.stateDir, `startup-${randomUUID()}.log`) } = {}) {
@@ -90,7 +110,8 @@ export function startArguments(profile, env = process.env, { startupLog = path.j
   if ([paramsFile, profile.projectRoot].some(value => /[;"\r\n]/.test(value))) fail("unsupported startup path characters");
   const command = ["runMcp", `mcpPort=${profile.mcp.port}`, "UseEditor", `WorkspaceRoot=${profile.projectRoot}`, `VAParams=${paramsFile}`];
   const auth = [];
-  if (profile.manager.userEnv) auth.push("/N", text(env[profile.manager.userEnv], "manager user environment value"));
+  const user = configuredUser(profile.manager, "manager", env);
+  if (user !== undefined) auth.push("/N", user);
   return ["ENTERPRISE", "/TESTMANAGER", "/iTaxi", "/IBConnectionString", connectionString(profile.manager.infobase), ...auth,
     ...(profile.runtime.epf ? ["/Execute", profile.runtime.epf] : ["/URL", profile.runtime.navigationUrl]), "/Out", startupLog, "/C", command.join(";")];
 }

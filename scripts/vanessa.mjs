@@ -24,6 +24,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { effective_settings } from "./project_context.mjs";
 import { WorkflowKnowledge } from "./openviking_adapter.mjs";
+import { loadProfile } from "../vanessa/profile.mjs";
 export function runtime_profile(selected, with_digest = false) {
   const root = locate_project(selected),
     data = project_profile(root);
@@ -35,6 +36,9 @@ export function runtime_profile(selected, with_digest = false) {
     throw new ConfigError("Vanessa runtime profile exceeds the 64 KiB limit");
   const payload = fs.readFileSync(file),
     raw = JSON.parse(payload.toString("utf8").replace(/^\uFEFF/, ""));
+  // Runtime validation gives actionable diagnostics for conflicting user settings,
+  // duplicate names and cross-client infobase mismatches before schema validation.
+  loadProfile(file, sha256(payload));
   check_schema(raw, "vanessa-runtime.schema.json");
   for (const [key, expected] of [
     ["projectRoot", root],
@@ -65,6 +69,7 @@ export async function main() {
         "arguments_file",
         "authorization_file",
         "for_action",
+        "client",
       ],
     ),
     command = a._[0];
@@ -87,6 +92,7 @@ export async function main() {
       true,
     ),
     action = command === "describe" ? a.for_action || "run" : command;
+  const selected = loadProfile(file, runtimeHash, a.client);
   const knowledge = new WorkflowKnowledge(), usesKnowledge = !["describe", "configure", "doctor"].includes(command);
   const workflowConfig = usesKnowledge ? effective_settings(settings(a.settings), root, data) : null;
   const validateKnowledge = () => {
@@ -132,7 +138,8 @@ export async function main() {
     projectRoot: root,
     runtimeProfile: resolve(file),
     manager: infobase(raw.manager.infobase),
-    client: infobase(raw.client.infobase),
+    client: infobase(selected.client.infobase),
+    clientName: selected.client.name,
     runtime: runtimeHash,
     command: action,
     feature: a.feature || null,
@@ -191,6 +198,7 @@ export async function main() {
   ];
   for (const key of ["feature", "scenario", "tool"])
     if (a[key]) args.push("--" + key, a[key]);
+  if (a.client) args.push("--client", a.client);
   if (argumentsFile)
     args.push(
       "--arguments-file",

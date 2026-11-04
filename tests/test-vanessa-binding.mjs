@@ -10,6 +10,8 @@ import { once } from "node:events";
 import { launch, stop_child } from "../scripts/processes.mjs";
 import { ROOT } from "./helpers.mjs";
 import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
+import { check_schema } from "../scripts/common.mjs";
+import { loadProfile } from "../vanessa/profile.mjs";
 function binding(t) {
   const f = fixture(t),
     file = path.join(f.root, ".ai/vanessa.local.json");
@@ -88,6 +90,55 @@ test("Vanessa describe preserves Unicode and binds exact canonical targets and r
   assert.equal(scope.runtime, sha256(fs.readFileSync(f.file)));
   assert.equal(scope.projectRoot, f.root);
   assert.equal(scope.feature, "features/测试.feature");
+});
+test("Vanessa client selection is validated and bound to authorization scope", (t) => {
+  const f = binding(t);
+  f.raw.manager.user = "АдминистраторТакси";
+  f.raw.client.user = "АдминистраторKafka";
+  f.raw.clients = [{ ...f.raw.client, name: "RestrictedClient", user: "ПользовательKafka" }];
+  f.save();
+  const args = ["--for-action", "connect"];
+  const normal = success(f.invoke("describe", args));
+  const restricted = success(f.invoke("describe", [...args, "--client", "RestrictedClient"]));
+  assert.equal(JSON.parse(normal.scope).clientName, "TestClient");
+  assert.equal(JSON.parse(restricted.scope).clientName, "RestrictedClient");
+  assert.notEqual(normal.scope, restricted.scope);
+  const startApproval = success(f.invoke("describe", ["--for-action", "start"]));
+  delete startApproval.runtimeProfile;
+  startApproval.authorizations = [{ scope: startApproval.scope, effects: startApproval.effects, evidence: "synthetic instruction for default client" }];
+  const approval = path.join(f.base, "client-approval.json");
+  fs.writeFileSync(approval, JSON.stringify(startApproval));
+  const changedClient = f.invoke("start", ["--client", "RestrictedClient", "--authorization-file", approval]);
+  assert.notEqual(changedClient.status, 0);
+  assert.match(changedClient.stdout + changedClient.stderr, /scope\/effects differ/);
+  const bad = f.invoke("describe", [...args, "--client", "missing"]);
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stdout + bad.stderr, /unknown client/);
+  for (const [change, diagnostic] of [
+    [() => { f.raw.manager.userEnv = "MANAGER_USER"; }, /manager user and userEnv are mutually exclusive/],
+    [() => { delete f.raw.manager.userEnv; f.raw.client.userEnv = "CLIENT_USER"; }, /client user and userEnv are mutually exclusive/],
+    [() => { delete f.raw.client.userEnv; f.raw.clients[0].user = " "; }, /invalid client user/],
+  ]) {
+    change(); f.save();
+    assert.throws(() => runtime_profile(f.root), diagnostic);
+  }
+  f.raw.clients[0].user = "ПользовательKafka";
+  delete f.raw.manager.user; delete f.raw.client.user; delete f.raw.clients;
+  f.raw.manager.userEnv = "MANAGER_USER"; f.raw.client.userEnv = "CLIENT_USER";
+  f.save();
+  assert.doesNotThrow(() => runtime_profile(f.root));
+  assert.equal(success(f.invoke("describe", args)).scope.includes('"clientName":"TestClient"'), true);
+});
+test("documented local Vanessa profile is valid and selects both clients", t => {
+  const f = binding(t);
+  const docs = fs.readFileSync(path.join(ROOT, "docs/PROFILES.md"), "utf8");
+  const section = docs.split("Пример `.ai/vanessa.local.json`")[1];
+  const example = JSON.parse(section.match(/```json\s*([\s\S]*?)```/)[1]);
+  check_schema(example, "vanessa-runtime.schema.json");
+  fs.writeFileSync(f.file, JSON.stringify(example));
+  assert.equal(loadProfile(f.file).client.user, "АдминистраторKafka");
+  assert.equal(loadProfile(f.file, undefined, "RestrictedClient").client.user, "ПользовательKafka");
+  assert.equal(loadProfile(f.file).manager.user, "АдминистраторТакси");
 });
 for (const feature of ["features/smoke.feature", ".local/repair.feature"])
   test(

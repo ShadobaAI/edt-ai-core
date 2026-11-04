@@ -28,7 +28,7 @@ export async function doctor(profile) {
 
 export async function main(argv) {
   const command = argv.shift();
-  if (!command || command === "help" || command === "--help") return { usage: "node vanessa.mjs <configure|start|setup|connect|doctor|list|call|run> --profile <file> [--tool <actual-name> --arguments-file <json>] [--feature <file> --scenario <exact-name> --editor-transition]", note: "configure prints an MCP TOML snippet; no credentials or upstream checkout are used" };
+  if (!command || command === "help" || command === "--help") return { usage: "node vanessa.mjs <configure|start|setup|connect|doctor|list|call|run> --profile <file> [--client <name>] [--tool <actual-name> --arguments-file <json>] [--feature <file> --scenario <exact-name> --editor-transition]", note: "configure prints an MCP TOML snippet; no credentials or upstream checkout are used" };
   if (!["configure", "start", "setup", "connect", "doctor", "list", "call", "run"].includes(command)) fail("unknown command");
   const opts = {};
   while (argv.length) {
@@ -38,7 +38,7 @@ export async function main(argv) {
       opts[key] = true; continue;
     }
     const value = argv.shift();
-    if (!["--profile", "--expected-profile-sha256", "--tool", "--arguments-file", "--expected-arguments-sha256", "--feature", "--scenario"].includes(key) || !value || Object.hasOwn(opts, key)) fail("invalid or duplicate CLI option");
+    if (!["--profile", "--client", "--expected-profile-sha256", "--tool", "--arguments-file", "--expected-arguments-sha256", "--feature", "--scenario"].includes(key) || !value || Object.hasOwn(opts, key)) fail("invalid or duplicate CLI option");
     opts[key] = value;
   }
   if (!opts["--profile"]) fail("--profile is required");
@@ -46,7 +46,7 @@ export async function main(argv) {
   if (opts["--expected-arguments-sha256"] && !opts["--arguments-file"]) fail("arguments hash requires --arguments-file");
   if (command !== "run" && (opts["--feature"] || opts["--scenario"])) fail("feature/scenario options require run");
   if (command !== "run" && opts["--editor-transition"]) fail("editor transition requires run");
-  const profile = loadProfile(opts["--profile"], opts["--expected-profile-sha256"]);
+  const profile = loadProfile(opts["--profile"], opts["--expected-profile-sha256"], opts["--client"]);
   if (command === "configure") return { status: "configuration_only", serverName: profile.mcp.serverName, snippet: configSnippet(profile), interactiveParameters: interactiveParameters(profile), readiness: "unverified" };
   if (command === "start") return start(profile);
   if (command === "doctor") return doctor(profile);
