@@ -21,7 +21,7 @@ import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
 import { RemoteMcp } from "../scripts/remote_client.mjs";
-import { generateKeyPairSync, sign, randomUUID } from "node:crypto";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { read_openviking_record } from "../scripts/openviking_store.mjs";
 import { credential_binding, surface_fingerprint, operation_fingerprint, access_error } from "../scripts/openviking_access.mjs";
 import { stable } from "../scripts/common.mjs";
@@ -34,17 +34,19 @@ import { RemoteHttpError } from "../scripts/remote_client.mjs";
 
 const accessKeys = generateKeyPairSync("ed25519");
 const publicationKeys = generateKeyPairSync("ed25519");
-// Fixture publisher: write synthetic records synchronously so changes can be
-// injected inside a mocked native response. Production writes use the locked API.
+// Fixture publisher must also be usable inside synchronous mocked responses.
+// A child uses the real locked writer, including its platform ownership rules.
 function updateRecord(f, patch, endpoint = f.config.mcp.optional.openviking.url) {
   const state = f.env.EDT_AI_STATE_DIR, id = f.config.mcp.optional.openviking.connection_id || "";
-  const directory = path.join(state, "openviking-private"); fs.mkdirSync(directory, { recursive: true });
-  const file = path.join(directory, sha256(JSON.stringify([endpoint, id])) + ".json");
-  const previous = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).values :
-    { credential: "", bindingKey: "", accessPublicKey: "", accessReceipts: "", publicationPublicKey: "", publicationReceipts: "" };
-  const temp = path.join(directory, randomUUID() + ".tmp");
-  fs.writeFileSync(temp, JSON.stringify({ version: 1, identity: [endpoint, id], revision: randomUUID(), values: { ...previous, ...patch } }));
-  fs.renameSync(temp, file);
+  const module = pathToFileURL(path.join(ROOT, "scripts/openviking_store.mjs")).href;
+  const script = `import fs from 'node:fs'; import {read_openviking_record,save_openviking_record} from ${JSON.stringify(module)};
+    const {state,endpoint,id,patch}=JSON.parse(fs.readFileSync(0,'utf8'));
+    const current=read_openviking_record(endpoint,id,state);
+    await save_openviking_record(endpoint,id,{...current.values,...patch},current.revision,state);`;
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    input: JSON.stringify({ state, endpoint, id, patch }), encoding: "utf8", windowsHide: true, shell: false, timeout: 20000,
+  });
+  assert.equal(child.error, undefined); assert.equal(child.status, 0, child.stderr);
 }
 function fixtureRecord(f, endpoint = f.config.mcp.optional.openviking.url) {
   return read_openviking_record(endpoint, f.config.mcp.optional.openviking.connection_id || "", f.env.EDT_AI_STATE_DIR).values;
