@@ -156,10 +156,10 @@ ID команд уникальны, их репозитории должны с�
 | `knowledge` | Да | Настройки базы знаний. | — |
 | `knowledge.provider` | Да | `none` или `openviking`. | — |
 | `knowledge.manifest` | Да | Относительный путь к manifest или `null`. | — |
-| `knowledge.mode` | Условно | `disabled`, `transitional` или `kora`; обязателен при `provider: openviking`. | — |
-| `knowledge.required` | Условно | `true` / `false`; обязателен при `provider: openviking` или `mode: kora`. | — |
-| `knowledge.dependent_actions` | Условно | Обязателен при `provider: openviking`, `required: true` или `mode: kora`. Массив этапов: `discovery`, `design`, `implementation`, `review`, `runtime`. | — |
-| `knowledge.collections` | Условно | Массив ID коллекций; обязателен при `provider: openviking`. | — |
+| `knowledge.mode` | Да | `disabled`, `transitional` или `kora`. | — |
+| `knowledge.required` | Да | `true` / `false`. | — |
+| `knowledge.dependent_actions` | Да | Массив этапов: `discovery`, `design`, `implementation`, `review`, `runtime`. | — |
+| `knowledge.collections` | Да | Массив ID коллекций. | — |
 | `knowledge.collection_uris` | Нет | Карта ID коллекции на URI вида `viking://resources/...`. | — |
 
 ### Ограничения поиска
@@ -174,8 +174,8 @@ ID команд уникальны, их репозитории должны с�
 | `knowledge.search.max_excerpt_chars` | Да | Максимум символов отрывка: целое число 128–8000. | — |
 | `knowledge.search.max_material_chars` | Да | Максимум символов материала: целое число 1024–100000. | — |
 
-- При `provider: none` требуется `manifest: null`; если `mode` и `required`
-  заданы, они равны `disabled` и `false`. Массивы коллекций и зависимых действий
+- При `provider: none` требуется `manifest: null`; поля `mode` и `required`
+  равны `disabled` и `false`. Массивы коллекций и зависимых действий
   и карта URI должны быть пустыми; `search` запрещён.
 - При `provider: openviking` обязательны `mode`, `collections`, `required` и
   `dependent_actions`; режим — `transitional` или `kora`, коллекция нужна хотя бы одна.
@@ -269,13 +269,13 @@ ID команд уникальны, их репозитории должны с�
 | --- | --- | --- |
 | `components.bsl-ls` | Необязательный объект. | — |
 | `components.bsl-ls.mode` | `auto` или `external`. | — |
-| `components.bsl-ls.version` | Версия компонента или `latest`. | — |
+| `components.bsl-ls.version` | Для managed JAR: версия не ниже 1.1.0-rc.4 или `latest`; по умолчанию выбирается подходящий стабильный выпуск, а при его отсутствии — последний RC 1.1.0. С `allow_prerelease: true` также учитываются другие подходящие предварительные выпуски. | — |
 | `components.bsl-ls.enabled` | Включён ли компонент: `true` / `false`. | «Компоненты» → «Компоненты этой папки» → «BSL LS» |
 | `components.bsl-ls.url` | HTTP(S)-адрес внешнего компонента либо пустая строка. | — |
 | `components.bsl-ls.timeout_seconds` | Положительный тайм-аут в секундах. | — |
 | `components.bsl-ls.max_response_bytes` | Целый предел ответа от 1024 байт. | — |
 | `components.bsl-ls.headers_env` | Карта HTTP-заголовков на имена переменных окружения. | — |
-| `components.bsl-ls.allow_prerelease` | Разрешать ли предварительные версии. | — |
+| `components.bsl-ls.allow_prerelease` | Разрешать ли автоматический выбор подходящих предварительных версий; при `false` RC 1.1.0 используется, если подходящего стабильного релиза нет. | — |
 
 Дополнительные поля BSL LS:
 

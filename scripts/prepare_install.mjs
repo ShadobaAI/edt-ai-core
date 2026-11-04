@@ -24,8 +24,6 @@ export function build(
   state,
   node = process.execPath,
   project_root = null,
-  edt_url = null,
-  v8std_url = null,
 ) {
   destination = resolve(destination);
   state = resolve(state);
@@ -35,11 +33,10 @@ export function build(
   if (exists(destination))
     throw new ConfigError("Build destination must be new");
   let config = load(path.join(ROOT, "settings/defaults.json"));
-  const configPath = path.join(state, "settings.json"),
-    previous = exists(configPath)
-      ? configPath
-      : path.join(state, "settings.yaml");
-  if (exists(previous)) config = deep_merge(config, load(previous));
+  const configPath = path.join(state, "settings.json");
+  if (!exists(configPath) && exists(path.join(state, "settings.yaml")))
+    throw new ConfigError("Unsupported previous settings.yaml; retain or archive it and configure current settings.json explicitly");
+  if (exists(configPath)) config = deep_merge(config, load(configPath));
   config.state_dir = state;
   if (project_root) {
     const root = resolve(project_root);
@@ -47,11 +44,6 @@ export function build(
       throw new ConfigError("Project directory does not exist");
     config.active_project = root;
   }
-  for (const [key, url] of [
-    ["edt", edt_url],
-    ["v8std", v8std_url],
-  ])
-    if (url !== null) config.mcp.required[key].url = url;
   validate_settings(config);
   const plugin = path.join(destination, "plugins/1c-ai-core");
   const excluded = new Set([
@@ -142,7 +134,7 @@ export function build(
 }
 if (entrypoint(import.meta.url))
   await cli(() => {
-    const a = argumentsOf();
+    const a = argumentsOf(undefined, [], ["destination", "state_dir", "node", "project_root"]);
     if (!a.destination || !a.state_dir)
       throw new ConfigError("Specify --destination and --state-dir");
     console.log(
@@ -152,8 +144,6 @@ if (entrypoint(import.meta.url))
           a.state_dir,
           a.node,
           a.project_root,
-          a.edt_url,
-          a.v8std_url,
         ),
         null,
         2,

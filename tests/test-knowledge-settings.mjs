@@ -309,7 +309,7 @@ test("OpenViking portable export/import preserves public transport defaults with
   assert.equal(/fixture-secret|private-local|private-instance|environment\.example/.test(exported.text), false);
   const other = path.join(f.base, "other"); fs.mkdirSync(path.join(other, "src"), { recursive: true });
   process.env.EDT_AI_PROJECT_ROOT = other; delete process.env.EDT_AI_OPENVIKING_URL;
-  const request = { text: exported.text };
+  const request = { text: exported.text, includeMachineSettings: true };
   const preview = await backend.main({ action: "preview", ...request });
   assert.equal(preview.openviking.url, "https://public.example/mcp");
   assert.equal(preview.openviking.timeout_seconds, 4);
@@ -382,9 +382,9 @@ for (const source of ["profile", "local", "repository_instance", "instance", "ex
     assert.equal(read.values.openvikingUrl, "");
     assert.equal(read.values.openvikingEnabled, true);
     assert.equal(read.connectionSources.openviking, source === "environment" ? "environment:EDT_AI_OPENVIKING_URL" : source === "local" ? "project_local" : source === "explicit" ? "connections_file" : source);
-    const preview = await backend.main({ action: "preview", text: JSON.stringify(f.profile) });
+    const preview = await backend.main({ action: "preview", text: JSON.stringify(f.profile), includeMachineSettings: true });
     assert.equal(preview.openviking.url, "");
-    await backend.main({ action: "apply", text: JSON.stringify(f.profile), revision: preview.revision, replace: true });
+    await backend.main({ action: "apply", text: JSON.stringify(f.profile), includeMachineSettings: true, revision: preview.revision, replace: true });
     assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "");
     const probe = await backend.main({ action: "probe" });
     assert.equal(probe.external.openviking.configured, false);

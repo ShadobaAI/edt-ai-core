@@ -1,8 +1,8 @@
 # План реализации 1C AI Core
 
 План универсального плагина без привязки к конкретным проектам. Основа:
-[документация](docs/README.md), [интеграции](docs/INTEGRATIONS.md),
-[дорожная карта](docs/ROADMAP.md), [принятые решения](skills/catalog.yaml)
+[документация](../docs/README.md), [интеграции](../docs/INTEGRATIONS.md),
+[дорожная карта](ROADMAP.md), [принятые решения](../skills/catalog.yaml)
 и [концепция KORA 3.1](KORA_3_1.md).
 
 Пункты отмечаются после реализации и проверки результата. Для уже существующих
@@ -275,16 +275,16 @@ MCP ИБ необязателен для первого рабочего вне�
 
 | Источник | Где учтён |
 | --- | --- |
-| [docs/README.md](docs/README.md): навигация и граница «планируется» | Гл. 1, п. 18; разделение реализации и live-приёмки во введении |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): MCP, изоляция, runtime, hooks, состояние | Гл. 1, п. 3–10, 15, 17–18; гл. 2, п. 6 |
-| [docs/PROFILES.md](docs/PROFILES.md): схемы, overrides, mappings, экземпляры, импорт/экспорт | Гл. 1, п. 1–5, 9, 17–18; гл. 2, п. 5 |
-| [docs/USAGE.md](docs/USAGE.md): onboarding, формы, readiness, обновления, диагностика | Гл. 1, п. 8–10, 17–18; гл. 2, п. 5–6 |
-| [docs/PROJECT_AGENTS.md](docs/PROJECT_AGENTS.md): инструкции, ownership, overrides, краткость | Гл. 1, п. 9, 11–17; гл. 2, п. 5 |
-| [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md): окружение, доступ, authorities, пределы проверок | Гл. 1, п. 3–8, 11, 15, 17–18; гл. 2, п. 6 |
-| [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md): знания и MCP ИБ | Гл. 1, п. 1–13; гл. 2, п. 1–4 |
-| [docs/ROADMAP.md](docs/ROADMAP.md): этапы и критерии приёмки | Обе главы; локальная приёмка — гл. 1, п. 18, live — гл. 2, п. 6–7 |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): тесты, package layout, CI, лицензии, выпуск | Гл. 1, п. 18; гл. 2, п. 5–6 |
-| [docs/SOURCES.md](docs/SOURCES.md), [skills/catalog.yaml](skills/catalog.yaml), [skills/README.md](skills/README.md): происхождение и принятые исключения | Гл. 1, п. 11, 17–18; осознанные отличия от KORA во введении |
+| [docs/README.md](../docs/README.md): навигация и граница «планируется» | Гл. 1, п. 18; разделение реализации и live-приёмки во введении |
+| [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md): MCP, изоляция, runtime, hooks, состояние | Гл. 1, п. 3–10, 15, 17–18; гл. 2, п. 6 |
+| [docs/PROFILES.md](../docs/PROFILES.md): схемы, overrides, mappings, экземпляры, импорт/экспорт | Гл. 1, п. 1–5, 9, 17–18; гл. 2, п. 5 |
+| [docs/USAGE.md](../docs/USAGE.md): onboarding, формы, readiness, обновления, диагностика | Гл. 1, п. 8–10, 17–18; гл. 2, п. 5–6 |
+| [docs/PROJECT_AGENTS.md](../docs/PROJECT_AGENTS.md): инструкции, ownership, overrides, краткость | Гл. 1, п. 9, 11–17; гл. 2, п. 5 |
+| [docs/REQUIREMENTS.md](../docs/REQUIREMENTS.md): окружение, доступ, authorities, пределы проверок | Гл. 1, п. 3–8, 11, 15, 17–18; гл. 2, п. 6 |
+| [docs/INTEGRATIONS.md](../docs/INTEGRATIONS.md): знания и MCP ИБ | Гл. 1, п. 1–13; гл. 2, п. 1–4 |
+| [docs/ROADMAP.md](ROADMAP.md): этапы и критерии приёмки | Обе главы; локальная приёмка — гл. 1, п. 18, live — гл. 2, п. 6–7 |
+| [docs/DEVELOPMENT.md](../docs/DEVELOPMENT.md): тесты, package layout, CI, лицензии, выпуск | Гл. 1, п. 18; гл. 2, п. 5–6 |
+| [docs/SOURCES.md](../docs/SOURCES.md), [skills/catalog.yaml](../skills/catalog.yaml), [skills/README.md](../skills/README.md): происхождение и принятые исключения | Гл. 1, п. 11, 17–18; осознанные отличия от KORA во введении |
 | KORA § 1–3: цели, архитектура, authorities, достоверность | Гл. 1, п. 1, 6–8, 11–15; осознанные отличия во введении |
 | KORA § 4: цикл разработки, L/M/H, планирование, делегирование | Гл. 1, п. 12–17 |
 | KORA § 5: смысловое переиспользование и остановка по ошибке | Гл. 1, п. 8, 11–12, 15, 18 |

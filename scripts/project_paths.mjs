@@ -73,22 +73,14 @@ export const sha256 = (value) =>
 // realpath preserves filesystem identity without linguistic transformations
 // (Straße and STRASSE are different directories even on Windows).
 export const path_identity = (file) => resolve(file).replace(/^\\\\\?\\UNC\\/, "\\\\").replace(/^\\\\\?\\/, "");
-export function legacy_project_state(state, root) {
-  const identity = path_identity(root), legacy = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
-  if (!exists(legacy)) return null;
-  let owner;
-  try { owner = JSON.parse(fs.readFileSync(path.join(legacy, "code-index/owner.json"), "utf8")); } catch {}
-  return { directory: legacy, status: !owner?.project_root ? "owner_unknown" : path_identity(owner.project_root) === identity ? "verified" : "other_project" };
-}
 export function project_directory(state, root) {
   const identity = path_identity(root),
-    home = path.join(state, "projects", sha256(identity).slice(0, 32)),
-    legacy = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
-  if (!exists(home) && exists(legacy)) {
-    // Keep a verified live daemon at its original home. Another project whose
-    // former folded key collided receives its new namespace, never this one.
-    if (legacy_project_state(state, root)?.status === "verified") return legacy;
-  }
+    home = path.join(state, "projects", sha256(identity).slice(0, 32));
+  // Do not start a second daemon while an older namespace may still own one.
+  // The old state is never read, reused, moved, or deleted automatically.
+  const previous = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
+  if (exists(previous))
+    throw new ConfigError("Unsupported previous project state exists: " + previous + ". Verify ownership, stop its services and archive it before using this project.");
   const ownerFile = path.join(home, "project-owner.json");
   if (is_file(ownerFile) && JSON.parse(fs.readFileSync(ownerFile, "utf8")).root !== identity)
     throw new ConfigError("Project state ownership mismatch: " + home);

@@ -231,8 +231,9 @@ test("versioned contracts reject missing, legacy, future and incorrectly typed v
   const old = profile(); old.schema_version = "0.1";
   assert.throws(() => validate(old), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
   assert.equal(old.schema_version, "0.1");
-  check_schema({ connections: {} }, "project-local.schema.json"); // Existing unversioned, unchanged partial overrides remain supported.
-  check_schema({ schema_version: "0.1" }, "project-local.schema.json");
+  check_schema({ connections: {} }, "project-local.schema.json");
+  check_schema({ schema_version: "0.2" }, "project-local.schema.json");
+  assert.throws(() => check_schema({ schema_version: "0.1" }, "project-local.schema.json"), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
   assert.throws(() => check_schema({ schema_version: "9.0" }, "project-local.schema.json"), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
 });
 

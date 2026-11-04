@@ -49,15 +49,12 @@ test("distinct Unicode filesystem directories cannot share instances or daemon h
   assert.notEqual(instance_directory(f.state,roots[0]), instance_directory(f.state,roots[1]));
   assert.notEqual(project_home(f.state,roots[0]), project_home(f.state,roots[1]));
 });
-test("unowned legacy overrides are preserved and require explicit selection before reuse",async t=>{
+test("previous project state blocks a new namespace without changing old files",async t=>{
   const f=fixture(t);environment(t,f.env);f.save();
   const old=path.join(f.state,"projects",sha256(casefold(f.root)).slice(0,16),"instances/first.yaml");
   dump({connections:{edt:{url:"http://localhost:17889/mcp"}}},old);
   const before=fs.readFileSync(old),backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
-  const read=await backend.main({action:"read"});assert.equal(read.values.edtUrl,"");assert.equal(read.legacyState.status,"owner_unknown");
-  assert.equal(read.legacyState.connections.edt.url,"http://localhost:17889/mcp");
-  await backend.main({action:"update",set:{edtUrl:read.legacyState.connections.edt.url}});
-  assert.equal((await backend.main({action:"read"})).values.edtUrl,"http://localhost:17889/mcp");
+  await assert.rejects(backend.main({action:"read"}), /Unsupported previous project state/);
   assert.deepEqual(fs.readFileSync(old),before);
 });
 test("native instructions survive and unrelated settings preserve the reader session", async t => {
@@ -137,9 +134,9 @@ test("host EOF releases an unanswered native callback and its relay", async t =>
 test("managed relay bounds shutdown of a child that ignores host EOF", async t => {
   const f = fixture(t); environment(t, f.env); f.save(); grant_preparation(f.state, f.root, ["bsl-ls"]);
   dump({ mcp: { managed: { "bsl-ls": { enabled: true, java: process.execPath } } } }, f.env.EDT_AI_SETTINGS);
-  const jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", "bsl-language-server-exec.jar"), bytes = Buffer.from("fixture jar");
+  const bytes = Buffer.from("fixture jar"), digest = sha256(bytes), jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", digest, "bsl-language-server-exec.jar");
   fs.mkdirSync(path.dirname(jar), { recursive: true }); fs.writeFileSync(jar, bytes);
-  save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": { release: "v1.2.3", sha256: sha256(bytes) } });
+  save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": { release: "v1.2.3", sha256: digest, path: path.relative(f.state, jar) } });
   const preloadFile = path.join(f.base, "hang-preload.mjs");
   const hanging = "process.stdout.write(String(process.pid)+'\\n'); process.stdin.resume(); setInterval(()=>{},1000);";
   fs.writeFileSync(preloadFile, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
@@ -170,9 +167,9 @@ test("direct managed BSL launch excludes credentials from the Java probe and nat
   f.profile.connections = { openviking: { headers_env: { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" } } };
   f.save(); grant_preparation(f.state, f.root, ["bsl-ls"]);
   dump({ mcp: { managed: { "bsl-ls": { enabled: true, java: process.execPath } } } }, f.env.EDT_AI_SETTINGS);
-  const jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", "bsl-language-server-exec.jar"), bytes = Buffer.from("fixture jar");
+  const bytes = Buffer.from("fixture jar"), digest = sha256(bytes), jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", digest, "bsl-language-server-exec.jar");
   fs.mkdirSync(path.dirname(jar), { recursive: true }); fs.writeFileSync(jar, bytes);
-  save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": { release: "v1.2.3", sha256: sha256(bytes) } });
+  save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": { release: "v1.2.3", sha256: digest, path: path.relative(f.state, jar) } });
   const report = path.join(f.base, "java-environment.json"), preloadFile = path.join(f.base, "native-env-preload.mjs");
   const inspectEnv = `['OPENVIKING_SEARCH_TOKEN','EDT_AI_OPENVIKING_ACCESS_BINDING_KEY','TEAM_KNOWLEDGE_TOKEN','OTHER_PROJECT_TOKEN'].filter(name => Object.hasOwn(process.env,name))`;
   fs.writeFileSync(preloadFile, `import cp from 'node:child_process'; import fs from 'node:fs'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
@@ -223,9 +220,23 @@ test("profile compatibility is checked against core semantics independently of f
   assert.throws(()=>satisfies_core(">=0.1.0 bad"),/comparator/);
 });
 function download(bytes,tag){return {fetch_json:async()=>({tag_name:tag,assets:[{name:`bsl-language-server-${tag}-exec.jar`,size:bytes.length,digest:"sha256:"+sha256(bytes),browser_download_url:`https://github.com/1c-syntax/bsl-language-server/releases/download/${tag}/server.jar`}]}),fetch:async()=>new Response(bytes)};}
+test("old BSL releases cannot start or be restored, but the RC fallback can be installed", async t => {
+  const f=fixture(t), config=settings(), bytes=zip({"old.txt":Buffer.from("old")}), digest=sha256(bytes);
+  const old=path.join(f.state,"runtime/bsl-ls/v1.0.7",digest,"bsl-language-server-exec.jar");
+  fs.mkdirSync(path.dirname(old),{recursive:true});fs.writeFileSync(old,bytes);
+  save_json(path.join(f.state,"runtime-lock.json"),{"bsl-ls":{release:"v1.0.7",sha256:digest,path:path.relative(f.state,old)}});
+  await assert.rejects(installed_runtime(f.state,config,"bsl-ls"),/1\.1\.0-rc\.4/);
+  const io=download(zip({"new.txt":Buffer.from("new")}),"v1.1.0-rc.8"), release=await io.fetch_json();
+  release.prerelease=true;
+  io.fetch_json=async url=>url.endsWith("/latest")?{tag_name:"v1.0.7",prerelease:false}:[release];
+  const result=await update_component(f.state,config,f.root,f.profile,"bsl-ls","install",{...io,smoke:async()=>({status:"mcp_ready"})});
+  assert.equal(result.release,"v1.1.0-rc.8");
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"bsl-ls","rollback",{}),/1\.1\.0-rc\.4/);
+  assert.equal(read_json(path.join(f.state,"runtime-lock.json"))["bsl-ls"].release,"v1.1.0-rc.8");
+});
 test("download, failed validation, apply and rollback preserve the active artifact transactionally",async t=>{
   const f=fixture(t),config=settings();config.mcp.managed["bsl-ls"].enabled=true;
-  const first=await ensure_installed(f.state,config,"bsl-ls",false,download(zip({"old.txt":Buffer.from("old")}),"v1.0.0"));
+  const first=await ensure_installed(f.state,config,"bsl-ls",false,download(zip({"old.txt":Buffer.from("old")}),"v1.1.0"));
   const changed=structuredClone(config);changed.mcp.managed["bsl-ls"].version="9.0.0";
   await assert.rejects(installed_runtime(f.state,changed,"bsl-ls"),/apply the requested candidate/);
   await update_component(f.state,config,f.root,f.profile,"bsl-ls","download",download(zip({"new.txt":Buffer.from("new")}),"v2.0.0"));

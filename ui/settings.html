@@ -88,7 +88,6 @@ details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer
 </nav>
 <section id="profilePanel" role="tabpanel" aria-labelledby="profileTab">
 <div class="panel" id="connectionSettings"><h2>Серверы MCP</h2><div class="scope-toolbar"><label for="connectionScope">Изменять в</label><select id="connectionScope" aria-describedby="connectionScopeDescription connectionDestination connectionScopeHint"><option value="instance">Этот экземпляр</option><option value="project_local">Локальные настройки проекта</option><option value="profile">Профиль проекта</option></select><button id="saveButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button></div><p id="connectionScopeDescription" class="scope-description"></p><p id="connectionDestination" class="path"></p><p id="connectionScopeHint" class="muted" role="status"></p><details class="scope-help"><summary>Чем отличаются области?</summary><p><strong>Профиль проекта</strong> можно передать вместе с проектом. <strong>Локальные настройки</strong> находятся в папке проекта и действуют для всех его экземпляров. <strong>Этот экземпляр</strong> хранится на компьютере отдельно для выбранного проекта и экземпляра.</p><p>Значение экземпляра перекрывает локальное, а локальное — значение профиля. Файл экземпляра в проекте, внешний файл подключений и переменные окружения также могут переопределять значения.</p></details>
-<details id="legacyState" hidden><summary>Проверьте прежние подключения</summary><p>Старое состояние сохранено. Его владелец не записан, поэтому адреса требуют проверки для этой папки.</p><pre id="legacyConnections"></pre><button id="migrateConnectionsButton">Использовать эти подключения</button></details>
 <div class="connection-field"><label class="field" for="edtUrl">EDT<small>Проект и платформа 1С</small></label><input id="edtUrl" type="text" placeholder="URL сервера EDT MCP" autocomplete="off" aria-describedby="edtSource"><div id="edtSource" class="source-line"></div><div id="edtPortHint" class="source-line" role="status" hidden><span id="edtPortText"></span> <button id="useEdtPortButton" class="text-button">Обновить порт</button></div></div>
 <div class="connection-field"><label class="field" for="v8stdUrl">v8std<small>Стандарты разработки</small></label><input id="v8stdUrl" type="text" placeholder="URL сервера v8std MCP" autocomplete="off" aria-describedby="v8stdConsent v8stdSource"><div id="v8stdConsent" class="source-line">Подключение разрешает операции сервера и передачу ему кода и контекста задачи.</div><div id="v8stdSource" class="source-line"></div></div>
 <div class="connection-field"><label class="field" for="openvikingUrl">OpenViking<small>Необязательный сервер знаний</small></label><input id="openvikingUrl" type="text" placeholder="URL внешнего сервера MCP" autocomplete="off" aria-describedby="openvikingSource"><div id="openvikingSource" class="source-line"></div><label class="replace source-line" for="openvikingEnabled"><input id="openvikingEnabled" type="checkbox" aria-describedby="openvikingEnabledSource"><span>Использовать OpenViking</span></label><div id="openvikingEnabledSource" class="source-line"></div></div>
@@ -132,7 +131,7 @@ details{margin-top:12px;font-size:12px;color:var(--muted)}summary{cursor:pointer
 <div class="actions"><label for="updateComponent">Компонент</label><select id="updateComponent"><option value="code-index">Индекс кода</option><option value="bsl-ls">BSL LS</option></select>
 <div id="versionPicker" class="version-picker"><button id="versionButton" aria-label="Выбрать версию компонента" aria-haspopup="listbox" aria-expanded="false" aria-controls="versionPopup"><span id="versionValue">Последняя стабильная версия</span><svg class="icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg></button>
 <div id="versionPopup" class="version-popup" hidden><div class="version-toolbar"><input id="versionSearch" type="text" placeholder="Поиск версии…" aria-label="Поиск версии" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="versionOptions" autocomplete="off" spellcheck="false"><button id="refreshVersionsButton" class="icon-button" title="Обновить список версий" aria-label="Обновить список версий"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg></button></div><div id="versionOptions" class="version-options" role="listbox" aria-label="Версии компонента"></div><p id="versionHint" role="status"></p><button id="moreVersionsButton" hidden>Показать ещё</button></div></div></div>
-<p class="muted">Последняя стабильная версия выбирается автоматически. Версия сохраняется для всех проектов пользователя после успешной установки.</p>
+<p class="muted">Автоматически выбирается последняя подходящая стабильная версия. Для BSL LS при её отсутствии выбирается RC 1.1.0. Версия сохраняется для всех проектов пользователя после успешной установки.</p>
 <p>Установка скачает выбранную версию, проверит её работоспособность и переключит компонент. Для возврата к старой версии выберите её в списке и установите. Текущие операции индекса должны завершиться.</p>
 <div class="actions"><button id="installUpdateButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Установить</button></div><p id="installHint" class="muted" role="status"></p><pre id="updatesResult"></pre></div>
 <h2 class="runtime-heading">Сервисы проекта</h2><p>Состояние сервисов и действия для каждого компонента.</p><div id="connections" class="panel" hidden></div>
@@ -196,6 +195,7 @@ function userMessage(value){
     if(/external MCP rejected/i.test(line)){const code=/\bHTTP\s+(\d{3})/i.exec(line);return "Внешний сервер MCP отклонил запрос"+(code?" (HTTP "+code[1]+")":"")+". Проверьте подключение и права доступа.";}
     if(/invalid document|unexpected token|unexpected end|expected .*JSON|JSON\.parse/i.test(line))return "Документ содержит ошибку. Проверьте его формат и значения.";
     if(/candidate rejected; active artifact retained/i.test(line))return "Новая версия не прошла проверку. Прежняя версия сохранена.";
+    if(/BSL LS requires version 1\.1\.0/i.test(line))return "Для BSL LS требуется версия не ниже 1.1.0-rc.4. Установите подходящую версию в настройках.";
     if(/disk unavailable/i.test(line))return "Диск недоступен. Проверьте место сохранения и повторите попытку.";
     if(/offline|network|fetch failed|ECONNREFUSED|ENOTFOUND|connection refused/i.test(line))return "Не удалось подключиться к серверу. Проверьте адрес и сетевое соединение.";
     if(/publication.*missing|missing.*publication/i.test(line))return "Не найдено подтверждение публикации. Проверьте настройку базы знаний.";
@@ -205,7 +205,8 @@ function userMessage(value){
 const knowledgeMode=value=>({disabled:"выключен",transitional:"переходный",kora:"KORA"})[value]||"не определён";
 const knowledgeProvider=value=>({none:"источник не выбран",openviking:"OpenViking"})[value]||"источник не определён";
 const knowledgeAction=value=>({discovery:"изучение",design:"проектирование",implementation:"изменение",review:"ревью",runtime:"работа с приложением"})[value]||"другое действие";
-const versionLabel=value=>value==="latest"?"Последняя стабильная версия":value;
+const installAllowsPrerelease=component=>{const field=component==="bsl-ls"?"bslLsAllowPrerelease":"codeIndexAllowPrerelease";return currentData?.managedValueSources?.[field]&&currentData.managedValueSources[field]!=="settings"&&currentData.values?.[field]===true;};
+const versionLabel=value=>value==="latest"?($("updateComponent").value==="bsl-ls"||installAllowsPrerelease($("updateComponent").value)?"Последняя подходящая версия":"Последняя стабильная версия"):value;
 function notice(text,error=false){status.textContent=error?userMessage(text):text;status.classList.toggle("error",error);}
 function rpc(method,params={}){
   if(window.parent===window)return Promise.reject(new Error("Откройте настройки 1C AI Core в Codex."));
@@ -355,8 +356,6 @@ function renderCurrent(current,{preserveDraft=false}={}){
   }
   pendingScope=null;
   if(changedScope){cancelReadinessRetry();dirtyFields.clear();settingsDraftRevision=null;renameBaseRevision=null;importDraft=false;nativeImport=null;$("nativeImportFileName").textContent="";renameDirty=false;$("renameArea").hidden=true;invalidate();$("settingsText").value="";editorOriginal="";editBaseRevision=null;editLayerScope=null;editorDocument="profile";$("editorDocument").value="profile";resetJsonEditor();$("probeResult").hidden=true;$("connections").hidden=true;$("exportSaved").hidden=true;$("javaResult").textContent="";updateResults.clear();selectedVersions.clear();renderUpdates();}
-  $("legacyState").hidden=current.legacyState?.status!=="owner_unknown"||!Object.keys(current.legacyState?.connections||{}).length;
-  $("legacyConnections").textContent=Object.entries(current.legacyState?.connections||{}).map(([name,item])=>name+": "+(item.url||"отключён")).join("\n");
   for(const field of ["codeIndexEnabled","bslLsEnabled","openvikingEnabled"])if(!preserveDraft||!dirtyFields.has(field))$(field).checked=Boolean(scopedField(current,field));
   for(const field of ["openvikingTimeout","openvikingMaxResponseBytes","openvikingHeadersEnv"])if(!preserveDraft||!dirtyFields.has(field))$(field).value=scopedSaved(current,field);
   if(!preserveDraft||!dirtyFields.has("bslLsJava"))$("bslLsJava").value=scopedSaved(current,"bslLsJava");
@@ -430,9 +429,9 @@ function renderCurrent(current,{preserveDraft=false}={}){
 }
 const scopeNames={instance:"настройках этого экземпляра",project_local:"локальных настройках проекта",profile:"профиле проекта",global:"общих настройках"};
 const scopeGenitive={instance:"настроек этого экземпляра",project_local:"локальных настроек проекта",profile:"профиля проекта",global:"общих настроек"};
-const scopeRank={settings:0,legacy:0,unconfigured:0,edt_workspace:0,global:0,profile:1,project_local:2,repository_instance:3,instance:4,connections_file:5};
+const scopeRank={settings:0,unconfigured:0,edt_workspace:0,global:0,profile:1,project_local:2,repository_instance:3,instance:4,connections_file:5};
 function sourceRank(source){return source?.startsWith("environment:")?6:scopeRank[source]??0;}
-function sourceLabel(source){return source.startsWith("environment:")?"переменная окружения "+source.slice(12):({connections_file:"внешний файл подключений",profile:"профиль проекта",edt_workspace:"настройки EDT",project_local:"локальные настройки проекта",repository_instance:"файл экземпляра в проекте",instance:"настройки этого экземпляра",settings:"общие настройки или значения по умолчанию",unconfigured:"адрес не указан"}[source]||"прежние настройки пользователя");}
+function sourceLabel(source){return source.startsWith("environment:")?"переменная окружения "+source.slice(12):({connections_file:"внешний файл подключений",profile:"профиль проекта",edt_workspace:"настройки EDT",project_local:"локальные настройки проекта",repository_instance:"файл экземпляра в проекте",instance:"настройки этого экземпляра",settings:"общие настройки или значения по умолчанию",unconfigured:"адрес не указан"}[source]||"источник не определён");}
 function fieldSource(current,field){
   if(["edtUrl","v8stdUrl","openvikingUrl"].includes(field))return current?.connectionSources?.[field.slice(0,-3)]||"unconfigured";
   return (field.startsWith("openviking")?current?.valueSources?.[field]:current?.managedValueSources?.[field])||"settings";
@@ -548,7 +547,7 @@ function syncControls(){
   $("readinessButton").disabled||=Boolean(hasProfileDraft());$("rebuildIndexButton").disabled||=Boolean(hasProfileDraft());$("restartIndexButton").disabled||=Boolean(hasProfileDraft());
   $("checkTab").disabled||=!loaded;
   $("editorTab").disabled||=!loaded&&currentData?.profile?.status!=="invalid";
-  for(const id of ["createButton","repairButton","loadButton","previewButton","applyButton","file","pickImportFileButton","importSource","sourceProfile","includeProfileConnections","includeMachineSettings","reviewEditButton","migrateConnectionsButton"])$(id).disabled||=blocked||!currentData?.values?.projectRoot;
+  for(const id of ["createButton","repairButton","loadButton","previewButton","applyButton","file","pickImportFileButton","importSource","sourceProfile","includeProfileConnections","includeMachineSettings","reviewEditButton"])$(id).disabled||=blocked||!currentData?.values?.projectRoot;
   $("applyButton").disabled||=!lastPreview||Boolean(lastPreview?.replacesProfile&&!$("replace").checked);
   if(observing)for(const id of ["probeButton","pickJavaButton","checkJavaButton","readinessButton","installUpdateButton","rebuildIndexButton","restartIndexButton","pickDirectoryButton","pickImportFileButton"])$(id).disabled=true;
   $("editSettingsButton").disabled||=!currentData?.values?.projectRoot||draftRoot||editorChanged();$("settingsText").disabled||=!currentData?.values?.projectRoot||draftRoot;$("settingsText").readOnly=Boolean(currentData?.viewOnly);
@@ -688,16 +687,10 @@ $("saveComponentsButton").onclick=()=>busy("Сохраняем компонен�
 }).catch(()=>{});
 $("saveJavaButton").onclick=()=>busy("Сохраняем Java…",async()=>{const result=await tool("settings.update",{set:{bslLsJava:$("bslLsJava").value.trim()},scope:$("javaScope").value,...expectedSettingsRevision()});settingsSaved(result,["bslLsJava"]);await refresh();notice("Java сохранена: "+(result.savedTo||$("javaDestination").textContent)+". Проверьте источник действующего значения.");}).catch(()=>{});
 for(const [id,name]of [["pickJavaButton","settings.pick_java"],["checkJavaButton","settings.check_java"]])$(id).onclick=()=>busy("Проверяем Java…",async()=>{const args=name==="settings.check_java"?{command:$("bslLsJava").value.trim()}:{};const job=await tool(name,args);activeOperation=job;await pollOperation(job.id);}).catch(()=>{});
-$("migrateConnectionsButton").onclick=()=>busy("Переносим проверенные подключения…",async()=>{
-  if(connectionFields.some(field=>dirtyFields.has(field)))throw new Error("Сохраните или отмените изменённые подключения перед переносом.");
-  const set={};for(const [name,item] of Object.entries(currentData?.legacyState?.connections||{})){const field=name+"Url";if(!$(field).readOnly)set[field]=item.url;}
-  if(!Object.keys(set).length)throw new Error("Подключения задаются источником с более высоким приоритетом.");
-  const result=await tool("settings.update",{set,scope:"instance",...expectedSettingsRevision()});settingsSaved(result,[]);await refresh();notice("Подключения сохранены для выбранной папки. Старое состояние сохранено.");
-}).catch(()=>{});
 async function installVersion(){
   if(hasProfileDraft())throw new Error("Сохраните или отмените изменения перед установкой компонента.");
   const current=await refresh();if(!current.preparationScope)throw new Error("Выберите папку проекта.");
-  const state=installationState();if(state.same){notice("Выбранная версия уже установлена.");return;}if(state.unresolved)throw new Error("Обновите список версий или выберите конкретную версию вместо последней стабильной версии.");
+  const state=installationState();if(state.same){notice("Выбранная версия уже установлена.");return;}if(state.unresolved)throw new Error("Обновите список версий или выберите конкретную версию.");
   const component=$("updateComponent").value,version=selectedVersion(component);
   updateResults.delete(component);renderUpdates();
   const authorization={scope:current.preparationScope,effects:["launch"],evidence:"Пользователь нажал «Установить» для компонента «"+component+"», версия «"+version+"»."};
@@ -705,15 +698,15 @@ async function installVersion(){
 }
 $("installUpdateButton").onclick=()=>busy("Устанавливаем версию…",installVersion).catch(()=>{});
 function installationState(){
-  const component=$("updateComponent").value,selected=selectedVersion(component),installed=currentData?.installedVersions?.[component],catalog=versionCatalogs.get(component),target=selected==="latest"?catalog?.latest:selected;
+  const component=$("updateComponent").value,selected=selectedVersion(component),installed=currentData?.installedVersions?.[component],catalog=versionCatalogs.get(component),target=selected==="latest"?(installAllowsPrerelease(component)?catalog?.latestPrerelease:catalog?.latest):selected;
   const configured=savedField(currentData?.values,versionField(component)),matches=Boolean(installed&&target&&installed.replace(/^v/,"")===target.replace(/^v/,"")),repair=Boolean(matches&&configured!=="latest"&&configured.replace(/^v/,"")!==installed.replace(/^v/,""));
   return {installed,target,latest:selected==="latest",same:matches&&!repair,repair,unresolved:Boolean(installed&&selected==="latest"&&!target),loading:!catalog||catalog.loading};
 }
 function syncInstallControl(){
-  const state=installationState(),reason=state.same?"Выбранная версия уже установлена.":state.repair?"Сохранённая настройка отличается от рабочей версии. Установка согласует их.":state.unresolved?(state.loading?"Определяем последнюю стабильную версию…":"Не удалось определить последнюю стабильную версию. Обновите список или выберите конкретную версию."):"";
+  const state=installationState(),reason=state.same?"Выбранная версия уже установлена.":state.repair?"Сохранённая настройка отличается от рабочей версии. Установка согласует их.":state.unresolved?(state.loading?"Определяем подходящую версию…":"Не удалось определить подходящую версию. Обновите список или выберите конкретную версию."):"";
   $("installUpdateButton").disabled=standalone||!connected||busyActive||activeOperation?.status==="running"||currentData?.profile?.status!=="loaded"||Boolean(currentData?.viewOnly)||dirtyFields.has("projectRoot")||Boolean(hasProfileDraft())||state.same||state.unresolved;
   $("installUpdateButton").title=reason;
-  $("installHint").textContent=(state.installed?"Установлена: "+state.installed+". ":"")+(state.latest&&state.target?"Последняя стабильная версия: "+state.target+". ":"")+reason;
+  $("installHint").textContent=(state.installed?"Установлена: "+state.installed+". ":"")+(state.latest&&state.target?versionLabel("latest")+": "+state.target+". ":"")+reason;
 }
 function renderUpdates(){
   const item=updateResults.get($("updateComponent").value),states={disabled:"отключён",external:"внешний экземпляр",current:"актуален",update_available:"выбранная версия отличается от установленной",error:"ошибка проверки",applied:"установлена версия",candidate_downloaded:"кандидат скачан"};
@@ -744,7 +737,7 @@ async function loadVersions(component,retry=false){
   const existing=versionCatalogs.get(component);if(existing&&(existing.loading||(!retry&&existing.expires>Date.now())))return existing.promise;
   const catalog={loading:true,versions:existing?.versions||[],expires:Date.now()+5*60*1000};versionCatalogs.set(component,catalog);if(versionOpen&&$("updateComponent").value===component)renderVersionOptions();
   syncInstallControl();
-  catalog.promise=(async()=>{try{const result=await tool("settings.versions",{component,...(retry?{refresh:true}:{})});if(result.component!==component||!Array.isArray(result.versions))throw new Error("Некорректный список версий.");if(!result.versions.length)throw new Error("Сервер вернул пустой каталог. Повторите загрузку.");catalog.versions=result.versions;catalog.latest=result.latest;catalog.latestError=result.latestError;}
+  catalog.promise=(async()=>{try{const result=await tool("settings.versions",{component,...(retry?{refresh:true}:{})});if(result.component!==component||!Array.isArray(result.versions))throw new Error("Некорректный список версий.");if(!result.versions.length)throw new Error("Сервер вернул пустой каталог. Повторите загрузку.");catalog.versions=result.versions;catalog.latest=result.latest;catalog.latestPrerelease=result.latestPrerelease;catalog.latestError=result.latestError;}
     catch(error){catalog.error=error.message;catalog.expires=0;}finally{catalog.loading=false;if(versionOpen&&$("updateComponent").value===component)renderVersionOptions();syncInstallControl();}})();return catalog.promise;
 }
 function closeVersionPicker(focus=true){versionOpen=false;$("versionPopup").hidden=true;$("versionButton").setAttribute("aria-expanded","false");if(focus)$("versionButton").focus();}
@@ -889,7 +882,7 @@ async function pollOperation(operationId){
     }
     if(operation.action==="updates"){
       if(!operationMatchesProfile(operation)){notice("Обновление завершилось для другого профиля; его результат здесь не отображается.");return;}
-      const data=operation.result;for(const item of data.components||[data]){updateResults.set(item.component,item);if(item.state==="applied"&&selectedVersions.get(item.component)===item.requested)selectedVersions.delete(item.component);if(item.state==="applied"&&item.requested==="latest"){const catalog=versionCatalogs.get(item.component)||{versions:[],expires:0};catalog.latest=item.release;versionCatalogs.set(item.component,catalog);}}renderUpdates();await refresh();notice("Операция обновления завершена.");return;
+      const data=operation.result;for(const item of data.components||[data]){updateResults.set(item.component,item);if(item.state==="applied"&&selectedVersions.get(item.component)===item.requested)selectedVersions.delete(item.component);if(item.state==="applied"&&item.requested==="latest"){const catalog=versionCatalogs.get(item.component)||{versions:[],expires:0};if(installAllowsPrerelease(item.component))catalog.latestPrerelease=item.release;else catalog.latest=item.release;versionCatalogs.set(item.component,catalog);}}renderUpdates();await refresh();notice("Операция обновления завершена.");return;
     }
     if(operation.action==="probe"){
       if(!operationMatchesProfile(operation)){notice("Проверка завершена для другого каталога или экземпляра. Результат не применяется к текущему профилю.");return;}

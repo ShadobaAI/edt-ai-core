@@ -43,6 +43,22 @@ import { spawn_detached_windows } from "./windows_process.mjs";
 import { index_repositories, index_selection } from "./directory_context.mjs";
 
 export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPONENTS[id].repository]));
+// Workspace registration tools first appeared in 1.1.0-rc.4.
+function supported_bsl_version(tag) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*))?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/.exec(tag || "");
+  if (!match) return false;
+  const major = Number(match[1]), minor = Number(match[2]), patch = Number(match[3]);
+  if (major !== 1) return major > 1;
+  if (minor !== 1) return minor > 1;
+  if (patch !== 0) return patch > 0;
+  if (!match[4]) return true;
+  const rc = /^rc\.(\d+)$/.exec(match[4]);
+  return Boolean(rc && Number(rc[1]) >= 4);
+}
+function require_supported_version(component, tag) {
+  if (component === "bsl-ls" && !supported_bsl_version(tag))
+    throw new ConfigError("BSL LS requires version 1.1.0 or newer; 1.1.0-rc.4 and newer RCs are also supported. Install a supported version in settings.");
+}
 export async function list_versions(component, io = { fetch_json }, options = {}) {
   if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
   const releases = [], deadline = Date.now() + 90000;
@@ -71,7 +87,7 @@ export async function list_versions(component, io = { fetch_json }, options = {}
     }
     const { items, hasNext } = result;
     for (const item of items) {
-      if (!item || item.draft || typeof item.tag_name !== "string" || item.tag_name === "latest" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(item.tag_name)) continue;
+      if (!item || item.draft || typeof item.tag_name !== "string" || item.tag_name === "latest" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(item.tag_name) || (component === "bsl-ls" && !supported_bsl_version(item.tag_name))) continue;
       const publishedAt = item.published_at || item.created_at || null;
       releases.push({ version: item.tag_name, prerelease: Boolean(item.prerelease), publishedAt });
     }
@@ -88,7 +104,7 @@ export async function list_versions(component, io = { fetch_json }, options = {}
 }
 export async function latest_version(component, io = { fetch_json }, options = {}) {
   if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
-  const release = await runtime_release(component, { version: "latest", allow_prerelease: false }, {
+  const release = await runtime_release(component, { version: "latest", allow_prerelease: options.allowPrerelease === true }, {
     fetch_json: url => io.fetch_json(url, 30000, { fresh: options.refresh === true }),
   });
   return release.tag_name;
@@ -96,17 +112,31 @@ export async function latest_version(component, io = { fetch_json }, options = {
 async function runtime_release(component, options, io) {
   const requested = options.version, automatic = requested === "latest";
   const tag = /^\d+\.\d+\.\d+/.test(requested) ? "v" + requested : requested;
+  if (!automatic) require_supported_version(component, tag);
   const releaseURL = automatic ? (options.allow_prerelease ? "?per_page=100" : "/latest") : "/tags/" + tag;
-  const response = await io.fetch_json(`https://api.github.com/repos/${SPECS[component]}/releases${releaseURL}`);
+  const base = `https://api.github.com/repos/${SPECS[component]}/releases`;
+  let response;
+  try { response = await io.fetch_json(base + releaseURL); }
+  catch (error) {
+    if (!(component === "bsl-ls" && automatic && !options.allow_prerelease && /^HTTP 404:/.test(error.message))) throw error;
+  }
+  if (component === "bsl-ls" && automatic && !options.allow_prerelease && (!response || !supported_bsl_version(response.tag_name))) {
+    const releases = await io.fetch_json(base + "?per_page=100");
+    response = Array.isArray(releases) ? releases.find(item => !item.draft && item.prerelease && /^v?1\.1\.0-rc\.\d+$/.test(item.tag_name || "") && supported_bsl_version(item.tag_name)) : null;
+    if (!response) throw new ConfigError("No supported BSL LS stable release or 1.1.0 release candidate found");
+    require_supported_version(component, response.tag_name);
+    return response;
+  }
   // GitHub lists releases newest first. Drafts are never runnable candidates.
   const release = automatic && options.allow_prerelease
-    ? (Array.isArray(response) ? response.find(item => !item.draft) : null) : response;
+    ? (Array.isArray(response) ? response.find(item => !item.draft && (component !== "bsl-ls" || supported_bsl_version(item.tag_name))) : null) : response;
   if (!release || release.draft || (automatic && !options.allow_prerelease && release.prerelease))
     throw new ConfigError("No eligible runtime release; use a stable release, allow_prerelease, or an explicit version");
   if (!automatic && release.tag_name !== tag)
     throw new ConfigError("Runtime release response does not match the requested version");
   if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(release.tag_name || ""))
     throw new ConfigError("Unsupported release tag: " + release.tag_name);
+  require_supported_version(component, release.tag_name);
   return release;
 }
 export function platform_build(
@@ -159,14 +189,10 @@ export function artifact(state, component, slot = "active") {
     entry.platform !== process.platform + "-" + process.arch
   )
     return null;
+  if (typeof entry.path !== "string") throw new ConfigError("Invalid runtime-lock artifact path");
   const home = path.join(state, "runtime", component, entry.release),
-    legacy = resolve(path.join(home, executable));
-  const target = entry.path ? inside(state, entry.path) : legacy;
-  if (
-    ![legacy, resolve(path.join(home, entry.sha256, executable))].includes(
-      resolve(target),
-    )
-  )
+    target = inside(state, entry.path);
+  if (resolve(target) !== resolve(path.join(home, entry.sha256, executable)))
     throw new ConfigError("Invalid runtime-lock artifact path");
   return is_file(target) && sha(target) === entry.sha256 ? target : null;
 }
@@ -207,6 +233,8 @@ export async function ensure_installed(
     requested = config.mcp.managed[component].version,
     current =
       read_json(path.join(state, "runtime-lock.json"), {})[component] || {};
+  if (!refresh && existing && (requested === "latest" || requested.replace(/^v/, "") === current.release.replace(/^v/, "")))
+    require_supported_version(component, current.release);
   if (
     existing &&
     !refresh &&
@@ -333,6 +361,7 @@ export const installed_runtime = (state, config, component, refresh = false, all
     () => {
       const current = artifact(state, component), requested = component_settings(config, component).version;
       const release = read_json(path.join(state, "runtime-lock.json"), {})[component]?.release;
+      if (current && !refresh) require_supported_version(component, release);
       if (current && (refresh || (requested !== "latest" && requested.replace(/^v/, "") !== release?.replace(/^v/, ""))))
         throw new ConfigError("A verified runtime is already active; use settings.updates to download, validate and apply the requested candidate.");
       if (!current && !allow_install)
@@ -351,8 +380,7 @@ function owned_executable(state, owner) {
   if (!target.startsWith(base + path.sep)) return false;
   // The process's own immutable artifact is checked, not today's active release.
   const digest = path.basename(path.dirname(target));
-  if (/^[0-9a-f]{64}$/.test(digest)) return digest === sha(target);
-  return ["active", "previous", "candidate"].some(slot => artifact(state, "code-index", slot) === target);
+  return /^[0-9a-f]{64}$/.test(digest) && digest === sha(target);
 }
 export async function check_updates(state, config, component, io = { fetch_json }) {
   const options = component_settings(config, component);
@@ -418,10 +446,23 @@ export async function update_component(state, config, root, data, component, act
     const before = read_json(lockfile, {}), entry = before[component] || {}, slot = action === "rollback" ? "previous" : "candidate";
     const candidate = artifact(state, component, slot);
     if (!candidate) throw new ConfigError("No verified " + slot + " artifact; download a candidate first");
+    require_supported_version(component, entry[slot].release);
     if (action !== "rollback") {
       const options = component_settings(config, component), selected = entry[slot];
+      // An RC is allowed by the default policy only while no supported stable
+      // release exists. A previously downloaded candidate may have gone stale.
+      if (action === "apply" && component === "bsl-ls" && options.version === "latest" &&
+          !options.allow_prerelease && selected.prerelease === true) {
+        const fetchRelease = io.fetch_json || fetch_json;
+        const current = await runtime_release(component, options, {
+          fetch_json: url => fetchRelease(url, 30000, { fresh: true }),
+        });
+        if (current.tag_name !== selected.release)
+          throw new ConfigError("Downloaded candidate does not match the current release settings; download a new candidate before applying");
+      }
       if ((options.version !== "latest" && options.version.replace(/^v/, "") !== selected.release.replace(/^v/, "")) ||
-          (options.version === "latest" && !options.allow_prerelease && selected.prerelease === true))
+          (options.version === "latest" && !options.allow_prerelease && selected.prerelease === true &&
+            !(component === "bsl-ls" && /^v?1\.1\.0-rc\.\d+$/.test(selected.release))))
         throw new ConfigError("Downloaded candidate does not match the current release settings; download a new candidate before applying");
     }
     const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
@@ -1053,7 +1094,6 @@ export async function main() {
             EDT_AI_SETTINGS: resolve(a.settings || process.env.EDT_AI_SETTINGS || path.join(ROOT, "settings/local.yaml")) },
         };
       save_json(a.output, {
-        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
         mcpServers: servers,
       });
       result = { status: "written", path: resolve(a.output) };

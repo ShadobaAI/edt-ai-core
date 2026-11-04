@@ -422,17 +422,17 @@ test("publication bounded conflict recovery preserves a concurrently published p
   );
   assert.ok(catalog.plugins.some((plugin) => plugin.name === "other-plugin"));
 });
-test("prepared local marketplace preserves legacy YAML and runs with Node alone", async (t) => {
+test("prepared local marketplace uses current settings and runs with Node alone", async (t) => {
   const f = fixture(t);
   f.save();
   fs.writeFileSync(
-    path.join(f.state, "settings.yaml"),
-    "mcp:\n  required:\n    edt:\n      url: http://localhost:18201/mcp\n",
+    path.join(f.state, "settings.json"),
+    JSON.stringify({ mcp: { required: { v8std: { url: "http://localhost:18201/mcp" } } } }),
   );
   const result = prepare(path.join(f.base, "prepared"), f.state);
   assert.equal(result.node, fs.realpathSync.native(process.execPath));
   assert.equal(
-    JSON.parse(fs.readFileSync(result.settings, "utf8")).mcp.required.edt.url,
+    JSON.parse(fs.readFileSync(result.settings, "utf8")).mcp.required.v8std.url,
     "http://localhost:18201/mcp",
   );
   const client = new McpClient(
@@ -583,7 +583,7 @@ child.release(); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));
   },
 );
 test(
-  "Windows native process identity checks executable, exact creation and legacy CIM timestamps",
+  "Windows native process identity checks executable and exact creation timestamp",
   { skip: process.platform !== "win32" },
   () => {
     const state = windows_process_identity(process.pid);
@@ -592,7 +592,7 @@ test(
       process.execPath.toLowerCase(),
     );
     assert.equal(same_creation(state, state.created), true);
-    assert.equal(same_creation(state, "/Date(" + state.createdMs + ")/"), true);
+    assert.equal(same_creation(state, "/Date(0)/"), false);
     assert.equal(same_creation(state, "win32-filetime:1"), false);
     assert.equal(windows_process_identity(0xfffffffe), null);
   },

@@ -7,6 +7,8 @@ import { settings, sleep, operation_lock } from "../scripts/common.mjs";
 import {
   platform_build,
   ensure_installed,
+  latest_version,
+  list_versions,
   artifact,
   sha,
   save_json,
@@ -33,6 +35,32 @@ import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { native_environment, OPENVIKING_ENV_VARS } from "../scripts/components.mjs";
+
+test("BSL release selection prefers a supported stable release and falls back to the latest supported RC", async () => {
+  let stable = { tag_name: "v1.0.7", prerelease: false };
+  const releases = [
+    { tag_name: "v1.1.0-rc.9", draft: true, prerelease: true },
+    { tag_name: "v1.1.0-rc.8", prerelease: true },
+    { tag_name: "v1.1.0-rc.3", prerelease: true },
+    stable,
+  ];
+  const io = { fetch_json: async url => url.endsWith("/latest") ? stable : releases };
+  assert.equal(await latest_version("bsl-ls", io), "v1.1.0-rc.8");
+  assert.deepEqual((await list_versions("bsl-ls", io)).versions.map(item => item.version), ["v1.1.0-rc.8"]);
+  stable = { tag_name: "v1.1.0", prerelease: false };
+  assert.equal(await latest_version("bsl-ls", io), "v1.1.0");
+  assert.equal(await latest_version("bsl-ls", io, { allowPrerelease: true }), "v1.1.0-rc.8");
+  const missingStable = { fetch_json: async url => { if (url.endsWith("/latest")) throw new Error("HTTP 404: " + url); return releases; } };
+  assert.equal(await latest_version("bsl-ls", missingStable), "v1.1.0-rc.8");
+});
+
+test("BSL rejects an explicitly selected old release before contacting GitHub", async t => {
+  const f = fixture(t), config = settings();
+  for (const version of ["v1.0.7", "v1.1.0-rc.3", "unknown"]) {
+    config.mcp.managed["bsl-ls"].version = version;
+    await assert.rejects(ensure_installed(f.state, config, "bsl-ls", false, { fetch_json: async () => { throw new Error("unexpected request"); } }), /1\.1\.0-rc\.4/);
+  }
+});
 
 for (const [platform, arch, expected] of [
   ["win32", "x64", "windows-x64.zip"],
@@ -533,14 +561,15 @@ test("CLI installation and exported bindings respect disabled components without
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });
 
-test("exported MCP bindings forward the selected OpenViking credential name, not its value", t => {
+test("exported MCP bindings list the selected OpenViking credential name, not its value", t => {
   const f = fixture(t);
   f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:1/mcp",
     headers_env: { "X-Api-Key": "TEAM_KNOWLEDGE_TOKEN" } } };
   f.save(); f.env.TEAM_KNOWLEDGE_TOKEN = "fixture-private-token";
   const output = path.join(f.base, "mcp.json");
   success(node("scripts/runtime.mjs", ["config", "--output", output], { env: f.env }));
-  const contents = fs.readFileSync(output, "utf8"), bindings = JSON.parse(contents).mcpServers;
+  const contents = fs.readFileSync(output, "utf8"), exported = JSON.parse(contents), bindings = exported.mcpServers;
+  assert.equal(Object.hasOwn(exported, "$schema"), false);
   for (const name of ["openviking", "edt", "v8std", "code-index", "bsl-ls"]) {
     assert.ok(bindings[name].env_vars.includes("TEAM_KNOWLEDGE_TOKEN"), name);
     assert.ok(bindings[name].env_vars.includes("EDT_AI_OPENVIKING_ACCESS_RECEIPTS"), name);

@@ -206,12 +206,11 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
     const { McpClient } = await import(
       pathToFileURL(path.join(root, "scripts/mcp_client.mjs")).href
     );
-    const { OPENVIKING_ENV_VARS } = await import(
-      pathToFileURL(path.join(root, "scripts/components.mjs")).href
-    );
     for (const [name, entry] of Object.entries(json("mcp.json").mcpServers)) {
       assert.equal(entry.command, "node");
-      if (name !== "policy") assert.deepEqual(entry.env_vars, OPENVIKING_ENV_VARS);
+      // The portable MCP manifest parser rejects entries with Codex's
+      // config.toml-only env_vars field before they can be started.
+      assert.equal(Object.hasOwn(entry, "env_vars"), false);
       const args = entry.args.map((arg) =>
         arg.replaceAll("${PLUGIN_ROOT}", root),
       );
@@ -246,9 +245,10 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
           // caller-selected destination without presenting an OS dialog.
           const journal = await client.call("settings.diagnostics", {});
           assert.equal(journal.structuredContent, undefined);
-          const { support_bundle, save_support_bundle } = await import(pathToFileURL(path.join(root, "scripts/support_bundle.mjs")).href);
+          const { support_bundle } = await import(pathToFileURL(path.join(root, "scripts/support_bundle.mjs")).href);
+          const { save_export_to_path } = await import(pathToFileURL(path.join(root, "scripts/settings_export.mjs")).href);
           const bundle = await support_bundle({ state: env.EDT_AI_STATE_DIR, configPath: env.EDT_AI_SETTINGS, selectedRoot: null });
-          const support = save_support_bundle(env.EDT_AI_STATE_DIR, bundle, path.join(temp, "support.json"));
+          const support = save_export_to_path(path.join(temp, "support.json"), bundle, 16 * 1024 * 1024);
           assert.equal(JSON.parse(fs.readFileSync(support.path, "utf8")).format, "1c-ai-core-diagnostics");
           const resource = await client.request("resources/read", { uri: app._meta.ui.resourceUri });
           assert.deepEqual(resource.contents[0]._meta["openai/ui"].availableDisplayModes,["fullscreen"]);

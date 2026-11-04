@@ -385,7 +385,7 @@ test("connection precedence and scoped instance keys perform no implicit writes"
     /existing override/,
   );
 });
-test("legacy EDT URL never crosses project ownership; custom env and host roots remain local", (t) => {
+test("shared EDT URL is ignored; custom env and host roots remain local", (t) => {
   const f = fixture(t);
   environment(t, f.env);
   f.save();
@@ -396,6 +396,8 @@ test("legacy EDT URL never crosses project ownership; custom env and host roots 
   const effective = effective_settings(config, f.root, f.profile);
   assert.equal(effective.mcp.required.edt.url, "");
   config.active_project = null;
+  assert.equal(effective_settings(config, f.root, f.profile).mcp.required.edt.url, "");
+  config.active_project = f.root;
   assert.equal(effective_settings(config, f.root, f.profile).mcp.required.edt.url, "");
   assert.equal(effective.mcp.required.v8std.url, config.mcp.required.v8std.url);
   f.profile.connections = {

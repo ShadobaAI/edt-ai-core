@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fixture, session, ROOT, node, success, environment } from "./helpers.mjs";
-import { COMPONENTS, component_settings, managed_components, binding_fingerprint } from "../scripts/components.mjs";
+import { COMPONENTS, OPENVIKING_ENV_VARS, component_settings, managed_components, binding_fingerprint } from "../scripts/components.mjs";
 import { settings, dump, load } from "../scripts/common.mjs";
 import { OpenVikingAdapter, WorkflowKnowledge, OPENVIKING_LIMITS } from "../scripts/openviking_adapter.mjs";
 import { SEARCH_REQUIREMENTS, publication_inventory } from "../scripts/knowledge.mjs";
@@ -649,7 +649,7 @@ test("OpenViking registry uses optional settings and a dedicated bounded MCP ent
   success(node("scripts/runtime.mjs", ["config", "--output", output], { env: f.env }));
   assert.deepEqual(JSON.parse(fs.readFileSync(output)).mcpServers.openviking.args, [path.join(ROOT, COMPONENTS.openviking.adapter)]);
 });
-test("plugin MCP allowlist forwards the standard search token and leaves access checks enforced", async t => {
+test("portable MCP entries omit unsupported env_vars and forwarded search tokens leave access checks enforced", async t => {
   const f = fixture(t);
   f.profile.knowledge = { provider: "openviking", mode: "transitional", manifest: null,
     collections: ["architecture"], collection_uris: { architecture: "viking://resources/team/architecture" },
@@ -658,18 +658,14 @@ test("plugin MCP allowlist forwards the standard search token and leaves access 
     headers_env: { "X-Api-Key": "OPENVIKING_SEARCH_TOKEN" } } };
   f.save();
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "mcp.json"))).mcpServers;
-  for (const name of ["openviking", "1c-ai-settings", "edt", "v8std", "code-index", "bsl-ls"]) {
-    assert.ok(manifest[name].env_vars.includes("OPENVIKING_SEARCH_TOKEN"), name);
-    for (const required of ["EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-      "EDT_AI_OPENVIKING_ACCESS_RECEIPTS", "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY", "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"])
-      assert.ok(manifest[name].env_vars.includes(required), `${name}: ${required}`);
-  }
+  for (const name of ["openviking", "1c-ai-settings", "edt", "v8std", "code-index", "bsl-ls"])
+    assert.equal(Object.hasOwn(manifest[name], "env_vars"), false, name);
   const parent = { ...f.env, OPENVIKING_SEARCH_TOKEN: "fixture-search-token" };
   const sanitized = { ...f.env };
-  for (const key of manifest.openviking.env_vars) delete sanitized[key];
+  for (const name of OPENVIKING_ENV_VARS) delete sanitized[name];
   for (const forwarded of [false, true]) {
     const env = { ...sanitized };
-    if (forwarded) for (const key of manifest.openviking.env_vars) if (key === "OPENVIKING_SEARCH_TOKEN") env[key] = parent[key];
+    if (forwarded) env.OPENVIKING_SEARCH_TOKEN = parent.OPENVIKING_SEARCH_TOKEN;
     const client = new McpClient([process.execPath, path.join(ROOT, "mcp/openviking.mjs")], f.root, env, 10);
     f.clients.push(client); await client.initialize();
     const status = (await client.call("knowledge_status", {})).structuredContent;
@@ -678,7 +674,7 @@ test("plugin MCP allowlist forwards the standard search token and leaves access 
     assert.doesNotMatch(JSON.stringify(status), /fixture-search-token/);
   }
   const env = { ...sanitized };
-  for (const key of manifest["1c-ai-settings"].env_vars) if (key === "OPENVIKING_SEARCH_TOKEN") env[key] = parent[key];
+  env.OPENVIKING_SEARCH_TOKEN = parent.OPENVIKING_SEARCH_TOKEN;
   const settingsClient = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root, env, 10);
   f.clients.push(settingsClient); await settingsClient.initialize();
   await settingsClient.call("settings.inspect", { projectRoot: f.root });
@@ -870,7 +866,7 @@ test("disabled knowledge never opens the configured endpoint, including contradi
   const f = adapterFixture(t), remote = await upstream(t, f);
   const client = await session(t, "mcp/openviking.mjs", [], f);
   for (const enabled of [false, true]) {
-    f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+    f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] };
     f.profile.connections.openviking.enabled = enabled; f.save();
     const status = (await client.call("knowledge_status", {})).structuredContent;
     assert.equal(status.state, enabled ? "invalid" : "disabled");
@@ -954,7 +950,7 @@ test("profiles share one external read server with independent collections, cont
   await assert.rejects(search(first, "bsp"), /outside the selected profile/);
   await assert.rejects(search(second, "architecture"), /outside the selected profile/);
   assert.equal(remote.requests.length, before);
-  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] };
   f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
   assert.equal((await first.call("knowledge_status", {})).structuredContent.binding, null);
   const stillBound = await search(second, "bsp");
@@ -1029,7 +1025,7 @@ test("disabling knowledge while initialize is pending prevents discovery and ret
   f.client.before = async message => { if (message.method === "initialize") { entered.resolve(); await release.promise; } };
   const pending = client.call("knowledge_status", {}), rejected = assert.rejects(pending, /binding changed/);
   await entered.promise;
-  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] };
   f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
   assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");
   release.resolve(); await rejected;
@@ -1045,7 +1041,7 @@ test("a binding invalidated while the old DELETE is pending never opens a stale 
   f.profile.connections.openviking.timeout_seconds = 3; f.save();
   const rejected = assert.rejects(client.call("knowledge_status", {}), /binding changed/);
   await entered.promise;
-  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] };
   f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
   release.resolve(); await rejected;
   assert.equal(remote.requests.filter(value => value.method === "initialize").length, 1);
@@ -1065,7 +1061,7 @@ test("native requests waiting in the queue cannot reach a provider disabled whil
   };
   const rejected = Promise.all(Array.from({ length: 5 }, () => assert.rejects(client.call("knowledge_read", { uri, collection: "architecture" }), /changed|closed|disabled/)));
   await entered.promise; await client.request("tools/list");
-  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null };
+  f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] };
   f.profile.connections.openviking.enabled = false; f.save();
   release.resolve(); await rejected;
   assert.equal(remote.requests.filter(value => value.method === "tools/call").length, 2);
@@ -1411,7 +1407,7 @@ test("OpenViking rejects incompatible contracts, arguments, output and disabled 
   for (const response of [{ content: [] }, { ...textResult("x"), isError: true }, { ...textResult("x"), structuredContent: { result: 1 } }, { ...textResult("x"), structuredContent: { result: "different" } }]) {
     f.client.respond = () => response; await assert.rejects(adapter.search({ query: "x", collection: "architecture" }));
   }
-  const disabled = adapterFixture(t); disabled.profile.knowledge = { provider: "none", manifest: null }; disabled.config.mcp.optional.openviking.enabled = false;
+  const disabled = adapterFixture(t); disabled.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] }; disabled.config.mcp.optional.openviking.enabled = false;
   await assert.rejects(disabled.adapter().connect()); assert.equal(disabled.client.initialized, 0);
   const unmapped = adapterFixture(t); delete unmapped.profile.knowledge.collection_uris;
   await assert.rejects(unmapped.adapter().connect(), /mapping required/); assert.equal(unmapped.client.initialized, 0);
@@ -1516,13 +1512,24 @@ test("guarded HTTP reads still enforce response and timeout budgets", async t =>
   assert.equal(timed.connected, false); release.resolve();
 });
 
-test("OpenViking MCP entry reaches an isolated HTTP server using effective settings", async t => {
+test("OpenViking MCP sends the configured environment token to the isolated HTTP server", async t => {
   const f = adapterFixture(t);
+  const token = "isolated-openviking-search-token";
+  const previousToken = process.env.OPENVIKING_SEARCH_TOKEN;
+  process.env.OPENVIKING_SEARCH_TOKEN = token;
+  t.after(() => {
+    if (previousToken === undefined) delete process.env.OPENVIKING_SEARCH_TOKEN;
+    else process.env.OPENVIKING_SEARCH_TOKEN = previousToken;
+  });
+  f.env.OPENVIKING_SEARCH_TOKEN = token;
+  f.config.mcp.optional.openviking.headers_env = { "X-Api-Key": "OPENVIKING_SEARCH_TOKEN" };
+  const received = [];
   let descriptors = nativeTools();
   const server = createServer(async (req, res) => {
     if (req.method === "DELETE") return res.writeHead(204).end();
     let text = ""; for await (const chunk of req) text += chunk;
     const message = JSON.parse(text), reply = result => res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+    received.push({ method: message.method, hasToken: req.headers["x-api-key"] === token });
     if (message.method === "server/discover") return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "legacy fixture" } }));
     if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "fixture", version: "1" }, capabilities: { tools: {} } });
     if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
@@ -1533,9 +1540,16 @@ test("OpenViking MCP entry reaches an isolated HTTP server using effective setti
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
   f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:" + server.address().port + "/mcp", headers_env: f.config.mcp.optional.openviking.headers_env } }; f.save();
   grantAccess(f, f.profile.connections.openviking.url);
+  const missing = await session(t, "mcp/openviking.mjs", [], f, { OPENVIKING_SEARCH_TOKEN: "" });
+  const missingStatus = (await missing.call("knowledge_status", {})).structuredContent;
+  assert.equal(missingStatus.connected, false);
+  assert.match(missingStatus.detail, /search credential is missing or invalid/);
+  assert.equal(received.length, 0);
   const client = await session(t, "mcp/openviking.mjs", [], f);
   assert.equal((await client.call("knowledge_status", {})).structuredContent.connected, true);
   const retrieved = (await client.call("knowledge_search", { query: "x", collection: "architecture" })).structuredContent;
+  assert.ok(received.some(request => request.method === "tools/call"));
+  assert.ok(received.every(request => request.hasToken));
   assert.equal(retrieved.items.length, 0); assert.equal(retrieved.discoveryCandidates.length, 1);
   assert.deepEqual(retrieved.binding.collections, ["architecture"]);
   assert.equal(retrieved.binding.projectRoot, f.root);

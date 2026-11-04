@@ -1,0 +1,37 @@
+schema_version: '0.2'
+profile_id: multirepo-example
+profile_version: 0.2.0
+project:
+  id: multirepo-example
+  adapter: generic-1c
+  purpose: Example workspace with multiple repositories
+repositories:
+  - { id: base, path: base, alias: base }
+  - { id: product, path: product, alias: product }
+  - { id: patch, path: patch, alias: patch }
+  - { id: framework, path: framework, alias: framework }
+  - { id: unit-tests, path: unit-tests, alias: unit-tests }
+  - { id: ui-tests, path: ui-tests, alias: ui-tests }
+roots:
+  source: [base/src, product/src, patch/src, framework/src, unit-tests/src, ui-tests/features]
+  protected: [base/src, product/src, patch/src, framework/src, unit-tests/src, ui-tests/features]
+authorities:
+  edt_writer: edt
+  code_index: code-index
+  bsl_ls: bsl-ls
+  v8std: v8std
+policy:
+  mode: conservative
+testing:
+  commands: []
+  yaxunit: false
+  vanessa: false
+knowledge:
+  mode: disabled
+  provider: none
+  manifest: null
+  collections: []
+  required: false
+  dependent_actions: []
+compatibility:
+  core: '>=0.1.0'

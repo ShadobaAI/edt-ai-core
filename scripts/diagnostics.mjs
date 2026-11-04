@@ -255,9 +255,8 @@ export function read_diagnostic_logs(state = diagnostic_state()) {
           const timestamp = Date.parse(event.time);
           if (!Number.isFinite(timestamp) || timestamp < Date.now() - LOG_POLICY.days * 86400000) continue;
           if (event.formatVersion !== LOG_FORMAT_VERSION) {
-            event = { formatVersion: LOG_FORMAT_VERSION, time: new Date(timestamp).toISOString(), component: "legacy", event: "legacy_event", level: "warning",
-              detail: { omitted: "untrusted_legacy_record" } };
             issues.push("Unsupported log format: record details omitted");
+            continue;
           }
           if (event.event === "runtime_stderr") event.detail = { content: "omitted", ...(Number.isSafeInteger(event.detail?.bytes) ? { bytes: event.detail.bytes } : {}) };
           events.push(sanitize_diagnostics(event));

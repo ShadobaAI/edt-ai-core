@@ -621,12 +621,12 @@ test("the searchable version picker keeps independent drafts without changing ru
   const values={...read.values,codeIndexVersion:"latest",bslLsVersion:"latest",bslLsAllowPrerelease:true};
   const ui=screen(async(name,args)=>{
     if(name==="settings.read"||name==="settings.status")return {...read,values:{...values}};
-    if(name==="settings.versions")return {component:args.component,versions:args.component==="bsl-ls"?[{version:"v1.1.0-rc.7"},{version:"v1.0.7"}]:[{version:"v1.14.1"}]};
+    if(name==="settings.versions")return {component:args.component,versions:args.component==="bsl-ls"?[{version:"v1.1.0-rc.7"},{version:"v1.1.0-rc.4"}]:[{version:"v1.14.1"}]};
     throw new Error(name);
   });await ui.flush();assert.equal(ui.elements.get("versionValue").textContent,"Последняя стабильная версия");
   for(const id of ["codeIndexVersion","bslLsVersion","codeIndexAllowPrerelease","bslLsAllowPrerelease","saveVersionsButton"])assert.equal(ui.elements.has(id),false);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();
-  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя стабильная версия","v1.1.0-rc.7","v1.0.7"]);
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя подходящая версия","v1.1.0-rc.7","v1.1.0-rc.4"]);
   ui.elements.get("versionSearch").value="rc.7";ui.elements.get("versionSearch").events.input();await ui.tick(8000);
   assert.equal(ui.elements.get("versionSearch").value,"rc.7");assert.equal(ui.elements.get("versionOptions").children.length,1);
   await ui.elements.get("versionOptions").children[0].onclick();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");assert.equal(ui.elements.get("versionPopup").hidden,true);
@@ -681,13 +681,13 @@ test("an empty BSL LS catalog shows a retry and refreshes the server instead of 
     if(name==="settings.versions"){
       if(args.component==="code-index")return {component:"code-index",versions:[{version:"v1.14.1"}]};
       if(++attempts===1)return {component:"bsl-ls",versions:[]};
-      assert.equal(args.refresh,true);return {component:"bsl-ls",versions:[{version:"v1.1.0-rc.7"},{version:"v1.0.7"}]};
+      assert.equal(args.refresh,true);return {component:"bsl-ls",versions:[{version:"v1.1.0-rc.7"},{version:"v1.1.0-rc.4"}]};
     }throw new Error(name);
   });await ui.flush();await ui.elements.get("versionButton").onclick();
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();
   assert.match(ui.elements.get("versionHint").textContent,/пустой каталог/);assert.doesNotMatch(ui.elements.get("versionHint").textContent,/Найдено: 1/);
   assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);await ui.elements.get("refreshVersionsButton").onclick();
-  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя стабильная версия","v1.1.0-rc.7","v1.0.7"]);
+  assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя подходящая версия","v1.1.0-rc.7","v1.1.0-rc.4"]);
   assert.equal(ui.elements.get("refreshVersionsButton").disabled,false);
 });
 
@@ -720,11 +720,11 @@ test("installation is disabled for the verified active version and latest resolv
     assert.equal(ui.elements.get("installUpdateButton").disabled,true);
     finish();await pending;
     assert.equal(ui.elements.get("installUpdateButton").disabled,true);
-    assert.match(ui.elements.get("installHint").textContent,/Последняя стабильная версия: v1\.0\.7/);
+    assert.match(ui.elements.get("installHint").textContent,component==="bsl-ls"?/Последняя подходящая версия: v1\.0\.7/:/Последняя стабильная версия: v1\.0\.7/);
     assert.match(ui.elements.get("installUpdateButton").title,/уже установлена/);
     const choose=async version=>{
       if(ui.elements.get("versionPopup").hidden)await ui.elements.get("versionButton").onclick();
-      await ui.elements.get("versionOptions").children.find(option=>option.textContent===(version==="latest"?"Последняя стабильная версия":version)).onclick();
+      await ui.elements.get("versionOptions").children.find(option=>option.textContent===(version==="latest"?(component==="bsl-ls"?"Последняя подходящая версия":"Последняя стабильная версия"):version)).onclick();
     };
     await choose("v1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
     await choose("1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
@@ -737,6 +737,36 @@ test("installation is disabled for the verified active version and latest resolv
   }
 });
 
+test("latest reflects a locally overridden prerelease policy, but an explicit install resets the shared policy", async () => {
+  for (const source of ["settings", "project_local", "instance"]) {
+    const ui=screen(async(name,args)=>{
+      if(name==="settings.read"||name==="settings.status")return {...read,
+        values:{...read.values,codeIndexVersion:"latest",codeIndexAllowPrerelease:true},
+        managedValueSources:{codeIndexAllowPrerelease:source},installedVersions:{"code-index":"v1.0.0"}};
+      if(name==="settings.versions")return {component:args.component,latest:"v1.0.0",latestPrerelease:"v2.0.0-rc.1",
+        versions:[{version:"v2.0.0-rc.1",prerelease:true},{version:"v1.0.0"}]};
+      throw new Error(name);
+    });
+    await ui.flush();await ui.elements.get("versionButton").onclick();
+    assert.equal(ui.elements.get("installUpdateButton").disabled,source==="settings");
+    assert.match(ui.elements.get("installHint").textContent,source==="settings"?/v1\.0\.0/:/v2\.0\.0-rc\.1/);
+  }
+});
+
+test("an unresolved prerelease latest does not fall back to a stable release", async () => {
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return {...read,
+      values:{...read.values,codeIndexVersion:"latest",codeIndexAllowPrerelease:true},
+      managedValueSources:{codeIndexAllowPrerelease:"project_local"},installedVersions:{"code-index":"v1.0.0"}};
+    if(name==="settings.versions")return {component:args.component,latest:"v2.0.0",latestPrerelease:null,
+      versions:[{version:"v2.0.0"}]};
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("versionButton").onclick();
+  assert.equal(ui.elements.get("installUpdateButton").disabled,true);
+  assert.match(ui.elements.get("installHint").textContent,/Не удалось определить подходящую версию/);
+});
+
 test("an unresolved latest keeps installation disabled while exact versions remain usable", async () => {
   const ui=screen(async(name,args)=>{
     if(name==="settings.read")return {...read,installedVersions:{"code-index":"v1.0.0"}};
@@ -744,7 +774,7 @@ test("an unresolved latest keeps installation disabled while exact versions rema
     throw new Error(name);
   });await ui.flush();await ui.elements.get("versionButton").onclick();
   assert.equal(ui.elements.get("installUpdateButton").disabled,true);
-  assert.match(ui.elements.get("installHint").textContent,/Не удалось определить последнюю стабильную версию/);
+  assert.match(ui.elements.get("installHint").textContent,/Не удалось определить подходящую версию/);
   await ui.elements.get("versionOptions").children.find(option=>option.textContent==="v2.0.0").onclick();
   assert.equal(ui.elements.get("installUpdateButton").disabled,false);
 });
@@ -2291,7 +2321,7 @@ test("the JSON editor changes local overrides without leaving the form or openin
   let applied;
   const ui = screen(async (name, args) => {
     if (["settings.read", "settings.status"].includes(name)) return { ...read, writePaths: { project_local: "C:/project/.ai/project.local.yaml" } };
-    if (name === "settings.edit") { assert.equal(args.layerScope, "project_local"); return { text: '{"schema_version":"0.1","components":{"bsl-ls":{"node":"node"}}}', baseRevision: "local-base", layerScope: "project_local" }; }
+    if (name === "settings.edit") { assert.equal(args.layerScope, "project_local"); return { text: '{"schema_version":"0.2","components":{"bsl-ls":{"node":"node"}}}', baseRevision: "local-base", layerScope: "project_local" }; }
     if (name === "settings.preview") { assert.equal(args.mode, "layer"); assert.equal(args.layerScope, "project_local"); assert.equal(args.baseRevision, "local-base"); return { revision: "local-preview", layerPath: "C:/project/.ai/project.local.yaml", projectRoot: read.values.projectRoot, repositories: [] }; }
     if (name === "settings.apply") { applied = args; return {}; }
     throw new Error(name);

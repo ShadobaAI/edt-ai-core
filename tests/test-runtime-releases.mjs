@@ -27,14 +27,14 @@ function releases(component) {
     digest: "sha256:" + sha256(bytes), size: bytes.length,
     browser_download_url: `https://github.com/${SPECS[component]}/releases/download/${tag}/artifact`,
   }] });
-  const stable = release("v1.0.7"), preview = release("v1.1.0-rc.7", true), urls = [], downloads = [];
+  const stable = release("v1.2.7"), preview = release("v1.1.0-rc.7", true), urls = [], downloads = [];
   return { stable, preview, release, urls, downloads, io: {
     fetch_json: async url => {
       urls.push(url);
       if (url === base + "/latest") return stable;
       if (url === base + "?per_page=100") return [release("v9.0.0", true, true), preview, stable];
       if (url === base + "/tags/v1.1.0-rc.7") return preview;
-      if (url === base + "/tags/v1.0.7") return stable;
+      if (url === base + "/tags/v1.2.7") return stable;
       throw new Error("Unexpected release URL: " + url);
     },
     fetch: async url => { downloads.push(url); return new Response(bytes); },
@@ -82,14 +82,14 @@ for (const component of ["code-index", "bsl-ls"]) {
   });
 
   test(`${component}: the version catalog follows every page and sorts by publication date, including prereleases`, async () => {
-    const releases=Array.from({length:201},(_,i)=>({tag_name:`v1.0.${i}`,published_at:new Date(Date.UTC(2026,0,1)+i*86400000).toISOString()}));
-    releases.push({tag_name:"v0.1.0",published_at:"2026-10-20T00:00:00Z"},{tag_name:"v2.0.0-rc.7",prerelease:true,published_at:"2026-10-19T00:00:00Z"},
-      {tag_name:"v1.0.0",published_at:"2020-01-01T00:00:00Z"},{tag_name:"v9.0.0",draft:true},{tag_name:"../bad"},null);
+    const releases=Array.from({length:201},(_,i)=>({tag_name:`v1.2.${i}`,published_at:new Date(Date.UTC(2026,0,1)+i*86400000).toISOString()}));
+    releases.push({tag_name:"v1.3.0",published_at:"2026-10-20T00:00:00Z"},{tag_name:"v2.0.0-rc.7",prerelease:true,published_at:"2026-10-19T00:00:00Z"},
+      {tag_name:"v1.2.0",published_at:"2020-01-01T00:00:00Z"},{tag_name:"v9.0.0",draft:true},{tag_name:"../bad"},null);
     const urls=[],result=await list_versions(component,{fetch_json:async(url,timeout)=>{urls.push(url);assert.ok(timeout>0&&timeout<=30000);const page=Number(new URL(url).searchParams.get("page")||1);return releases.slice((page-1)*100,page*100);}});
     assert.equal(result.component,component);assert.equal(result.versions.length,203);assert.equal(urls.length,3);
     assert.equal(urls[0],`https://api.github.com/repos/${SPECS[component]}/releases?per_page=100`);
     assert.ok(urls.slice(1).every(url=>new URL(url).searchParams.get("per_page")==="100"&&Number(new URL(url).searchParams.get("page"))>1));
-    assert.deepEqual(result.versions.slice(0,3).map(item=>item.version),["v0.1.0","v2.0.0-rc.7","v1.0.200"]);
+    assert.deepEqual(result.versions.slice(0,3).map(item=>item.version),["v1.3.0","v2.0.0-rc.7","v1.2.200"]);
     assert.equal(result.versions[1].prerelease,true);assert.equal(result.versions.at(-1).publishedAt,"2026-01-01T00:00:00.000Z");
   });
 
@@ -109,12 +109,12 @@ for (const component of ["code-index", "bsl-ls"]) {
     await assert.rejects(list_versions(component,{fetch_json:async()=>[]}),/пустую страницу/);
     await assert.rejects(list_versions(component,{fetch_json:async()=>[{draft:true,tag_name:"v1.0.0"}]}),/no published version tags/);
     let fresh;
-    await list_versions(component,{fetch_json:async(url,timeout,options)=>{fresh=options.fresh;return [{tag_name:"v1.0.0"}];}},{refresh:true});
+    await list_versions(component,{fetch_json:async(url,timeout,options)=>{fresh=options.fresh;return [{tag_name:"v1.2.0"}];}},{refresh:true});
     assert.equal(fresh,true);
   });
 
   test(`${component}: empty 100-item queries recover through 50-item pagination without losing older releases`, async () => {
-    const releases=Array.from({length:101},(_,i)=>({tag_name:`v1.0.${i}`})),calls=[];
+    const releases=Array.from({length:101},(_,i)=>({tag_name:`v1.2.${i}`})),calls=[];
     const result=await list_versions(component,{fetch_json:async(url,timeout,options)=>{
       calls.push({url,options});const params=new URL(url).searchParams,size=Number(params.get("per_page")),page=Number(params.get("page")||1);
       if(size===100)return [];
@@ -129,9 +129,9 @@ for (const component of ["code-index", "bsl-ls"]) {
 
   test(`${component}: latest resolves the stable endpoint independently of the catalog publication order`, async () => {
     const calls=[],release=await latest_version(component,{fetch_json:async(url,timeout,options)=>{
-      calls.push(url);assert.equal(options.fresh,true);assert.equal(timeout,30000);return {tag_name:"v1.0.7",draft:false,prerelease:false};
+      calls.push(url);assert.equal(options.fresh,true);assert.equal(timeout,30000);return {tag_name:"v1.2.7",draft:false,prerelease:false};
     }},{refresh:true});
-    assert.equal(release,"v1.0.7");assert.deepEqual(calls,[`https://api.github.com/repos/${SPECS[component]}/releases/latest`]);
+    assert.equal(release,"v1.2.7");assert.deepEqual(calls,[`https://api.github.com/repos/${SPECS[component]}/releases/latest`]);
     await assert.rejects(latest_version(component,{fetch_json:async()=>({tag_name:"v2.0.0-rc.1",prerelease:true})}),/No eligible/);
   });
 
@@ -142,7 +142,7 @@ for (const component of ["code-index", "bsl-ls"]) {
       options.on_response(new Response("",{headers:page===1?{link:'<https://api.github.com/next>; rel="next"'}:{}}));
       if(page===1)return [{tag_name:"v2.0.0"}];
       if(url.includes("?page=2"))return [];
-      assert.equal(options.fresh,true);return [{tag_name:"v1.0.0"}];
+      assert.equal(options.fresh,true);return [{tag_name:"v1.2.0"}];
     }};
     const result=await list_versions(component,io);assert.equal(result.versions.length,2);
     assert.match(calls[2],/\?per_page=100&page=2$/);
@@ -224,7 +224,7 @@ for (const component of ["code-index", "bsl-ls"]) {
     options.allow_prerelease = true;
     await ensure_installed(f.state, config, component, true, r.io, { stage: true });
     let launched = false;
-    const io = { smoke: async () => { launched = true; return { status: "mcp_ready" }; } };
+    const io = { ...r.io, smoke: async () => { launched = true; return { status: "mcp_ready" }; } };
     options.allow_prerelease = false;
     await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), /current release settings/);
     options.version = "v9.0.0";
@@ -233,6 +233,29 @@ for (const component of ["code-index", "bsl-ls"]) {
     assert.equal(artifact(f.state, component), active);
   });
 }
+
+test("BSL RC candidate can be applied only while the current default still selects it", async t => {
+  const f = fixture(t), config = settings(), options = config.mcp.managed["bsl-ls"], r = releases("bsl-ls");
+  options.allow_prerelease = true;
+  await ensure_installed(f.state, config, "bsl-ls", true, r.io, { stage: true });
+  options.allow_prerelease = false;
+  const io = { ...r.io, fetch_json: async (url, timeout, options) => {
+    assert.equal(options.fresh, true);
+    return url.endsWith("/latest") ? r.release("v1.0.7") : r.io.fetch_json(url);
+  },
+    smoke: async () => ({ status: "mcp_ready" }) };
+  const applied = await update_component(f.state, config, f.root, f.profile, "bsl-ls", "apply", io);
+  assert.equal(applied.release, r.preview.tag_name);
+});
+
+test("runtime lock rejects the obsolete artifact layout", t => {
+  const f = fixture(t), digest = "a".repeat(64);
+  for (const entry of [{ release: "v1.2.0", sha256: digest },
+    { release: "v1.2.0", sha256: digest, path: "runtime/bsl-ls/v1.2.0/bsl-language-server-exec.jar" }]) {
+    save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": entry });
+    assert.throws(() => artifact(f.state, "bsl-ls"), /Invalid runtime-lock artifact path/);
+  }
+});
 
 test("the installed code-index version reflects only this project's verified live daemon", t => {
   const f=fixture(t),entries=["v1.0.0","v2.0.0"].map(release=>{

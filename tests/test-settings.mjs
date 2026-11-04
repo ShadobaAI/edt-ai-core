@@ -419,7 +419,7 @@ test("UI import/export, replacement backup and portable roundtrip preserve profi
     edt: { url: "http://localhost:18101/mcp" },
     v8std: { url: "http://localhost:18102/mcp" },
   };
-  const request = { text: JSON.stringify(f.profile) },
+  const request = { text: JSON.stringify(f.profile), includeMachineSettings: true },
     preview = (await client.call("settings.preview", request))
       .structuredContent;
   assert.ok(!fs.existsSync(path.join(f.root, ".ai")));
@@ -580,7 +580,7 @@ test("settings import preserves explicit empty required URLs in the current inst
   await backend.main({ action: "update", set: { edtUrl: "http://localhost:18117/mcp" } });
   process.env.EDT_AI_INSTANCE = "first";
   await backend.main({ action: "update", set: { edtUrl: "http://localhost:18115/mcp", v8stdUrl: "http://localhost:18116/mcp" } });
-  const request = { text: JSON.stringify({ format: "1c-ai-core-settings", version: 1,
+  const request = { includeMachineSettings: true, text: JSON.stringify({ format: "1c-ai-core-settings", version: 1,
     settings: { mcp: { required: { edt: { url: "" }, v8std: { url: "" } } } } }) };
   const preview = await backend.main({ ...request, action: "preview" });
   assert.deepEqual(preview.connectionUrls, { edt: "", v8std: "" });
@@ -686,7 +686,7 @@ test("host roots can change; ambiguous/empty roots never borrow the previous pro
     f.root,
   );
 });
-test("subdirectory and Git root use one settings binding; legacy YAML is still read", async (t) => {
+test("subdirectory and Git root use one binding without a shared EDT URL", async (t) => {
   const f = fixture(t);
   f.save();
   const sub = path.join(f.root, "docs");
@@ -705,7 +705,7 @@ test("subdirectory and Git root use one settings binding; legacy YAML is still r
   const read = (await client.call("settings.read", {})).structuredContent;
   assert.equal(read.values.projectRoot, f.root);
   assert.equal(read.preparationScope, f.root + "#first");
-  assert.equal(read.values.edtUrl, "http://localhost:18131/mcp");
+  assert.equal(read.values.edtUrl, "");
   const exported = JSON.parse(
     (await client.call("settings.export_data", {}))._meta.data.text,
   );

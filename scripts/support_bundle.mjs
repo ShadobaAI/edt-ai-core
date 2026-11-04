@@ -3,7 +3,6 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { LOG_POLICY, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, environment_compatibility, verification_limits } from "./diagnostics.mjs";
-import { save_export_to_path } from "./settings_export.mjs";
 
 const FILE_LIMIT = 256 * 1024, SECTION_LIMIT = 128 * 1024;
 const REPORT_NAME = "1c-ai-core-diagnostics.json";
@@ -22,11 +21,6 @@ export function saved_support_report(state) {
     if (!stat.isFile() || stat.isSymbolicLink()) return null;
     return { filename: REPORT_NAME, path: file, directory, bytes: stat.size, savedAt: stat.mtime.toISOString() };
   } catch { return null; }
-}
-// Legacy callers keep this entry point but must supply a destination.
-export function save_support_bundle(state, bundle, destination) {
-  if (!destination) throw new Error("Выберите место сохранения диагностического файла.");
-  return save_export_to_path(destination, bundle, 16 * 1024 * 1024);
 }
 // Deliberately no CLI or model tool. Only the settings app calls this collector.
 // Every section fails independently; invalid settings must still be exportable.

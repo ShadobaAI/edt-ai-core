@@ -186,8 +186,6 @@ export function merged_profile(root, shared, local, options) {
       if (entry.url) validate_url(entry.url, name);
   }
   const overlay = structuredClone(local);
-  // 0.1 identified the legacy local override format, not the profile schema.
-  if (overlay.schema_version === "0.1") delete overlay.schema_version;
   const result = deep_merge(shared, overlay);
   for (const key of ["source", "protected"]) {
     for (const original of shared.roots?.[key] || []) {

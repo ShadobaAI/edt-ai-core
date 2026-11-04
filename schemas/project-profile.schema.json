@@ -511,7 +511,11 @@
       },
       "required": [
         "provider",
-        "manifest"
+        "manifest",
+        "mode",
+        "collections",
+        "required",
+        "dependent_actions"
       ],
       "allOf": [
         {

@@ -46,8 +46,6 @@ const ajv = new Ajv2020({
 });
 const validators = new Map();
 export function check_schema(data, name) {
-  if (name === "project-local.schema.json" && object(data) && Object.hasOwn(data, "schema_version") && !["0.1", "0.2"].includes(data.schema_version))
-    throw Object.assign(new ConfigError("Unsupported contract version for project-local.schema.json: expected 0.1 or 0.2."), { code: "UNSUPPORTED_CONTRACT_VERSION", contract: name });
   if (!validators.has(name)) {
     const schema = JSON.parse(fs.readFileSync(path.join(ROOT, "schemas", name), "utf8"));
     const versionField = ["schema_version", "version"].find(field => Object.hasOwn(schema.properties?.[field] || {}, "const"));

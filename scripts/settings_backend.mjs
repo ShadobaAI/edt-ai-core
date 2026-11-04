@@ -42,12 +42,10 @@ import {
   is_dir,
   sha256,
   locate_project,
-  legacy_project_state,
   record_project_owner,
   path_identity,
 } from "./project_paths.mjs";
 import {
-  legacy_edt_matches,
   resolved_settings,
   effective_settings,
   instance_file,
@@ -159,6 +157,8 @@ export class SettingsBackend {
   current(allowAmbiguous = false) {
     const config = settings(this.CONFIG);
     config.state_dir = this.STATE;
+    // EDT is bound per project or instance, never by a saved global URL.
+    config.mcp.required.edt.url = "";
     const normalize = directory => {
       try { return configuration_root(directory); }
       catch (error) {
@@ -168,8 +168,6 @@ export class SettingsBackend {
     };
     if (process.env.EDT_AI_PROJECT_ROOT) {
       const selected = normalize(process.env.EDT_AI_PROJECT_ROOT);
-      if (!config.active_project || !legacy_edt_matches(config, selected))
-        config.mcp.required.edt.url = "";
       config.active_project = selected;
     } else if (Object.hasOwn(process.env, "EDT_AI_PROJECT_ROOT")) {
       config.active_project = null;
@@ -183,7 +181,7 @@ export class SettingsBackend {
     let sources = Object.fromEntries(
       Object.entries(config.mcp.required).map(([name, item]) => [
         name,
-        item.url ? "legacy" : "unconfigured",
+        name !== "edt" && item.url ? "settings" : "unconfigured",
       ]),
     );
     if (config.active_project) {
@@ -303,9 +301,19 @@ export class SettingsBackend {
     const editing = request.mode === "edit";
     let omittedTestingCommands = [];
     if (request.layerScope !== undefined) throw new ConfigError("Выбор локального файла доступен только в режиме layer.");
-    // The app explicitly opts in before importing machine-specific addresses
-    // and executable paths. Calls predating this option retain their behavior.
-    if (!editing && request.includeMachineSettings === false) {
+    // Validate omitted fields too: filtering must not hide malformed input or
+    // credential-bearing URLs from the import's trust boundary.
+    const sourceProfile = data?.format === "1c-ai-core-settings" ? data.profile : data;
+    if (!editing && sourceProfile != null) {
+      check_schema(sourceProfile, "project-local.schema.json");
+      validate_override_urls(sourceProfile);
+    }
+    if (!editing && data?.format === "1c-ai-core-settings" && data.settings != null) {
+      if (!object(data.settings)) throw new ConfigError("Недопустимые поля настроек.");
+      validate_settings(deep_merge(this.current(), data.settings));
+    }
+    // Import machine-specific settings only after an explicit opt-in.
+    if (!editing && request.includeMachineSettings !== true) {
       const omitProfileMachineSettings = profile => {
         if (!object(profile)) return;
         delete profile.connections;
@@ -559,7 +567,7 @@ export class SettingsBackend {
       if (request.layerScope === "instance") project_profile(root);
       const baseRevision = this.edit_revision(), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
       let text;
-      if (!exists(target)) text = JSON.stringify({ schema_version: "0.1" }, null, 2);
+      if (!exists(target)) text = JSON.stringify({ schema_version: "0.2" }, null, 2);
       else {
         const stat = fs.statSync(target);
         if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw new ConfigError("Документ недоступен или превышает 2 МиБ.");
@@ -672,12 +680,6 @@ export class SettingsBackend {
         ? [config, {}] : this.effective(config, null, null, true);
       const actual = this.values(effective, false);
       if (request.remember) remember_profile(this.STATE, config.active_project, profile);
-      const legacy = config.active_project ? legacy_project_state(this.STATE, config.active_project) : null;
-      if (legacy?.status === "owner_unknown" && !exists(instance_file(config, config.active_project, this.STATE))) {
-        const file = path.join(legacy.directory, "instances", instance_name() + ".yaml");
-        try { const data = load(file); check_schema(data, "project-local.schema.json"); legacy.connections = data.connections || {}; }
-        catch { legacy.connections = {}; }
-      }
       const directoryContext = directory_context(process.env.EDT_AI_PROJECT_ROOT || config.active_project, { includeDisplayName: true });
       const profileDirectoryContext = config.active_project && directoryContext?.directory !== config.active_project
         ? directory_context(config.active_project, { includeDisplayName: true }) : directoryContext;
@@ -714,7 +716,6 @@ export class SettingsBackend {
         writePaths: config.active_project ? { profile: profile_target(config.active_project), project_local: inside(config.active_project, ".ai/project.local.yaml"), instance: instance_file(config, config.active_project), global: this.CONFIG } : {},
         layerValues: this.setting_layers(config, profile),
         preparationScope: preparation_scope(actual.projectRoot),
-        legacyState: legacy,
         profileHistory: profile_history(this.STATE, actual.projectRoot),
         profileHistoryHidden: profile_hidden(this.STATE, actual.projectRoot),
         summary,

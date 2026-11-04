@@ -7,7 +7,8 @@ import { pathToFileURL } from "node:url";
 import http from "node:http";
 import { fixture, environment, session, dialog_session, ROOT, node } from "./helpers.mjs";
 import { LOG_POLICY, create_diagnostic_logger, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, diagnostic_state, diagnostic_journal, connection_failure, environment_compatibility } from "../scripts/diagnostics.mjs";
-import { support_bundle, save_support_bundle, saved_support_report } from "../scripts/support_bundle.mjs";
+import { support_bundle, saved_support_report } from "../scripts/support_bundle.mjs";
+import { save_export_to_path } from "../scripts/settings_export.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { json_message } from "../scripts/mcp_codec.mjs";
@@ -231,15 +232,15 @@ test("an unbound settings app can export without creating a project or preparing
 
 test("support export writes one real file and a failed replacement preserves the previous report", t => {
   const f = fixture(t), first = '{"format":"1c-ai-core-diagnostics","sequence":1}', target = path.join(f.base, "support.json");
-  assert.throws(() => save_support_bundle(f.state, { text: first }), /Выберите место/);
-  const saved = save_support_bundle(f.state, { text: first }, target);
+  assert.throws(() => save_export_to_path("", { text: first }), /абсолютный путь/);
+  const saved = save_export_to_path(target, { text: first }, 16 * 1024 * 1024);
   assert.equal(saved.path, target);
   assert.equal(fs.readFileSync(saved.path, "utf8"), first);
   const second = '{"format":"1c-ai-core-diagnostics","sequence":2}';
-  assert.equal(save_support_bundle(f.state, { text: second }, target).path, saved.path);
+  assert.equal(save_export_to_path(target, { text: second }, 16 * 1024 * 1024).path, saved.path);
   const rename = fs.renameSync;
   fs.renameSync = (from, to) => { if (to === saved.path) throw Object.assign(new Error("Disk unavailable"), { code: "EACCES" }); return rename(from, to); };
-  try { assert.throws(() => save_support_bundle(f.state, { text: first }, target), /Disk unavailable/); }
+  try { assert.throws(() => save_export_to_path(target, { text: first }, 16 * 1024 * 1024), /Disk unavailable/); }
   finally { fs.renameSync = rename; }
   assert.equal(fs.readFileSync(saved.path, "utf8"), second);
   assert.equal(saved_support_report(f.state), null);
@@ -342,15 +343,15 @@ test("stdio timeout and exit omit stderr while preserving an unknown operation o
   }
 });
 
-test("legacy request failure records cannot export arbitrary encoded credentials", async t => {
+test("unsupported diagnostic records cannot export arbitrary encoded credentials", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const encoded = [..."private-credential-8193"].join("~");
   fs.mkdirSync(path.join(f.state, "diagnostics"));
   fs.writeFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), JSON.stringify({ time: new Date().toISOString(), event: "request_failed",
     detail: { error: { message: encoded, stack: encoded } } }) + "\n");
-  const events = read_diagnostic_logs(f.state).events;
-  assert.equal(events[0].event, "legacy_event");
-  assert.equal(events[0].detail.omitted, "untrusted_legacy_record");
+  const { events, issues } = read_diagnostic_logs(f.state);
+  assert.deepEqual(events, []);
+  assert.ok(issues.includes("Unsupported log format: record details omitted"));
   const bundle = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root });
   assert.equal((JSON.stringify(events) + bundle.text).includes(encoded), false);
 });

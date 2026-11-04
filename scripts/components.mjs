@@ -6,8 +6,9 @@ import fs from "node:fs";
 import { access_revision, persisted_access_revision, access_receipt_epoch } from "./openviking_access.mjs";
 import { publication_revision, publication_receipt_epoch } from "./openviking_publication.mjs";
 import { index_repositories } from "./directory_context.mjs";
-// These names are forwarded by the plugin manifest. The CLI-generated MCP
-// configuration can additionally forward the profile's chosen credential name.
+// The CLI's JSON bindings list these names and the profile's chosen credential
+// name for translation into host configuration. Portable mcp.json does not
+// support the Codex config.toml env_vars field.
 export const OPENVIKING_ENV_VARS = Object.freeze([
   "OPENVIKING_SEARCH_TOKEN",
   "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",

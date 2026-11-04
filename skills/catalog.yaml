@@ -44,10 +44,18 @@ migration_decisions:
       - "Each stdio session owns its process and registrations; other projects and sessions are not switched."
       - "Single-repository selection in settings, profiles and CLI was removed; backward compatibility is not required."
       - "Optional configuration is passed to native global and workspace loaders; no empty file replaces a missing one."
-      - "Native workspace API support is checked against the live contract, without version pins or roots fallback."
+      - "BSL LS 1.1.0-rc.4 or newer is required because it provides the workspace API; verify the installed native contract as well, without a roots fallback."
     review_contract:
       - "Distinguish support in supplied source from the actually installed JAR; artifact incompatibility limits live acceptance."
       - "Check session isolation, Unicode and URI, directory boundaries, ID routing, request queues and child-process termination."
+  bsl-minimum-version:
+    status: accepted
+    decided_on: '2026-11-04'
+    decided_by: user
+    scope: BSL LS release selection and native workspace API
+    consequences:
+      - "Require 1.1.0-rc.4 or newer because it contains the required workspace API. This minimum supersedes the previous no-version-pin condition."
+      - "Verify the installed native API contract in addition to the minimum version; a version alone does not establish runtime readiness."
   platform-documentation-edt-only:
     status: accepted
     decided_on: '2026-10-19'

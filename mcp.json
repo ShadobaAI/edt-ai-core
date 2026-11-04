@@ -6,14 +6,6 @@
       "command": "node",
       "args": [
         "${PLUGIN_ROOT}/mcp/openviking.mjs"
-      ],
-      "env_vars": [
-        "OPENVIKING_SEARCH_TOKEN",
-        "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
-        "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"
       ]
     },
     "policy": {
@@ -28,14 +20,6 @@
       "command": "node",
       "args": [
         "${PLUGIN_ROOT}/mcp/settings.mjs"
-      ],
-      "env_vars": [
-        "OPENVIKING_SEARCH_TOKEN",
-        "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
-        "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"
       ]
     },
     "code-index": {
@@ -45,14 +29,6 @@
         "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "code-index"
-      ],
-      "env_vars": [
-        "OPENVIKING_SEARCH_TOKEN",
-        "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
-        "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"
       ]
     },
     "bsl-ls": {
@@ -62,14 +38,6 @@
         "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "bsl-ls"
-      ],
-      "env_vars": [
-        "OPENVIKING_SEARCH_TOKEN",
-        "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
-        "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"
       ]
     },
     "edt": {
@@ -79,14 +47,6 @@
         "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "edt"
-      ],
-      "env_vars": [
-        "OPENVIKING_SEARCH_TOKEN",
-        "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
-        "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"
       ]
     },
     "v8std": {
@@ -96,14 +56,6 @@
         "${PLUGIN_ROOT}/scripts/lazy_mcp.mjs",
         "--component",
         "v8std"
-      ],
-      "env_vars": [
-        "OPENVIKING_SEARCH_TOKEN",
-        "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_ACCESS_RECEIPTS",
-        "EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY",
-        "EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS"
       ]
     }
   }

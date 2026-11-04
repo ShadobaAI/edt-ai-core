@@ -132,7 +132,6 @@ function readSettings(actual) {
     readiness: actual.readiness,
     knowledge: actual.knowledge,
     environmentCompatibility: actual.environmentCompatibility,
-    legacyState: actual.legacyState,
     profileHistory: actual.profileHistory || [], profileHistoryHidden: actual.profileHistoryHidden, summary: actual.summary,
     configurationError: actual.configurationError,
     operation: operationSummary(),
@@ -153,7 +152,7 @@ const editArguments = {
   mode: { type: "string", enum: ["import", "edit", "layer"], description: "Import merges portable settings; edit saves the complete profile/runtime document; layer edits one selected settings document." },
   baseRevision: { type: "string", minLength: 1, description: "Required in edit mode: exact baseRevision returned by settings.edit." },
   layerScope: { type: "string", enum: ["profile", "project_local", "instance", "global"], description: "Required in layer mode: the settings document returned by settings.edit." },
-  includeMachineSettings: { type: "boolean", description: "When false, omit profile connections, test commands, and machine-specific runtime paths and endpoints from an import. Omitted retains the legacy import behavior." },
+  includeMachineSettings: { type: "boolean", description: "When true, include profile connections, test commands, and machine-specific runtime paths and endpoints in an import. Omitted defaults to false." },
 };
 const tools = [
   { name: "settings.forget_profile", title: "Убрать профиль из списка", description: "Remove a profile from the user's list without deleting the profile, project state, or changing the chat selection.",
@@ -437,13 +436,16 @@ async function call(name, args, meta = {}) {
     let cached = versionCatalogs.get(args.component);
     if (args.refresh || !cached || cached.expires < Date.now()) {
       const promise = import("../scripts/runtime.mjs").then(async runtime => {
-        const [catalog, latest] = await Promise.allSettled([
+        const [catalog, latest, latestPrerelease] = await Promise.allSettled([
           runtime.list_versions(args.component, undefined, { refresh: args.refresh }),
           runtime.latest_version(args.component, undefined, { refresh: args.refresh }),
+          runtime.latest_version(args.component, undefined, { refresh: args.refresh, allowPrerelease: true }),
         ]);
         if (catalog.status === "rejected") throw catalog.reason;
         const data = { ...catalog.value, latest: latest.status === "fulfilled" ? latest.value : null,
-          ...(latest.status === "rejected" ? { latestError: latest.reason.message } : {}) };
+          ...(latest.status === "rejected" ? { latestError: latest.reason.message } : {}),
+          latestPrerelease: latestPrerelease.status === "fulfilled" ? latestPrerelease.value : null,
+          ...(latestPrerelease.status === "rejected" ? { latestPrereleaseError: latestPrerelease.reason.message } : {}) };
         diagnostic.event("version_catalog_loaded", { component: args.component, versions: data.versions.length, latest: data.latest });return data;
       });
       cached = { promise, expires: Date.now() + 5 * 60 * 1000 };versionCatalogs.set(args.component, cached);
@@ -629,7 +631,7 @@ tools.push({ name: "settings.updates", title: "Обновления компон
     component: { enum: ["code-index", "bsl-ls"], description: "Target component for this operation. Only check may omit it to inspect both components." }, authorization: preparationAuthorization,
   }, required: ["operation"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
-tools.push({ name: "settings.versions", title: "Версии компонента", description: "List all published release tags, including prereleases, newest publication first, and resolve latest through GitHub's stable-release endpoint. Read-only catalog; does not install or launch components. The settings form searches the complete catalog locally.",
+tools.push({ name: "settings.versions", title: "Версии компонента", description: "List published release tags and resolve latest with and without prereleases using the installation release policy. Read-only catalog; does not install or launch components. The settings form searches the complete catalog locally.",
   inputSchema: { type: "object", properties: { component: { enum: ["code-index", "bsl-ls"] }, refresh: { type: "boolean", description: "Bypass the catalog cache and revalidate GitHub responses for a manual refresh or retry." } }, required: ["component"], additionalProperties: false },
   annotations: { ...annotations(), openWorldHint: true }, _meta: appOnly });
 for (const tool of tools) tool.icons = component_icons("settings");

@@ -94,7 +94,7 @@ test("passive settings reads do not expose a pre-existing masked credential URL"
   assert.equal(read.structuredContent.configurationError, true);
   assert.doesNotMatch(JSON.stringify(read), /synthetic-private-value/);
   const edit = (await client.call("settings.edit", { layerScope: "project_local" }))._meta.data;
-  const request = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: '{"schema_version":"0.1"}' };
+  const request = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: '{"schema_version":"0.2"}' };
   const preview = (await client.call("settings.preview", request)).structuredContent;
   await client.call("settings.apply", { ...request, revision: preview.revision });
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "loaded");
@@ -157,8 +157,8 @@ test("saving a global document creates its file even when its values equal defau
 for (const layerScope of ["project_local", "instance"]) test(`MCP JSON editor validates and saves the complete ${layerScope} override`, async t => {
   const f = fixture(t); f.save(); const client = await session(t, "mcp/settings.mjs", [], f);
   const edit = (await client.call("settings.edit", { layerScope }))._meta.data;
-  assert.equal(JSON.parse(edit.text).schema_version, "0.1");
-  const document = { schema_version: "0.1", connections: { v8std: { url: "http://127.0.0.1:9001/mcp" } },
+  assert.equal(JSON.parse(edit.text).schema_version, "0.2");
+  const document = { schema_version: "0.2", connections: { v8std: { url: "http://127.0.0.1:9001/mcp" } },
     components: { "bsl-ls": { java: "custom-java", node: "custom-node", configuration: ".bsl-language-server.json", version: "v2.0.0" } } };
   const args = { text: JSON.stringify(document), mode: "layer", layerScope, baseRevision: edit.baseRevision, projectRoot: f.root };
   const preview = (await client.call("settings.preview", args)).structuredContent;
@@ -182,7 +182,7 @@ test("a malformed local override can be repaired through the layer editor", asyn
   assert.equal((await client.call("settings.read", {})).structuredContent.configurationError, true);
   const edit = (await client.call("settings.edit", { layerScope: "project_local" }))._meta.data;
   assert.match(edit.text, /broken/);
-  const args = { text: '{"schema_version":"0.1","components":{"bsl-ls":{"node":"node"}}}', mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, projectRoot: f.root };
+  const args = { text: '{"schema_version":"0.2","components":{"bsl-ls":{"node":"node"}}}', mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, projectRoot: f.root };
   const preview = (await client.call("settings.preview", args)).structuredContent;
   await client.call("settings.apply", { ...args, revision: preview.revision });
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "loaded");
@@ -279,8 +279,9 @@ test("file import omits machine paths unless explicitly selected and reports mis
   assert.equal(full.projectSpecific.edtMappings[0].status, "detected");
   assert.equal(full.connectionUrls.v8std, "http://127.0.0.1:9000/mcp");
   assert.equal(full.projectSpecific.testing.commands, 1);
-  const legacy = (await client.call("settings.preview", { text })).structuredContent;
-  assert.equal(legacy.projectSpecific.testing.commands, 1);
+  const defaultImport = (await client.call("settings.preview", { text })).structuredContent;
+  assert.equal(defaultImport.projectSpecific.testing.commands, 0);
+  assert.equal(defaultImport.connectionUrls.v8std, "");
   assert.equal(full.sharedRuntimeChanges["bsl-ls"].java, "foreign-java");
   assert.equal(full.sharedRuntimeChanges["bsl-ls"].mode, "external");
   await assert.rejects(client.call("settings.apply", { text, includeMachineSettings: true, revision: safe.revision, replace: true }), /предпросмотра/);

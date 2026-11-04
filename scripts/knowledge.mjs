@@ -190,7 +190,7 @@ export function load_manifest(root, relative, selectedCollections = []) {
 }
 
 export function knowledge_status(profile, config) {
-  const { provider, mode = provider === "none" ? "disabled" : null, collections = [], required = false, dependent_actions = [] } = profile?.knowledge || {};
+  const { provider, mode = null, collections = [], required = false, dependent_actions = [] } = profile?.knowledge || {};
   const transport = config?.mcp?.optional?.openviking;
   const enabled = Boolean(transport) && transport.enabled !== false;
   const result = { provider, mode, collections: structuredClone(collections), required, dependentActions: structuredClone(dependent_actions),

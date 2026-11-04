@@ -60,8 +60,3 @@ export function saved_settings_export(state) {
     return { filename, path: file, directory, bytes: stat.size };
   } catch { return null; }
 }
-// Keep the helper name for existing callers, but require an explicit target.
-export function save_settings_export(state, data, destination) {
-  if (!destination) throw new Error("Выберите место сохранения файла настроек.");
-  return save_export_to_path(destination, data);
-}

@@ -15,11 +15,9 @@ import {
   locate_project,
   instance_directory,
   instance_name,
-  configuration_root,
   resolve,
   exists,
   is_file,
-  is_dir,
   ConfigError,
   path_identity,
   contained,
@@ -36,13 +34,6 @@ export function local_overrides(root) {
   const data = load(file);
   check_schema(data, "project-local.schema.json");
   return data;
-}
-export function legacy_edt_matches(config, root) {
-  let owner = config.active_project;
-  if (!owner) return false;
-  owner = resolve(owner);
-  if (is_dir(owner)) owner = configuration_root(owner, { recursive: false });
-  return owner === resolve(root);
 }
 export const instance_file = (config, root, state) =>
   path.join(
@@ -143,13 +134,11 @@ export function resolved_settings(
     }
   }
   const connections = overrides.connections,
-    overlay = {};
-  if (!legacy_edt_matches(config, root)) overlay.edt = { url: "" };
+    overlay = { edt: { url: "" } };
   for (const [name, entry] of Object.entries(connections))
     overlay[name] = { ...overlay[name], ...entry };
   // Explicit URL fields (including an empty local override) always win.
-  if (!Object.hasOwn(connections.edt || {}, "url") &&
-      !(legacy_edt_matches(config, root) && config.mcp.required.edt.url)) {
+  if (!Object.hasOwn(connections.edt || {}, "url")) {
     const detected = edt_connection(root);
     if (detected.url) {
       overlay.edt = { ...overlay.edt, url: detected.url };
@@ -166,9 +155,8 @@ export function resolved_settings(
       if (name === "openviking") fieldSources.openviking.url = sources[name];
     } else
       sources[name] ||=
-        defaults?.url &&
-        (name !== "edt" || legacy_edt_matches(config, root))
-          ? name === "openviking" ? "settings" : "legacy"
+        defaults?.url && name !== "edt"
+          ? "settings"
           : "unconfigured";
   }
   for (const [name, entry] of Object.entries(overlay)) {

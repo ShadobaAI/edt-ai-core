@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture, dialog_session, ROOT } from "./helpers.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
-import { save_settings_export, saved_settings_export, state_export_path, save_state_export } from "../scripts/settings_export.mjs";
+import { save_export_to_path, saved_settings_export, state_export_path, save_state_export } from "../scripts/settings_export.mjs";
 
 async function platform_session(t, f, platform) {
   const entry = path.join(f.base, "platform-entry.mjs");
@@ -31,13 +31,13 @@ test("portable export uses the chosen destination and preserves its API", async 
 test("failed settings export leaves the previous file intact and does not claim a saved file", t => {
   const f=fixture(t), target=path.join(f.base,"settings-export.json");
   assert.equal(saved_settings_export(f.state),null);
-  assert.throws(()=>save_settings_export(f.state,{text:"{}"}),/Выберите место/);
-  assert.throws(()=>save_settings_export(f.state,{},target),/отсутствует/);
-  const saved=save_settings_export(f.state,{text:"{}"},target);
-  assert.throws(()=>save_settings_export(f.state,{text:"x".repeat(2*1024*1024+1)},target),/превышает/);
+  assert.throws(()=>save_export_to_path("",{text:"{}"}),/абсолютный путь/);
+  assert.throws(()=>save_export_to_path(target,{}),/отсутствует/);
+  const saved=save_export_to_path(target,{text:"{}"});
+  assert.throws(()=>save_export_to_path(target,{text:"x".repeat(2*1024*1024+1)}),/превышает/);
   assert.equal(fs.readFileSync(saved.path,"utf8"),"{}");
   fs.rmSync(saved.path);fs.mkdirSync(saved.path);
-  assert.throws(()=>save_settings_export(f.state,{text:"{}"},target));
+  assert.throws(()=>save_export_to_path(target,{text:"{}"}));
   assert.equal(saved_settings_export(f.state),null);
   assert.ok(fs.statSync(saved.path).isDirectory());
 });
@@ -58,10 +58,10 @@ for (const platform of ["linux", "darwin"]) test(`${platform} exports settings a
 test("state export cannot replace an explicitly configured connections file", async t => {
   const f = fixture(t); f.save();
   const file = state_export_path(f.state, "settings"); fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, "schema_version: '0.1'\n"); f.env.EDT_AI_CONNECTIONS_FILE = file;
+  fs.writeFileSync(file, "schema_version: '0.2'\n"); f.env.EDT_AI_CONNECTIONS_FILE = file;
   const client = await platform_session(t, f, "linux");
   await assert.rejects(client.call("settings.save_export", {}), /служебное состояние/i);
-  assert.equal(fs.readFileSync(file, "utf8"), "schema_version: '0.1'\n");
+  assert.equal(fs.readFileSync(file, "utf8"), "schema_version: '0.2'\n");
 });
 
 test("state export rejects linked directories and changed destinations", t => {
