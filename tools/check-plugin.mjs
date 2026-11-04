@@ -25,8 +25,7 @@ async function check_worker(selected) {
   assert.equal(manifest.hooks, "./hooks/hooks.json");
   for (const extension of [manifest, universal.extensions["com.openai"]]) {
     assert.equal(extension.requires_local_executor, true);
-    assert.equal(extension.onboardingSkill, "./skills/edt-ai-core/SKILL.md");
-    assert.ok(fs.existsSync(path.join(root, extension.onboardingSkill)));
+    assert.equal(Object.hasOwn(extension, "onboardingSkill"), false);
   }
   for (const listing of [manifest.interface, universal.extensions["com.openai"].interface]) {
     assert.equal(listing.developerName, "ShadobaAI");

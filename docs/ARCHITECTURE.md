@@ -31,7 +31,7 @@ flowchart TD
 
 | Модуль | Ответственность |
 | --- | --- |
-| `plugin.json` | Метаданные, требование локального исполнителя, onboarding skill и hooks |
+| `plugin.json` | Метаданные, требование локального исполнителя и hooks |
 | `mcp.json` | Семь stdio-входов: policy, настройки, code-index, bsl-ls, edt, v8std, openviking |
 | `skills/` | Настройка, routing, изменение кода, поиск, нормы, диагностика, ревью и тесты |
 | `scripts/profile.mjs`, `schemas/` | Загрузка, валидация, создание и перенос профиля |

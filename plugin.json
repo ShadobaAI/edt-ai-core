@@ -17,7 +17,6 @@
   "extensions": {
     "com.openai": {
       "requires_local_executor": true,
-      "onboardingSkill": "./skills/edt-ai-core/SKILL.md",
       "interface": {
         "displayName": "1C AI Core",
         "shortDescription": "Профильное ядро 1С",
