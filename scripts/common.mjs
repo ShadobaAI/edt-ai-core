@@ -14,8 +14,9 @@ import {
 export { ROOT, ConfigError };
 export const object = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
-export function parse(text) {
-  const doc = parseDocument(text.replace(/^\uFEFF/, ""), {
+export function parse_yaml_document(text) {
+  const source = text.replace(/^\uFEFF/, "");
+  const doc = parseDocument(source, {
     uniqueKeys: true,
     schema: "yaml-1.1",
     customTags: (tags) =>
@@ -27,10 +28,17 @@ export function parse(text) {
           : tag,
       ),
   });
-  if (doc.errors.length || doc.warnings.length)
+  if (doc.errors.length || doc.warnings.length) {
+    const position = [...doc.errors, ...doc.warnings][0]?.pos?.[0];
+    const documentLine = Number.isInteger(position) && position >= 0 ? source.slice(0, position).split(/\r\n|\r|\n/).length : undefined;
     throw Object.assign(new ConfigError(
       "Invalid YAML document (" + [...doc.errors, ...doc.warnings].map(error => error.code || "YAML_ERROR").join(", ") + "); source excerpt omitted",
-    ), { code: "INVALID_DOCUMENT" });
+    ), { code: "INVALID_DOCUMENT", documentLine });
+  }
+  return doc;
+}
+export function parse(text) {
+  const doc = parse_yaml_document(text);
   let value;
   try { value = doc.toJS({ maxAliasCount: 100 }); }
   catch { throw Object.assign(new ConfigError("Invalid YAML document; source excerpt omitted"), { code: "INVALID_DOCUMENT" }); }
@@ -103,15 +111,26 @@ export function inside(root, relative) {
     throw new ConfigError(`Path escapes project: ${relative}`);
   return target;
 }
-export function deep_merge(base, overlay) {
+// Only these schema-defined dictionaries may use names that are also special
+// JavaScript properties. Their values are strings, never object paths.
+export function safe_profile_dictionary_path(parts, { runtime = false } = {}) {
+  return parts.length === 3 && parts[0] === "knowledge" && parts[1] === "collection_uris" ||
+    parts.length === 4 && ["connections", "components"].includes(parts[0]) &&
+      parts[2] === "headers_env" && /^[a-z0-9-]+$/.test(parts[1]) ||
+    runtime && parts.length === 5 && parts[0] === "mcp" && ["required", "managed"].includes(parts[1]) &&
+      parts[3] === "headers_env" && /^[a-z0-9-]+$/.test(parts[2]);
+}
+export function deep_merge(base, overlay, parts = []) {
   const result = structuredClone(base);
   for (const [key, value] of Object.entries(overlay)) {
-    if (["__proto__", "constructor", "prototype"].includes(key))
+    const path = [...parts, key];
+    if (["__proto__", "constructor", "prototype"].includes(key) &&
+        !(safe_profile_dictionary_path(path, { runtime: true }) && typeof value === "string"))
       throw new ConfigError("Unsafe object key: " + key);
-    result[key] =
-      object(value) && object(result[key])
-        ? deep_merge(result[key], value)
-        : structuredClone(value);
+    const previous = Object.hasOwn(result, key) ? result[key] : undefined;
+    Object.defineProperty(result, key, { value: object(value) && object(previous)
+      ? deep_merge(previous, value, path) : structuredClone(value),
+      enumerable: true, configurable: true, writable: true });
   }
   return result;
 }

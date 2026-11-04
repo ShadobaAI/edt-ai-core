@@ -52,7 +52,9 @@ export const is_dir = (file) => {
 export function resolve(file) {
   let current = path.resolve(file),
     suffix = [];
-  while (!exists(current)) {
+  // existsSync follows links and treats a dangling link as absent. Never append
+  // a missing suffix to such a link: it could later resolve outside the root.
+  while (!fs.lstatSync(current, { throwIfNoEntry: false })) {
     const parent = path.dirname(current);
     if (parent === current) break;
     suffix.unshift(path.basename(current));

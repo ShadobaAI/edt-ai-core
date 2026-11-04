@@ -187,7 +187,7 @@ export class RemoteMcp {
     }
     if ([202, 204].includes(response.status))
       throw new Error("MCP request received no result; outcome unknown");
-    if (!response.headers.get("Content-Type")?.includes("text/event-stream")) {
+    if (response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "text/event-stream") {
       const message = await response_json(response, this.maxBytes);
       if (message.id !== payload.id)
         throw new RemoteContractError("MCP response ID mismatch; outcome unknown");
@@ -197,7 +197,8 @@ export class RemoteMcp {
       decoder = new TextDecoder();
     let buffer = "",
       event = [],
-      bytes = 0;
+      bytes = 0,
+      skipLF = false;
     try {
       while (true) {
         const { value, done } = await reader.read();
@@ -205,11 +206,16 @@ export class RemoteMcp {
         if (bytes > this.maxBytes)
           throw new Error("MCP output budget exceeded; outcome unknown");
         buffer += decoder.decode(value, { stream: !done });
-        let index;
-        while ((index = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, index).replace(/\r$/, "");
-          buffer = buffer.slice(index + 1);
-          if (line.startsWith("data:")) event.push(line.slice(5).trimStart());
+        if (skipLF && buffer.length) {
+          if (buffer.startsWith("\n")) buffer = buffer.slice(1);
+          skipLF = false;
+        }
+        let match;
+        while ((match = /\r\n|\r|\n/.exec(buffer))) {
+          const line = buffer.slice(0, match.index);
+          skipLF = match[0] === "\r" && match.index === buffer.length - 1;
+          buffer = buffer.slice(match.index + match[0].length);
+          if (line.startsWith("data:")) event.push(line.slice(5).replace(/^ /, ""));
           else if (!line && event.length) {
             const message = json_message(event.join("\n"), this.maxBytes);
             event = [];

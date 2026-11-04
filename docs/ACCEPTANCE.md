@@ -54,6 +54,6 @@ schemas и обезличенные шаблоны остаются в ZIP. Пр
 
 `switching fresh plugin copies` в `tests/test-packaging.mjs` проверяет два новых
 dev-destination с одним внешним state: settings сохраняют значения, профиль,
-local/instance overrides, исходник, publication и runtime lock сохраняют байты.
+локальные настройки, исходник, publication и runtime lock сохраняют байты.
 Это проверка `prepare_install`, не обновления настоящего host cache. Разделение
 checkout/cache/running MCP и порядок переключения описаны в [USAGE.md](USAGE.md).

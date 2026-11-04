@@ -1,6 +1,15 @@
 import { gunzipSync } from "node:zlib";
 import { unzipSync, zipSync } from "../vendor/deps.mjs";
 
+const crcTable = Uint32Array.from({ length: 256 }, (_, n) => {
+  for (let bit = 0; bit < 8; bit++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
+  return n >>> 0;
+});
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
 export function zip_entries(bytes, maxBytes = 100_000_000) {
   bytes = Buffer.from(bytes);
   let eocd = -1;
@@ -67,7 +76,7 @@ export function zip_entries(bytes, maxBytes = 100_000_000) {
     )
       throw new Error("Unsafe ZIP entry");
     names.add(name.toLowerCase());
-    entries.push({ name, size, directory: name.endsWith("/") });
+    entries.push({ name, size, crc: bytes.readUInt32LE(cursor + 16), directory: name.endsWith("/") });
     cursor += 46 + length + extra + comment;
   }
   if (cursor !== eocd) throw new Error("Invalid ZIP directory size");
@@ -79,7 +88,7 @@ export function unzip(bytes, maxBytes) {
   if (
     Object.keys(data).length !== entries.length ||
     entries.some(
-      (item) => !data[item.name] || data[item.name].length !== item.size,
+      (item) => !data[item.name] || data[item.name].length !== item.size || crc32(data[item.name]) !== item.crc,
     )
   )
     throw new Error("ZIP entry mismatch");
@@ -95,6 +104,31 @@ export function zip(files) {
     ),
     { level: 9 },
   );
+}
+// Project transfer archives have a deliberately closed layout. Validate the
+// central directory before decompression, then accept only bounded UTF-8 YAML.
+const projectEntries = [".ai/project.yaml", ".ai/project.local.yaml"];
+const projectFileLimit = 2 * 1024 * 1024;
+export function read_project_archive(bytes) {
+  bytes = Buffer.from(bytes);
+  if (bytes.length > 4 * 1024 * 1024) throw new Error("Project archive exceeds 4 MiB");
+  const entries = zip_entries(bytes, 2 * projectFileLimit);
+  if (entries.length !== projectEntries.length ||
+      entries.some(entry => entry.directory || !projectEntries.includes(entry.name) || entry.size > projectFileLimit))
+    throw new Error("Project archive must contain exactly the two project YAML files");
+  const data = unzip(bytes, 2 * projectFileLimit), result = {};
+  for (const name of projectEntries) {
+    const content = Buffer.from(data[name]), text = content.toString("utf8");
+    if (!Buffer.from(text, "utf8").equals(content) || text.includes("\0")) throw new Error("Project archive YAML must be UTF-8");
+    result[name] = text;
+  }
+  return result;
+}
+export function write_project_archive(documents) {
+  if (!documents || typeof documents !== "object" || Object.keys(documents).length !== projectEntries.length ||
+      projectEntries.some(name => typeof documents[name] !== "string" || Buffer.byteLength(documents[name]) > projectFileLimit || documents[name].includes("\0")))
+    throw new Error("Project archive requires exactly two bounded YAML documents");
+  return zip(Object.fromEntries(projectEntries.map(name => [name, Buffer.from(documents[name], "utf8")])));
 }
 export function extract_binary(bytes, format, executable) {
   if (format === "zip") {

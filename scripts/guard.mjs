@@ -17,9 +17,10 @@ export function* strings(value) {
 const escapeRE = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const setupMethods = new Set([
   "create", "load", "import", "export", "select_profile", "forget_profile", "status", "refresh_readiness", "reset_connection", "open", "inspect", "probe_connections", "profile", "read", "pick_directory",
-  "open_directory", "update", "preview", "apply", "export_data", "save_export", "open_export_directory", "export_diagnostics", "diagnostics",
+  "open_directory", "update", "preview", "apply", "export_diagnostics", "diagnostics",
   "open_diagnostics_directory", "edit", "document", "operation", "check", "run_check", "rebuild_index", "restart_index", "updates", "versions",
-  "pick_java", "check_java", "pick_import_file", "import_file", "profile_source", "rename_profile", "repair_document", "openviking_read", "openviking_save",
+  "pick_java", "check_java", "pick_import_file", "pick_view_directory", "import_file", "rename_profile", "openviking_read", "openviking_save",
+  "document_fields", "document_patch", "transfer_export", "transfer_decode", "transfer_context", "transfer_preview", "transfer_apply", "export_log",
 ]);
 function setup_control(name) {
   const match = /^mcp__([A-Za-z0-9_-]+)__(.+)$/.exec(name);

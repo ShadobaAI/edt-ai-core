@@ -23,7 +23,6 @@ import {
 import {
   effective_settings,
   resolved_settings,
-  instance_file,
 } from "../scripts/project_context.mjs";
 import { reason } from "../scripts/guard.mjs";
 import { casefold } from "../scripts/casefold.mjs";
@@ -333,7 +332,7 @@ test("profile and paths respect symlinks and nested Git boundaries", (t) => {
   };
   assert.throws(() => validate_at(f.root, bad));
 });
-test("connection precedence and scoped instance keys perform no implicit writes", (t) => {
+test("connection precedence and runtime instance identifiers perform no implicit writes", (t) => {
   const f = fixture(t);
   environment(t, f.env);
   f.profile.connections = { edt: { url: "http://localhost:18001/mcp" } };
@@ -347,15 +346,9 @@ test("connection precedence and scoped instance keys perform no implicit writes"
     { connections: { edt: { url: "http://localhost:18002/mcp" } } },
     path.join(f.root, ".ai/project.local.yaml"),
   );
-  dump(
-    { connections: { edt: { url: "http://localhost:18003/mcp" } } },
-    path.join(f.root, ".ai/instances/first.local.yaml"),
-  );
-  const first = instance_file(config, f.root);
-  dump({ connections: { edt: { url: "http://localhost:18004/mcp" } } }, first);
   assert.equal(
     effective_settings(config, f.root, f.profile).mcp.required.edt.url,
-    "http://localhost:18004/mcp",
+    "http://localhost:18002/mcp",
   );
   const explicit = path.join(f.base, "connections.yaml");
   dump(
@@ -373,7 +366,7 @@ test("connection precedence and scoped instance keys perform no implicit writes"
     process.env.EDT_AI_EDT_URL,
   );
   process.env.EDT_AI_INSTANCE = "second";
-  assert.notEqual(instance_file(config, f.root), first);
+  assert.equal(effective_settings(config, f.root, f.profile).mcp.required.edt.url, process.env.EDT_AI_EDT_URL);
   assert.notEqual(
     reconnect_file(f.state, f.root),
     reconnect_file(f.state, f.base),

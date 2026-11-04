@@ -3,11 +3,13 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { fixture, session, ROOT } from "./helpers.mjs";
-import { dump, load } from "../scripts/common.mjs";
+import { dump, load, parse } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
+import { patch_yaml_draft, SettingsBackend } from "../scripts/settings_backend.mjs";
 
 const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
@@ -19,12 +21,28 @@ test("static settings controls have unique IDs and script references point to re
   for (const match of script.matchAll(/\$\("([^"]+)"\)/g)) assert.ok(available.has(match[1]), `Missing control ${match[1]}`);
 });
 
+test("main navigation contains the three requested sections", () => {
+  const nav=html.match(/<nav class="tabs" id="profileTabs"[\s\S]*?<\/nav>/)?.[0];
+  assert.ok(nav);assert.deepEqual([...nav.matchAll(/role="tab"[^>]*>([^<]+)/g)].map(match=>match[1]),["Компоненты","Конфигурация","Поддержка"]);
+});
+
+test("readiness preparation states its side effects before the user starts it", () => {
+  const panel = html.match(/<div id="readinessPanel"[\s\S]*?<\/details><\/div>/)?.[0];
+  assert.match(panel, /id="readinessButton">Подготовить и проверить/);
+  assert.match(panel, /скачать компоненты и запустить включённые сервисы/);
+  assert.match(panel, /пассивного обновления состояния/);
+});
+
 function screen(handler, options = {}) {
   const elements = new Map(), timers = new Map(), calls = [], downloads = [], blobs = [];
   let nextTimer = 0, message, observedResize;const lifecycle = {}, documentEvents = {};
   class Element {
-    constructor(tag = "div") { Object.assign(this, { tag, style: {}, disabled: false, readOnly: false, hidden: false, checked: false, value: "", files: [], textContent: "", children: [], events: {} }); }
+    constructor(tag = "div") { Object.assign(this, { tag, style: {}, disabled: false, readOnly: false, hidden: false, checked: false, value: "", files: [], textContent: "", children: [], events: {} });
+      if (tag.toLowerCase() === "textarea") { let value = ""; Object.defineProperty(this, "value", { get: () => value, set: text => { value = String(text).replace(/\r\n?/g, "\n"); } }); }
+    }
     classList = { toggle() {} };
+    get parentElement() { return this.parentNode; }
+    get tagName() { return this.tag.toUpperCase(); }
     addEventListener(name, fn) { this.events[name] = fn; }
     setAttribute(key, value) { (this.attributes ||= {})[key] = value; }
     removeAttribute(key) { delete (this.attributes ||= {})[key]; }
@@ -33,6 +51,8 @@ function screen(handler, options = {}) {
     append(...children) { for (const child of children) { if (child.parentNode) { if (child.contains?.(document.activeElement)) document.activeElement = document.body; child.parentNode.children = child.parentNode.children.filter(item => item !== child); } child.parentNode = this; this.children.push(child); } }
     insertBefore(child, next) { this.append(child); this.children.splice(this.children.indexOf(child), 1); this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, child); }
     click() { if (this.tag === "a") downloads.push({ filename: this.download, href: this.href }); }
+    showModal() { this.open = true; }
+    close() { this.open = false; this.events.close?.(); }
     remove() { if (this.parentNode) { if (this.contains(document.activeElement)) document.activeElement = document.body; this.parentNode.children = this.parentNode.children.filter(item => item !== this); this.parentNode = null; } }
     focus() { document.activeElement = this; }
     getBoundingClientRect() { return { height: options.height?.() ?? 500 }; }
@@ -72,7 +92,7 @@ function screen(handler, options = {}) {
     setTimeout: (fn, ms) => { const id = ++nextTimer; timers.set(id, { fn, ms }); return id; }, clearTimeout: id => timers.delete(id),
     getComputedStyle: () => ({ paddingTop: "20px", paddingBottom: "20px" }),
     ResizeObserver: class { constructor(callback) { observedResize = callback; } observe() {} },
-    Blob, URL: { createObjectURL: blob => { blobs.push(blob); return "blob:fixture"; }, revokeObjectURL() {} } });
+    Blob, TextDecoder, URL: { createObjectURL: blob => { blobs.push(blob); return "blob:fixture"; }, revokeObjectURL() {} } });
   vm.runInContext(script, context);
   vm.runInContext(`configureNavigation(${JSON.stringify(options.navigation || "profiles")})`, context);
   const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -108,6 +128,7 @@ test("settings UI saves, previews a local document, and renames through the real
   ui.elements.get("edtUrl").events.input();
   await ui.elements.get("saveButton").onclick();
   assert.equal(load(local).connections.edt.url, "http://127.0.0.1:8123/mcp");
+  fs.writeFileSync(local, fs.readFileSync(local, "utf8").replace(/\n/g, "\r\n"));
   assert.match(ui.elements.get("connectionDestination").textContent, /project\.local\.yaml/);
 
   ui.elements.get("editorTab").onclick();
@@ -115,18 +136,25 @@ test("settings UI saves, previews a local document, and renames through the real
   ui.elements.get("editorDocument").value = "project_local";
   ui.elements.get("editorDocument").events.change();
   await until(() => {
-    try { return JSON.parse(ui.elements.get("settingsText").value).connections?.edt?.url === "http://127.0.0.1:8123/mcp" && !ui.elements.get("editSettingsButton").disabled; }
+    try { return parse(ui.elements.get("settingsText").value).connections?.edt?.url === "http://127.0.0.1:8123/mcp" && !ui.elements.get("editSettingsButton").disabled; }
     catch { return false; }
   }, "local editor");
-  const document = JSON.parse(ui.elements.get("settingsText").value);
-  document.components = { "bsl-ls": { java: "fixture-java" } };
-  ui.elements.get("settingsText").value = JSON.stringify(document);
+  assert.equal(ui.context.editorChanged(), false);
+  ui.elements.get("editorMode").value = "tree"; ui.elements.get("editorMode").events.change();
+  await until(() => treeInputs(ui).some(input => input.attributes?.["aria-label"] === "connections.edt.url"), "schema fields through MCP");
+  ui.elements.get("editorMode").value = "text"; ui.elements.get("editorMode").events.change();
+  const updated = "connections:\n  edt:\n    url: http://127.0.0.1:8123/mcp\n# keep this comment\ncomponents:\n  bsl-ls:\n    java: fixture-java\n\n";
+  ui.elements.get("settingsText").value = updated;
   ui.elements.get("settingsText").events.input();
   await ui.elements.get("reviewEditButton").onclick();
-  assert.equal(ui.elements.get("preview").hidden, false);
+  assert.equal(ui.elements.get("preview").hidden, false,ui.elements.get("status").textContent);
   assert.match(ui.elements.get("importEffects").textContent, /project\.local\.yaml/);
+  const comparison = ui.elements.get("previewTextDiff").children[0];
+  assert.match(comparison.children[2].textContent, /connections:/);
+  assert.match(comparison.children[4].textContent, /# keep this comment/);
   await ui.elements.get("applyButton").onclick();
   assert.equal(load(local).components["bsl-ls"].java, "fixture-java");
+  assert.equal(fs.readFileSync(local, "utf8"), updated.replace(/\n/g, "\r\n"));
 
   ui.elements.get("renameButton").onclick();
   ui.elements.get("projectIdInput").value = "renamed-in-ui";
@@ -134,6 +162,67 @@ test("settings UI saves, previews a local document, and renames through the real
   await ui.elements.get("renameSaveButton").onclick();
   assert.equal(load(path.join(f.root, ".ai", "project.yaml")).project.id, "renamed-in-ui");
   assert.equal(ui.elements.get("profileTitle").textContent, "renamed-in-ui");
+  ui.lifecycle.pagehide();
+});
+
+test("YAML editor preserves mixed line endings around an edited or added line", async () => {
+  const text = "schema_version: '0.2'\r\ncomponents: {}\n";
+  const ui = screen(async name => name === "settings.edit" ? { text, format: "yaml", baseRevision: "base", layerScope: "project_local" } : read);
+  await ui.flush();
+  ui.elements.get("editorDocument").value = "project_local"; ui.elements.get("editorDocument").events.change(); await ui.flush();
+  assert.equal(ui.context.editorChanged(), false);
+  assert.equal(ui.context.editorText(), text);
+  ui.elements.get("settingsText").value += "# changed\n"; ui.elements.get("settingsText").events.input();
+  assert.equal(ui.context.editorText(), text + "# changed\n");
+  ui.elements.get("settingsText").value = "schema_version: '0.2'\ncomponents: {x: 1}\n";
+  assert.equal(ui.context.editorText(), "schema_version: '0.2'\r\ncomponents: {x: 1}\n");
+  vm.runInContext(`editorRawOriginal="a\\r\\nb\\nc\\r\\nd\\n";editorOriginal="a\\nb\\nc\\nd\\n"`,ui.context);
+  ui.elements.get("settingsText").value="A\nb\nc\nD\nnew\n";
+  assert.equal(ui.context.editorText(),"A\r\nb\nc\r\nD\nnew\n");
+});
+
+test("chat project selector views another profile without rebinding the chat", async t => {
+  const f = fixture(t); f.save();
+  const other = path.join(f.base, "Other"); fs.mkdirSync(path.join(other, "src"), { recursive: true });
+  dump({ ...f.profile, project: { ...f.profile.project, id: "Other" } }, path.join(other, ".ai", "project.yaml"));
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const ui = screen((name, args, meta) => client.request("tools/call", { name, arguments: args, ...(meta ? { _meta: meta } : {}) }),
+    { navigation: "project", rawResults: true });
+  const until = async predicate => { const deadline = Date.now() + 10000; while (!predicate()) { if (Date.now() > deadline) throw new Error("UI did not load"); await new Promise(resolve => setTimeout(resolve, 20)); } };
+  await until(() => ui.elements.get("profileTitle").textContent === f.profile.project.id);
+  ui.elements.get("profileToggleButton").onclick();
+  await ui.context.selectProfile(other);
+  const selection = ui.calls.find(call => call.params?.name === "settings.select_profile");
+  assert.equal(selection.params._meta["1c-ai-core/projectRoot"], f.root);
+  assert.equal(ui.elements.get("profileTitle").textContent, "Other");
+  assert.equal(ui.elements.get("viewOnlyHint").hidden, false);
+  assert.equal(ui.elements.get("profileBrowser").hidden, true);
+  assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, f.root);
+  assert.equal(ui.elements.get("saveButton").disabled, true);
+  await ui.context.selectProfile(f.root);
+  assert.equal(ui.elements.get("profileTitle").textContent, f.profile.project.id);
+  assert.equal(ui.elements.get("viewOnlyHint").hidden, true);
+  ui.lifecycle.pagehide();
+});
+
+test("historical view waits for the real MCP host root change before confirming the new chat", async t => {
+  const f=fixture(t);f.save();const other=path.join(f.base,"Other"),next=path.join(f.base,"Next");
+  for(const [root,id] of [[other,"Other"],[next,"Next"]]){fs.mkdirSync(path.join(root,"src"),{recursive:true});dump({...f.profile,project:{...f.profile.project,id}},path.join(root,".ai/project.yaml"));}
+  const client=new McpClient([process.execPath,path.join(ROOT,"mcp/settings.mjs")],f.root,{...f.env,EDT_AI_PROJECT_ROOT:""},10);
+  f.clients.push(client);await client.initialize();
+  const ui=screen((name,args,meta)=>client.request("tools/call",{name,arguments:args,...(meta?{_meta:meta}:{})}),{navigation:"project",rawResults:true});
+  const until=async predicate=>{const deadline=Date.now()+10000;while(!predicate()){if(Date.now()>deadline)throw new Error("UI did not reach expected state");await new Promise(resolve=>setTimeout(resolve,20));}};
+  await until(()=>ui.elements.get("profileTitle").textContent===f.profile.project.id);
+  await ui.context.selectProfile(other);assert.equal(ui.elements.get("viewOnlyHint").hidden,false);
+  ui.deliver({jsonrpc:"2.0",method:"ui/notifications/tool-input",params:{arguments:{projectRoot:next}}});
+  await ui.context.refreshStatus();assert.equal(ui.context.confirmedChatRoot(),null);
+  const before=ui.calls.filter(call=>call.params?.name==="settings.select_profile").length;
+  await ui.context.selectProfile(next);assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,before);
+  client.roots=[{uri:pathToFileURL(next).href}];client.notify("notifications/roots/list_changed");
+  const deadline=Date.now()+10000;while(ui.context.confirmedChatRoot()!==next&&Date.now()<deadline){await ui.context.refreshStatus();await new Promise(resolve=>setTimeout(resolve,20));}
+  assert.equal(ui.context.confirmedChatRoot(),next);assert.equal(ui.elements.get("profileTitle").textContent,"Other");
+  await ui.context.selectProfile(next);assert.equal(ui.elements.get("profileTitle").textContent,"Next");
+  assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,next);
   ui.lifecycle.pagehide();
 });
 
@@ -155,68 +244,26 @@ test("document selector shows separate scopes and preserves a draft through the 
   };
   await until(() => ui.elements.get("profileTitle").textContent === f.profile.project.id);
   ui.elements.get("editorTab").onclick();
-  await until(() => { try { return JSON.parse(ui.elements.get("settingsText").value).project.id === f.profile.project.id; } catch { return false; } });
+  await until(() => { try { return parse(ui.elements.get("settingsText").value).project.id === f.profile.project.id; } catch { return false; } });
   assert.equal(ui.elements.get("editorDocument").value, "profile");
   assert.equal(ui.elements.get("editorDestination").textContent, initial.writePaths.profile);
-  const profile = JSON.parse(ui.elements.get("settingsText").value); assert.equal(profile.settings, undefined);
+  const profile = parse(ui.elements.get("settingsText").value); assert.equal(profile.settings, undefined);
   profile.project.purpose = "unsaved change";
   ui.elements.get("settingsText").value = JSON.stringify(profile); ui.elements.get("settingsText").events.input();
-  ui.elements.get("editorDocument").value = "global"; ui.elements.get("editorDocument").events.change();
+  ui.elements.get("editorDocument").value = "project_local"; ui.elements.get("editorDocument").events.change();
   assert.equal(ui.elements.get("editorDocument").value, "profile");
   assert.equal(JSON.parse(ui.elements.get("settingsText").value).project.purpose, "unsaved change");
-  assert.match(ui.elements.get("status").textContent, /черновик/);
-  ui.elements.get("discardDraftButton").onclick();
-  ui.elements.get("editorDocument").value = "global"; ui.elements.get("editorDocument").events.change();
-  await until(() => { try { return JSON.parse(ui.elements.get("settingsText").value).mcp.managed["bsl-ls"].java === "before-java"; } catch { return false; } });
-  assert.equal(ui.elements.get("editorDestination").textContent, initial.writePaths.global);
-  const global = JSON.parse(ui.elements.get("settingsText").value); assert.equal(global.profile, undefined);
-  global.mcp.managed["bsl-ls"].java = "after-java";
-  ui.elements.get("settingsText").value = JSON.stringify(global); ui.elements.get("settingsText").events.input();
+  assert.equal(ui.elements.get("editorSwitchDialog").open, true);
+  ui.elements.get("editorSwitchDiscard").onclick();
+  await until(() => ui.elements.get("editorDestination").textContent === initial.writePaths.project_local && ui.elements.get("settingsText").value.trim() === "{}");
+  const local = { connections: { edt: { url: "http://localhost:8333/mcp" } } };
+  ui.elements.get("settingsText").value = JSON.stringify(local); ui.elements.get("settingsText").events.input();
   await ui.elements.get("reviewEditButton").onclick();
-  assert.equal(ui.elements.get("preview").hidden, false);
+  assert.equal(ui.elements.get("preview").hidden, false, ui.elements.get("status").textContent);
   assert.match(ui.elements.get("importEffects").textContent, /Файл записи/);
   await ui.elements.get("applyButton").onclick();
-  assert.equal(load(initial.writePaths.global).mcp.managed["bsl-ls"].java, "after-java");
+  assert.equal(load(initial.writePaths.project_local).connections.edt.url, "http://localhost:8333/mcp");
   assert.deepEqual(fs.readFileSync(initial.writePaths.profile), profileBefore);
-  ui.lifecycle.pagehide();
-});
-
-test("settings UI imports a registered profile into an empty project through the real MCP server", async t => {
-  const f = fixture(t), sourceRoot = path.join(f.base, "source");
-  fs.mkdirSync(sourceRoot); fs.mkdirSync(path.join(sourceRoot, "src"));
-  const source = structuredClone(f.profile);
-  source.project.id = "source-project";
-  source.connections = { edt: { url: "http://127.0.0.1:8765/mcp" } };
-  source.testing.commands = [{ id: "machine-test", repository_id: "product", argv: ["node", "C:\\local\\runner.js"], effects: [] }];
-  dump(source, path.join(sourceRoot, ".ai", "project.yaml"));
-  dump({ components: { "bsl-ls": { java: "source-java" } } }, path.join(sourceRoot, ".ai", "project.local.yaml"));
-  remember_profile(f.state, sourceRoot, profile_state(sourceRoot));
-  const client = await session(t, "mcp/settings.mjs", [], f);
-  const ui = screen((name, args, meta) => client.request("tools/call", { name, arguments: args, ...(meta ? { _meta: meta } : {}) }),
-    { navigation: "project", rawResults: true });
-  ui.document.hidden = true;
-  const end = Date.now() + 10000;
-  while (ui.elements.get("sourceProfile").value !== sourceRoot) {
-    if (Date.now() > end) throw new Error(`Timed out waiting for source profile: ${ui.elements.get("status").textContent}`);
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
-  assert.equal(ui.elements.get("createButton").hidden, false);
-  assert.equal(ui.elements.get("importTab").hidden, true);
-  ui.elements.get("importSource").value = "profile";
-  ui.elements.get("importSource").events.change();
-  await ui.elements.get("previewButton").onclick();
-  assert.equal(ui.elements.get("preview").hidden, false);
-  assert.match(ui.elements.get("importEffects").textContent, /machine-test/);
-  assert.match(ui.elements.get("importEffects").textContent, /Product: не найден в каталоге/);
-  assert.equal(ui.elements.get("replaceLabel").hidden, true);
-  await ui.elements.get("applyButton").onclick();
-  const imported = load(path.join(f.root, ".ai", "project.yaml"));
-  assert.equal(imported.project.id, "source-project");
-  assert.equal(imported.profile_id, source.profile_id);
-  assert.equal(imported.connections, undefined);
-  assert.deepEqual(imported.testing.commands, []);
-  assert.equal(fs.existsSync(path.join(f.root, ".ai", "project.local.yaml")), false);
-  assert.equal(ui.elements.get("profileTitle").textContent, "source-project");
   ui.lifecycle.pagehide();
 });
 
@@ -386,13 +433,17 @@ test("opening the HTML directly allows every preview tab without a host or profi
   assert.equal(ui.elements.get("standaloneHint").hidden,false);
   assert.equal(ui.elements.get("profileTitle").textContent,"Предпросмотр настроек");
   assert.equal(ui.elements.get("profileState").textContent,"Без подключения");
-  for(const mode of ["check","editor","import","support","profile"]){
+  assert.equal(ui.elements.get("checkPanel").hidden,false);
+  assert.equal(ui.elements.get("profilePanel").hidden,true);
+  assert.equal(ui.elements.get("countAll").textContent,"7");
+  assert.equal(ui.elements.get("countIssues").textContent,"7");
+  assert.equal(ui.elements.get("componentCatalog").children.length,3);
+  for(const mode of ["check","editor","support"]){
     const tab=ui.elements.get(mode+"Tab");assert.equal(tab.disabled,false);tab.onclick();
     assert.equal(ui.elements.get(mode+"Panel").hidden,false);assert.equal(tab.attributes["aria-selected"],"true");
-    if(mode==="import")assert.equal(ui.elements.get("exportPanel").hidden,false);
   }
-  ui.elements.get("profileTab").events.keydown({key:"ArrowRight",preventDefault(){}});
-  assert.equal(ui.elements.get("checkPanel").hidden,false);
+  ui.elements.get("checkTab").events.keydown({key:"ArrowRight",preventDefault(){}});
+  assert.equal(ui.elements.get("editorPanel").hidden,false);
   assert.equal(ui.elements.get("versionButton").disabled,false);await ui.elements.get("versionButton").onclick();
   assert.equal(ui.elements.get("versionPopup").hidden,false);assert.equal(ui.elements.get("versionSearch").disabled,false);
   assert.match(ui.elements.get("versionHint").textContent,/в настройках плагина/);
@@ -401,50 +452,271 @@ test("opening the HTML directly allows every preview tab without a host or profi
 
 test("standalone preview keeps saving, updates and service launches unavailable after navigation", async () => {
   const ui=screen(()=>{throw new Error("No plugin calls in preview");},{standalone:true});await ui.flush();
-  assert.equal(ui.elements.get("importTarget").textContent,"не выбран");
   assert.equal(ui.elements.get("editorDestination").textContent,"недоступен");
   assert.equal(ui.elements.get("journalCount").textContent,"Недоступен в предпросмотре");
-  for(const mode of ["check","import","editor","support"]){
+  for(const mode of ["check","editor","support"]){
     ui.elements.get(mode+"Tab").onclick();
-    for(const id of ["saveButton","saveComponentsButton","readinessButton","rebuildIndexButton","installUpdateButton","refreshVersionsButton","downloadButton","previewButton","applyButton","diagnosticsButton"])
+    for(const id of ["saveButton","saveComponentsButton","readinessButton","rebuildIndexButton","installUpdateButton","refreshVersionsButton","transferExport","transferPreview","applyButton","diagnosticsButton"])
       assert.equal(ui.elements.get(id).disabled,true,id);
   }
   await ui.elements.get("readinessButton").onclick();
   assert.deepEqual(ui.calls,[]);assert.match(ui.elements.get("status").textContent,/Подключение к плагину/);
 });
 
-test("JSON tree edits typed values and sends the exact document through revision-protected preview", async () => {
-  const text=JSON.stringify({settings:{enabled:false,items:[1,null]},profile:{name:"<script>"}},null,2);
-  let previewText;
+test("invalid numeric YAML fields block preview until corrected", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"), original="connections:\n  openviking:\n    timeout_seconds: 20\n";
   const ui=screen(async(name,args)=>{
     if(name==="settings.read"||name==="settings.status")return read;
-    if(name==="settings.edit")return {text,baseRevision:"base-json"};
-    if(name==="settings.preview"){assert.equal(args.baseRevision,"base-json");assert.equal(args.mode,"edit");previewText=args.text;return {revision:"reviewed",projectRoot:read.values.projectRoot,repositories:[]};}
+    if(name==="settings.edit")return {text:original,format:"yaml",baseRevision:"base",layerScope:"project_local"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    if(name==="settings.document_patch")return patch_yaml_draft(args.text,args.operation);
     throw new Error(name);
-  });await ui.flush();ui.elements.get("editorMode").value="tree";await ui.elements.get("editSettingsButton").onclick();
-  assert.equal(ui.elements.get("jsonTree").hidden,false);assert.equal(ui.elements.get("settingsText").hidden,true);
-  const inputs=treeInputs(ui);const types=[];const findTypes=node=>{if(node.treeType)types.push(node);for(const child of node.children||[])findTypes(child);};findTypes(ui.elements.get("jsonTree"));inputs[2].parentType=types[2];assert.equal(inputs[3].value,'<script>');
-  inputs[0].value="true";inputs[0].events.input();inputs[1].value="42";inputs[1].events.input();
-  const type=inputs[2].parentType;type.value='string';type.events.change();inputs[2].value='typed';inputs[2].events.input();
-  const expected={settings:{enabled:true,items:[42,"typed"]},profile:{name:"<script>"}};
-  assert.deepEqual(JSON.parse(ui.elements.get("settingsText").value),expected);
-  await ui.tick(8000);assert.deepEqual(JSON.parse(ui.elements.get("settingsText").value),expected);
-  await ui.elements.get("reviewEditButton").onclick();assert.deepEqual(JSON.parse(previewText),expected);
+  });
+  await ui.flush();ui.elements.get("editorDocument").value="project_local";ui.elements.get("editorDocument").events.change();await ui.flush();await ui.flush();
+  ui.elements.get("editorMode").value="tree";ui.elements.get("editorMode").events.change();await ui.flush();await ui.flush();
+  const input=treeInputs(ui).find(element=>element.attributes?.["aria-label"]==="connections.openviking.timeout_seconds");assert.ok(input);
+  input.value="";input.onchange();assert.equal(input.attributes["aria-invalid"],"true");assert.equal(ui.elements.get("reviewEditButton").disabled,true);
+  input.value="30";input.onchange();await ui.flush();await ui.flush();assert.match(ui.elements.get("settingsText").value,/timeout_seconds: 30/);
+});
+
+test("schema fields and YAML share one draft and keep a scalar comment", async () => {
+  const backend = new SettingsBackend("unused-state", "unused-settings"), original = "schema_version: '0.2'\nproject:\n  id: old # retained\n";
+  const ui = screen(async (name,args) => {
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text:original,format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    if(name==="settings.document_patch")return patch_yaml_draft(args.text,args.operation);
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();
+  ui.elements.get("editorMode").value="tree";ui.elements.get("editorMode").events.change();
+  await ui.flush();await ui.flush();
+  const inputs=treeInputs(ui), id=inputs.find(input=>input.attributes?.["aria-label"]==="project.id");
+  assert.ok(id);id.value="new";id.onchange();await ui.flush();await ui.flush();
+  assert.equal(ui.elements.get("settingsText").value,"schema_version: '0.2'\nproject:\n  id: \"new\" # retained\n");
   ui.elements.get("editorMode").value="text";ui.elements.get("editorMode").events.change();
   assert.equal(ui.elements.get("settingsText").hidden,false);
 });
 
-test("JSON tree keeps strings as strings and rejects malformed numbers without damaging the document", async () => {
-  const ui = screen(async name => name === "settings.edit" ? { text: '{"s":"old","n":1,"b":true,"empty":null}', baseRevision: "base" } : read);
-  await ui.flush(); await ui.elements.get("editSettingsButton").onclick();
-  const [string, number, boolean, empty] = treeInputs(ui);
-  string.value = '42 "quoted" \\ path'; string.events.input();
-  number.value = "1e"; number.events.input();
-  assert.equal(number.attributes["aria-invalid"], "true");
-  assert.equal(JSON.parse(ui.elements.get("settingsText").value).n, 1);
-  number.value = "-1.25e2"; number.events.input(); boolean.value = "false"; boolean.events.input(); empty.value = "null"; empty.events.input();
-  assert.deepEqual(JSON.parse(ui.elements.get("settingsText").value), { s: '42 "quoted" \\ path', n: -125, b: false, empty: null });
+test("editing fields preserves opened sections and nested branches", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"),text="testing:\n  yaxunit_config:\n    launch_configuration: old\n";
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text,format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    if(name==="settings.document_patch")return patch_yaml_draft(args.text,args.operation);
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();
+  const section=()=>ui.elements.get("jsonTree").children.find(item=>item.children[0].textContent==="Тестирование");
+  section().open=true;
+  const input=treeInputs(ui).find(item=>item.attributes?.["aria-label"]==="testing.yaxunit_config.launch_configuration");
+  assert.ok(input);let node=input.parentNode;while(node&&node!==section()){if(node.tagName==="DETAILS")node.open=true;node=node.parentNode;}
+  input.value="new";input.onchange();ui.elements.get("supportTab").focus();await ui.flush();await ui.flush();
+  assert.equal(section().open,true);
+  const updated=treeInputs(ui).find(item=>item.attributes?.["aria-label"]==="testing.yaxunit_config.launch_configuration");
+  assert.ok(updated);node=updated.parentNode;while(node&&node!==section()){if(node.tagName==="DETAILS")assert.equal(node.open,true);node=node.parentNode;}
+  assert.equal(ui.document.activeElement,ui.elements.get("supportTab"));
 });
+
+test("unblurred field input is a protected draft and a failed patch keeps it editable", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"),text="project:\n  id: old\n";
+  let rejectPatch=true;
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return read;
+    if(name==="settings.edit")return {text,format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    if(name==="settings.document_patch"){if(rejectPatch)throw new Error("fixture failure");return patch_yaml_draft(args.text,args.operation);}
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();await ui.flush();
+  const input=treeInputs(ui).find(item=>item.attributes?.["aria-label"]==="project.id");
+  input.value="draft";input.oninput();let prevented=false;ui.lifecycle.beforeunload({preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.equal(ui.context.editorChanged(),true);assert.equal(ui.elements.get("editorDraftStatus").textContent,"Есть изменения");
+  await ui.elements.get("reviewEditButton").onclick();assert.equal(ui.calls.some(call=>call.params?.name==="settings.preview"),false);
+  input.onchange();await ui.flush();await ui.flush();assert.equal(input.value,"draft");assert.match(ui.elements.get("editorValidation").textContent,/Не удалось/);
+  rejectPatch=false;input.value="draft revised";input.oninput();input.onchange();await ui.flush();await ui.flush();
+  assert.equal(parse(ui.elements.get("settingsText").value).project.id,"draft revised");
+});
+
+test("rapid edits of two fields are serialized without stealing focus", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"),text="project:\n  id: old\n  purpose: before\n";const releases=[];
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return read;
+    if(name==="settings.edit")return {text,format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    if(name==="settings.document_patch")return new Promise(resolve=>releases.push(()=>resolve(patch_yaml_draft(args.text,args.operation))));
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();await ui.flush();
+  const find=path=>treeInputs(ui).find(item=>item.attributes?.["aria-label"]===path),first=find("project.id"),second=find("project.purpose");
+  first.value="new";first.oninput();first.onchange();await ui.flush();second.focus();second.value="after";second.oninput();second.onchange();
+  releases.shift()();await ui.flush();await ui.flush();assert.equal(ui.document.activeElement,second);
+  assert.equal(releases.length,1);releases.shift()();await ui.flush();await ui.flush();
+  assert.deepEqual(parse(ui.elements.get("settingsText").value).project,{id:"new",purpose:"after"});
+  assert.equal(ui.document.activeElement,second);
+});
+
+test("field sections resolve local schema composition and attach object errors", async () => {
+  const schema={type:"object",$defs:{extra:{type:"object",properties:{new_field:{type:"string"}}}},allOf:[{$ref:"#/$defs/extra"}],properties:{project:{type:"object",properties:{id:{type:"string"}}}}};
+  const ui=screen(async(name)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text:"project: {}\nnew_field: value\n",format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return {schema,value:{project:{},new_field:"value"}};
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();await ui.flush();
+  assert.equal(ui.elements.get("editorMode").value,"tree");
+  assert.deepEqual(ui.elements.get("jsonTree").children.map(section=>section.children[0].textContent),["Основное","Дополнительно"]);
+  assert.ok(treeInputs(ui).some(input=>input.attributes?.["aria-label"]==="new_field"));
+  vm.runInContext('markFieldErrors("/project: missing id")',ui.context);
+  assert.equal(vm.runInContext('jsonRows.get(JSON.stringify(["project"])).error.textContent',ui.context),"missing id");
+  assert.equal(vm.runInContext('jsonRows.get(JSON.stringify(["project"])).node.parentNode.tag',ui.context),"details");
+});
+
+test("schema composition keeps scalar defaults, nested allOf fields and selected object variants", async () => {
+  const ui=screen(async()=>read);await ui.flush();
+  assert.equal(vm.runInContext('schemaDefault(formSchema({$ref:"#/$defs/s"},{$defs:{s:{type:"string"}}},undefined))',ui.context),"");
+  const keys=vm.runInContext(`Object.keys(formSchema({allOf:[{properties:{section:{type:"object",properties:{a:{type:"string"}}}}},{properties:{section:{type:"object",properties:{b:{type:"string"}}}}}]},{},{}).properties.section.properties).sort().join(",")`,ui.context);
+  assert.equal(keys,"a,b");
+  const branch=vm.runInContext(`formSchema({oneOf:[{type:"object",properties:{kind:{const:"a"},alpha:{type:"string"}}},{type:"object",properties:{kind:{const:"b"},beta:{type:"string"}}}]},{},{kind:"b"}).properties`,ui.context);
+  assert.ok(branch.beta);assert.equal(branch.alpha,undefined);
+});
+
+test("referenced array and dictionary elements get values of the declared type", async () => {
+  const schema={type:"object",$defs:{item:{type:"object",properties:{name:{type:"string"}}}},properties:{items:{type:"array",items:{$ref:"#/$defs/item"}},mapping:{type:"object",additionalProperties:{$ref:"#/$defs/item"}}}};
+  const patches=[],ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text:"items: []\nmapping: {}\n",format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return {schema,value:parse(args.text)};
+    if(name==="settings.document_patch"){patches.push(args.operation);return patch_yaml_draft(args.text,args.operation);}
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();await ui.flush();
+  const all=()=>{const out=[],visit=node=>{out.push(node);for(const child of node.children||[])visit(child);};visit(ui.elements.get("jsonTree"));return out;};
+  all().find(node=>node.textContent==="+ Добавить элемент").onclick();await ui.flush();await ui.flush();
+  const key=all().find(node=>node.attributes?.["aria-label"]==="Новый ключ: mapping");key.value="first";
+  const add=all().find(node=>node.textContent==="+ Добавить ключ");add.onclick();await ui.flush();await ui.flush();
+  assert.deepEqual(JSON.parse(JSON.stringify(patches.map(op=>op.value))),[{},{}]);
+});
+
+test("schema variant control switches between an object and an array", async () => {
+  const schema={type:"object",properties:{variant:{oneOf:[{title:"Объект",type:"object",properties:{name:{type:"string"}}},{title:"Массив",type:"array",items:{type:"string"}}]}}};
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text:"variant: {}\n",format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return {schema,value:parse(args.text)};
+    if(name==="settings.document_patch")return patch_yaml_draft(args.text,args.operation);
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();await ui.flush();
+  const all=[],visit=node=>{all.push(node);for(const child of node.children||[])visit(child);};visit(ui.elements.get("jsonTree"));
+  const select=all.find(node=>node.attributes?.["aria-label"]==="Вариант: variant");assert.ok(select);select.value="1";select.onchange();await ui.flush();await ui.flush();
+  assert.deepEqual(parse(ui.elements.get("settingsText").value).variant,[]);
+});
+
+test("discarding a document restores its loaded text without clearing other drafts", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"),original="project:\n  id: original\n";
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text:original,format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();
+  ui.elements.get("settingsText").value="project:\n  id: changed\n";ui.elements.get("settingsText").events.input();
+  vm.runInContext('dirtyFields.add("edtUrl")',ui.context);ui.elements.get("discardDraftButton").onclick();
+  assert.equal(ui.elements.get("settingsText").value,original);assert.equal(vm.runInContext('dirtyFields.has("edtUrl")',ui.context),true);
+});
+
+test("scope switch saves only after preview and confirmation", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"),edits=[];
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text:args.layerScope==="profile"?"project:\n  id: old\n":"{}\n",format:"yaml",baseRevision:"base",layerScope:args.layerScope};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    if(name==="settings.preview")return {repositories:[],revision:"preview",projectRoot:read.values.projectRoot,replacesProfile:false};
+    if(name==="settings.apply"){edits.push(args);return {};}
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();
+  ui.elements.get("settingsText").value="project:\n  id: changed\n";ui.elements.get("settingsText").events.input();
+  ui.elements.get("editorDocument").value="project_local";ui.elements.get("editorDocument").events.change();
+  ui.elements.get("editorSwitchSave").onclick();await ui.flush();await ui.flush();
+  assert.equal(ui.elements.get("preview").hidden,false);assert.equal(edits.length,0);assert.equal(ui.elements.get("editorDocument").value,"profile");
+  await ui.elements.get("applyButton").onclick();await ui.flush();
+  assert.equal(edits.length,1);assert.equal(ui.elements.get("editorDocument").value,"project_local");assert.equal(ui.elements.get("settingsText").value,"{}\n");
+});
+
+test("validation errors appear beside the affected field and in the general status", async () => {
+  const backend = new SettingsBackend("unused-state", "unused-settings"), text = "repositories:\n  - path: ../outside\n";
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text, format: "yaml", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return backend.main({ action: "document_fields", ...args });
+    if (name === "settings.preview") throw new Error("/repositories/0/path: Path escapes project");
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("editSettingsButton").onclick();
+  ui.elements.get("editorMode").value = "tree"; ui.elements.get("editorMode").events.change(); await ui.flush(); await ui.flush();
+  const field = treeInputs(ui).find(input => input.attributes?.["aria-label"] === "repositories.0.path"); assert.ok(field);
+  await ui.elements.get("reviewEditButton").onclick();
+  assert.equal(field.attributes["aria-invalid"], "true");
+  assert.match(field.parentNode.children.map(item => item.textContent).join(" "), /Path escapes project/);
+  assert.match(ui.elements.get("editorValidation").textContent, /Path escapes project/);
+});
+
+test("nullable fields remain editable and pending field edits block saving the old draft", async () => {
+  const backend = new SettingsBackend("unused-state", "unused-settings");let release;
+  const ui = screen(async (name,args) => {
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.edit")return {text:"knowledge:\n  manifest: old.yaml\n",format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    if(name==="settings.document_patch")return new Promise(resolve=>{release=()=>resolve(patch_yaml_draft(args.text,args.operation));});
+    throw new Error(name);
+  });
+  await ui.flush();await ui.elements.get("editSettingsButton").onclick();ui.elements.get("editorMode").value="tree";ui.elements.get("editorMode").events.change();await ui.flush();await ui.flush();
+  const input=treeInputs(ui).find(item=>item.attributes?.["aria-label"]==="knowledge.manifest");assert.ok(input);input.value="new.yaml";input.onchange();await ui.flush();
+  assert.equal(ui.elements.get("reviewEditButton").disabled,true);assert.equal(ui.elements.get("applyButton").disabled,true);assert.equal(ui.elements.get("editorMode").disabled,true);
+  await ui.elements.get("reviewEditButton").onclick();assert.equal(ui.calls.some(call=>call.params?.name==="settings.preview"),false);
+  release();await ui.flush();await ui.flush();assert.match(ui.elements.get("settingsText").value,/manifest: "new.yaml"/);
+});
+
+test("detailed log export sends the selected period and displays the confirmed path", async () => {
+  let days;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.export_log"){days=args.days;return {path:"C:/support/log.txt",canOpenDirectory:true};}
+    throw new Error(name);
+  });
+  await ui.flush();ui.elements.get("logPeriod").value="3";await ui.elements.get("exportLogButton").onclick();
+  assert.equal(days,3);assert.equal(ui.elements.get("diagnosticsPath").textContent,"C:/support/log.txt");assert.equal(ui.elements.get("diagnosticsSaved").hidden,false);
+});
+
+
+test("project transfer reviews YAML and requires replacement confirmation", async () => {
+  let applied;
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read"||name==="settings.status")return read;
+    if(name==="settings.pick_import_file")return {id:"pick",status:"running"};
+    if(name==="settings.operation")return {id:"pick",status:"completed",action:"pick_import_file",projectRoot:read.values.projectRoot,result:{fileId:"file"}};
+    if(name==="settings.import_file")return {scope:"profile",filename:"project.yaml",text:"{}\n"};
+    if(name==="settings.transfer_context")return {baseRevision:"base"};
+    if(name==="settings.transfer_preview")return {revision:"review",files:[{path:"project.yaml",scope:"profile",exists:true,changes:[]}]};
+    if(name==="settings.transfer_apply"){applied=args;return {backups:[{scope:"profile",path:"backup.yaml"}]};}
+    throw new Error(name);
+  });
+  await ui.flush();ui.elements.get("openTransferButton").onclick();
+  ui.elements.get("transferScope").value="profile";
+  ui.elements.get("transferPath").value="C:/input/project.yaml";await ui.elements.get("transferPick").onclick();
+  await ui.elements.get("transferPreview").onclick();
+  await ui.elements.get("transferApply").onclick();assert.equal(applied,undefined);
+  ui.elements.get("transferReplace").checked=true;ui.elements.get("transferReplace").events.change();await ui.elements.get("transferApply").onclick();
+  assert.equal(applied.revision,"review");assert.equal(applied.replace,true);assert.equal(applied.documents.profile,"{}\n");
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,0);
+  assert.match(ui.elements.get("transferDetails").children[0].textContent,/backup\.yaml/);
+});
+
 
 test("profile table and header show detected EDT projects separately from the shared Git repository", async () => {
   const projects=[{name:"configuration",displayName:"Base",directory:"C:/fixture/project/configuration"},{name:"extension",displayName:"<Extension>",directory:"C:/fixture/project/extension"},{name:"other",directory:"C:/fixture/project/other"}];
@@ -456,90 +728,42 @@ test("profile table and header show detected EDT projects separately from the sh
   assert.match(ui.context.describeProjectImport({edtMappings:[{repository:"repo",project:"examples",status:"ambiguous"}]}),/найдено несколько подходящих каталогов/);
 });
 
-test("invalid tree values guard preview, import and profile changes until corrected or discarded", async () => {
-  const ui=screen(async name=>{if(name==="settings.read")return read;if(name==="settings.edit")return {text:'{"value":false}',baseRevision:"base"};throw new Error(name);});
-  await ui.flush();ui.elements.get("editorMode").value="tree";await ui.elements.get("editSettingsButton").onclick();
-  const input=treeInputs(ui)[0];input.value="fals";input.events.input();
-  assert.equal(input.attributes["aria-invalid"],"true");assert.equal(ui.elements.get("reviewEditButton").disabled,true);
-  assert.equal(ui.elements.get("unsavedHint").hidden,false);
-  await ui.elements.get("reviewEditButton").onclick();await ui.elements.get("previewButton").onclick();
-  await ui.context.selectProfile("C:/another");
-  assert.equal(ui.calls.filter(call=>["settings.preview","settings.select_profile"].includes(call.params?.name)).length,0);
-  ui.elements.get("editorMode").value="text";ui.elements.get("editorMode").events.change();assert.equal(ui.elements.get("editorMode").value,"tree");
-  input.value="true";input.events.input();assert.equal(ui.elements.get("reviewEditButton").disabled,false);
-  input.value="{";input.events.input();ui.elements.get("discardDraftButton").onclick();
-  assert.equal(ui.elements.get("jsonTree").children.length,0);assert.equal(ui.elements.get("unsavedHint").hidden,true);
-});
 
-test("JSON tree blocks edits while a different project directory is awaiting selection", async () => {
-  const ui=screen(async name=>name==="settings.edit"?{text:'{"value":false}',baseRevision:"base"}:{...read,schema:{properties:{projectRoot:{readOnly:false}}}});
-  await ui.flush();await ui.elements.get("editSettingsButton").onclick();
-  const input=treeInputs(ui)[0];assert.equal(input.disabled,false);
-  ui.elements.get("projectRoot").value="C:/different";ui.elements.get("projectRoot").events.input();
-  assert.equal(ui.elements.get("settingsText").disabled,true);assert.equal(input.disabled,true);
-  input.value="true";input.events.input();assert.equal(ui.elements.get("settingsText").value,'{"value":false}');
-  ui.elements.get("projectRoot").value=read.values.projectRoot;ui.elements.get("projectRoot").events.input();
-  assert.equal(input.disabled,false);input.events.input();assert.equal(JSON.parse(ui.elements.get("settingsText").value).value,true);
-});
 
-test("JSON formatting validates syntax without losing invalid text, and YAML stays editable", async () => {
-  const ui=screen(async name=>{if(name==="settings.read")return read;if(name==="settings.edit")return {text:'{"value":1}',baseRevision:"base"};throw new Error(name);});
-  await ui.flush();await ui.elements.get("editSettingsButton").onclick();
-  ui.elements.get("formatJsonButton").onclick();assert.equal(ui.elements.get("settingsText").value,'{\n  "value": 1\n}');
-  ui.elements.get("settingsText").value='{"value":';ui.elements.get("settingsText").events.input();ui.elements.get("formatJsonButton").onclick();
-  assert.equal(ui.elements.get("settingsText").value,'{"value":');assert.match(ui.elements.get("editorValidation").textContent,/Не удалось форматировать JSON/);
-  ui.elements.get("settingsText").value="value: true";ui.elements.get("settingsText").events.input();
-  ui.elements.get("editorMode").value="tree";ui.elements.get("editorMode").events.change();
-  assert.equal(ui.elements.get("editorMode").value,"text");assert.equal(ui.elements.get("settingsText").value,"value: true");
-});
 
-test("history JSON tree is read-only and prototype-like keys remain ordinary document data", async () => {
-  const text='{"__proto__":{"value":false},"constructor":"safe"}';
-  const ui=screen(async name=>{if(name==="settings.read")return {...read,viewOnly:true};if(name==="settings.document")return {text};throw new Error(name);});
-  await ui.flush();ui.elements.get("editorMode").value="tree";await ui.elements.get("editSettingsButton").onclick();
-  assert.ok(treeInputs(ui).every(input=>input.readOnly));assert.equal(ui.elements.get("formatJsonButton").disabled,true);
-  const input=treeInputs(ui)[0];input.value="true";input.events.input();assert.equal(ui.elements.get("settingsText").value,text);
-  const editable=screen(async name=>name==="settings.edit"?{text,baseRevision:"base"}:read);await editable.flush();
-  editable.elements.get("editorMode").value="tree";await editable.elements.get("editSettingsButton").onclick();
-  const field=treeInputs(editable)[0];field.value="true";field.events.input();
-  assert.equal(JSON.parse(editable.elements.get("settingsText").value).__proto__.value,true);
-  assert.equal(vm.runInContext("Object.prototype.value",editable.context),undefined);
-});
 
-test("history view displays only the profile from the combined read-only document", async () => {
-  const document = { format: "1c-ai-core-settings", version: 1, profile: { project: { id: "viewed" } }, settings: { mcp: { managed: { marker: "runtime" } } } };
-  const ui = screen(async name => name === "settings.document" ? { text: JSON.stringify(document) } : { ...read, viewOnly: true });
+test("history view displays the read-only YAML profile", async () => {
+  const document = "project:\n  id: viewed\n",local = "project:\n  purpose: local\n";
+  const ui = screen(async (name,args) => name === "settings.document" ? { text: args.layerScope==="project_local"?local:document, format: "yaml" } : { ...read, viewOnly: true });
   await ui.flush(); await ui.elements.get("editSettingsButton").onclick();
-  assert.deepEqual(JSON.parse(ui.elements.get("settingsText").value), document.profile);
+  assert.equal(ui.elements.get("settingsText").value, document);
   assert.equal(ui.elements.get("settingsText").readOnly, true);
   assert.equal(ui.elements.get("editorDocument").value, "profile");
+  assert.equal(ui.elements.get("editorDocument").disabled,false);
+  ui.elements.get("editorDocument").value="project_local";ui.elements.get("editorDocument").events.change();await ui.flush();
+  assert.equal(ui.elements.get("settingsText").value,local);
+  assert.equal(ui.elements.get("settingsText").readOnly,true);
 });
 
-test("settings export confirms a saved file and opens its folder without browser downloads", async () => {
-  const savedPath="C:/fixture/state/exports/1c-ai-core-settings.json";
+test("settings export confirms a saved YAML file without browser downloads", async () => {
+  const savedPath="C:/fixture/state/exports/project.yaml";
   const ui=screen(async name=>{
     if(name==="settings.read")return read;
-    if(name==="settings.save_export")return {path:savedPath,canOpenDirectory:true};
-    if(name==="settings.open_export_directory")return {};
+    if(name==="settings.transfer_export")return {path:savedPath};
     throw new Error(name);
-  });await ui.flush();await ui.elements.get("downloadButton").onclick();
-  assert.equal(ui.elements.get("exportPath").textContent,savedPath);
-  assert.equal(ui.elements.get("exportSaved").hidden,false);
-  assert.equal(ui.elements.get("openExportButton").hidden,false);
-  assert.match(ui.elements.get("status").textContent,/Файл настроек сохранён/);
+  });await ui.flush();await ui.elements.get("transferExport").onclick();
+  assert.match(ui.elements.get("status").textContent,/сохранён/);
+  assert.match(ui.elements.get("status").textContent,/project.yaml/);
   assert.equal(ui.downloads.length,0);
-  await ui.elements.get("openExportButton").onclick();
-  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.open_export_directory").length,1);
 });
 
 test("settings export never reports success when the disk write fails or no path is confirmed", async () => {
   for(const result of [null,{text:"{}"}]){
     const ui=screen(async name=>{
       if(name==="settings.read")return read;
-      if(name==="settings.save_export"){if(!result)throw new Error("Disk unavailable");return result;}
+      if(name==="settings.transfer_export"){if(!result)throw new Error("Disk unavailable");return result;}
       throw new Error(name);
-    });await ui.flush();await ui.elements.get("downloadButton").onclick();
-    assert.equal(ui.elements.get("exportSaved").hidden,true);
+    });await ui.flush();await ui.elements.get("transferExport").onclick();
     assert.match(ui.elements.get("status").textContent,/Диск недоступен|не подтверждено/);
     assert.equal(ui.downloads.length,0);
   }
@@ -932,12 +1156,12 @@ test("external connection button polls one read-only probe and displays project 
 });
 
 test("manual settings require a fresh preview after editing and apply the reviewed text", async () => {
-  const text = JSON.stringify({ format: "1c-ai-core-settings", version: 1, settings: { mcp: { managed: {} } } });
+  const text = "project: {}\n";
   const ui = screen(async (name, args) => {
     if(name === "settings.read") return read;
-    if(name === "settings.edit") return { text, baseRevision: "loaded" };
-    if(name === "settings.preview") { assert.equal(args.mode, "edit"); assert.equal(args.baseRevision, "loaded"); return { revision: "reviewed", projectRoot: read.values.projectRoot, repositories: [], openviking: { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 4, max_response_bytes: 4096 } }; }
-    if(name === "settings.apply") { assert.equal(args.text, text); assert.equal(args.revision, "reviewed"); assert.equal(args.mode, "edit"); assert.equal(args.baseRevision, "loaded"); return {}; }
+    if(name === "settings.edit") return { text, format: "yaml", layerScope: "profile", baseRevision: "loaded" };
+    if(name === "settings.preview") { assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); return { revision: "reviewed", projectRoot: read.values.projectRoot, repositories: [], openviking: { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 4, max_response_bytes: 4096 } }; }
+    if(name === "settings.apply") { assert.equal(args.text, text); assert.equal(args.revision, "reviewed"); assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); return {}; }
     throw new Error(name);
   });
   await ui.flush();
@@ -952,7 +1176,7 @@ test("manual settings require a fresh preview after editing and apply the review
   await ui.elements.get("reviewEditButton").onclick();
   await ui.elements.get("applyButton").onclick();
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.apply").length, 1);
-  assert.equal(ui.elements.get("settingsText").value, "");
+  assert.equal(ui.elements.get("settingsText").value, text);
 });
 
 test("the chat directory is filled on opening and can be opened without changing its binding", async () => {
@@ -1119,10 +1343,10 @@ test("a locked project remains locked and preparation polling does not restart i
   assert.equal(preparations.length, 1);
   assert.equal(JSON.stringify(preparations[0].params.arguments.authorization), JSON.stringify({
     scope: "C:/fixture/project#default", effects: ["launch"],
-    evidence: "Пользователь нажал «Подготовить и проверить MCP» в экране настроек."
+    evidence: "Пользователь нажал «Подготовить и проверить» в экране настроек."
   }));
   assert.equal([...ui.timers.values()].filter(timer => timer.ms === 1000 || timer.ms === 5000).length, 0);
-  assert.match(ui.elements.get("status").textContent, /Сводка обновляется автоматически/);
+  assert.match(ui.elements.get("status").textContent, /затем проверьте готовность/);
   const contents = element => [element.textContent, ...element.children.map(contents)].join(" ");
   const lines = contents(ui.elements.get("connections"));
   assert.match(lines, /Подключение к BSL LS и работа с проектами доступны/);
@@ -1133,19 +1357,22 @@ test("an edited import cannot acquire the previous preview result", async () => 
   let release;
   const ui = screen(async name => {
     if (name === "settings.read") return read;
-    if (name === "settings.preview") return new Promise(resolve => { release = resolve; });
+    if (name === "settings.pick_import_file") return { id: "pick", status: "running" };
+    if (name === "settings.operation") return { id: "pick", status: "completed", action: "pick_import_file", projectRoot: read.values.projectRoot, result: { fileId: "file" } };
+    if (name === "settings.import_file") return { scope: "profile", filename: "project.yaml", text: "{}" };
+    if (name === "settings.transfer_context") return { baseRevision: "base" };
+    if (name === "settings.transfer_preview") return new Promise(resolve => { release = resolve; });
     throw new Error(name);
   });
   await ui.flush();
-  ui.elements.get("file").files = [{ size: 20, text: async () => "profile" }];
-  const pending = ui.elements.get("previewButton").onclick();
+  ui.elements.get("transferPath").value = "C:/profile.yaml"; await ui.elements.get("transferPick").onclick();
+  const pending = ui.elements.get("transferPreview").onclick();
   await ui.flush();
-  assert.equal(ui.elements.get("file").disabled, true);
-  ui.elements.get("file").events.change();
-  release({ projectRoot: "C:/old", repositories: [] });
+  ui.elements.get("transferScope").value = "project_local"; ui.elements.get("transferScope").events.change();
+  release({ revision: "old", files: [] });
   await pending;
-  assert.equal(ui.elements.get("preview").hidden, true);
-  assert.match(ui.elements.get("status").textContent, /изменились во время проверки/);
+  assert.equal(ui.elements.get("transferApply").disabled, true);
+  assert.match(ui.elements.get("status").textContent, /изменились/);
 });
 
 test("a late operation notification opens and refreshes its result", async () => {
@@ -1175,21 +1402,6 @@ test("preparation uses the current backend scope after a host directory change",
   await ui.elements.get("readinessButton").onclick();
   const preparation = ui.calls.find(call => call.params?.name === "settings.run_check");
   assert.equal(preparation.params.arguments.authorization.scope, "C:/other#second");
-});
-
-test("importing a profile does not assert a separate launch authorization", async () => {
-  const ui = screen(async name => {
-    if (name === "settings.read") return read;
-    if (name === "settings.preview") return { projectRoot: "C:/fixture/project", repositories: [], revision: "one" };
-    if (name === "settings.apply") return { values: read.values };
-    throw new Error(name);
-  });
-  await ui.flush();
-  ui.elements.get("file").files = [{ size: 20, text: async () => "profile" }];
-  await ui.elements.get("previewButton").onclick();
-  await ui.elements.get("applyButton").onclick();
-  assert.equal(ui.elements.get("profilePanel").hidden, false);
-  assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });
 
 test("profile creation reports restart guidance without preparing services", async () => {
@@ -1241,9 +1453,9 @@ test("profile creation explains starter and preserved instructions and override 
 
 test("the readiness summary checks once and retains a scoped result across refresh", async () => {
   let completed=false;
-  const readiness={state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",label:"EDT",state:"ready"},{id:"policy",label:"Политика",state:"ready"},{id:"skills",label:"Навыки",state:"ready"}]};
+  const readiness={state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",label:"EDT",state:"ready"},{id:"v8std",label:"v8std",state:"ready"},{id:"policy",label:"Политика",state:"ready"},{id:"skills",label:"Навыки",state:"ready"}]};
   const ui=screen(async(name,args)=>{
-    if(name==="settings.read")return {...read,readiness:completed?readiness:{state:"not_checked"}};
+    if(name==="settings.read")return {...read,values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:completed?readiness:{state:"not_checked"}};
     if(name==="settings.run_check"){assert.equal(args.authorization.scope,read.preparationScope);return {id:"ready-check",status:"running"};}
     if(name==="settings.operation"){completed=true;return {id:"ready-check",status:"completed",action:"check",result:{managed:[],external:{},readiness}};}
     throw new Error(name);
@@ -1251,7 +1463,7 @@ test("the readiness summary checks once and retains a scoped result across refre
   await ui.elements.get("readinessButton").onclick();
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,1);
   assert.match(ui.elements.get("readinessTitle").textContent,/можно начинать работу/);
-  assert.equal(ui.elements.get("readinessItems").children.length,3);
+  assert.equal(ui.elements.get("readinessItems").children.length,4);
   ui.elements.get("edtUrl").value="http://localhost:2222/mcp";ui.elements.get("edtUrl").events.input();
   assert.match(ui.elements.get("readinessTitle").textContent,/несохранённые/);
   await ui.elements.get("readinessButton").onclick();assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,1);
@@ -1266,7 +1478,7 @@ test("failed service checks name the failing component and stale indexes offer r
 });
 
 test("a stale readiness result cannot display ready", async () => {
-  const ui=screen(async()=>({...read,readiness:{state:"stale",checkedAt:"2026-10-22T12:00:00Z",reason:"Изменился порт EDT.",checks:[{id:"edt",label:"EDT",state:"ready"}]}}));
+  const ui=screen(async()=>({...read,values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"stale",checkedAt:"2026-10-22T12:00:00Z",reason:"Изменился порт EDT.",checks:[{id:"edt",label:"EDT",state:"ready"}]}}));
   await ui.flush();assert.match(ui.elements.get("readinessTitle").textContent,/повторить/);assert.match(ui.elements.get("readinessDetail").textContent,/Изменился порт/);
 });
 
@@ -1460,25 +1672,6 @@ test("editing connections saves only writable changes for the bound project", as
   assert.equal(JSON.stringify(written), JSON.stringify({ v8stdUrl: "http://localhost:8001/mcp" }));
 });
 
-test("a replacement needs confirmation and carries the reviewed revision", async () => {
-  let applied;
-  const ui = screen(async (name, args) => {
-    if (name === "settings.read") return read;
-    if (name === "settings.preview") return { projectRoot: read.values.projectRoot, repositories: [], replacesProfile: true, revision: "reviewed" };
-    if (name === "settings.apply") { applied = args; return {}; }
-    throw new Error(name);
-  });
-  await ui.flush();
-  ui.elements.get("file").files = [{ name: "profile.yaml", size: 20, text: async () => "profile" }];
-  await ui.elements.get("previewButton").onclick();
-  await ui.elements.get("applyButton").onclick();
-  assert.equal(applied, undefined);
-  assert.match(ui.elements.get("status").textContent, /Подтвердите/);
-  ui.elements.get("replace").checked = true;
-  await ui.elements.get("applyButton").onclick();
-  assert.equal(applied.revision, "reviewed");assert.equal(applied.replace, true);
-});
-
 test("resizing measures content independently from the iframe viewport", async () => {
   const ui = screen(async () => read);await ui.flush();
   const sizes = () => ui.calls.filter(call => call.method === "ui/notifications/size-changed");
@@ -1558,7 +1751,7 @@ test("echoed load and operation results do not navigate, refresh recursively or 
   ui.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: { mode: "profile" } } });
   await ui.elements.get("loadButton").onclick();
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.read").length, 2);
-  assert.equal(ui.elements.get("profilePanel").hidden, false);
+  assert.equal(ui.elements.get("checkPanel").hidden, false);
   ui.elements.get("checkTab").onclick();
   await ui.context.pollOperation(operation.id);
   for (let index = 0; index < 3; index++) ui.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: operation } });
@@ -1654,87 +1847,174 @@ test("opening and observing a profile keep managed status and service results co
   assert.equal(ui.calls.filter(call=>["settings.run_check","settings.probe_connections"].includes(call.params?.name)).length,0);
 });
 
-test("loading, selecting and reloading profiles run live readiness checks without a button click", async () => {
-  let projectRoot=read.values.projectRoot,verified=false,checks=0,release;
-  const snapshot=()=>({...read,values:{...read.values,projectRoot},preparationScope:projectRoot+"#default",instance:"default",
-    readiness:{state:verified?"ready":"stale",checks:[]},summary:{components:[{id:"code-index",status:verified?"ready":"stopped"},{id:"bsl-ls",status:verified?"ready":"check_stale"}]}});
-  const ui=screen(async(name,args)=>{
-    if(name==="settings.read"||name==="settings.status")return snapshot();
-    if(name==="settings.refresh_readiness"){checks++;assert.equal(args.scope,projectRoot+"#default");assert.equal(args.authorization,undefined);return {id:"observe-"+checks,action:"refresh_readiness",status:"running"};}
-    if(name==="settings.operation"){await new Promise(resolve=>{release=resolve;});verified=true;return {id:args.operationId,action:"refresh_readiness",projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};}
-    if(name==="settings.select_profile"){projectRoot=args.projectRoot;verified=false;return snapshot();}
-    if(name==="settings.load"){verified=false;return {};}
-    throw new Error(name);
-  });
-  await ui.flush();assert.equal(checks,1);assert.match(ui.elements.get("readinessTitle").textContent,/Обновляем готовность/);
-  release();await ui.flush();
-  assert.equal(ui.elements.get("indexSummary").textContent,"Индекс актуален");assert.equal(ui.elements.get("bslSummary").textContent,"API доступен");
-  assert.match(ui.elements.get("readinessTitle").textContent,/можно начинать работу/);
-  await ui.tick(8000);await ui.tick(8000);assert.equal(checks,1);
-  const selected=ui.context.selectProfile("C:/fixture/other");await ui.flush();assert.equal(checks,2);release();await selected;
-  const reloaded=ui.elements.get("loadButton").onclick();await ui.flush();assert.equal(checks,3);release();await reloaded;
-  ui.document.hidden=true;ui.documentEvents.visibilitychange();ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.flush();assert.equal(checks,4);release();await ui.flush();
-  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,0);
-});
-
-test("automatic readiness defers drafts, skips viewed profiles and follows an existing check", async () => {
-  let ready=false,checks=0;
-  const current=()=>({...read,instance:"default",readiness:{state:ready?"ready":"stale",checks:[]}});
-  const ui=screen(async(name,args)=>{
-    if(name==="settings.read"||name==="settings.status")return current();
-    if(name==="settings.refresh_readiness"){checks++;return {id:"observe",action:"refresh_readiness",status:"running"};}
-    if(name==="settings.operation"){ready=true;return {id:"observe",action:"refresh_readiness",status:"completed",result:{managed:[],external:{}}};}
-    if(name==="settings.select_profile")return {...current(),values:{projectRoot:args.projectRoot},preparationScope:args.projectRoot+"#default",viewOnly:true};
-    throw new Error(name);
-  });await ui.flush();assert.equal(checks,1);
-  ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
-  await ui.elements.get("refreshButton").onclick();await ui.tick(8000);assert.equal(checks,1);assert.equal(ui.elements.get("edtUrl").value,"draft");
-  ui.elements.get("discardDraftButton").onclick();await ui.flush();assert.equal(checks,2);
-  await ui.context.selectProfile("C:/foreign");assert.equal(checks,2);
-  const running=screen(async name=>{
-    if(name==="settings.read")return {...current(),operation:{id:"existing",action:"check",status:"running"}};
-    if(name==="settings.operation")return {id:"existing",action:"check",status:"running"};
-    throw new Error(name);
-  });await running.flush();assert.equal(running.calls.filter(call=>call.params?.name==="settings.refresh_readiness").length,0);
-  assert.equal(running.calls.filter(call=>call.params?.name==="settings.operation").length,1);
-});
-
-test("automatic checks leave navigation and drafts usable and do not release another action's busy state", async () => {
-  let releaseCheck,releaseEditor,verified=false;
-  const ui=screen(async name=>{
-    if(name==="settings.read")return {...read,instance:"default",values:{...read.values,edtUrl:"saved"},readiness:{state:verified?"ready":"stale",checks:[]}};
-    if(name==="settings.refresh_readiness")return {id:"background",action:"refresh_readiness",status:"running"};
-    if(name==="settings.operation"){await new Promise(resolve=>{releaseCheck=resolve;});verified=true;return {id:"background",action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};}
-    if(name==="settings.edit"){await new Promise(resolve=>{releaseEditor=resolve;});return {text:"{}",baseRevision:"document"};}
-    if(name==="settings.versions")return {versions:[]};
-    throw new Error(name);
-  });await ui.flush();
-  for(const id of ["profileTab","checkTab","editorTab","edtUrl","bslLsEnabled","selectProfileButton"])assert.equal(ui.elements.get(id).disabled,false,id);
-  for(const id of ["saveButton","readinessButton","installUpdateButton"])assert.equal(ui.elements.get(id).disabled,true,id);
-  ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
-  ui.elements.get("checkTab").onclick();assert.equal(ui.elements.get("checkPanel").hidden,false);
-  const editing=ui.elements.get("editSettingsButton").onclick();await ui.flush();
-  releaseCheck();await ui.flush();assert.equal(ui.elements.get("edtUrl").disabled,true,"document loading still owns its busy state");
-  releaseEditor();await editing;assert.equal(ui.elements.get("edtUrl").disabled,false);assert.equal(ui.elements.get("edtUrl").value,"draft");
-});
-
-test("a changed connection can be saved while automatic readiness is still running", async () => {
-  let releaseCheck, saved="saved";
-  const snapshot=()=>({...read,instance:"default",values:{...read.values,edtUrl:saved},readiness:{state:"not_checked",checks:[]}});
-  const ui=screen(async (name,args)=>{
-    if(name==="settings.read"||name==="settings.status")return snapshot();
-    if(name==="settings.refresh_readiness")return {id:"background",action:"refresh_readiness",status:"running"};
-    if(name==="settings.operation"){await new Promise(resolve=>{releaseCheck=resolve;});return {id:"background",action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{},superseded:true}};}
-    if(name==="settings.update"){saved=args.set.edtUrl;return {settingsRevision:"new"};}
-    throw new Error(name);
+test("opening, refreshing and switching projects only observe status, including stale and indexing states", async () => {
+  let projectRoot = read.values.projectRoot, statusCalls = 0;
+  const snapshot = () => ({ ...read, instance: "default", values: { ...read.values, projectRoot, edtUrl: "http://edt", v8stdUrl: "http://v8std" },
+    preparationScope: projectRoot + "#default", readiness: { state: "stale", reason: "Истёк срок проверки", checks: [] },
+    summary: { components: [{ id: "code-index", status: "indexing" }, { id: "bsl-ls", status: "check_stale" }] } });
+  const ui = screen(async (name, args) => {
+    if (name === "settings.read") return snapshot();
+    if (name === "settings.status") { statusCalls++; return snapshot(); }
+    if (name === "settings.select_profile") { projectRoot = args.projectRoot; return snapshot(); }
+    if (name === "settings.load") return {};
+    throw new Error("Unexpected active operation: " + name);
   });
   await ui.flush();
-  ui.elements.get("edtUrl").value="http://127.0.0.1:8123/mcp";ui.elements.get("edtUrl").events.input();
-  assert.equal(ui.elements.get("saveButton").disabled,false);
-  await ui.elements.get("saveButton").onclick();
-  assert.equal(saved,"http://127.0.0.1:8123/mcp");
-  assert.equal(ui.elements.get("edtUrl").value,saved);
-  releaseCheck();await ui.flush();
+  assert.match(ui.elements.get("readinessTitle").textContent, /устарел|провер/i);
+  await ui.tick(8000); await ui.tick(8000);
+  await ui.elements.get("refreshButton").onclick();
+  await ui.context.selectProfile("C:/fixture/next");
+  await ui.elements.get("loadButton").onclick();
+  ui.document.hidden = true; ui.documentEvents.visibilitychange();
+  ui.document.hidden = false; ui.documentEvents.visibilitychange(); await ui.flush();
+  assert.ok(statusCalls >= 4);
+  assert.equal(ui.elements.get("projectRoot").value, "C:/fixture/next");
+  assert.equal(ui.calls.filter(call => ["settings.refresh_readiness", "settings.run_check", "settings.probe_connections", "settings.updates", "settings.rebuild_index", "settings.restart_index"].includes(call.params?.name)).length, 0);
+});
+
+test("component catalogue uses fresh evidence and treats disabled required services as attention", async () => {
+  const current={...read,profile:{...read.profile,authorities:{code_index:"code-index",bsl_ls:"bsl-ls"},testing:{yaxunit:false,vanessa:false}},
+    values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std",openvikingEnabled:false,codeIndexEnabled:false,bslLsEnabled:true},
+    readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"},{id:"code-index",state:"disabled"},{id:"bsl-ls",state:"ready"}]},
+    summary:{components:[{id:"code-index",status:"disabled"},{id:"bsl-ls",status:"ready",checkedAt:"2026-10-22T12:00:00Z"}]},installedVersions:{"bsl-ls":"1.2.3"}};
+  const ui=screen(async()=>current);await ui.flush();
+  const cards=()=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children);
+  const card=name=>cards().find(item=>item.children[0].children[0].textContent===name);
+  assert.equal(cards().length,7);assert.equal(card("EDT").children[0].children[1].textContent,"Готов");
+  assert.equal(ui.elements.get("countAll").textContent,"7");assert.equal(ui.elements.get("countReady").textContent,"3");
+  assert.equal(ui.elements.get("countIssues").textContent,"1");assert.equal(ui.elements.get("countDisabled").textContent,"3");
+  assert.equal(ui.elements.get("profileOverview").parentElement,ui.elements.get("overviewDetails"));
+  assert.equal(card("OpenViking").children[0].children[1].textContent,"Отключён");
+  assert.match(ui.elements.get("readinessTitle").textContent,/требуется внимание/);
+  assert.match(ui.elements.get("readinessDetail").textContent,/Code Index/);
+  ui.elements.get("componentsIssues").onclick();assert.ok(card("Code Index"));assert.equal(card("OpenViking"),undefined);
+  card("Code Index").children[2].children[1].onclick();assert.equal(ui.elements.get("managedSettings").open,true);
+  current.readiness={...current.readiness,state:"stale"};ui.context.renderCurrent(current,{preserveDraft:true});
+  ui.elements.get("componentsAll").onclick();assert.equal(card("EDT").children[0].children[1].textContent,"Проверка устарела");
+  assert.equal(card("BSL LS").children[0].children[1].textContent,"Проверка устарела");
+});
+
+test("known configuration problems take priority over unchecked or stale status", async () => {
+  for(const state of ["not_checked","stale"]){
+    const current={...read,values:{...read.values,edtUrl:"",v8stdUrl:"http://v8std"},readiness:{state,checks:[]}};
+    const ui=screen(async()=>current);await ui.flush();
+    assert.equal(ui.elements.get("headerStatusTitle").textContent,"Требует внимания");
+    assert.match(ui.elements.get("headerStatusReason").textContent,/EDT/);
+  }
+});
+
+test("a check completion never announces ready with a disabled assigned authority", async () => {
+  const current = { ...read, instance: "default", profile: { ...read.profile, authorities: { code_index: "code-index", bsl_ls: "bsl-ls" } } };
+  const ui = screen(async () => current); await ui.flush();
+  for (const name of ["code-index", "bsl-ls"]) {
+    const result = { managed: [{ name, state: "disabled", ready: true }], external: {}, readiness: { state: "ready", checks: [{ id: name, state: "disabled" }] } };
+    ui.context.renderCheck(result, { projectRoot: read.values.projectRoot, instance: "default" });
+    assert.match(ui.elements.get("status").textContent, /требует внимания/, name);
+    assert.doesNotMatch(ui.elements.get("status").textContent, /Окружение готово/, name);
+  }
+});
+
+test("component actions target their service and preserve an unrelated document draft", async () => {
+  const current={...read,profile:{...read.profile,testing:{yaxunit:true,vanessa:true}},values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std",openvikingEnabled:false,codeIndexEnabled:true,bslLsEnabled:true},
+    knowledge:{provider:"openviking",mode:"kora",required:true},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
+  const ui=screen(async(name,args)=>name==="settings.edit"?{text:'{"mcp":{}}',baseRevision:"base",layerScope:args.layerScope}:name==="settings.versions"?{component:args.component,versions:[]}:current);await ui.flush();
+  const cards=()=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),card=name=>cards().find(item=>item.children[0].children[0].textContent===name);
+  ui.elements.get("componentsIssues").onclick();assert.ok(card("OpenViking"));assert.match(ui.elements.get("readinessDetail").textContent,/OpenViking/);
+  card("BSL LS").children[2].children[1].onclick();assert.equal(ui.elements.get("updateComponent").value,"bsl-ls");assert.equal(ui.elements.get("managedDialog").open,true);assert.equal(ui.document.activeElement,ui.elements.get("bslLsEnabled"));ui.elements.get("managedDialogClose").onclick();
+  ui.elements.get("editorDocument").value="project_local";ui.elements.get("editorDocument").events.change();await ui.flush();
+  ui.elements.get("settingsText").value='{"mcp":{"draft":true}}';ui.elements.get("settingsText").events.input();
+  card("YaXUnit").children[2].children[1].onclick();assert.equal(ui.elements.get("editorDocument").value,"project_local");assert.match(ui.elements.get("settingsText").value,/draft/);
+});
+
+test("testing cards open and focus the matching profile field", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"),text="testing:\n  commands: []\n  yaxunit: false\n  vanessa: false\n";
+  const current={...read,profile:{...read.profile,testing:{yaxunit:false,vanessa:false}}};
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.edit")return {text,format:"yaml",baseRevision:"base",layerScope:"profile"};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    throw new Error(name);
+  });
+  await ui.flush();const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children);
+  cards.find(card=>card.children[0].children[0].textContent==="YaXUnit").children[2].children[1].onclick();
+  await ui.flush();await ui.flush();await ui.flush();
+  const section=ui.elements.get("jsonTree").children.find(item=>item.children[0].textContent==="Тестирование");
+  assert.equal(section.open,true);assert.equal(ui.document.activeElement.attributes?.["aria-label"],"testing.yaxunit");
+});
+
+test("managed component dialog keeps a draft and collapses its panel on close", async () => {
+  const current={...read,values:{...read.values,codeIndexEnabled:true,bslLsEnabled:true},summary:{components:[]}};
+  const ui=screen(async()=>current);await ui.flush();const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children);
+  cards.find(card=>card.children[0].children[0].textContent==="BSL LS").children[2].children[1].onclick();
+  assert.equal(ui.elements.get("codeIndexChoice").hidden,true);assert.equal(ui.elements.get("bslLsChoice").hidden,false);assert.equal(ui.elements.get("javaSettingsPanel").hidden,false);assert.equal(ui.elements.get("updateComponent").disabled,true);
+  ui.elements.get("bslLsEnabled").checked=false;ui.elements.get("bslLsEnabled").events.change();ui.elements.get("managedDialogClose").onclick();
+  assert.equal(ui.elements.get("managedCloseConfirm").open,true);ui.elements.get("managedCloseKeep").onclick();
+  assert.equal(ui.elements.get("managedDialog").open,false);assert.equal(ui.elements.get("managedSettings").open,false);assert.equal(ui.elements.get("bslLsEnabled").checked,false);assert.equal(ui.elements.get("codeIndexChoice").hidden,false);assert.equal(ui.elements.get("updateComponent").disabled,false);
+  cards.find(card=>card.children[0].children[0].textContent==="Code Index").children[2].children[1].onclick();
+  assert.equal(ui.elements.get("managedDialog").open,false);assert.match(ui.elements.get("status").textContent,/черновик другого компонента/);
+});
+
+test("separate import and export actions expose the selected transfer flow", async () => {
+  const ui=screen(async()=>read);await ui.flush();
+  ui.elements.get("openImportButton").onclick();assert.equal(ui.elements.get("transferImportSection").hidden,false);assert.equal(ui.elements.get("transferExportSection").hidden,true);
+  ui.elements.get("transferClose").onclick();assert.equal(ui.document.activeElement,ui.elements.get("openImportButton"));
+  ui.elements.get("openExportButton").onclick();assert.equal(ui.elements.get("transferImportSection").hidden,true);assert.equal(ui.elements.get("transferExportSection").hidden,false);
+  ui.elements.get("transferClose").onclick();ui.context.show("export");assert.equal(ui.elements.get("transferImportSection").hidden,true);assert.equal(ui.elements.get("transferExportSection").hidden,false);
+});
+
+test("connection dialog keeps its draft and prevents saving it from another component", async () => {
+  const current={...read,values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"not_checked"},summary:{components:[]}};
+  const ui=screen(async()=>current);await ui.flush();
+  const card=name=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children).find(item=>item.children[0].children[0].textContent===name);
+  card("EDT").children[2].children[1].onclick();assert.equal(ui.elements.get("componentDialog").open,true);
+  assert.equal(ui.elements.get("edtField").hidden,false);assert.equal(ui.elements.get("v8stdField").hidden,true);
+  ui.elements.get("connectionScope").value="project_local";ui.elements.get("connectionScope").events.change();
+  ui.elements.get("edtUrl").value="http://draft";ui.elements.get("edtUrl").events.input();
+  ui.elements.get("connectionScope").value="profile";ui.elements.get("connectionScope").events.change();
+  assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.match(ui.elements.get("componentDialogStatus").textContent,/сменой области/);
+  ui.elements.get("componentDialogClose").onclick();assert.equal(ui.elements.get("componentCloseConfirm").open,true);
+  ui.elements.get("componentCloseKeep").onclick();assert.equal(ui.elements.get("componentDialog").open,false);
+  assert.equal(ui.elements.get("edtUrl").value,"http://draft");
+  card("v8std").children[2].children[1].onclick();assert.equal(ui.elements.get("componentDialog").open,false);assert.match(ui.elements.get("status").textContent,/черновик другого подключения/);
+  card("EDT").children[2].children[1].onclick();assert.equal(ui.elements.get("componentDialog").open,true);
+});
+
+test("discarding a connection draft does not release a pending external project change", async () => {
+  const current={...read,instance:"first",values:{...read.values,edtUrl:"http://edt",bslLsJava:"java"},summary:{components:[]}};
+  const ui=screen(async()=>current);await ui.flush();
+  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),edt=cards.find(item=>item.children[0].children[0].textContent==="EDT");
+  edt.children[2].children[1].onclick();ui.elements.get("edtUrl").value="http://draft";ui.elements.get("edtUrl").events.input();
+  ui.elements.get("bslLsJava").value="other-draft";ui.elements.get("bslLsJava").events.input();
+  ui.context.renderCurrent({...current,values:{...current.values,projectRoot:"C:/new"}},{preserveDraft:true});
+  assert.equal(ui.elements.get("saveButton").disabled,true);
+  ui.elements.get("componentDiscard").onclick();
+  assert.equal(ui.elements.get("edtUrl").value,"http://edt");assert.equal(ui.elements.get("bslLsJava").value,"other-draft");
+  assert.equal(ui.elements.get("saveJavaButton").disabled,true);assert.equal(ui.elements.get("unsavedHint").hidden,false);
+  assert.match(ui.elements.get("componentDialogStatus").textContent,/Проект изменился/);
+  ui.elements.get("bslLsJava").value="java";ui.elements.get("bslLsJava").events.input();
+  assert.equal(ui.elements.get("unsavedHint").hidden,false);assert.equal(ui.elements.get("discardDraftButton").disabled,false);
+});
+
+test("component catalogue shows checking instead of the previous ready receipt during a scoped operation", async () => {
+  const current={...read,instance:"default",values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
+  const ui=screen(async()=>current);await ui.flush();
+  current.operation={id:"check",action:"check",status:"running",projectRoot:read.values.projectRoot,instance:"default"};ui.context.renderCurrent(current,{preserveDraft:true});
+  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),edt=cards.find(item=>item.children[0].children[0].textContent==="EDT");
+  assert.equal(edt.children[0].children[1].textContent,"Проверяется…");
+});
+
+test("enabled testing capabilities are not falsely claimed ready or treated as failed setup checks", async () => {
+  const current={...read,profile:{...read.profile,testing:{yaxunit:true,vanessa:true}},values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
+  const ui=screen(async()=>current);await ui.flush();
+  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),testCard=cards.find(item=>item.children[0].children[0].textContent==="YaXUnit");
+  assert.equal(testCard.children[0].children[1].textContent,"Не проверен");assert.equal(ui.elements.get("headerStatusTitle").textContent,"Готово");
+});
+
+test("header names non-component readiness failures and opens their details", async () => {
+  const current={...read,values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"blocked",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",label:"EDT",state:"ready"},{id:"v8std",label:"v8std",state:"ready"},{id:"policy",label:"Политика",state:"error"}]},summary:{components:[]}};
+  const ui=screen(async()=>current);await ui.flush();assert.equal(ui.elements.get("headerStatusTitle").textContent,"Требует внимания");
+  assert.match(ui.elements.get("headerStatusReason").textContent,/Политика/);
+  ui.elements.get("headerStatus").onclick();assert.equal(ui.elements.get("readinessChecks").open,true);assert.equal(ui.elements.get("checkPanel").hidden,false);
 });
 
 test("a manual status refresh leaves the form usable and preserves edits made while waiting", async () => {
@@ -1780,69 +2060,6 @@ test("a failed status request for the previous profile does not mark the selecte
   release();await pending;assert.equal(ui.elements.get("autoRefreshState").textContent,indicator);
 });
 
-test("an explicitly expired observation triggers one automatic refresh", async () => {
-  let stale=false,checks=0;
-  const snapshot=()=>({...read,instance:"default",readiness:{state:stale?"stale":"ready",checkedAt:"2026-10-22T12:00:00Z",reason:stale?"Истёк срок проверки":undefined,checks:[]}});
-  const ui=screen(async name=>{
-    if(name==="settings.read"||name==="settings.status")return snapshot();
-    if(name==="settings.refresh_readiness"){checks++;return {id:"background-"+checks,action:"refresh_readiness",status:"running"};}
-    if(name==="settings.operation")return {id:"background-"+checks,action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};
-    throw new Error(name);
-  });
-  await ui.flush();assert.equal(checks,1);
-  stale=true;await ui.tick(8000);await ui.flush();assert.equal(checks,2);
-  await ui.tick(8000);await ui.flush();assert.equal(checks,2);
-});
-
-test("a profile can be selected while the previous automatic check is still running", async () => {
-  const scopes=[];let projectRoot=read.values.projectRoot,operationRoot=projectRoot,release,releaseStart,running=false;
-  const snapshot=()=>({...read,values:{projectRoot},instance:"default",preparationScope:projectRoot+"#default",readiness:{state:"stale",checks:[]},operation:running?{id:"background",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:"running"}:{status:"idle"}});
-  const ui=screen(async(name,args)=>{
-    if(name==="settings.read")return snapshot();
-    if(name==="settings.refresh_readiness"){scopes.push(args.scope);operationRoot=projectRoot;running=true;if(scopes.length===2)await new Promise(resolve=>{releaseStart=resolve;});return {id:"background",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:"running"};}
-    if(name==="settings.operation"){const root=operationRoot;await new Promise(resolve=>{release=resolve;});running=false;return {id:"background",action:"refresh_readiness",projectRoot:root,instance:"default",status:"completed",result:{managed:[],external:{}}};}
-    if(name==="settings.select_profile"){projectRoot=args.projectRoot;return snapshot();}
-    throw new Error(name);
-  });await ui.flush();assert.deepEqual(scopes,[read.preparationScope]);
-  await ui.context.selectProfile("C:/next-profile");assert.equal(ui.elements.get("projectRoot").value,"C:/next-profile");assert.equal(scopes.length,1);
-  assert.equal(ui.elements.get("edtUrl").disabled,false);
-  release();await ui.flush();assert.deepEqual(scopes,[read.preparationScope,"C:/next-profile#default"]);
-  assert.equal(ui.elements.get("readinessButton").disabled,true,"the previous check cannot release the new check's startup lock");
-  releaseStart();await ui.flush();
-  release();await ui.flush();assert.equal(ui.elements.get("projectRoot").value,"C:/next-profile");
-});
-
-test("a late refresh from the previous automatic check cannot undo a completed profile selection", async () => {
-  const firstRoot=read.values.projectRoot,secondRoot="C:/selected-profile",scopes=[];let reads=0,releaseCheck,releaseRead,releaseSelection;
-  const snapshot=root=>({...read,values:{projectRoot:root},instance:"default",preparationScope:root+"#default",readiness:{state:"stale",checks:[]},operation:{status:"completed"}});
-  const ui=screen(async(name,args)=>{
-    if(name==="settings.read"){reads++;if(reads===2)return new Promise(resolve=>{releaseRead=()=>resolve(snapshot(firstRoot));});return snapshot(reads===1?firstRoot:secondRoot);}
-    if(name==="settings.refresh_readiness"){scopes.push(args.scope);return {id:args.scope,action:"refresh_readiness",projectRoot:args.scope.split("#")[0],instance:"default",status:"running"};}
-    if(name==="settings.operation"){const root=args.operationId.split("#")[0];await new Promise(resolve=>{releaseCheck=resolve;});return {id:args.operationId,action:"refresh_readiness",projectRoot:root,instance:"default",status:"completed",result:{managed:[],external:{}}};}
-    if(name==="settings.select_profile")return new Promise(resolve=>{releaseSelection=()=>resolve(snapshot(secondRoot));});
-    throw new Error(name);
-  });await ui.flush();
-  const selecting=ui.context.selectProfile(secondRoot);await ui.flush();releaseCheck();await ui.flush();assert.equal(typeof releaseRead,"function");
-  releaseSelection();await selecting;assert.equal(ui.elements.get("projectRoot").value,secondRoot);
-  releaseRead();await ui.flush();assert.equal(ui.elements.get("projectRoot").value,secondRoot);assert.deepEqual(scopes,[firstRoot+"#default",secondRoot+"#default"]);
-  releaseCheck();await ui.flush();
-});
-
-test("missing startup freshness is retried automatically with a bounded per-profile budget", async () => {
-  let checks=0;
-  const ui=screen(async name=>{
-    if(name==="settings.read"||name==="settings.status")return {...read,instance:"default",readiness:{state:"blocked",checks:[]}};
-    if(name==="settings.refresh_readiness"){checks++;return {id:"settling",action:"refresh_readiness",status:"running"};}
-    if(name==="settings.operation")return {id:"settling",action:"refresh_readiness",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[{name:"code-index",state:"not_checked",ready:false,retryable:true}],external:{}}};
-    throw new Error(name);
-  });await ui.flush();assert.equal(checks,1);
-  for(let attempt=0;attempt<10;attempt++)await ui.tick(8000);
-  assert.equal(checks,4,"initial observation plus three retries; status polling does not reset the budget");
-  ui.document.hidden=true;ui.documentEvents.visibilitychange();ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.flush();
-  for(let attempt=0;attempt<10;attempt++)await ui.tick(8000);
-  assert.equal(checks,8,"returning to the form starts a new bounded cycle");
-});
-
 test("an existing readiness check completed on the first poll does not trigger another check", async () => {
   let completed=false;
   const ui=screen(async name=>{
@@ -1852,18 +2069,6 @@ test("an existing readiness check completed on the first poll does not trigger a
   });await ui.flush();
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.operation").length,1);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.refresh_readiness").length,0);
-});
-
-test("echoed automatic check results keep the selected settings view without restarting polling", async () => {
-  const ui=screen(async name=>{
-    if(name==="settings.read")return {...read,instance:"default",readiness:{state:"ready",checks:[]}};
-    if(name==="settings.refresh_readiness")return {id:"automatic",action:"refresh_readiness",status:"running"};
-    if(name==="settings.operation")return {id:"automatic",action:"refresh_readiness",mode:"operation",navigation:"project",projectRoot:read.values.projectRoot,instance:"default",status:"completed",result:{managed:[],external:{}}};
-    throw new Error(name);
-  },{echo:true});await ui.flush();
-  assert.equal(ui.elements.get("profileBrowser").hidden,false);assert.equal(ui.elements.get("profilePanel").hidden,false);
-  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.operation").length,1);
-  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.refresh_readiness").length,1);
 });
 
 test("a real operation entry matching the backend snapshot still opens its result", async () => {
@@ -1877,43 +2082,6 @@ test("a real operation entry matching the backend snapshot still opens its resul
   assert.equal(ui.elements.get("checkPanel").hidden,false);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.operation").length,1);
   assert.match(ui.elements.get("status").textContent,/Профиль загружен/);
-});
-
-test("a host scope change during a check queues readiness for the new profile", async () => {
-  const firstRoot=read.values.projectRoot,secondRoot="C:/new-host-root",scopes=[];
-  let projectRoot=firstRoot,operationRoot=firstRoot,finished=false;
-  const snapshot=()=>({...read,values:{projectRoot},instance:"default",preparationScope:projectRoot+"#default",readiness:{state:"stale",checks:[]},operation:{id:"check",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:finished?"completed":"running"}});
-  const ui=screen(async(name,args)=>{
-    if(name==="settings.read")return {...snapshot(),operation:{status:"idle"}};
-    if(name==="settings.status")return snapshot();
-    if(name==="settings.refresh_readiness"){scopes.push(args.scope);operationRoot=projectRoot;return {id:"check",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:"running"};}
-    if(name==="settings.operation")return {id:"check",action:"refresh_readiness",projectRoot:operationRoot,instance:"default",status:finished?"completed":"running",...(finished?{result:{managed:[],external:{}}}:{})};
-    throw new Error(name);
-  });await ui.flush();assert.deepEqual(scopes,[firstRoot+"#default"]);
-  projectRoot=secondRoot;await ui.context.refreshStatus();assert.equal(ui.elements.get("projectRoot").value,secondRoot);assert.equal(scopes.length,1);
-  finished=true;await ui.tick();await ui.flush();assert.deepEqual(scopes,[firstRoot+"#default",secondRoot+"#default"]);
-});
-
-test("indexing is checked again automatically until ready, and retries respect drafts and profile scope", async () => {
-  let checks=0,projectRoot=read.values.projectRoot,state="indexing",viewOnly=false;
-  const snapshot=()=>({...read,values:{projectRoot},instance:"default",viewOnly,preparationScope:projectRoot+"#default",readiness:{state:state==="ready"?"ready":"blocked",checks:[]}});
-  const ui=screen(async(name,args)=>{
-    if(name==="settings.read"||name==="settings.status")return snapshot();
-    if(name==="settings.refresh_readiness"){checks++;return {id:"observe",action:"refresh_readiness",status:"running"};}
-    if(name==="settings.operation")return {id:"observe",action:"refresh_readiness",projectRoot,instance:"default",status:"completed",result:{managed:[{name:"code-index",ready:state==="ready",state}],external:{}}};
-    if(name==="settings.select_profile"){projectRoot=args.projectRoot;viewOnly=true;return snapshot();}
-    throw new Error(name);
-  });await ui.flush();assert.equal(checks,1);
-  const retry=[...ui.timers.entries()].find(([,timer])=>timer.ms===8000);assert.ok(retry);ui.timers.delete(retry[0]);retry[1].fn();await ui.flush();assert.equal(checks,2);
-  ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
-  await ui.tick(8000);await ui.tick(8000);assert.equal(checks,2);
-  state="ready";ui.elements.get("discardDraftButton").onclick();await ui.flush();assert.equal(checks,3);
-  await ui.tick(8000);assert.equal(checks,3);assert.match(ui.elements.get("readinessTitle").textContent,/можно начинать работу/);
-  state="indexing";await ui.elements.get("refreshButton").onclick();assert.equal(checks,4);
-  const oldRetry=[...ui.timers.values()].find(timer=>timer.ms===8000);
-  await ui.context.selectProfile("C:/view-only");await ui.tick(8000);assert.equal(checks,4);
-  oldRetry.fn();await ui.flush();assert.equal(checks,4);
-  ui.lifecycle.pagehide();assert.equal([...ui.timers.values()].filter(timer=>[1000,8000].includes(timer.ms)).length,0);
 });
 
 test("automatic observation preserves drafts and never repeats preparation or external probes", async () => {
@@ -1953,8 +2121,8 @@ test("observation pauses for hidden windows, ignores late closed responses and d
 test("the profile chooser gates scoped settings until a profile is loaded", async () => {
   const ui=screen(async name=>{assert.equal(name,"settings.read");return {...read,profile:{status:"missing"}};});
   await ui.flush();assert.equal(ui.elements.get("connectionSettings").hidden,true);
-  for(const id of ["saveButton","readinessButton","saveComponentsButton","downloadButton"])assert.equal(ui.elements.get(id).disabled,true);
-  assert.equal(ui.elements.get("createButton").hidden,false);assert.equal(ui.elements.get("previewButton").disabled,false);
+  for(const id of ["saveButton","readinessButton","saveComponentsButton","transferExport"])assert.equal(ui.elements.get(id).disabled,true);
+  assert.equal(ui.elements.get("createButton").hidden,false);assert.equal(ui.elements.get("openMissingTransfer").disabled,false);
 });
 
 test("history previews another profile read-only without selecting it for chat operations", async () => {
@@ -1967,7 +2135,7 @@ test("history previews another profile read-only without selecting it for chat o
   });
   await ui.flush();await ui.elements.get("profileHistory").children.find(item=>item.children[0].children[0].textContent==="Other").children[0].onclick();
   assert.equal(ui.elements.get("profileTitle").textContent,"Other");assert.equal(ui.elements.get("viewOnlyHint").hidden,false);
-  for(const id of ["saveButton","probeButton","readinessButton","downloadButton"])assert.equal(ui.elements.get(id).disabled,true);
+  for(const id of ["saveButton","probeButton","readinessButton","transferExport"])assert.equal(ui.elements.get(id).disabled,true);
   assert.equal(ui.elements.get("editSettingsButton").disabled,false);
   assert.equal(ui.elements.get("settingsText").readOnly,true);
   ui.elements.get("editorTab").onclick();await ui.flush();
@@ -2068,13 +2236,13 @@ test("automatic selection after removal preserves an unsaved import or directory
       if(name==="settings.forget_profile"){history=history.filter(item=>item.projectRoot!==args.projectRoot);return {profileHistory:history};}
       throw new Error(name);
     });await ui.flush();
-    if(draft==="import"){ui.elements.get("file").files=[{name:"draft.json",size:5}];ui.elements.get("file").events.change();}
+    if(draft==="import"){ui.elements.get("transferPath").value="C:/draft.yaml";ui.elements.get("transferPath").events.input();}
     else{ui.elements.get("projectRoot").value="C:/typed";ui.elements.get("projectRoot").events.input();}
     await ui.elements.get("profileHistory").children.find(card=>card.children[0].children[0].textContent==="Second").children[1].onclick();
     assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
     assert.equal(ui.elements.get("profileHistory").children.some(card=>card.children[0].children[0].textContent==="Second"),false);
     assert.match(ui.elements.get("status").textContent,/Сохраните или отмените изменения/);
-    assert.equal(draft==="import"?ui.elements.get("file").files[0].name:ui.elements.get("projectRoot").value,draft==="import"?"draft.json":"C:/typed");
+    assert.equal(draft==="import"?ui.elements.get("transferPath").value:ui.elements.get("projectRoot").value,draft==="import"?"C:/draft.yaml":"C:/typed");
   }
 });
 
@@ -2105,21 +2273,27 @@ test("a failed automatic observation retries and keeps the last successful profi
 
 test("keyboard navigation skips unavailable profile tabs and dirty drafts guard the folder picker", async () => {
   const ui=screen(async()=>({...read,profile:{status:"missing"},schema:{}}));await ui.flush();
-  ui.elements.get("profileTab").events.keydown({key:"ArrowRight",preventDefault(){}});
-  assert.equal(ui.elements.get("importTab").hidden,true);assert.equal(ui.elements.get("supportPanel").hidden,false);
+  ui.elements.get("checkTab").events.keydown({key:"ArrowRight",preventDefault(){}});
+  assert.equal(ui.elements.get("supportPanel").hidden,false);
   ui.elements.get("settingsText").value="draft";ui.elements.get("settingsText").events.input();
   await ui.elements.get("pickDirectoryButton").onclick();
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.pick_directory").length,0);
   assert.match(ui.elements.get("status").textContent,/Сохраните изменения/);
 });
 
-test("chat settings hide profile navigation and never restore or select another profile", async () => {
+test("chat settings do not automatically choose another profile when the chat root is unknown", async () => {
   const ui=screen(async name=>{assert.equal(name,"settings.read");return {...read,values:{projectRoot:""},profile:{status:"unselected"},profileHistory:[{projectRoot:"C:/other",status:"loaded"}]};},{navigation:"project"});
   await ui.flush();assert.equal(ui.elements.get("profileBrowser").hidden,true);
+  assert.equal(ui.elements.get("profileToggleButton").hidden,false);
   assert.equal(ui.elements.get("projectRoot").readOnly,true);assert.equal(ui.elements.get("pickDirectoryButton").hidden,true);
-  ui.elements.get("projectRoot").value="C:/other";await ui.elements.get("selectProfileButton").onclick();
+  assert.equal(ui.elements.get("directoryChooser").hidden,true);assert.equal(ui.elements.get("addProfileButton").hidden,true);
+  assert.equal(ui.elements.get("viewDirectoryChooser").hidden,false);assert.equal(ui.elements.get("openViewDirectoryButton").disabled,true);
+  ui.elements.get("profileToggleButton").onclick();
+  await ui.elements.get("profileHistory").children[0].children[0].onclick();
+  assert.match(ui.elements.get("profileChooserStatus").textContent,/Сначала определите каталог/);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
   assert.equal(ui.elements.get("emptyTitle").textContent,"Проект чата не определён");
+  assert.equal(ui.elements.get("headerStatusReason").textContent,"Выберите проект");
 });
 
 test("settings declare fullscreen only and request it once when the host initially embeds the form", async () => {
@@ -2155,7 +2329,7 @@ test("tool input supplies chat scope before the first app read and an empty entr
   assert.equal(empty.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
 });
 
-test("narrow full settings use an overlay drawer without replacing or changing the selected profile", async () => {
+test("project selector opens from the header at narrow and wide widths without changing the selected profile", async () => {
   const ui=screen(async name=>{assert.equal(name,"settings.read");return read;},{narrow:true});await ui.flush();
   assert.equal(ui.elements.get("profileBrowser").hidden,true);assert.equal(ui.elements.get("profileToggleButton").hidden,false);
   ui.elements.get("profileToggleButton").onclick();
@@ -2166,9 +2340,97 @@ test("narrow full settings use an overlay drawer without replacing or changing t
   assert.equal(ui.elements.get("profileBrowser").hidden,true);assert.equal(ui.elements.get("settingsWorkspace").inert,false);
   ui.elements.get("profileToggleButton").onclick();ui.elements.get("profileBackdrop").onclick();
   assert.equal(ui.elements.get("profileBrowser").hidden,true);
-  ui.media.matches=false;ui.media.listener();assert.equal(ui.elements.get("profileBrowser").hidden,false);
-  assert.equal(ui.elements.get("profileToggleButton").hidden,true);
+  ui.media.matches=false;assert.equal(ui.elements.get("profileBrowser").hidden,true);
+  assert.equal(ui.elements.get("profileToggleButton").hidden,false);
+  assert.equal(ui.elements.get("selectedProjectLabel").textContent,"Project");
+  ui.elements.get("profileToggleButton").onclick();assert.equal(ui.elements.get("profileBrowser").hidden,false);
+  ui.documentEvents.keydown({key:"Escape",preventDefault(){}});
+  assert.equal(ui.elements.get("profileBrowser").hidden,true);assert.equal(ui.document.activeElement,ui.elements.get("profileToggleButton"));
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
+});
+
+test("project selector announces a blocked directory picker inside the modal when a draft exists", async () => {
+  const ui=screen(async()=>({...read,schema:{properties:{projectRoot:{readOnly:false}}},folderActions:{supported:true}}));await ui.flush();
+  ui.elements.get("settingsText").value="draft";ui.elements.get("settingsText").events.input();
+  ui.elements.get("profileToggleButton").onclick();
+  await ui.elements.get("addProfileButton").onclick();
+  assert.equal(ui.elements.get("profileBrowser").hidden,false);
+  assert.match(ui.elements.get("profileChooserStatus").textContent,/Сохраните изменения/);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.pick_directory").length,0);
+});
+
+test("chat directory picker opens the chosen profile read-only and retains the chat scope", async () => {
+  const base = { ...read, instance: "default", projectSelection: { locked: true }, folderActions: { supported: true } };
+  const other = "C:/fixture/other";
+  const ui = screen(async (name, args, meta) => {
+    if (name === "settings.read" || name === "settings.status") return base;
+    if (name === "settings.pick_view_directory") return { id: "pick-view", action: "pick_view_directory", status: "running", projectRoot: read.values.projectRoot, instance: "default" };
+    if (name === "settings.operation") return { id: "pick-view", action: "pick_view_directory", status: "completed", projectRoot: read.values.projectRoot, instance: "default", result: { directory: other } };
+    if (name === "settings.select_profile") {
+      assert.equal(args.projectRoot, other); assert.equal(meta["1c-ai-core/projectRoot"], read.values.projectRoot);
+      return { ...base, values: { projectRoot: other }, profile: { ...read.profile, projectId: "Other" }, viewOnly: true, chatProjectRoot: read.values.projectRoot };
+    }
+    throw new Error(name);
+  }, { navigation: "project" });
+  await ui.flush();
+  ui.deliver({jsonrpc:"2.0",method:"ui/notifications/tool-input",params:{arguments:{projectRoot:read.values.projectRoot+"/src"}}});
+  await ui.context.refreshStatus();
+  ui.elements.get("profileToggleButton").onclick(); await ui.elements.get("pickViewDirectoryButton").onclick();
+  assert.equal(ui.elements.get("profileTitle").textContent, "Other"); assert.equal(ui.elements.get("viewOnlyHint").hidden, false);
+  assert.equal(ui.elements.get("profileBrowser").hidden, true);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.pick_view_directory").length, 1);
+});
+
+test("a changed chat input invalidates a pending view picker before it selects a profile", async () => {
+  const base = { ...read, instance: "default", projectSelection: { locked: true }, folderActions: { supported: true } };
+  let release;
+  const ui = screen(async name => {
+    if (name === "settings.read") return base;
+    if (name === "settings.pick_view_directory") return { id: "pick-view", action: "pick_view_directory", status: "running", projectRoot: read.values.projectRoot, instance: "default" };
+    if (name === "settings.operation") { await new Promise(resolve => { release = resolve; }); return { id: "pick-view", action: "pick_view_directory", status: "completed", projectRoot: read.values.projectRoot, instance: "default", result: { directory: "C:/other" } }; }
+    throw new Error("Unexpected call " + name);
+  }, { navigation: "project" });
+  await ui.flush(); ui.elements.get("profileToggleButton").onclick();
+  const picking = ui.elements.get("pickViewDirectoryButton").onclick(); await ui.flush();
+  ui.deliver({jsonrpc:"2.0",method:"ui/notifications/tool-input",params:{arguments:{projectRoot:"C:/new-chat"}}});
+  release(); await picking;
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
+  assert.match(ui.elements.get("profileChooserStatus").textContent,/Каталог чата изменился/);
+  await ui.context.selectProfile("C:/other");
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
+  assert.equal(ui.elements.get("profileTitle").textContent,"Project");
+});
+
+test("a changed chat input discards an in-flight history selection", async () => {
+  const base = { ...read, instance: "default", projectSelection: { locked: true } }; let release;
+  const ui = screen(async name => {
+    if(name==="settings.read")return base;
+    if(name==="settings.select_profile"){await new Promise(resolve=>{release=resolve;});return {...base,values:{projectRoot:"C:/other"},profile:{...read.profile,projectId:"Other"},viewOnly:true,chatProjectRoot:read.values.projectRoot};}
+    throw new Error(name);
+  },{navigation:"project"});await ui.flush();
+  const selecting=ui.context.selectProfile("C:/other");await ui.flush();
+  ui.deliver({jsonrpc:"2.0",method:"ui/notifications/tool-input",params:{arguments:{projectRoot:"C:/new-chat"}}});
+  release();await selecting;
+  assert.equal(ui.elements.get("profileTitle").textContent,"Project");
+  assert.match(ui.elements.get("status").textContent,/Каталог чата изменился/);
+});
+
+test("a viewed profile stays visible while the new chat scope is confirmed", async () => {
+  const first=read.values.projectRoot,second="C:/new-chat",other="C:/history",third="C:/another";
+  const base=root=>({...read,values:{projectRoot:root},instance:"default",projectSelection:{locked:true}});
+  let selected=other;
+  const ui=screen(async(name,args,meta)=>{
+    if(name==="settings.read")return base(meta?.["1c-ai-core/projectRoot"]===second?second:first);
+    if(name==="settings.status")return {...base(selected),profile:{...read.profile,projectId:"Viewed"},viewOnly:true,chatProjectRoot:second};
+    if(name==="settings.select_profile"){selected=args.projectRoot;return {...base(selected),profile:{...read.profile,projectId:selected===other?"Viewed":"Another"},viewOnly:true,chatProjectRoot:meta["1c-ai-core/projectRoot"]};}
+    throw new Error(name);
+  },{navigation:"project"});await ui.flush();
+  await ui.context.selectProfile(other);assert.equal(ui.elements.get("profileTitle").textContent,"Viewed");
+  ui.deliver({jsonrpc:"2.0",method:"ui/notifications/tool-input",params:{arguments:{projectRoot:second}}});
+  await ui.context.selectProfile(third);assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,1);
+  await ui.context.refreshStatus();assert.equal(ui.elements.get("profileTitle").textContent,"Viewed");
+  await ui.context.selectProfile(third);assert.equal(ui.elements.get("profileTitle").textContent,"Another");
+  const selections=ui.calls.filter(call=>call.params?.name==="settings.select_profile");assert.equal(selections[1].params._meta["1c-ai-core/projectRoot"],second);
 });
 
 test("the full settings workspace restores the most recent available profile without a folder dialog", async () => {
@@ -2176,26 +2438,13 @@ test("the full settings workspace restores the most recent available profile wit
     if(name==="settings.read")return {...read,values:{projectRoot:""},profile:{status:"unselected"},schema:{},profileHistory:[{projectRoot:"C:/gone",status:"unavailable"},{projectRoot:read.values.projectRoot,status:"loaded"}]};
     assert.equal(name,"settings.select_profile");assert.equal(args.projectRoot,read.values.projectRoot);return read;
   });await ui.flush();
-  assert.equal(ui.elements.get("profileBrowser").hidden,false);assert.equal(ui.elements.get("profileTitle").textContent,"Project");
+  assert.equal(ui.elements.get("profileBrowser").hidden,true);assert.equal(ui.elements.get("profileTitle").textContent,"Project");
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.pick_directory").length,0);
 });
 
-test("import uses its selected file even after an unchanged editor document has been loaded", async () => {
-  const ui=screen(async(name,args)=>{
-    if(name==="settings.read")return read;
-    if(name==="settings.edit")return {text:"editor-document",baseRevision:"editor-base"};
-    if(name==="settings.preview"){assert.equal(args.text,"import-document");assert.equal(args.mode,undefined);return {revision:"import-revision",projectRoot:read.values.projectRoot,repositories:[]};}
-    if(name==="settings.apply"){assert.equal(args.text,"import-document");assert.equal(args.mode,undefined);assert.equal(args.revision,"import-revision");return {};}
-    throw new Error(name);
-  });await ui.flush();await ui.elements.get("editSettingsButton").onclick();
-  assert.equal(ui.elements.get("unsavedHint").hidden,true);
-  ui.elements.get("file").files=[{size:10,text:async()=>"import-document"}];await ui.elements.get("previewButton").onclick();await ui.elements.get("applyButton").onclick();
-  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.apply").length,1);
-});
-
 test("scoped connection edits show the destination and preserve higher-priority source information", async () => {
-  const current = { ...read, values: { ...read.values, edtUrl: "http://instance/mcp" }, settingsRevision: "rev1",
-    connectionSources: { edt: "instance" }, layerValues: { profile: { edtUrl: "http://old-profile/mcp" } }, writePaths: { profile: "C:/project/.ai/project.yaml", instance: "C:/state/first.yaml" } };
+  const current = { ...read, values: { ...read.values, edtUrl: "http://local/mcp" }, settingsRevision: "rev1",
+    connectionSources: { edt: "project_local" }, layerValues: { profile: { edtUrl: "http://old-profile/mcp" } }, writePaths: { profile: "C:/project/.ai/project.yaml", project_local: "C:/project/.ai/project.local.yaml" } };
   let saved;
   const ui = screen(async (name, args) => {
     if (["settings.read", "settings.status"].includes(name)) return current;
@@ -2206,7 +2455,7 @@ test("scoped connection edits show the destination and preserve higher-priority 
   assert.match(ui.elements.get("connectionDestination").textContent, /project.yaml/);
   assert.match(ui.elements.get("connectionScopeHint").textContent, /приоритетный/);
   assert.equal(ui.elements.get("edtUrl").value, "http://old-profile/mcp");
-  assert.match(ui.elements.get("edtSource").textContent, /Действует: http:\/\/instance/);
+  assert.match(ui.elements.get("edtSource").textContent, /Действует: http:\/\/local/);
   const field = ui.elements.get("edtUrl"); field.value = "http://project/mcp"; field.events.input();
   await ui.elements.get("saveButton").onclick();
   assert.equal(saved.scope, "profile"); assert.equal(saved.expectedRevision, "rev1"); assert.equal(saved.set.edtUrl, "http://project/mcp");
@@ -2222,83 +2471,23 @@ test("scope controls keep each selector and save action together", () => {
   const editor = html.match(/<label for="editorDocument">Изменять в<\/label><select id="editorDocument">([\s\S]*?)<\/select>/)?.[1];
   assert.ok(editor);
   assert.deepEqual([...editor.matchAll(/<option value="([^"]+)"[^>]*>([^<]+)<\/option>/g)].map(match => [match[1], match[2]]), [
-    ["instance", "Этот экземпляр"], ["project_local", "Локальные настройки проекта"], ["profile", "Профиль проекта"], ["global", "Все проекты"],
+    ["project_local", "Локальные настройки проекта"], ["profile", "Профиль проекта"],
   ]);
 });
 
-test("scope switching, drafts, inheritance and saves use the real settings MCP", async t => {
-  const f = fixture(t); f.save();
-  const client = await session(t, "mcp/settings.mjs", [], f);
-  const update = async (scope, set) => (await client.call("settings.update", { scope, set })).structuredContent;
-  const projectUrl = "http://127.0.0.1:8111/mcp", localUrl = "http://127.0.0.1:8222/mcp", instanceUrl = "http://127.0.0.1:8333/mcp";
-  await update("profile", { edtUrl: projectUrl });
-  await update("global", { bslLsJava: "global-java" });
-  await update("project_local", { edtUrl: localUrl, bslLsJava: "local-java", bslLsEnabled: false });
-  await update("instance", { edtUrl: instanceUrl, bslLsJava: "instance-java", bslLsEnabled: true });
-  const initial = (await client.call("settings.read", {})).structuredContent;
-  const ui = screen((name, args, meta) => client.request("tools/call", { name, arguments: args, ...(meta ? { _meta: meta } : {}) }),
-    { navigation: "project", rawResults: true });
-  ui.document.hidden = true;
-  const until = async predicate => {
-    const end = Date.now() + 10000;
-    while (!predicate()) {
-      if (Date.now() > end) throw new Error(`Timed out waiting for settings: ${ui.elements.get("status").textContent}`);
-      await new Promise(resolve => setTimeout(resolve, 20));
-    }
-  };
-  await until(() => ui.elements.get("edtUrl").value === instanceUrl);
-  const select = (id, scope) => { ui.elements.get(id).value = scope; ui.elements.get(id).events.change(); };
-  const text = id => ui.elements.get(id).textContent;
-  assert.match(text("edtSource"), /В поле и действует: значение из настроек этого экземпляра/);
-  assert.match(text("connectionScopeDescription"), /этого проекта и экземпляра/);
-  select("connectionScope", "profile");
-  assert.equal(ui.elements.get("edtUrl").value, projectUrl);
-  assert.match(text("edtSource"), /В поле: значение из профиля проекта/);
-  assert.match(text("edtSource"), new RegExp(`Действует: ${instanceUrl}.*приоритет выше`));
-  assert.match(text("v8stdSource"), /В профиле проекта значение не задано; в поле — действующее/);
-  assert.match(text("connectionDestination"), /project\.yaml/);
-  select("connectionScope", "project_local");
-  assert.equal(ui.elements.get("edtUrl").value, localUrl);
-  assert.match(text("edtSource"), /значение из локальных настроек проекта/);
-  assert.match(text("connectionScopeDescription"), /всех его экземпляров/);
-  const changedUrl = "http://127.0.0.1:8444/mcp";
-  ui.elements.get("edtUrl").value = changedUrl; ui.elements.get("edtUrl").events.input();
-  select("connectionScope", "profile");
-  assert.equal(ui.elements.get("edtUrl").value, changedUrl);
-  assert.match(text("edtSource"), /несохранённое изменение для профиля проекта/);
-  assert.match(text("connectionScopeHint"), /сохранятся в выбранную область/);
-  await ui.elements.get("saveButton").onclick();
-  assert.equal(load(initial.writePaths.profile).connections.edt.url, changedUrl);
-  assert.equal(load(initial.writePaths.project_local).connections.edt.url, localUrl);
-  assert.equal(load(initial.writePaths.instance).connections.edt.url, instanceUrl);
-  assert.match(text("edtSource"), /Действует: http:\/\/127\.0\.0\.1:8333\/mcp/);
-  select("connectionScope", "instance");
-  assert.equal(ui.elements.get("edtUrl").value, instanceUrl);
-  assert.match(text("edtSource"), /В поле и действует/);
-
-  select("componentScope", "project_local");
-  assert.equal(ui.elements.get("bslLsEnabled").checked, false);
-  assert.match(text("bslLsEnabledSource"), /из локальных настроек проекта.*Действует: включено.*приоритет выше/);
-  ui.elements.get("bslLsEnabled").checked = true; ui.elements.get("bslLsEnabled").events.change();
-  assert.match(text("bslLsEnabledSource"), /несохранённое изменение/);
-  await ui.elements.get("saveComponentsButton").onclick();
-  assert.equal(load(initial.writePaths.project_local).components["bsl-ls"].enabled, true);
-  assert.equal(load(initial.writePaths.instance).components["bsl-ls"].enabled, true);
-
-  select("javaScope", "global");
-  assert.equal(ui.elements.get("bslLsJava").value, "global-java");
-  assert.match(text("bslLsJavaSource"), /из общих настроек.*Действует: instance-java.*приоритет выше/);
-  assert.match(text("javaScopeDescription"), /всех проектов/);
-  ui.elements.get("bslLsJava").value = "draft-java"; ui.elements.get("bslLsJava").events.input();
-  select("javaScope", "project_local");
-  assert.equal(ui.elements.get("bslLsJava").value, "draft-java");
-  assert.match(text("bslLsJavaSource"), /несохранённое изменение для локальных настроек проекта/);
-  await ui.elements.get("saveJavaButton").onclick();
-  assert.equal(load(initial.writePaths.project_local).components["bsl-ls"].java, "draft-java");
-  assert.equal(load(initial.writePaths.instance).components["bsl-ls"].java, "instance-java");
-  assert.equal(load(initial.writePaths.global).mcp.managed["bsl-ls"].java, "global-java");
-  assert.match(text("bslLsJavaSource"), /Действует: instance-java/);
-  ui.lifecycle.pagehide();
+test("project scopes keep drafts isolated and save through the real MCP", async t => {
+  const f=fixture(t);f.save();const client=await session(t,"mcp/settings.mjs",[],f);
+  await client.call("settings.update",{scope:"profile",set:{edtUrl:"http://localhost:8111/mcp"}});
+  await client.call("settings.update",{scope:"project_local",set:{edtUrl:"http://localhost:8222/mcp"}});
+  const ui=screen((name,args,meta)=>client.request("tools/call",{name,arguments:args,...(meta?{_meta:meta}:{})}),{navigation:"project",rawResults:true});ui.document.hidden=true;
+  const until=async predicate=>{const end=Date.now()+10000;while(!predicate()){if(Date.now()>end)throw new Error("Timed out waiting for project scope");await new Promise(resolve=>setTimeout(resolve,20));}};
+  await until(()=>ui.elements.get("edtUrl").value==="http://localhost:8222/mcp");
+  ui.elements.get("connectionScope").value="profile";ui.elements.get("connectionScope").events.change();
+  assert.equal(ui.elements.get("edtUrl").value,"http://localhost:8111/mcp");assert.match(ui.elements.get("edtSource").textContent,/приоритет выше/);
+  ui.elements.get("edtUrl").value="http://localhost:8333/mcp";ui.elements.get("edtUrl").events.input();
+  ui.elements.get("connectionScope").value="project_local";ui.elements.get("connectionScope").events.change();assert.equal(ui.elements.get("connectionScope").value,"profile");
+  await ui.elements.get("saveButton").onclick();assert.equal(load(path.join(f.root,".ai/project.yaml")).connections.edt.url,"http://localhost:8333/mcp");
+  assert.equal(load(path.join(f.root,".ai/project.local.yaml")).connections.edt.url,"http://localhost:8222/mcp");ui.lifecycle.pagehide();
 });
 
 test("environment URLs remain read-only and explain the higher-priority source", async () => {
@@ -2312,47 +2501,6 @@ test("environment URLs remain read-only and explain the higher-priority source",
   assert.equal(ui.elements.get("edtUrl").value, "http://profile/mcp");
   assert.equal(ui.elements.get("edtUrl").readOnly, true);
   assert.match(ui.elements.get("edtSource").textContent, /Действует: http:\/\/env\/mcp — переменная окружения EDT_AI_EDT_URL.*приоритет выше/);
-});
-
-test("missing profile import stays beside creation and requires replacement confirmation", async () => {
-  const sourceRoot = "C:/fixture/source", snapshots = { ...read, profile: { status: "missing" },
-    schema: {}, profileHistory: [{ projectRoot: sourceRoot, projectId: "Source", status: "loaded" }] };
-  let applied, loaded = false;
-  const ui = screen(async (name, args) => {
-    if (["settings.read", "settings.status"].includes(name)) return loaded ? { ...snapshots, profile: read.profile } : snapshots;
-    if (name === "settings.profile_source") { assert.equal(args.sourceRoot, sourceRoot); assert.equal(args.includeConnections, false); return { text: "portable", missingPaths: ["src"] }; }
-    if (name === "settings.preview") { assert.equal(args.text, "portable"); assert.equal(args.includeMachineSettings, false); return { projectRoot: read.values.projectRoot, repositories: [], missingPaths: ["src"], replacesProfile: true, revision: "review" }; }
-    if (name === "settings.apply") { applied = args; loaded = true; return {}; }
-    throw new Error(name);
-  }); await ui.flush();
-  assert.equal(ui.elements.get("createButton").hidden, false);
-  assert.equal(ui.elements.get("importPanel").hidden, false);
-  assert.equal(ui.elements.get("importTab").hidden, true);
-  ui.elements.get("importSource").value = "profile"; ui.elements.get("importSource").events.change();
-  await ui.elements.get("previewButton").onclick();
-  assert.match(ui.elements.get("importWarnings").textContent, /src/);
-  assert.equal(ui.elements.get("applyButton").disabled, true);
-  ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
-  assert.equal(ui.elements.get("applyButton").disabled, false);
-  await ui.elements.get("applyButton").onclick();
-  assert.equal(applied.replace, true); assert.equal(applied.revision, "review");
-  assert.equal(ui.elements.get("profileTitle").textContent, "Project");
-});
-
-test("the JSON editor changes local overrides without leaving the form or opening YAML", async () => {
-  let applied;
-  const ui = screen(async (name, args) => {
-    if (["settings.read", "settings.status"].includes(name)) return { ...read, writePaths: { project_local: "C:/project/.ai/project.local.yaml" } };
-    if (name === "settings.edit") { assert.equal(args.layerScope, "project_local"); return { text: '{"schema_version":"0.2","components":{"bsl-ls":{"node":"node"}}}', baseRevision: "local-base", layerScope: "project_local" }; }
-    if (name === "settings.preview") { assert.equal(args.mode, "layer"); assert.equal(args.layerScope, "project_local"); assert.equal(args.baseRevision, "local-base"); return { revision: "local-preview", layerPath: "C:/project/.ai/project.local.yaml", projectRoot: read.values.projectRoot, repositories: [] }; }
-    if (name === "settings.apply") { applied = args; return {}; }
-    throw new Error(name);
-  }); await ui.flush();
-  ui.elements.get("editorDocument").value = "project_local"; ui.elements.get("editorDocument").events.change(); await ui.flush();
-  const node = treeInputs(ui).find(input => input.value === "node"); node.value = "C:/Node/node.exe"; node.events.input();
-  await ui.elements.get("reviewEditButton").onclick(); assert.match(ui.elements.get("importEffects").textContent, /project.local.yaml/);
-  await ui.elements.get("applyButton").onclick();
-  assert.equal(applied.mode, "layer"); assert.equal(JSON.parse(applied.text).components["bsl-ls"].node, "C:/Node/node.exe");
 });
 
 test("rename guards other profile selection and refreshes the displayed project id", async () => {
@@ -2382,10 +2530,10 @@ test("Java selection checks the chosen executable and saves only after an explic
     if (name === "settings.update") { saved = args; current = { ...current, values: { ...current.values, bslLsJava: args.set.bslLsJava } }; return { savedTo: current.writePaths.project_local }; }
     throw new Error(name);
   }); await ui.flush();
+  ui.elements.get("javaScope").value = "project_local"; ui.elements.get("javaScope").events.change();
   await ui.elements.get("pickJavaButton").onclick();
   assert.match(ui.elements.get("javaResult").textContent, /21\.0\.2/);
   assert.equal(saved, undefined); assert.equal(ui.elements.get("saveJavaButton").disabled, false);
-  ui.elements.get("javaScope").value = "project_local"; ui.elements.get("javaScope").events.change();
   await ui.elements.get("saveJavaButton").onclick();
   assert.equal(saved.scope, "project_local"); assert.equal(saved.set.bslLsJava, "C:/Java/bin/java.exe");
 });
@@ -2396,25 +2544,26 @@ test("Windows file import uses the native picker and previews its returned docum
     if (["settings.read", "settings.status"].includes(name)) return current;
     if (name === "settings.pick_import_file") return { id: "picker", status: "running" };
     if (name === "settings.operation") return { id: "picker", status: "completed", action: "pick_import_file", projectRoot: read.values.projectRoot, instance: "first", result: { fileId: "chosen", filename: "profile.yaml" } };
-    if (name === "settings.import_file") { assert.equal(args.fileId, "chosen"); return { filename: "profile.yaml", text: "document" }; }
-    if (name === "settings.preview") { previewed = args; return { projectRoot: read.values.projectRoot, repositories: [], revision: "preview" }; }
+    if (name === "settings.import_file") { assert.equal(args.fileId, "chosen"); return { scope: "profile", filename: "profile.yaml", text: "document" }; }
+    if (name === "settings.transfer_context") return { baseRevision: "base" };
+    if (name === "settings.transfer_preview") { previewed = args; return { projectRoot: read.values.projectRoot, files: [], revision: "preview" }; }
     throw new Error(name);
   }); await ui.flush();
-  assert.equal(ui.elements.get("fileChooser").hidden, true);
-  await ui.elements.get("pickImportFileButton").onclick();
-  assert.equal(ui.elements.get("nativeImportFileName").textContent, "profile.yaml");
-  await ui.elements.get("previewButton").onclick();
-  assert.equal(previewed.text, "document"); assert.equal(previewed.includeMachineSettings, false);
+  assert.equal(ui.elements.get("transferPath").hidden, true);
+  await ui.elements.get("transferPick").onclick();
+  assert.match(ui.elements.get("transferFilename").textContent, /profile.yaml/);
+  await ui.elements.get("transferPreview").onclick();
+  assert.equal(previewed.documents.profile, "document");
 });
 
 test("cancelled Save As does not report a saved settings or diagnostics file", async () => {
   const ui = screen(async name => {
     if (["settings.read", "settings.status"].includes(name)) return read;
-    if (["settings.save_export", "settings.export_diagnostics"].includes(name)) return { cancelled: true };
+    if (["settings.transfer_export", "settings.export_diagnostics"].includes(name)) return { cancelled: true };
     throw new Error(name);
   }); await ui.flush();
   ui.elements.get("diagnosticsSaved").hidden = true;
-  await ui.elements.get("downloadButton").onclick(); assert.equal(ui.elements.get("exportSaved").hidden, true);
+  await ui.elements.get("transferExport").onclick(); assert.match(ui.elements.get("status").textContent, /отменено/);
   await ui.elements.get("diagnosticsButton").onclick(); assert.equal(ui.elements.get("diagnosticsSaved").hidden, true);
   assert.match(ui.elements.get("status").textContent, /отменено/);
 });
@@ -2426,9 +2575,8 @@ test("export hints explain the platform-specific destination", async () => {
       throw new Error(name);
     });
     await ui.flush();
-    assert.match(ui.elements.get("exportDestinationHint").textContent, supported ? /системном окне/ : /каталоге состояния/);
     assert.match(ui.elements.get("diagnosticsDestinationHint").textContent, supported ? /Выберите место/ : /каталоге состояния/);
-    assert.equal(ui.elements.get("downloadLabel").textContent, supported ? "Сохранить настройки как…" : "Сохранить настройки");
+    assert.equal(ui.elements.get("transferPath").hidden, supported);
     ui.lifecycle.pagehide();
   }
 });
@@ -2492,7 +2640,7 @@ test("diagnostics show and filter safe text, stay available during an operation,
   const ui=screen(async name=>{if(name==="settings.read"||name==="settings.status")return {...read,operation};if(name==="settings.operation")return operation;if(name==="settings.diagnostics"){logs++;return data;}throw new Error(name);});await ui.flush();
   ui.elements.get("supportTab").onclick();await ui.flush();assert.equal(logs,1);
   assert.equal(ui.elements.get("diagnosticsRefreshButton").disabled,false);assert.equal(ui.elements.get("diagnosticJournal").children.length,2);
-  assert.match(ui.elements.get("diagnosticOperation").textContent,/Выполняется · проверка готовности/);
+  assert.match(ui.elements.get("diagnosticOperation").textContent,/Выполняется · подготовка и проверка готовности/);
   assert.equal(ui.elements.get("diagnosticJournal").children[0].children[0].children[2].textContent,"edt · <failure>");
   assert.equal(ui.elements.get("diagnosticJournal").children[0].children[0].children[1].textContent,"ошибка");
   assert.match(ui.elements.get("diagnosticJournal").children[0].children[1].textContent,/ECONNREFUSED/);
@@ -2501,6 +2649,6 @@ test("diagnostics show and filter safe text, stay available during an operation,
   ui.elements.get("logSearch").value="absent";ui.elements.get("logSearch").events.input();assert.match(ui.elements.get("diagnosticJournal").children[0].textContent,/Нет записей/);
   await ui.elements.get("diagnosticsRefreshButton").onclick();assert.equal(logs,2);
   await ui.tick(8000);assert.equal(logs,3);
-  ui.elements.get("profileTab").onclick();await ui.tick(8000);assert.equal(logs,3);
+  ui.elements.get("checkTab").onclick();await ui.tick(8000);assert.equal(logs,3);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,0);
 });

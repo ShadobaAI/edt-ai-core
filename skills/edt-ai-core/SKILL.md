@@ -48,16 +48,16 @@ another chat before correcting the actual connection problem.
   projectInstructions.created/preserved with contentValidated=false; finish the
   project-specific rules from confirmed facts and preserve existing instructions.
   A valid profile or ready environment does not prove those rules are complete.
-- For an invalid existing profile, settings.edit returns its repairable document
+- For an invalid existing profile, settings.edit with layerScope=profile and
+  format=yaml returns its repairable document
   and baseRevision. Use that document and the validation detail from inspect;
   do not reverse-engineer scripts or export/read the profile repeatedly.
-- For edits use settings.preview/apply with mode=edit and the same baseRevision.
-  This is a full document: omitted runtime fields reset to defaults. Keep other
-  values intact. Explain shared runtime changes; replacing an existing profile
-  requires explicit agreement, reviewed preview and backup. A stale revision
+- For edits use settings.preview/apply with mode=layer, the selected profile
+  layerScope and the same baseRevision. Replacing an existing profile
+  requires a reviewed preview and backup. A stale revision
   requires a fresh document and reconciliation, never an automatic retry.
-- For supplied portable files use preview/apply import semantics. settings.import
-  only opens the form. For a simple connection/component change use settings.update
+- For supplied portable YAML or ZIP files use the settings.import transfer dialog.
+  For a simple connection/component change use settings.update
   with changed fields only; respect read-only/environment/connection-file sources.
   Both form entrypoints, chat tools and the Node CLI use SettingsBackend with
   the same selected root, instance and precedence. OpenViking transport fields

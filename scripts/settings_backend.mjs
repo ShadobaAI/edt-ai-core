@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { stringify } from "../vendor/deps.mjs";
+import { read_project_archive, write_project_archive } from "./archives.mjs";
 import {
   ConfigError,
   atomic_write,
@@ -15,6 +18,8 @@ import {
   validate_url,
   validate_openviking_url,
   parse,
+  parse_yaml_document,
+  safe_profile_dictionary_path,
   object,
   stable,
   entrypoint,
@@ -24,8 +29,6 @@ import {
   profile_target,
   project_profile,
   merged_profile,
-  validate,
-  validate_at,
   create_profile,
   profile_state,
   scoped_paths,
@@ -39,6 +42,7 @@ import {
   instance_name,
   resolve,
   exists,
+  contained,
   is_dir,
   sha256,
   locate_project,
@@ -48,17 +52,294 @@ import {
 import {
   resolved_settings,
   effective_settings,
-  instance_file,
-  instance_files,
+  external_override_files,
   assert_settings_paths,
-  check_instance_override,
 } from "./project_context.mjs";
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, index_repositories, repository_projects } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness, readiness_receipt_revision, readiness_fingerprint } from "./setup_readiness.mjs";
 import { knowledge_status } from "./knowledge.mjs";
+
+// Ensure the local layer is ignored before writing it. Keep existing rules,
+// including negations, and append our rule last so it remains effective.
+function local_ignore_plan(root) {
+  const nominal = path.join(root, ".ai", ".gitignore"), target = inside(root, ".ai/.gitignore");
+  const stat = fs.lstatSync(nominal, { throwIfNoEntry: false });
+  if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw new ConfigError("Файл .ai/.gitignore должен быть обычным файлом.");
+  const previous = stat ? fs.readFileSync(target) : null;
+  const original = previous?.toString("utf8") ?? "";
+  if (previous && !Buffer.from(original, "utf8").equals(previous)) throw new ConfigError("Файл .ai/.gitignore должен быть в UTF-8.");
+  let directory = root;
+  while (!exists(path.join(directory, ".git")) && path.dirname(directory) !== directory) directory = path.dirname(directory);
+  const repository = exists(path.join(directory, ".git")); let gitVerified = false;
+  if (repository) {
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
+    const result = spawnSync("git", ["--no-optional-locks", "-C", root, "ls-files", "--error-unmatch", "--", ".ai/project.local.yaml"], { env, windowsHide: true, shell: false, timeout: 2000, encoding: "utf8" });
+    if (result.status === 0) throw new ConfigError(".ai/project.local.yaml уже отслеживается Git; правило игнорирования его не защитит. Уберите файл из индекса самостоятельно.");
+    gitVerified = result.status === 1;
+  }
+  const next = original.split(/\r?\n/).filter(line => line.trim() && !line.trimStart().startsWith("#")).at(-1)?.trim() === "/project.local.yaml"
+    ? original : original + (original && !original.endsWith("\n") ? "\n" : "") + "/project.local.yaml\n";
+  return { target, previous, next, changed: next !== original,
+    gitWarning: repository && !gitVerified ? "Не удалось проверить индекс Git: правило игнорирования не защищает уже отслеживаемый файл project.local.yaml. Проверьте индекс самостоятельно." : null };
+}
+function protect_local_layer(root, expected) {
+  const plan = local_ignore_plan(root), current = fs.existsSync(plan.target) ? fs.readFileSync(plan.target) : null;
+  const same = (a,b) => a === null ? b === null : b !== null && a.equals(b);
+  if (!same(plan.previous, current) || expected && (!same(plan.previous, expected.previous) || plan.next !== expected.next)) throw new ConfigError("Файл .ai/.gitignore изменился во время сохранения.");
+  if (plan.changed) atomic_write(plan.target, plan.next, plan.previous !== null);
+  return plan;
+}
+function restore_local_ignore(plan) {
+  if (!plan?.changed) return;
+  const now = fs.existsSync(plan.target) ? fs.readFileSync(plan.target) : null;
+  if (!now || !now.equals(Buffer.from(plan.next))) throw new ConfigError("Файл .ai/.gitignore изменился после сохранения и не был восстановлен.");
+  restore(plan.target, plan.previous);
+}
+function rollback_layer(target, previous, expected, wrote, ignorePlan, error, backupPath) {
+  const failed = [];
+  if (wrote) try {
+    const current = bytes(target);
+    if (expected !== null && (current === null || !current.equals(Buffer.from(expected)))) throw new Error("changed");
+    restore(target, previous);
+  } catch { failed.push(target); }
+  try { restore_local_ignore(ignorePlan); } catch { failed.push(ignorePlan.target); }
+  if (failed.length) throw new ConfigError("Не удалось восстановить файлы: " + failed.join(", ") + (backupPath ? ". Резервная копия: " + backupPath : ""));
+  throw error;
+}
 import { environment_compatibility, safe_error_message, sanitize_setup_result } from "./diagnostics.mjs";
+
+// Field edits operate on the supplied draft. Unrelated source is kept intact.
+// Shared aliases are detached when necessary so editing one field cannot
+// silently change another field that happens to reference the same anchor.
+export function patch_yaml_draft(text, operation) {
+  if (typeof text !== "string" || Buffer.byteLength(text) > 2 * 1024 * 1024) throw new ConfigError("Документ превышает 2 МиБ.");
+  const bom = text.startsWith("\uFEFF") ? "\uFEFF" : "", source = bom ? text.slice(1) : text;
+  const data = parse(source), doc = parse_yaml_document(source), keys = operation?.path;
+  if (!Array.isArray(keys) || !keys.length || keys.length > 64 || keys.some((key, index) =>
+    !(typeof key === "string" || Number.isSafeInteger(key)) ||
+    ["__proto__", "prototype", "constructor"].includes(key) &&
+      !(index === keys.length - 1 && safe_profile_dictionary_path(keys) &&
+        (operation.kind === "remove" || operation.kind === "set" && typeof operation.value === "string"))))
+    throw new ConfigError("Некорректный путь поля.");
+  const prefix = (a,b) => a.length <= b.length && a.every((part,index) => String(part) === String(b[index]));
+  const anchors = new Set(), anchorPaths = new Map(), aliases = [];
+  const walk = (node, current) => {
+    if (!node || typeof node !== "object") return;
+    if (node.anchor) { anchorPaths.set(node.anchor,current); if (prefix(current,keys) || prefix(keys,current)) anchors.add(node.anchor); }
+    if (node.constructor?.name === "Alias") aliases.push({ node, path: current });
+    else if (Array.isArray(node.items)) node.items.forEach((item,index) => item.key ? walk(item.value,[...current,item.key.value]) : walk(item,[...current,index]));
+  };
+  walk(doc.contents, []);
+  const detach = aliases.filter(alias => prefix(alias.path,keys) || anchors.has(alias.node.source));
+  if (detach.length) {
+    let expanded = source;
+    for (const alias of detach.sort((a,b) => b.node.range[0]-a.node.range[0])) {
+      let value = data; for (const part of alias.path) value = value?.[part];
+      // Merge aliases are not represented as a `<<` property by toJS.
+      if (value === undefined && anchorPaths.has(alias.node.source)) { value = data; for (const part of anchorPaths.get(alias.node.source)) value = value?.[part]; }
+      let replacement; try { replacement = JSON.stringify(value); } catch { throw new ConfigError("Не удалось безопасно отделить циклическую YAML-ссылку."); }
+      if (replacement === undefined) throw new ConfigError("Не удалось безопасно отделить YAML-ссылку.");
+      expanded = expanded.slice(0,alias.node.range[0]) + replacement + expanded.slice(alias.node.range[1]);
+    }
+    const result = patch_yaml_draft(bom + expanded, operation);
+    return { ...result, reformatted: true };
+  }
+  let parent = data;
+  for (const key of keys.slice(0, -1)) {
+    if (!parent || typeof parent !== "object" || !Object.hasOwn(parent, key)) throw new ConfigError("Поле больше не существует.");
+    parent = parent[key];
+  }
+  const key = keys.at(-1), existsKey = parent && typeof parent === "object" && Object.hasOwn(parent, key);
+  if (!parent || typeof parent !== "object") throw new ConfigError("Некорректная структура поля.");
+  let targetPath = keys, next;
+  // A merge key can provide a value with no node of its own. Writing the
+  // property must add an explicit override without changing the anchor.
+  const inheritedSet = operation.kind === "set" && existsKey && !doc.getIn(keys,true);
+  const inheritedRemove = operation.kind === "remove" && existsKey && !doc.getIn(keys,true);
+  if (inheritedSet) {
+    Object.defineProperty(parent,key,{ value: operation.value, enumerable:true, configurable:true, writable:true });
+    targetPath = keys.slice(0,-1); next = parent;
+  }
+  else if (inheritedRemove) { delete parent[key]; targetPath = keys.slice(0,-1); next = parent; }
+  else if (operation.kind === "set" && existsKey) next = operation.value;
+  else {
+    targetPath = keys.slice(0, -1);
+    if (operation.kind === "set" && !Array.isArray(parent)) Object.defineProperty(parent, key, { value: operation.value, enumerable: true, configurable: true, writable: true });
+    else if (operation.kind === "remove" && existsKey) Array.isArray(parent) ? parent.splice(Number(key), 1) : delete parent[key];
+    else if (operation.kind === "append" && Array.isArray(parent) && Number(key) === parent.length) parent.push(operation.value);
+    else if (operation.kind === "move" && Array.isArray(parent) && existsKey && Number.isInteger(operation.to) && operation.to >= 0 && operation.to < parent.length) parent.splice(operation.to, 0, parent.splice(Number(key), 1)[0]);
+    else throw new ConfigError("Недопустимое изменение поля.");
+    next = parent;
+  }
+  if (operation.kind === "remove" && existsKey && !inheritedRemove && !Array.isArray(parent)) {
+    const parentNode = keys.length > 1 ? doc.getIn(keys.slice(0,-1),true) : doc.contents;
+    if (parentNode?.items?.some(item => item.key?.source === "<<" && typeof item.key.value === "symbol")) {
+      // Removing an explicit override reveals the merged value, rather than
+      // removing the effective key from the document altogether.
+      const after = parse_yaml_document(source); after.deleteIn(keys);
+      let effective = parse(after.toString()); for (const part of keys.slice(0,-1)) effective = effective?.[part];
+      if (effective && Object.hasOwn(effective,key)) Object.defineProperty(parent,key,{value:effective[key],enumerable:true,configurable:true,writable:true});
+    }
+  }
+  const node = targetPath.length ? doc.getIn(targetPath, true) : doc.contents;
+  if (!node?.range) throw new ConfigError("Это значение можно изменить в режиме YAML.");
+  if (node.constructor?.name === "Alias") throw new ConfigError("Не удалось безопасно отделить YAML-ссылку.");
+  const [start, end] = node.range, old = source.slice(start, end);
+  const matches = candidate => { try { return stable(parse(candidate)) === stable(data); } catch { return false; } };
+  const patchCollectionAst = () => {
+    const changed = parse_yaml_document(source), collection = targetPath.length ? changed.getIn(targetPath,true) : changed.contents;
+    if (!collection || !Array.isArray(collection.items)) throw new ConfigError("Не удалось изменить коллекцию YAML.");
+    if (operation.kind === "move") collection.items.splice(operation.to,0,collection.items.splice(Number(key),1)[0]);
+    else if (inheritedRemove) {
+      // YAML merge has no syntax for excluding a key: materialize the
+      // remaining inherited values as explicit properties in this map.
+      collection.items = collection.items.filter(item => !(item.key?.source === "<<" && typeof item.key.value === "symbol"));
+      for (const [name,value] of Object.entries(parent)) if (!collection.has(name)) collection.set(name,value);
+    }
+    else if (operation.kind === "remove") changed.deleteIn(keys);
+    else if (operation.kind === "append") collection.add(changed.createNode(operation.value));
+    else if (operation.kind === "set") changed.setIn(keys,operation.value);
+    else throw new ConfigError("Недопустимое изменение поля.");
+    const rendered = changed.toString(), parsed = parse_yaml_document(rendered), renderedNode = targetPath.length ? parsed.getIn(targetPath,true) : parsed.contents;
+    if (!renderedNode?.range) throw new ConfigError("Не удалось подготовить коллекцию YAML.");
+    const [newStart,newEnd] = renderedNode.range, lineStart = (value,offset) => value.lastIndexOf("\n",offset-1)+1;
+    const oldIndent = source.slice(lineStart(source,start),start).match(/^ */)?.[0] || "", newIndent = rendered.slice(lineStart(rendered,newStart),newStart).match(/^ */)?.[0] || "";
+    let replacement = rendered.slice(newStart,newEnd);
+    if (oldIndent !== newIndent) replacement = replacement.replace(/\n( *)/g,(_,spaces) => "\n" + oldIndent + spaces.slice(newIndent.length));
+    if (source.includes("\r\n")) replacement = replacement.replace(/(?<!\r)\n/g,"\r\n");
+    const lineEnd = old.match(/(?:\r\n|\r|\n)$/)?.[0];
+    if (lineEnd && !/(?:\r\n|\r|\n)$/.test(replacement)) replacement += lineEnd;
+    // Preserve comments the YAML serializer associates with a removed item.
+    // They are moved immediately before the affected collection and the UI
+    // explicitly reports that the edited block was reformatted.
+    const comments = [], collectComments = item => {
+      if (!item || typeof item !== "object") return;
+      for (const value of [item.commentBefore,item.comment]) if (typeof value === "string") for (const line of value.split("\n")) comments.push("#" + line);
+      if (item.key) { collectComments(item.key); collectComments(item.value); }
+      if (Array.isArray(item.items)) item.items.forEach(collectComments);
+    };
+    collectComments(node); const missing = [];
+    for (const comment of comments) if (old.includes(comment) && !replacement.includes(comment) && !missing.includes(comment)) missing.push(comment);
+    const beginning = lineStart(source,start), newline = source.includes("\r\n") ? "\r\n" : "\n";
+    const prefixComments = missing.map(comment => oldIndent + comment + newline).join("");
+    const result = bom + source.slice(0,beginning) + prefixComments + source.slice(beginning,start) + replacement + source.slice(end);
+    if (!matches(result)) throw new ConfigError("Не удалось безопасно изменить коллекцию YAML.");
+    return { text: result, reformatted: true };
+  };
+  if (inheritedSet || inheritedRemove) return patchCollectionAst();
+  // For flow collections, keep each original entry and its surrounding
+  // separators instead of rewriting all siblings as JSON.
+  if (targetPath.length !== keys.length && node.flow && Array.isArray(node.items) && !/[#&*]/.test(old)) {
+    const ranges = node.items.map(item => item.key
+      ? [item.key.range?.[0], item.value?.range?.[1] ?? item.key.range?.[1]]
+      : [item.range?.[0], item.range?.[1]]);
+    if (ranges.every(([a, b]) => Number.isInteger(a) && Number.isInteger(b) && a >= start && b <= end && a <= b)) {
+      let body = source.slice(start, end), replacement;
+      if (operation.kind === "append" || operation.kind === "set" && !existsKey) {
+        const addition = operation.kind === "append" ? JSON.stringify(operation.value) : JSON.stringify(key) + ": " + JSON.stringify(operation.value);
+        const close = body.length - 1;
+        replacement = body.slice(0, close) + (ranges.length ? ", " : "") + addition + body.slice(close);
+      } else if (ranges.length) {
+        const index = Array.isArray(parent) ? Number(key) : node.items.findIndex(item => item.key?.value === key);
+        if (index >= 0 && index < ranges.length) {
+          const entries = ranges.map(([a, b]) => source.slice(a, b));
+          const separators = ranges.slice(1).map(([a], i) => source.slice(ranges[i][1], a));
+          if (operation.kind === "remove") {
+            entries.splice(index, 1);
+            separators.splice(index === 0 ? 0 : index - 1, 1);
+          } else if (operation.kind === "move") entries.splice(operation.to, 0, entries.splice(index, 1)[0]);
+          if (operation.kind === "remove" || operation.kind === "move") {
+            replacement = source.slice(start, ranges[0][0]) + entries.map((entry, i) => (i ? separators[i - 1] : "") + entry).join("") + source.slice(ranges.at(-1)[1], end);
+          }
+        }
+      }
+      if (replacement !== undefined) {
+        const result = bom + source.slice(0, start) + replacement + source.slice(end);
+        if (matches(result)) return { text: result, reformatted: false };
+      }
+    }
+  }
+  // Work on complete block entries instead of serializing their parent. This
+  // keeps spelling, indentation and comments on every untouched entry.
+  if (targetPath.length !== keys.length && !node.flow && Array.isArray(node.items) && node.items.length) {
+    const lineStart = offset => source.lastIndexOf("\n", offset - 1) + 1;
+    const starts = node.items.map(item => lineStart((item.key || item).range?.[0] ?? -1));
+    // A standalone comment immediately before an entry travels with that
+    // entry when a sequence is reordered.
+    for (let i = 1; i < starts.length; i++) {
+      let cursor = starts[i];
+      while (cursor > starts[i-1]) {
+        const previous = lineStart(cursor - 1), line = source.slice(previous,cursor);
+        if (!/^\s*#/.test(line)) break;
+        starts[i] = previous; cursor = previous;
+      }
+    }
+    const firstLine = lineStart(start), indent = source.slice(firstLine, start);
+    if (/^ *$/.test(indent) && starts.every((offset, index) => offset >= firstLine && (index === 0 || offset > starts[index - 1]))) {
+      const newline = source.includes("\r\n") ? "\r\n" : "\n";
+      let result;
+      if (operation.kind === "append" || operation.kind === "set" && !existsKey) {
+        const separator = /(?:\r\n|\n|\r)$/.test(old) ? "" : newline;
+        const addition = operation.kind === "append" ? "- " + JSON.stringify(operation.value) : JSON.stringify(key) + ": " + JSON.stringify(operation.value);
+        result = bom + source.slice(0, end) + separator + indent + addition + newline + source.slice(end);
+      } else {
+        const index = Array.isArray(parent) ? Number(key) : node.items.findIndex(item => item.key?.value === key);
+        if (index >= 0 && index < starts.length && starts.length > 1) {
+          const parts = starts.map((offset, i) => source.slice(offset, starts[i + 1] ?? end));
+          let relocated = false;
+          if (operation.kind === "remove") {
+            // Standalone comments may belong to a neighbouring entry; retain
+            // them even when deleting this entry.
+            let comments = parts[index].split(/(?<=\n)/).filter(line => /^\s*#/.test(line)).join("");
+            const collect = item => {
+              if (!item || typeof item !== "object") return;
+              for (const value of [item.commentBefore,item.comment]) if (typeof value === "string") for (const line of value.split("\n")) if (!comments.includes("#"+line)) { comments += indent+"#"+line+newline; relocated = true; }
+              if (item.key) { collect(item.key); collect(item.value); }
+              if (Array.isArray(item.items)) item.items.forEach(collect);
+            };
+            collect(node.items[index]);
+            parts.splice(index, 1, comments);
+          } else if (operation.kind === "move") parts.splice(operation.to, 0, parts.splice(index, 1)[0]);
+          if (operation.kind === "remove" || operation.kind === "move") {
+            result = bom + source.slice(0, starts[0]) + parts.join("") + source.slice(end);
+            if (matches(result)) return { text: result, reformatted: relocated };
+          }
+        }
+      }
+      if (result && matches(result)) return { text: result, reformatted: false };
+    }
+  }
+  if (next !== null && typeof next === "object" && /[#&*]/.test(old)) {
+    // Adding a member to a block collection does not require reserializing its
+    // existing members or their comments. Other structural edits remain
+    // conservative until their source ranges can be retained safely.
+    if (!node.flow && (operation.kind === "append" || operation.kind === "set" && !existsKey)) {
+      const lineStart = source.lastIndexOf("\n", start - 1) + 1, indent = source.slice(lineStart, start);
+      if (/^ *$/.test(indent)) {
+        const newline = source.includes("\r\n") ? "\r\n" : "\n", separator = /(?:\r\n|\n|\r)$/.test(old) ? "" : newline;
+        const addition = operation.kind === "append" ? "- " + JSON.stringify(operation.value) : JSON.stringify(key) + ": " + JSON.stringify(operation.value);
+        const result = bom + source.slice(0, end) + separator + indent + addition + newline + source.slice(end);
+        if (matches(result)) return { text: result, reformatted: false };
+      }
+    }
+    return patchCollectionAst();
+  }
+  const replacement = JSON.stringify(next);
+  if (replacement === undefined) throw new ConfigError("Некорректное значение поля.");
+  const trailingLineEnd = old.match(/(?:\r\n|\r|\n)$/)?.[0] || "";
+  const result = bom + source.slice(0, start) + replacement + trailingLineEnd + source.slice(end);
+  // Reject surprising YAML constructs rather than silently editing a different value.
+  const expected = structuredClone(data);
+  if (operation.kind === "set" && existsKey) {
+    let target = expected;
+    for (const part of keys.slice(0, -1)) target = target[part];
+    Object.defineProperty(target, key, { value: operation.value, enumerable: true, configurable: true, writable: true });
+  }
+  if (stable(parse(result)) !== stable(expected)) throw new ConfigError("Это изменение неоднозначно в YAML. Используйте текстовый режим.");
+  return { text: result, reformatted: next !== null && typeof next === "object" };
+}
 
 export const FIELDS = {
   projectRoot: ["active_project"],
@@ -78,10 +359,50 @@ export const FIELDS = {
   openvikingConnectionId: ["mcp", "optional", "openviking", "connection_id"],
 };
 const bytes = (file) => (file && exists(file) ? fs.readFileSync(file) : null);
+const revision_bytes = file => {
+  const content = bytes(file);
+  return content === null ? Buffer.from("missing\0") : Buffer.concat([Buffer.from(`present:${content.length}\0`), content]);
+};
 const restore = (file, previous) => {
   if (previous === null) fs.rmSync(file, { force: true });
   else atomic_write(file, previous);
 };
+function patch_yaml_document(original, desired) {
+  if (original === null) return stringify(desired, { schema: "yaml-1.1" });
+  let text = original ?? "{}\n";
+  const visit = (before, after, keys = []) => {
+    if (object(before) && object(after)) {
+      for (const key of Object.keys(before)) if (!Object.hasOwn(after, key)) {
+        text = patch_yaml_draft(text, { kind: "remove", path: [...keys, key] }).text;
+        // Removing an explicit property may reveal a merged value. Scoped
+        // reset means the property must be absent from the effective layer.
+        let current = parse(text); for (const part of keys) current = current?.[part];
+        if (current && Object.hasOwn(current,key)) text = patch_yaml_draft(text, { kind: "remove", path: [...keys, key] }).text;
+      }
+      for (const [key, value] of Object.entries(after)) {
+        if (!Object.hasOwn(before, key)) text = patch_yaml_draft(text, { kind: "set", path: [...keys, key], value }).text;
+        else visit(before[key], value, [...keys, key]);
+      }
+    } else if (stable(before) !== stable(after)) {
+      if (!keys.length) throw new ConfigError("Измените документ в режиме YAML.");
+      text = patch_yaml_draft(text, { kind: "set", path: keys, value: after }).text;
+    }
+  };
+  visit(parse(text), desired);
+  if (stable(parse(text)) !== stable(desired)) throw new ConfigError("Не удалось подготовить изменение YAML.");
+  return text;
+}
+function backup_local_settings(state, root, previous) {
+  if (previous === null) return null;
+  const saved = path.join(state, "backups", `settings-${randomUUID()}.yaml`), actual = resolve(saved);
+  if (contained(resolve(root), actual)) throw new ConfigError("Резервная копия локальных настроек должна находиться вне проекта и Git-репозитория.");
+  for (let directory = path.dirname(actual); ; directory = path.dirname(directory)) {
+    if (exists(path.join(directory, ".git"))) throw new ConfigError("Резервная копия локальных настроек должна находиться вне проекта и Git-репозитория.");
+    if (path.dirname(directory) === directory) break;
+  }
+  atomic_write(saved, previous, false);
+  return saved;
+}
 function layer_changes(before, after) {
   const changes = [];
   let truncated = false;
@@ -124,7 +445,7 @@ function import_compatibility(profile, root) {
 }
 export const preparation_scope = (root) =>
   root ? `${root}#${instance_name()}` : null;
-export const session_guidance = "Профиль определяется по папке текущего чата. Если подключения не видят проект, сообщите агенту путь к его папке в этом чате. Привязка подключений к проекту действует только в текущем чате. Для подготовки сервисов нажмите «Проверить готовность».";
+export const session_guidance = "Профиль определяется по папке текущего чата. Если подключения не видят проект, сообщите агенту путь к его папке в этом чате. Привязка подключений к проекту действует только в текущем чате. Для подготовки сервисов нажмите «Подготовить и проверить».";
 export function authorize_preparation(request, root) {
   const auth = request.authorization;
   if (
@@ -220,12 +541,12 @@ export class SettingsBackend {
   setting_layers(config, profile) {
     const root = config.active_project;
     if (!root || profile.status !== "loaded") return {};
-    const files = { profile: profile_target(root), project_local: inside(root, ".ai/project.local.yaml"), instance: instance_file(config, root) };
+    const files = { profile: profile_target(root), project_local: inside(root, ".ai/project.local.yaml") };
     const layers = {};
     for (const [scope, file] of Object.entries(files)) {
       const document = exists(file) ? load(file) : {}, fields = {};
       if (scope !== "profile" && exists(file)) {
-        if (scope === "instance") check_instance_override(document); else check_schema(document, "project-local.schema.json");
+        check_schema(document, "project-local.schema.json");
         validate_override_urls(document);
       }
       for (const [key, parts] of Object.entries(FIELDS)) {
@@ -267,22 +588,22 @@ export class SettingsBackend {
     const chunks = [
       Buffer.from(stable(config)),
       Buffer.from(payload),
-      bytes(this.CONFIG) || Buffer.alloc(0),
+      revision_bytes(this.CONFIG),
     ];
     if (target)
       chunks.push(
         Buffer.from(resolve(target)),
-        bytes(target) || Buffer.alloc(0),
+        revision_bytes(target),
       );
     if (config.active_project) {
       // Track source revisions even when a higher-priority value masks them or
       // the imported document does not replace the current profile.
       for (const name of [".ai/project.yaml", ".ai/project.local.yaml"]) {
         const file = inside(config.active_project, name);
-        chunks.push(Buffer.from(file), bytes(file) || Buffer.alloc(0));
+        chunks.push(Buffer.from(file), revision_bytes(file));
       }
-      for (const file of instance_files(config, config.active_project))
-        chunks.push(Buffer.from(file), bytes(file) || Buffer.alloc(0));
+      for (const file of external_override_files())
+        chunks.push(Buffer.from(file), revision_bytes(file));
     }
     if (config.active_project)
       chunks.push(Buffer.from(stable(edt_connection(config.active_project))));
@@ -293,161 +614,8 @@ export class SettingsBackend {
       ? process.env.EDT_AI_PROJECT_ROOT
       : null;
   }
-  parse_import(request) {
-    const text = request.text || "";
-    if (typeof text !== "string" || Buffer.byteLength(text) > 2 * 1024 * 1024)
-      throw new ConfigError("Допустим файл настроек размером до 2 МиБ.");
-    const data = parse(text);
-    const editing = request.mode === "edit";
-    let omittedTestingCommands = [];
-    if (request.layerScope !== undefined) throw new ConfigError("Выбор локального файла доступен только в режиме layer.");
-    // Validate omitted fields too: filtering must not hide malformed input or
-    // credential-bearing URLs from the import's trust boundary.
-    const sourceProfile = data?.format === "1c-ai-core-settings" ? data.profile : data;
-    if (!editing && sourceProfile != null) {
-      check_schema(sourceProfile, "project-local.schema.json");
-      validate_override_urls(sourceProfile);
-    }
-    if (!editing && data?.format === "1c-ai-core-settings" && data.settings != null) {
-      if (!object(data.settings)) throw new ConfigError("Недопустимые поля настроек.");
-      validate_settings(deep_merge(this.current(), data.settings));
-    }
-    // Import machine-specific settings only after an explicit opt-in.
-    if (!editing && request.includeMachineSettings !== true) {
-      const omitProfileMachineSettings = profile => {
-        if (!object(profile)) return;
-        delete profile.connections;
-        for (const entry of Object.values(profile.components || {})) if (object(entry))
-          for (const field of ["java", "node", "configuration", "mode", "url", "headers_env"]) delete entry[field];
-        // Command arguments have no reliable portable/machine-specific type:
-        // they can embed paths, addresses, or other machine-local data.
-        // Require an explicit opt-in for the whole command instead of guessing.
-        if (Array.isArray(profile.testing?.commands)) {
-          omittedTestingCommands = profile.testing.commands.map(command => command?.id).filter(id => typeof id === "string");
-          profile.testing.commands = [];
-        }
-      };
-      if (data.format === "1c-ai-core-settings") {
-        omitProfileMachineSettings(data.profile);
-        const mcp = data.settings?.mcp;
-        for (const entry of Object.values(mcp?.required || {})) if (object(entry)) { delete entry.url; delete entry.headers_env; }
-        for (const entry of Object.values(mcp?.managed || {})) if (object(entry))
-          for (const field of ["java", "node", "configuration", "mode", "url", "headers_env"]) delete entry[field];
-        if (object(mcp?.optional?.openviking)) { delete mcp.optional.openviking.url; delete mcp.optional.openviking.headers_env; }
-      } else omitProfileMachineSettings(data);
-    }
-    if (request.mode !== undefined && !["import", "edit"].includes(request.mode))
-      throw new ConfigError("Неизвестный режим сохранения настроек.");
-    if (editing && request.baseRevision !== this.edit_revision())
-      throw new ConfigError("Настройки изменились после загрузки в редактор. Загрузите их заново.");
-    if (!editing && request.baseRevision !== undefined)
-      throw new ConfigError("Проверка версии документа доступна только при сохранении из редактора.");
-    let config = this.current(),
-      imported = null;
-    const previous = config.active_project,
-      connections = {};
-    if (data.format === "1c-ai-core-settings") {
-      if (
-        data.version !== 1 ||
-        Object.keys(data).some(
-          (key) => !["format", "version", "settings", "profile"].includes(key),
-        )
-      )
-        throw new ConfigError("Неизвестный формат или версия файла настроек.");
-      const changes = structuredClone(data.settings || {});
-      if (
-        !object(changes) ||
-        Object.keys(changes).some(
-          (key) => !["active_project", "mcp"].includes(key),
-        )
-      )
-        throw new ConfigError("Недопустимые поля настроек.");
-      if (editing) {
-        if (Object.keys(changes).some(key => key !== "mcp") || !object(changes.mcp) ||
-            Object.keys(changes.mcp).some(key => !["managed", "optional"].includes(key)) ||
-            !object(changes.mcp.managed) || !object(changes.mcp.optional) ||
-            !Object.hasOwn(data, "profile"))
-          throw new ConfigError("Документ должен содержать профиль и полные настройки управляемых и дополнительных компонентов. Адреса подключений изменяются на вкладке «Подключения».");
-        if (request.projectRoot !== undefined &&
-            (!request.projectRoot || configuration_root(request.projectRoot) !== config.active_project))
-          throw new ConfigError("Редактор относится к другой папке. Загрузите настройки заново.");
-        const defaults = load(new URL("../settings/defaults.json", import.meta.url));
-        config.mcp.managed = deep_merge(defaults.mcp.managed, changes.mcp.managed);
-        config.mcp.optional = deep_merge(defaults.mcp.optional, changes.mcp.optional);
-        this.checked(config);
-      }
-      check_schema(deep_merge(config, changes), "plugin-settings.schema.json");
-      for (const [name, entry] of Object.entries(changes.mcp?.required || {}))
-        if (Object.hasOwn(entry, "url")) {
-          const value = entry.url;
-          delete entry.url;
-          connections[name] = { url: value ? validate_url(value, name) : "" };
-        }
-      imported = data.profile == null ? null : structuredClone(data.profile);
-      if (!editing) config = deep_merge(config, changes);
-    } else if (!editing) imported = data;
-    else
-      throw new ConfigError(
-        "Это не экспорт настроек 1C AI Core и не профиль проекта.",
-      );
-    const selected = this.lockedRoot();
-    if (Object.hasOwn(request, "projectRoot")) {
-      const proposed = request.projectRoot
-        ? configuration_root(request.projectRoot)
-        : null;
-      if (selected && proposed !== configuration_root(selected))
-        throw new ConfigError(
-          "Импорт относится к другому каталогу. Сначала выберите этот проект в Codex.",
-        );
-      config.active_project = proposed;
-    } else if (config.active_project)
-      config.active_project = configuration_root(config.active_project);
-    if (config.active_project !== previous) config.mcp.required.edt.url = "";
-    if (
-      selected &&
-      (!config.active_project ||
-        resolve(config.active_project) !== configuration_root(selected))
-    )
-      throw new ConfigError(
-        "Импорт относится к другому каталогу. Сначала выберите этот проект в Codex.",
-      );
-    config.state_dir = this.STATE;
-    this.checked(config);
-    const root = config.active_project ? resolve(config.active_project) : null;
-    let target = null,
-      overrides = null;
-    if (imported !== null) {
-      if (!root)
-        throw new ConfigError("Для импорта профиля выберите папку проекта.");
-      target = profile_target(root);
-      const effectiveProfile = merged_profile(root, imported, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
-      for (const repo of effectiveProfile.repositories)
-        if (!is_dir(inside(root, repo.path)))
-          throw new ConfigError(
-            "В выбранной папке отсутствует репозиторий: " + repo.path,
-          );
-      effective_settings(config, root, imported);
-      // The editor loads the complete document; unrelated runtime edits must
-      // preserve profile comments, formatting and modification time.
-      if (editing && exists(target) && stable(load(target)) === stable(imported)) target = null;
-    } else if (editing && root && exists(profile_target(root))) {
-      throw new ConfigError("Удаление существующего профиля через редактор не поддерживается.");
-    }
-    if (Object.keys(connections).length) {
-      if (!root)
-        throw new ConfigError(
-          "Для импорта подключений выберите папку проекта.",
-        );
-      const file = instance_file(config, root);
-      overrides = deep_merge(exists(file) ? load(file) : { connections: {} }, {
-        connections,
-      });
-      check_schema(overrides, "project-local.schema.json");
-    }
-    return [config, imported, target, overrides, omittedTestingCommands];
-  }
   async update_scoped(changes, scope, expectedRevision) {
-    if (!["profile", "project_local", "instance", "global"].includes(scope))
+    if (!["profile", "project_local", "global"].includes(scope))
       throw new ConfigError("Неизвестная область сохранения.");
     const connectionFields = ["edtUrl", "v8stdUrl", "openvikingEnabled", "openvikingUrl", "openvikingTimeout", "openvikingMaxResponseBytes", "openvikingConnectionId"];
     const componentFields = ["codeIndexEnabled", "bslLsEnabled", "bslLsJava", "codeIndexVersion", "bslLsVersion"];
@@ -460,21 +628,26 @@ export class SettingsBackend {
       let profile;
       try { profile = project_profile(root); } catch (error) { if (!(error instanceof ProfileNotFound)) throw error; }
       if (profile) assert_settings_paths(config, root, profile, this.STATE, this.CONFIG);
-      const target = scope === "profile" ? profile_target(root) : scope === "project_local" ? inside(root, ".ai/project.local.yaml") : scope === "instance" ? instance_file(config, root) : this.CONFIG;
+      const target = scope === "profile" ? profile_target(root) : scope === "project_local" ? inside(root, ".ai/project.local.yaml") : this.CONFIG;
+      const previous = bytes(target), previousText = previous?.toString("utf8") ?? null;
+      if (previous !== null && !Buffer.from(previousText, "utf8").equals(previous)) throw new ConfigError("Файл настроек должен быть в корректной кодировке UTF-8.");
       if (expectedRevision && expectedRevision !== this.revision(config, profile_target(root)))
         throw new ConfigError("Настройки изменились после загрузки. Обновите сведения и повторите сохранение.");
       let document;
-      if (scope === "profile") document = load(target);
+      if (scope === "profile") document = previousText === null ? load(target) : parse(previousText);
       else if (scope === "global") document = config;
       else {
-        document = exists(target) ? load(target) : {};
-        if (exists(target)) check_schema(document, "project-local.schema.json");
+        document = previousText === null ? {} : parse(previousText);
+        if (previousText !== null) check_schema(document, "project-local.schema.json");
       }
       for (const [key, value] of Object.entries(changes)) {
         const member = FIELDS[key].at(-1);
         if (connectionFields.includes(key)) {
           const name = key.startsWith("openviking") ? "openviking" : key === "edtUrl" ? "edt" : "v8std";
-          const connection = ((document.connections ||= {})[name] ||= {});
+          // YAML aliases can share an object in memory. Copy the path being
+          // edited so a scoped change does not mutate another connection.
+          document.connections = { ...document.connections };
+          const connection = document.connections[name] = { ...document.connections[name] };
           connection[member] = member === "url" ? connection_url(name, value) : structuredClone(value);
         } else if (scope === "global") {
           const parts = FIELDS[key]; let item = document;
@@ -482,30 +655,37 @@ export class SettingsBackend {
           item[parts.at(-1)] = value;
         } else {
           const name = key.startsWith("codeIndex") ? "code-index" : "bsl-ls";
-          ((document.components ||= {})[name] ||= {})[member] = value;
+          document.components = { ...document.components };
+          document.components[name] = { ...document.components[name], [member]: value };
         }
       }
       if (scope === "profile") merged_profile(root, document, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
       else if (scope === "global") this.checked(document);
       else { check_schema(document, "project-local.schema.json"); validate_override_urls(document); if (scope === "project_local") merged_profile(root, load(profile_target(root)), document); }
-      const previous = bytes(target), savedBackup = scope === "profile" ? backup(target) : null;
+      const nextText = scope === "global" ? null : patch_yaml_document(previousText, document);
+      const savedBackup = scope === "profile" && previous !== null ? backup(target) : scope === "project_local" ? backup_local_settings(this.STATE, root, previous) : null;
+      const current = bytes(target);
+      if (previous === null ? current !== null : current === null || !previous.equals(current)) throw new ConfigError("Настройки изменились во время сохранения.");
+      let wrote = false, ignorePlan;
       try {
-        if (scope === "instance") record_project_owner(this.STATE, root);
         if (scope === "global") this.store_shared_settings(document);
-        else dump(document, target, previous !== null);
+        else { if (scope === "project_local") ignorePlan = protect_local_layer(root); atomic_write(target, nextText, previous !== null); }
+        wrote = true;
         const persisted = load(target);
         if (scope === "global") {
           if (stable(persisted.mcp.managed) !== stable(document.mcp.managed) || stable(persisted.mcp.optional) !== stable(document.mcp.optional))
             throw new ConfigError("Не удалось подтвердить сохранение настроек.");
         } else if (stable(persisted) !== stable(document)) throw new ConfigError("Не удалось подтвердить сохранение настроек.");
         const savedConfig = this.current(), effective = this.effective(savedConfig);
-        return { values: this.values(effective, false), savedTo: target, scope, backup: savedBackup,
+        return { values: this.values(effective, false), savedTo: target, scope, backup: savedBackup, gitWarning: ignorePlan?.gitWarning || null,
           settingsRevision: this.revision(savedConfig, profile_target(root)) };
-      } catch (error) { restore(target, previous); throw error; }
+      } catch (error) {
+        rollback_layer(target, previous, scope === "global" ? null : nextText, wrote, ignorePlan, error, savedBackup);
+      }
     });
   }
   prepare_layer(request) {
-    if (!["project_local", "instance"].includes(request.layerScope)) throw new ConfigError("Выберите локальный файл проекта или экземпляра.");
+    if (request.layerScope !== "project_local") throw new ConfigError("Выберите локальный файл проекта.");
     if (request.includeMachineSettings !== undefined) throw new ConfigError("Параметры импорта не относятся к редактору локальных настроек.");
     if (typeof request.text !== "string" || Buffer.byteLength(request.text) > 2 * 1024 * 1024) throw new ConfigError("Документ превышает 2 МиБ.");
     const config = this.current(), root = config.active_project;
@@ -514,13 +694,13 @@ export class SettingsBackend {
     if (!request.baseRevision || request.baseRevision !== this.edit_revision()) throw new ConfigError("Настройки изменились после загрузки. Загрузите документ заново.");
     const document = parse(request.text);
     check_schema(document, "project-local.schema.json");
-    if (request.layerScope === "instance") check_instance_override(document);
     validate_override_urls(document);
     const shared = load(profile_target(root));
-    const profile = request.layerScope === "project_local" ? merged_profile(root, shared, document) : project_profile(root), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
-    const [effective] = resolved_settings(config, root, profile, request.layerScope === "instance" ? document : null, this.STATE, request.layerScope === "project_local" ? document : null);
+    const profile = merged_profile(root, shared, document), target = inside(root, ".ai/project.local.yaml");
+    const [effective] = resolved_settings(config, root, profile, null, this.STATE, document);
     validate_settings(effective);
-    const payload = stable({ text: request.text, mode: "layer", baseRevision: request.baseRevision, layerScope: request.layerScope });
+    const ignorePlan = local_ignore_plan(root);
+    const payload = stable({ text: request.text, mode: "layer", baseRevision: request.baseRevision, layerScope: request.layerScope, gitignore: ignorePlan.previous?.toString("base64") ?? null });
     let previous = {};
     try { if (exists(target)) previous = load(target); } catch { previous = null; }
     const diff = previous === null ? { changes: [{ path: "Документ", replacedInvalid: true }], truncated: false } : layer_changes(previous, document);
@@ -529,75 +709,213 @@ export class SettingsBackend {
       connectionUrls: Object.fromEntries(Object.entries(effective.mcp.required).map(([name, item]) => [name, item.url])),
       openviking: structuredClone(effective.mcp.optional.openviking), writesInstanceConnections: false,
       sharedRuntimeChanges: {}, sharedOptionalChanges: {}, layerPath: target, layerScope: request.layerScope, layerChanges: diff.changes, layerChangesTruncated: diff.truncated,
+      textChanged: (bytes(target)?.toString("utf8") ?? "") !== request.text,
+      gitignoreChange: ignorePlan.changed ? { path: ignorePlan.target, beforeText: ignorePlan.previous?.toString("utf8") ?? "", afterText: ignorePlan.next } : null,
+      gitWarning: ignorePlan.gitWarning,
       revision: this.revision(effective, target, payload) };
-    return { config, root, document, target, summary, payload };
+    return { config, root, document, target, summary, payload, ignorePlan };
   }
-  async prepare_document_layer(request) {
-    if (!["profile", "global"].includes(request.layerScope)) throw new ConfigError("Неизвестный документ настроек.");
-    if (request.includeMachineSettings !== undefined) throw new ConfigError("Параметры импорта не относятся к редактору настроек.");
-    if (typeof request.text !== "string" || Buffer.byteLength(request.text) > 2 * 1024 * 1024) throw new ConfigError("Документ превышает 2 МиБ.");
-    const edit = await this.main({ action: "edit" });
-    if (!request.baseRevision || request.baseRevision !== edit.baseRevision) throw new ConfigError("Настройки изменились после загрузки. Загрузите документ заново.");
-    const envelope = JSON.parse(edit.text), document = parse(request.text);
-    const previous = request.layerScope === "profile" ? envelope.profile : envelope.settings;
-    if (request.layerScope === "profile") envelope.profile = document; else envelope.settings = document;
-    const input = { mode: "edit", baseRevision: request.baseRevision, text: JSON.stringify(envelope),
-      ...(request.projectRoot !== undefined ? { projectRoot: request.projectRoot } : {}) };
-    const preview = await this.main({ action: "preview", ...input });
-    const diff = layer_changes(previous, document), root = this.current().active_project;
-    const target = request.layerScope === "profile" ? profile_target(root) : this.CONFIG;
-    const revision = sha256(stable({ scope: request.layerScope, text: request.text, baseRevision: request.baseRevision,
-      projectRoot: request.projectRoot ?? null, preview: preview.revision }));
-    return { input, previewRevision: preview.revision, summary: { ...preview, layerScope: request.layerScope, layerPath: target,
-      layerChanges: diff.changes, layerChangesTruncated: diff.truncated, revision } };
-  }
-  async main(request, { profileDocumentOnly = false } = {}) {
-    const action = request.action;
-    if (action === "edit" && ["profile", "global"].includes(request.layerScope)) {
-      const edit = await this.main({ action: "edit" }), config = this.current();
-      if (!config.active_project) throw new ConfigError("Выберите папку проекта.");
-      const envelope = JSON.parse(edit.text), document = request.layerScope === "profile" ? envelope.profile : envelope.settings;
-      return { text: JSON.stringify(document, null, 2), baseRevision: edit.baseRevision, layerScope: request.layerScope,
-        path: request.layerScope === "profile" ? profile_target(config.active_project) : this.CONFIG };
+  prepare_project_transfer(request) {
+    const config = this.current(), root = config.active_project, documents = request.documents;
+    if (!root) throw new ConfigError("Выберите папку проекта.");
+    if (request.projectRoot !== undefined && configuration_root(request.projectRoot) !== root) throw new ConfigError("Импорт относится к другой папке.");
+    if (!object(documents) || !Object.keys(documents).length || Object.keys(documents).some(key => !["profile", "project_local"].includes(key)))
+      throw new ConfigError("Выберите общий или локальный файл проекта.");
+    if (!request.baseRevision || request.baseRevision !== this.edit_revision()) throw new ConfigError("Настройки изменились. Загрузите файлы заново.");
+    const paths = { profile: profile_target(root), project_local: inside(root, ".ai/project.local.yaml") }, parsed = {};
+    for (const scope of ["profile", "project_local"]) {
+      const text = Object.hasOwn(documents, scope) ? documents[scope] : bytes(paths[scope])?.toString("utf8");
+      if (text === undefined && scope === "project_local") { parsed[scope] = {}; continue; }
+      if (typeof text !== "string" || Buffer.byteLength(text) > 2 * 1024 * 1024) throw new ConfigError("Документ отсутствует или превышает 2 МиБ.");
+      parsed[scope] = parse(text);
     }
-    if (action === "edit" && request.layerScope !== undefined) {
-      if (!["project_local", "instance"].includes(request.layerScope)) throw new ConfigError("Неизвестный файл настроек.");
+    const profile = merged_profile(root, parsed.profile, parsed.project_local);
+    assert_settings_paths(config, root, profile, this.STATE, this.CONFIG);
+    validate_settings(resolved_settings(config, root, profile, null, this.STATE, parsed.project_local)[0]);
+    const previews = Object.entries(documents).map(([scope, text]) => {
+      const beforeText = bytes(paths[scope])?.toString("utf8") ?? "";
+      let previous = {};
+      try { if (exists(paths[scope])) previous = load(paths[scope]); } catch { previous = null; }
+      const diff = previous === null ? { changes: [{ path: "Документ", replacedInvalid: true }], truncated: false } : layer_changes(previous, parsed[scope]);
+      return { scope, path: paths[scope], exists: exists(paths[scope]), changes: diff.changes, changesTruncated: diff.truncated, textChanged: beforeText !== text,
+        ...(beforeText !== text ? { beforeText, afterText: text } : {}) };
+    });
+    const ignorePlan = Object.hasOwn(documents, "project_local") ? local_ignore_plan(root) : null;
+    const revision = this.revision(config, paths.profile, stable({ documents, baseRevision: request.baseRevision, gitignore: ignorePlan?.previous?.toString("base64") ?? null }));
+    const gitignoreChange = ignorePlan?.changed ? { path: ignorePlan.target, beforeText: ignorePlan.previous?.toString("utf8") ?? "", afterText: ignorePlan.next } : null;
+    return { root, paths, parsed, documents, ignorePlan, summary: { projectRoot: root, files: previews, revision, gitignoreChange, gitWarning: ignorePlan?.gitWarning || null, ...import_compatibility(profile, root) } };
+  }
+  prepare_document_layer(request) {
+    if (request.layerScope !== "profile") throw new ConfigError("Выберите общий профиль проекта.");
+    const input = { projectRoot: request.projectRoot, baseRevision: request.baseRevision, documents: { profile: request.text } };
+    if (input.projectRoot === undefined) delete input.projectRoot;
+    const prepared = this.prepare_project_transfer(input), config = this.current(), root = prepared.root;
+    const profile = merged_profile(root, prepared.parsed.profile, prepared.parsed.project_local);
+    const [effective] = resolved_settings(config, root, profile, null, this.STATE, prepared.parsed.project_local);
+    const file = prepared.summary.files[0], compatibility = import_compatibility(profile, root);
+    return { input, summary: { projectRoot: root, profileId: profile.profile_id, projectId: profile.project.id,
+      repositories: profile.repositories.map(({ id, path, alias }) => ({ id, path, alias })),
+      missingPaths: compatibility.missingPaths, edtMappings: compatibility.edtMappings,
+      connectionUrls: Object.fromEntries(Object.entries(effective.mcp.required).map(([name, value]) => [name, value.url])),
+      openviking: structuredClone(effective.mcp.optional.openviking), replacesProfile: file.exists,
+      layerScope: "profile", layerPath: file.path, textChanged: file.textChanged, layerChanges: file.changes,
+      layerChangesTruncated: file.changesTruncated, revision: prepared.summary.revision } };
+  }
+  async main(request) {
+    const action = request.action;
+    if (action === "transfer_context") {
+      const config = this.current(), root = config.active_project;
+      if (!root || request.projectRoot !== undefined && configuration_root(request.projectRoot) !== root) throw new ConfigError("Выберите проект текущего чата.");
+      return { projectRoot: root, baseRevision: this.edit_revision() };
+    }
+    if (action === "transfer_decode") {
+      if (typeof request.base64 !== "string" || request.base64.length > Math.ceil(4 * 1024 * 1024 / 3) * 4 ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(request.base64)) throw new ConfigError("Некорректный архив.");
+      const files = read_project_archive(Buffer.from(request.base64, "base64"));
+      return { documents: { profile: files[".ai/project.yaml"], project_local: files[".ai/project.local.yaml"] } };
+    }
+    if (action === "transfer_export") {
+      if (!["profile", "project_local", "both"].includes(request.scope)) throw new ConfigError("Выберите область экспорта.");
       const config = this.current(), root = config.active_project;
       if (!root) throw new ConfigError("Выберите папку проекта.");
-      if (request.layerScope === "instance") project_profile(root);
-      const baseRevision = this.edit_revision(), target = request.layerScope === "project_local" ? inside(root, ".ai/project.local.yaml") : instance_file(config, root);
-      let text;
-      if (!exists(target)) text = JSON.stringify({ schema_version: "0.2" }, null, 2);
-      else {
+      if (request.projectRoot !== undefined && configuration_root(request.projectRoot) !== root) throw new ConfigError("Экспорт относится к другой папке.");
+      const revision = this.edit_revision(), profile = project_profile(root);
+      assert_settings_paths(config, root, profile, this.STATE, this.CONFIG);
+      const paths = { profile: profile_target(root), project_local: inside(root, ".ai/project.local.yaml") }, output = {};
+      const selected = request.scope === "both" ? ["profile", "project_local"] : [request.scope];
+      const secrets = Object.entries(process.env).filter(([key, value]) => /password|passwd|secret|token|credential|api.?key|private.?key/i.test(key) && value.length >= 4).map(([, value]) => value);
+      const inspect = (value, key = "") => {
+        if (key === "headers_env") return; // Values are environment variable names, not credentials.
+        if (typeof value === "string") {
+          if (secrets.some(secret => value.includes(secret)) || /(?:bearer\s+\S+|(?:password|passwd|secret|token|api[_-]?key|authorization)\s*[=:]\s*\S+)/i.test(value))
+            throw new ConfigError("В настройках обнаружены возможные секреты. Удалите их перед экспортом.");
+        } else if (Array.isArray(value)) {
+          if (value.some(item => typeof item === "string" && (/^--?[^\s=]*(?:password|passwd|pwd|secret|token|credential|api[-_]?key|authorization)(?:=|$)/i.test(item) || /^-p(?:$|[^-])/i.test(item) || /^(?:-u|--user)(?:=|$)/i.test(item))))
+            throw new ConfigError("В команде обнаружен параметр возможного секрета. Удалите его перед экспортом.");
+          value.forEach(item => inspect(item));
+        }
+        else if (object(value)) for (const [name, child] of Object.entries(value)) inspect(child, name);
+      };
+      for (const scope of selected) {
+        const content = bytes(paths[scope]), raw = content === null ? "{}\n" : content.toString("utf8");
+        if (content !== null && !Buffer.from(raw, "utf8").equals(content)) throw new ConfigError("Файл профиля должен быть в корректной кодировке UTF-8.");
+        const document = parse(raw);
+        check_schema(document, "project-local.schema.json");
+        if (request.includeCommandsAndComments !== true && Array.isArray(document.testing?.commands)) document.testing.commands = [];
+        inspect(document);
+        // Comments are included in the export and may themselves contain a
+        // credential. Inspect them too before preserving the source text.
+        if (request.includeCommandsAndComments === true) {
+          for (const line of raw.split(/\r?\n/)) { const comment = line.match(/(?:^|\s)#(.*)$/); if (comment) { inspect(comment[1]); if (/\b(?:password|passwd|pwd|secret|token|credential|api[-_]?key|authorization)\s+\S+/i.test(comment[1])) throw new ConfigError("В комментарии обнаружен возможный секрет. Удалите его перед экспортом."); } }
+          output[scope] = raw;
+        } else output[scope] = stringify(document, { schema: "yaml-1.1" });
+      }
+      if (revision !== this.edit_revision()) throw new ConfigError("Настройки изменились во время экспорта.");
+      if (request.scope === "both") return { filename: "1c-ai-core-project.zip", base64: Buffer.from(write_project_archive({ ".ai/project.yaml": output.profile, ".ai/project.local.yaml": output.project_local })).toString("base64") };
+      return { filename: request.scope === "profile" ? "project.yaml" : "project.local.yaml", text: output[request.scope] };
+    }
+    if (action === "transfer_preview") return this.prepare_project_transfer(request).summary;
+    if (action === "transfer_apply") return operation_lock(this.STATE, () => {
+      const prepared = this.prepare_project_transfer(request), { root, paths, parsed, documents, summary, ignorePlan } = prepared;
+      if (request.replace !== true) throw new ConfigError("Подтвердите замену файлов.");
+      if (!request.revision || request.revision !== summary.revision) throw new ConfigError("Настройки изменились после предпросмотра.");
+      const previous = Object.fromEntries(Object.keys(documents).map(scope => [scope, bytes(paths[scope])])), backups = [];
+      for (const scope of Object.keys(documents)) if (previous[scope] !== null) {
+        if (scope === "profile") backups.push({ scope, path: backup(paths[scope]) });
+        else {
+          const saved = path.join(this.STATE, "backups", `import-${randomUUID()}.yaml`), actual = resolve(saved);
+          if (contained(resolve(root), actual)) throw new ConfigError("Резервная копия локального профиля должна находиться вне проекта и Git-репозитория.");
+          for (let directory = path.dirname(actual); ; directory = path.dirname(directory)) {
+            if (exists(path.join(directory, ".git"))) throw new ConfigError("Резервная копия локального профиля должна находиться вне проекта и Git-репозитория.");
+            if (path.dirname(directory) === directory) break;
+          }
+          atomic_write(saved, previous[scope], false); backups.push({ scope, path: saved });
+        }
+      }
+      const written = []; let savedIgnore;
+      try {
+        if (ignorePlan) savedIgnore = protect_local_layer(root, ignorePlan);
+        for (const scope of Object.keys(documents)) {
+          const now = bytes(paths[scope]), old = previous[scope];
+          if (old === null ? now !== null : now === null || !old.equals(now)) throw new ConfigError("Файл изменился во время импорта: " + paths[scope]);
+          atomic_write(paths[scope], documents[scope], old !== null); written.push(scope);
+          if (stable(load(paths[scope])) !== stable(parsed[scope])) throw new ConfigError("Не удалось подтвердить импорт: " + paths[scope]);
+        }
+      } catch (error) {
+        const failed = [];
+        for (const scope of written.reverse()) try {
+          const now = bytes(paths[scope]);
+          if (now === null || !now.equals(Buffer.from(documents[scope]))) throw new Error("changed");
+          restore(paths[scope], previous[scope]);
+        } catch { failed.push(paths[scope]); }
+        try { restore_local_ignore(savedIgnore); } catch { failed.push(savedIgnore.target); }
+        if (failed.length) throw new ConfigError("Не удалось восстановить файлы: " + failed.join(", ") + ". Резервные копии: " + backups.map(item => item.path).join(", "));
+        throw error;
+      }
+      return { status: "imported", summary, backups };
+    });
+    if (action === "document_fields") {
+      if (!["profile", "project_local"].includes(request.layerScope)) throw new ConfigError("Выберите проектный профиль.");
+      if (typeof request.text !== "string" || Buffer.byteLength(request.text) > 2 * 1024 * 1024) throw new ConfigError("Документ превышает 2 МиБ.");
+      const file = request.layerScope === "profile" ? "project-profile.schema.json" : "project-local.schema.json";
+      return { schema: JSON.parse(fs.readFileSync(new URL("../schemas/" + file, import.meta.url), "utf8")), value: parse(request.text) };
+    }
+    if (action === "document_patch") return patch_yaml_draft(request.text, request.operation);
+    if (action === "edit" && request.format === "yaml") {
+      if (!["profile", "project_local"].includes(request.layerScope)) throw new ConfigError("YAML доступен только для проектных профилей.");
+      const config = this.current(), root = config.active_project;
+      if (!root) throw new ConfigError("Выберите папку проекта.");
+      const baseRevision = this.edit_revision();
+      const target = request.layerScope === "profile" ? profile_target(root) : inside(root, ".ai/project.local.yaml");
+      let text = "{}\n";
+      if (exists(target)) {
         const stat = fs.statSync(target);
         if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw new ConfigError("Документ недоступен или превышает 2 МиБ.");
-        const original = fs.readFileSync(target, "utf8");
-        try { const document = parse(original); check_schema(document, "project-local.schema.json"); text = JSON.stringify(document, null, 2); }
-        catch { text = original; } // A broken overlay must remain repairable.
-      }
+        const content = fs.readFileSync(target);text = content.toString("utf8");
+        if (!Buffer.from(text, "utf8").equals(content)) throw new ConfigError("Файл профиля должен быть в корректной кодировке UTF-8.");
+      } else if (request.layerScope === "profile") throw new ConfigError("Профиль проекта не найден.");
       if (baseRevision !== this.edit_revision()) throw new ConfigError("Настройки изменились во время загрузки. Загрузите документ заново.");
-      return { text, baseRevision, layerScope: request.layerScope, path: target };
+      return { text, baseRevision, layerScope: request.layerScope, path: target, format: "yaml" };
     }
     if (["preview", "apply"].includes(action) && request.mode === "layer") {
-      if (["profile", "global"].includes(request.layerScope)) {
-        const prepared = await this.prepare_document_layer(request);
+      if (request.layerScope === "profile") {
+        const prepared = this.prepare_document_layer(request);
         if (action === "preview") return prepared.summary;
         if (request.revision !== prepared.summary.revision) throw new ConfigError("Настройки изменились после предпросмотра. Проверьте документ заново.");
-        const result = await this.main({ action: "apply", ...prepared.input, revision: prepared.previewRevision, replace: request.replace }, { profileDocumentOnly: request.layerScope === "profile" });
-        return { ...result, status: "saved", summary: prepared.summary, savedTo: prepared.summary.layerPath };
+        const result = await this.main({ action: "transfer_apply", ...prepared.input, revision: request.revision, replace: request.replace });
+        return { status: "saved", summary: prepared.summary, savedTo: prepared.summary.layerPath,
+          backup: result.backups.find(item => item.scope === "profile")?.path || null, sessionGuidance: session_guidance };
       }
       if (action === "preview") return this.prepare_layer(request).summary;
       return operation_lock(this.STATE, () => {
-        const { config, root, document, target, summary } = this.prepare_layer(request);
+        const { config, root, document, target, summary, ignorePlan } = this.prepare_layer(request);
         if (request.revision !== summary.revision) throw new ConfigError("Настройки изменились после предпросмотра. Проверьте документ заново.");
         const previous = bytes(target);
+        // Local documents may contain machine-specific information. Never put
+        // their backups in the project, including projects with an old ignore file.
+        const savedBackup = previous !== null ? path.join(this.STATE, "backups", `settings-${randomUUID()}.yaml`) : null;
+        if (savedBackup) {
+          // Check the resolved destination, including redirected directories,
+          // against the project and any enclosing Git worktree.
+          const actual = resolve(savedBackup);
+          if (contained(resolve(root), actual))
+            throw new ConfigError("Резервная копия локальных настроек должна находиться вне проекта и Git-репозитория.");
+          for (let directory = path.dirname(actual); ; directory = path.dirname(directory)) {
+            if (exists(path.join(directory, ".git")))
+              throw new ConfigError("Резервная копия локальных настроек должна находиться вне проекта и Git-репозитория.");
+            if (path.dirname(directory) === directory) break;
+          }
+          atomic_write(savedBackup, previous, false);
+        }
+        let wrote = false, savedIgnore;
         try {
-          if (request.layerScope === "instance") record_project_owner(this.STATE, root);
-          dump(document, target, previous !== null);
+          savedIgnore = protect_local_layer(root, ignorePlan);
+          atomic_write(target, request.text, previous !== null);
+          wrote = true;
           if (stable(load(target)) !== stable(document)) throw new ConfigError("Не удалось подтвердить сохранение настроек.");
           const effective = this.effective(this.current()); validate_settings(effective);
-          return { status: "saved", summary, savedTo: target, values: this.values(effective, false), sessionGuidance: session_guidance };
-        } catch (error) { restore(target, previous); throw error; }
+          return { status: "saved", summary, savedTo: target, backup: savedBackup, values: this.values(effective, false), sessionGuidance: session_guidance };
+        } catch (error) { rollback_layer(target, previous, request.text, wrote, savedIgnore, error, savedBackup); }
       });
     }
     if (action === "java_probe") {
@@ -607,43 +925,25 @@ export class SettingsBackend {
       catch { environment = {}; } // Keep repair diagnostics usable without inheriting unknown credentials.
       return request.directory ? java_in_directory(request.directory, config, environment) : java_info(request.command || "java", config, environment);
     }
-    if (action === "repair_document") {
-      const config = this.current(), root = config.active_project;
-      if (!root) throw new ConfigError("Выберите папку проекта.");
-      const file = profile_target(root), stat = fs.statSync(file);
-      if (!stat.isFile() || stat.size > 2 * 1024 * 1024) throw new ConfigError("Профиль недоступен или превышает 2 МиБ.");
-      return { text: fs.readFileSync(file, "utf8") };
-    }
-    if (action === "profile_source") {
-      const config = this.current(), target = config.active_project;
-      if (!target || typeof request.sourceRoot !== "string") throw new ConfigError("Выберите исходный и целевой профиль.");
-      const identity = path_identity(request.sourceRoot);
-      const source = profile_history(this.STATE, target).find(item => item.projectRoot === identity && item.status === "loaded");
-      if (!source || identity === path_identity(target)) throw new ConfigError("Выберите другой доступный профиль из списка.");
-      const profile = structuredClone(load(profile_target(identity)));
-      assert_settings_paths(config, identity, project_profile(identity), this.STATE, this.CONFIG);
-      if (request.includeConnections !== true) delete profile.connections;
-      const pathsProfile = { ...profile, roots: { source: [], protected: [], ...profile.roots },
-        repositories: profile.repositories || [], testing: profile.testing || {}, knowledge: profile.knowledge || {} };
-      const missingPaths = [...new Set(scoped_paths(pathsProfile))].filter(relative => !exists(inside(target, relative)));
-      return { text: JSON.stringify(profile, null, 2), sourceRoot: identity, missingPaths,
-        includesConnections: request.includeConnections === true, localOverridesIncluded: false };
-    }
     if (action === "rename_profile") {
       return operation_lock(this.STATE, () => {
         const config = this.current(), root = config.active_project;
         if (!root) throw new ConfigError("Выберите папку проекта.");
-        const target = profile_target(root), profile = load(target);
+        const target = profile_target(root), previous = bytes(target), original = previous?.toString("utf8");
+        if (previous === null || !Buffer.from(original, "utf8").equals(previous)) throw new ConfigError("Файл профиля должен быть в корректной кодировке UTF-8.");
+        const profile = parse(original);
         if (request.expectedRevision !== this.revision(config, target)) throw new ConfigError("Профиль изменился. Обновите сведения перед переименованием.");
         if (typeof request.projectId !== "string" || !request.projectId.trim()) throw new ConfigError("Укажите идентификатор проекта.");
         const previousId = project_profile(root).project.id;
-        (profile.project ||= {}).id = request.projectId.trim();
+        profile.project = { ...profile.project, id: request.projectId.trim() };
         const candidate = merged_profile(root, profile, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
         if (candidate.project.id !== profile.project.id) throw new ConfigError("Идентификатор переопределён локальным профилем; измените его там.");
         if (previousId === profile.project.id) return { status: "unchanged", profile: profile_state(root) };
-        const previous = bytes(target), savedBackup = backup(target);
+        const nextText = patch_yaml_document(original, profile), savedBackup = backup(target);
+        const current = bytes(target);
+        if (current === null || !current.equals(previous)) throw new ConfigError("Профиль изменился во время переименования.");
         try {
-          dump(profile, target);
+          atomic_write(target, nextText);
           if (stable(load(target)) !== stable(profile)) throw new ConfigError("Не удалось подтвердить переименование профиля.");
           project_profile(root);
         } catch (error) { restore(target, previous); throw error; }
@@ -713,7 +1013,7 @@ export class SettingsBackend {
         managedValueSources: Object.fromEntries(Object.entries(FIELDS).filter(([key]) => key.startsWith("codeIndex") || key.startsWith("bslLs"))
           .map(([key, parts]) => [key, fieldSources.components?.[parts.at(-2)]?.[parts.at(-1)] || "settings"])),
         settingsRevision: config.active_project && profile.status === "loaded" ? this.revision(config, profile_target(config.active_project)) : null,
-        writePaths: config.active_project ? { profile: profile_target(config.active_project), project_local: inside(config.active_project, ".ai/project.local.yaml"), instance: instance_file(config, config.active_project), global: this.CONFIG } : {},
+        writePaths: config.active_project ? { profile: profile_target(config.active_project), project_local: inside(config.active_project, ".ai/project.local.yaml"), global: this.CONFIG } : {},
         layerValues: this.setting_layers(config, profile),
         preparationScope: preparation_scope(actual.projectRoot),
         profileHistory: profile_history(this.STATE, actual.projectRoot),
@@ -755,24 +1055,33 @@ export class SettingsBackend {
         if (profile) assert_settings_paths(config, root, profile, this.STATE, this.CONFIG);
         if (request.expectedRevision && request.expectedRevision !== this.revision(config, profile_target(root)))
           throw new ConfigError("Настройки изменились после загрузки. Обновите сведения и повторите сохранение.");
-        const file = instance_file(config, root);
+        const file = inside(root, ".ai/project.local.yaml"); let gitWarning = null;
         if (exists(file)) {
-          const local = load(file);
+          const previous = bytes(file), original = previous.toString("utf8");
+          if (!Buffer.from(original, "utf8").equals(previous)) throw new ConfigError("Файл настроек должен быть в корректной кодировке UTF-8.");
+          const local = parse(original);
           check_schema(local, "project-local.schema.json");
           if (local.connections?.[request.connection]) {
+            local.connections = { ...local.connections, [request.connection]: { ...local.connections[request.connection] } };
             delete local.connections[request.connection].url;
             if (!Object.keys(local.connections[request.connection]).length) delete local.connections[request.connection];
           }
           check_schema(local, "project-local.schema.json");
           this.effective(config, local);
-          const previous = bytes(file);
+          const nextText = patch_yaml_document(original, local);
+          backup_local_settings(this.STATE, root, previous);
+          if (!bytes(file)?.equals(previous)) throw new ConfigError("Настройки изменились во время сохранения.");
+          let wrote = false, ignorePlan;
           try {
-            dump(local, file);
+            ignorePlan = protect_local_layer(root);
+            gitWarning = ignorePlan.gitWarning;
+            atomic_write(file, nextText);
+            wrote = true;
             if (stable(load(file)) !== stable(local)) throw new ConfigError("Не удалось подтвердить восстановление наследования.");
             this.effective(this.current());
-          } catch (error) { restore(file, previous); throw error; }
+          } catch (error) { rollback_layer(file, previous, nextText, wrote, ignorePlan, error); }
         }
-        return { values: this.values(config), settingsRevision: this.revision(config, profile_target(root)) };
+        return { values: this.values(config), settingsRevision: this.revision(config, profile_target(root)), gitWarning };
       });
     }
     if (action === "update") {
@@ -803,6 +1112,7 @@ export class SettingsBackend {
         throw new ConfigError(
           "Каталог задаётся текущей сессией; выберите другой проект в Codex.",
         );
+      let gitWarning = null;
       const config = await operation_lock(this.STATE, () => {
         const config = this.current(),
           instanceChanges = {};
@@ -853,7 +1163,7 @@ export class SettingsBackend {
         let file = null,
           overrides;
         if (instanceChanges.connections || instanceChanges.components) {
-          file = instance_file(config, root);
+          file = inside(root, ".ai/project.local.yaml");
           overrides = exists(file) ? load(file) : { connections: {} };
           check_schema(overrides, "project-local.schema.json");
           overrides = deep_merge(overrides, instanceChanges);
@@ -870,144 +1180,25 @@ export class SettingsBackend {
         }
         const previousOverride = bytes(file),
           previousConfig = bytes(this.CONFIG);
+        const oldText = previousOverride?.toString("utf8") ?? null;
+        if (previousOverride !== null && !Buffer.from(oldText, "utf8").equals(previousOverride)) throw new ConfigError("Файл настроек должен быть в корректной кодировке UTF-8.");
+        const overrideText = file ? patch_yaml_document(oldText, overrides) : null;
+        if (file) backup_local_settings(this.STATE, root, previousOverride);
+        let wroteOverride = false, ignorePlan;
         try {
-          if (file) { record_project_owner(this.STATE, root); dump(overrides, file); }
+          if (file) { ignorePlan = protect_local_layer(root); gitWarning = ignorePlan.gitWarning; atomic_write(file, overrideText, previousOverride !== null); wroteOverride = true; }
           if (globalChanged) this.store_shared_settings(config);
         } catch (error) {
-          if (file) restore(file, previousOverride);
-          restore(this.CONFIG, previousConfig);
+          const failed = [];
+          if (wroteOverride) try { const now = bytes(file); if (!now || !now.equals(Buffer.from(overrideText))) throw new Error("changed"); restore(file, previousOverride); } catch { failed.push(file); }
+          try { restore_local_ignore(ignorePlan); } catch { failed.push(ignorePlan.target); }
+          try { if (globalChanged) restore(this.CONFIG, previousConfig); } catch { failed.push(this.CONFIG); }
+          if (failed.length) throw new ConfigError("Не удалось восстановить файлы: " + failed.join(", "));
           throw error;
         }
         return config;
       });
-      return { values: this.values(config) };
-    }
-    if (["preview", "apply"].includes(action)) {
-      const payload = stable({ text: request.text, mode: request.mode || "import", baseRevision: request.baseRevision || null, includeMachineSettings: request.includeMachineSettings ?? null });
-      let [config, profile, target, overrides, omittedTestingCommands] = this.parse_import(request);
-      let applied = this.effective(config, overrides, profile);
-      const shared = settings(this.CONFIG);
-      const effectiveProfile = profile ? merged_profile(config.active_project, profile, exists(inside(config.active_project, ".ai/project.local.yaml")) ? load(inside(config.active_project, ".ai/project.local.yaml")) : {}) : null;
-      const compatibility = import_compatibility(effectiveProfile, config.active_project);
-      const summary = {
-        projectRoot: config.active_project || "",
-        profileId: effectiveProfile?.profile_id || null,
-        projectId: effectiveProfile?.project?.id || null,
-        repositories: (effectiveProfile?.repositories || []).map(
-          ({ id, path, alias }) => ({ id, path, alias }),
-        ),
-        missingPaths: compatibility.missingPaths,
-        omittedTestingCommands,
-        projectSpecific: effectiveProfile ? { roots: effectiveProfile.roots, edtRepositoryIds: effectiveProfile.policy.edt_repository_ids || [],
-          unboundEdtRepositories: effectiveProfile.policy.unbound_edt_repositories || [], edtMappings: compatibility.edtMappings,
-          testing: { yaxunit: effectiveProfile.testing.yaxunit, vanessa: effectiveProfile.testing.vanessa, commands: effectiveProfile.testing.commands.length,
-            ...(effectiveProfile.testing.yaxunit_config?.launch_configuration ? { yaxunitLaunchConfiguration: effectiveProfile.testing.yaxunit_config.launch_configuration } : {}),
-            ...(effectiveProfile.testing.vanessa_config ? { vanessaRuntimeProfile: effectiveProfile.testing.vanessa_config.runtime_profile, vanessaServer: effectiveProfile.testing.vanessa_config.server_name } : {}) },
-          knowledge: { mode: effectiveProfile.knowledge.mode, provider: effectiveProfile.knowledge.provider, manifest: effectiveProfile.knowledge.manifest, collections: effectiveProfile.knowledge.collections } } : null,
-        edtConfigured: !!applied.mcp.required.edt.url,
-        v8stdConfigured: !!applied.mcp.required.v8std.url,
-        openviking: structuredClone(applied.mcp.optional.openviking),
-        replacesProfile: !!(target && exists(target)),
-        connectionUrls: Object.fromEntries(
-          Object.entries(applied.mcp.required).map(([name, item]) => [
-            name,
-            item.url,
-          ]),
-        ),
-        writesInstanceConnections: overrides !== null,
-        sharedRuntimeChanges: Object.fromEntries(
-          Object.entries(config.mcp.managed).filter(
-            ([name, item]) => stable(item) !== stable(shared.mcp.managed[name]),
-          ),
-        ),
-        sharedOptionalChanges: stable(config.mcp.optional) === stable(shared.mcp.optional) ? {} : config.mcp.optional,
-        revision: this.revision(applied, target, stable({ payload, compatibility })),
-      };
-      if (action === "preview") return summary;
-      const saved = await operation_lock(this.STATE, () => {
-        [config, profile, target, overrides] = this.parse_import(request);
-        applied = this.effective(config, overrides, profile);
-        if (request.revision !== this.revision(applied, target, stable({ payload, compatibility: import_compatibility(profile ? merged_profile(config.active_project, profile, exists(inside(config.active_project, ".ai/project.local.yaml")) ? load(inside(config.active_project, ".ai/project.local.yaml")) : {}) : null, config.active_project) })))
-          throw new ConfigError(
-            "Настройки изменились после предпросмотра. Проверьте файл заново.",
-          );
-        if (target && exists(target) && request.replace !== true)
-          throw new ConfigError("Подтвердите замену существующего профиля.");
-        const overridePath =
-          overrides !== null
-            ? instance_file(config, config.active_project)
-            : null;
-        const previousConfig = bytes(this.CONFIG),
-          previousProfile = bytes(target),
-          previousOverride = bytes(overridePath);
-        const shared = settings(this.CONFIG), persistShared = !profileDocumentOnly;
-        if (profileDocumentOnly && (stable(shared.mcp.managed) !== stable(config.mcp.managed) || stable(shared.mcp.optional) !== stable(config.mcp.optional)))
-          throw new ConfigError("Общие настройки изменились. Загрузите профиль заново.");
-        const saved = target && exists(target) ? backup(target) : null;
-        try {
-          if (target) dump(profile, target, exists(target));
-          if (overridePath) { record_project_owner(this.STATE, config.active_project); dump(overrides, overridePath); }
-          if (persistShared) this.store_shared_settings(config);
-          // Confirm every written document before reporting success. If a
-          // write or subsequent read fails, restore the previous documents.
-          if (target && stable(load(target)) !== stable(profile)) throw new ConfigError("Не удалось подтвердить сохранение профиля.");
-          if (overridePath && stable(load(overridePath)) !== stable(overrides)) throw new ConfigError("Не удалось подтвердить сохранение настроек экземпляра.");
-          if (persistShared) {
-            const persisted = load(this.CONFIG);
-            if (stable(persisted.mcp.managed) !== stable(config.mcp.managed) || stable(persisted.mcp.optional) !== stable(config.mcp.optional))
-              throw new ConfigError("Не удалось подтвердить сохранение общих настроек.");
-          }
-        } catch (error) {
-          if (overridePath) restore(overridePath, previousOverride);
-          if (target) restore(target, previousProfile);
-          if (persistShared) restore(this.CONFIG, previousConfig);
-          throw error;
-        }
-        return saved;
-      });
-      remember_profile(this.STATE, config.active_project, profile_state(config.active_project));
-      return {
-        status: "imported",
-        summary,
-        backup: saved,
-        values: this.values(config),
-        profile: profile_state(config.active_project),
-        sessionGuidance: session_guidance,
-      };
-    }
-    if (action === "export" || action === "edit") {
-      const baseRevision = action === "edit" ? this.edit_revision() : null;
-      const config = this.current();
-      let profile = null;
-      if (config.active_project) {
-        const file = path.join(config.active_project, ".ai/project.yaml");
-        if (exists(file))
-          // Repairing a parsed old/incompatible profile must be possible in the
-          // editor. Preview/apply still validate the complete candidate.
-          profile = load(file);
-        if (profile && action === "export") assert_settings_paths(config, config.active_project, project_profile(config.active_project), this.STATE, this.CONFIG);
-      }
-      if (action === "edit" && baseRevision !== this.edit_revision())
-        throw new ConfigError("Настройки изменились во время загрузки. Загрузите их заново.");
-      return {
-        ...(action === "edit" ? { baseRevision } : {}),
-        filename: "1c-ai-core-settings.json",
-        text: JSON.stringify(
-          {
-            format: "1c-ai-core-settings",
-            version: 1,
-            settings: {
-              mcp: {
-                managed: config.mcp.managed,
-                optional: config.mcp.optional,
-              },
-            },
-            profile,
-          },
-          null,
-          2,
-        ),
-      };
+      return { values: this.values(config), gitWarning };
     }
     if (action === "updates") {
       const runtime = await import("./runtime.mjs"), config = this.effective(this.current());
@@ -1165,13 +1356,15 @@ if (entrypoint(import.meta.url)) {
     let input = "";
     for await (const chunk of process.stdin) {
       input += chunk;
-      if (Buffer.byteLength(input) > 4 * 1024 * 1024)
+      // Two 2 MiB YAML documents can expand in JSON escaping; ZIP bytes
+      // expand to base64. Individual operations enforce their own byte limits.
+      if (Buffer.byteLength(input) > 26 * 1024 * 1024)
         throw new Error("Request too large");
     }
     const result = await new SettingsBackend().main(JSON.parse(input));
     console.log(JSON.stringify({ ok: true, result }));
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: safe_error_message(error), ...(error.code ? { errorCode: error.code } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
+    console.log(JSON.stringify({ ok: false, error: safe_error_message(error), ...(error.code ? { errorCode: error.code } : {}), ...(Number.isSafeInteger(error.documentLine) ? { documentLine: error.documentLine } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
     process.exitCode = 1;
   }
 }

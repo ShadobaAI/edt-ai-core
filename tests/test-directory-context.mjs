@@ -4,14 +4,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { fixture, environment, session, node, success } from "./helpers.mjs";
-import { dump, settings } from "../scripts/common.mjs";
+import { dump, inside, parse, settings } from "../scripts/common.mjs";
 import { locate_project, resolve, ProfileNotFound } from "../scripts/project_paths.mjs";
 import { project_profile } from "../scripts/profile.mjs";
-import { resolved_settings, instance_file } from "../scripts/project_context.mjs";
+import { resolved_settings } from "../scripts/project_context.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, edt_project_count, edt_project_descriptors, git_context } from "../scripts/directory_context.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 
 const prefs = workspace => path.join(workspace, ".metadata/.plugins/org.eclipse.core.runtime/.settings/com.ditrix.edt.mcp.server.prefs");
+test("path resolution rejects dangling directory links instead of treating them as missing", t => {
+  const f = fixture(t), link = path.join(f.root, "dangling");
+  fs.symlinkSync(path.join(f.base, "missing-outside"), link, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => inside(f.root, "dangling/new/file"));
+  assert.equal(inside(f.root, "new/file"), path.join(f.root, "new", "file"));
+});
 function write(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);
@@ -141,16 +147,18 @@ test("discovered ports refresh without writes and never override explicit or dis
   let [effective, sources] = resolved_settings(config, f.root, f.profile);
   assert.equal(effective.mcp.required.edt.url, "http://127.0.0.1:19801/mcp");
   assert.equal(sources.edt, "edt_workspace");
-  const exported = await backend.main({ action: "export" });
-  assert.equal(JSON.parse(exported.text).profile.connections, undefined);
-  const preview = await backend.main({ action: "preview", text: exported.text });
+  const exported = await backend.main({ action: "transfer_export", scope: "profile" });
+  assert.equal(parse(exported.text).connections, undefined);
+  const context = await backend.main({ action: "transfer_context" });
+  const args = { baseRevision: context.baseRevision, documents: { profile: exported.text } };
+  const preview = await backend.main({ action: "transfer_preview", ...args });
   write(prefs(f.base), "mcpServerPort=19802");
-  await assert.rejects(backend.main({ action: "apply", text: exported.text, revision: preview.revision }), /измен/i);
+  await assert.rejects(backend.main({ action: "transfer_apply", ...args, revision: preview.revision, replace: true }), /измен/i);
   assert.equal((await backend.main({ action: "read" })).values.edtUrl, "http://127.0.0.1:19802/mcp");
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   f.profile.connections = { edt: { url: "https://edt.example.test/mcp" } };
   assert.equal(resolved_settings(config, f.root, f.profile)[0].mcp.required.edt.url, f.profile.connections.edt.url);
-  dump({ connections: { edt: { url: "" } } }, instance_file(config, f.root));
+  dump({ connections: { edt: { url: "" } } }, path.join(f.root, ".ai/project.local.yaml"));
   assert.equal(resolved_settings(config, f.root, f.profile)[0].mcp.required.edt.url, "");
   process.env.EDT_AI_EDT_URL = "http://localhost:19803/mcp";
   assert.equal(resolved_settings(config, f.root, f.profile)[0].mcp.required.edt.url, process.env.EDT_AI_EDT_URL);
@@ -167,7 +175,7 @@ test("changed EDT preferences offer a local port update without writing the prof
   assert.equal(view.edtPortSuggestion.detectedPort,19803);
   await backend.main({action:"update",set:{edtUrl:view.edtPortSuggestion.url}});
   view=await backend.main({action:"read"});assert.equal(view.edtPortSuggestion,null);assert.equal(view.values.edtUrl,"http://localhost:19803/custom/mcp");
-  assert.equal(view.connectionSources.edt,"instance");assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);
+  assert.equal(view.connectionSources.edt,"project_local");assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);
   assert.equal(fs.readFileSync(prefs(f.base),"utf8"),"mcpServerPort=19803");
   assert.equal(edt_port_suggestion("https://remote.example.test:19801/mcp",edt_connection(f.root)),null);
 });

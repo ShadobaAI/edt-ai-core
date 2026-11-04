@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { fixture, environment, session } from "./helpers.mjs";
 import { settings, load } from "../scripts/common.mjs";
-import { instance_file } from "../scripts/project_context.mjs";
 import { validate } from "../scripts/profile.mjs";
 import { knowledge_status, knowledge_gate, WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
@@ -292,7 +292,7 @@ test("inspection, doctor and setup report a conflicting transport without disabl
   const f = fixture(t); environment(t, f.env); f.save();
   const backend = new SettingsBackend();
   await backend.main({ action: "update", set: { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp" } });
-  const savedFile = instance_file(backend.current(), f.root);
+  const savedFile = path.join(f.root, ".ai/project.local.yaml");
   const saved = fs.readFileSync(savedFile, "utf8");
   const read = await backend.main({ action: "read" });
   assert.equal(read.knowledge.state, "invalid");

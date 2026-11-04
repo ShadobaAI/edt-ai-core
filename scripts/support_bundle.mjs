@@ -22,6 +22,14 @@ export function saved_support_report(state) {
     return { filename: REPORT_NAME, path: file, directory, bytes: stat.size, savedAt: stat.mtime.toISOString() };
   } catch { return null; }
 }
+export function detailed_log_export(state, days, now = Date.now()) {
+  if (![1, 3, 7].includes(days)) throw new Error("Выберите период журнала: 1, 3 или 7 дней.");
+  const logs = read_diagnostic_logs(state), cutoff = now - days * 86400000;
+  const events = logs.events.filter(event => Date.parse(event.time) >= cutoff);
+  const lines = ["1C AI Core — журнал событий", `Период: ${days} дн.`, "Пути и адреса серверов могут присутствовать.", "", ...events.map(event => JSON.stringify(event))];
+  if (logs.issues.length) lines.push("", "Замечания при чтении: " + JSON.stringify(sanitize_diagnostics(logs.issues)));
+  return { filename: "1c-ai-core-log.txt", mimeType: "text/plain", text: lines.join("\n") + "\n" };
+}
 // Deliberately no CLI or model tool. Only the settings app calls this collector.
 // Every section fails independently; invalid settings must still be exportable.
 export async function support_bundle({ state, configPath, selectedRoot, selection, operation, loggerStatus, readCurrent }) {
@@ -72,8 +80,6 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
       return { root, home,
         profile: await document(path.join(root, ".ai/project.yaml")),
         local: await document(path.join(root, ".ai/project.local.yaml")),
-        repositoryInstance: await document(path.join(root, ".ai/instances", instance + ".local.yaml")),
-        instance: await document(path.join(home, "instances", instance + ".yaml")),
         connectionsFile: process.env.EDT_AI_CONNECTIONS_FILE ? await document(process.env.EDT_AI_CONNECTIONS_FILE) : null,
         preparation: await document(path.join(home, "instances", instance + ".preparation.json")),
         reconnect: await document(path.join(home, "instances", instance + ".reconnect.json")),

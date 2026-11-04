@@ -6,11 +6,17 @@ import { edt_connection, repository_projects } from "./directory_context.mjs";
 import { setup_knowledge_status } from "./setup_probe.mjs";
 import { knowledge_evidence_revision } from "./components.mjs";
 import { verification_limits, sanitize_setup_result, register_diagnostic_secrets } from "./diagnostics.mjs";
+import { project_profile } from "./profile.mjs";
 
 const digest = file => is_file(file) ? sha256(fs.readFileSync(file)) : "missing";
 const receipt_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".readiness.json");
 export const readiness_receipt_revision = (state, root) => digest(receipt_file(state, root));
-const passed = item => ["ready", "disabled"].includes(item.state);
+function passed(item, profile) {
+  if (item.state === "ready") return true;
+  if (item.state !== "disabled") return false;
+  const authority = { "code-index": "code_index", "bsl-ls": "bsl_ls" }[item.id];
+  return !authority || profile.authorities?.[authority] !== item.id;
+}
 
 // Verify the installed workflow files, not whether a host/model has invoked a
 // skill or trusted a hook. Those are separate from setup acceptance.
@@ -64,7 +70,7 @@ export function save_readiness(state, config, profile, managed, external) {
       ...(item.repositories ? { repositories: item.repositories } : {}) })),
     ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : item.connected ? "not_verified" : "error", ...(item.failure ? { failure: item.failure } : {}), detail: item.detail || (!item.configured ? "Укажите адрес сервера в настройках подключений." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
     ...assets.checks];
-  const result = { state: checks.every(passed) ? "ready" : "blocked", checkedAt: new Date().toISOString(), checks, scope: "setup", knowledge,
+  const result = { state: checks.every(item => passed(item, profile)) ? "ready" : "blocked", checkedAt: new Date().toISOString(), checks, scope: "setup", knowledge,
     verificationLimits: verification_limits(knowledge.ready),
     workflowReadiness: { state: "not_checked", scope: "workflow", detail: "Setup acceptance does not authorize a task or another session's knowledge dependency." } };
   result.expiresAt = new Date(Math.min(Date.parse(result.checkedAt) + 15 * 60 * 1000,
@@ -82,13 +88,15 @@ export async function read_readiness(state, config, profile) {
   try {
     const receipt = JSON.parse(fs.readFileSync(file, "utf8")), result = receipt.result;
     if (receipt.version !== 3) return { ...empty, reason: "Несовместимая версия readiness-подтверждения. Повторите setup-проверку; старые диагностические данные не загружаются." };
-    if (result?.scope !== "setup" || !Number.isFinite(Date.parse(result.expiresAt)) || !Array.isArray(result?.checks) || !result.checks.length || !["ready", "blocked"].includes(result.state) || result.checks.some(item => !item || typeof item.id !== "string" || typeof item.label !== "string" || typeof item.state !== "string") || (result.state === "ready") !== result.checks.every(passed)) return empty;
+    if (result?.scope !== "setup" || !Number.isFinite(Date.parse(result.expiresAt)) || !Array.isArray(result?.checks) || !result.checks.length || !["ready", "blocked"].includes(result.state) || result.checks.some(item => !item || typeof item.id !== "string" || typeof item.label !== "string" || typeof item.state !== "string")) return empty;
     const age = Date.now() - Date.parse(result.checkedAt);
-    const data = profile.status ? load(profile.path) : profile;
+    const data = profile.status ? project_profile(config.active_project) : profile;
     if (!Number.isFinite(age) || age < 0 || typeof receipt.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(receipt.fingerprint))
       return { ...empty, reason: "Не удалось подтвердить сохранённую проверку готовности. Повторите проверку." };
     if (age > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt) || receipt.fingerprint !== readiness_fingerprint(state, config, data))
       return { ...result, state: "stale", verificationLimits: verification_limits(), reason: "Настройки или файлы изменились либо проверка устарела. Повторите проверку готовности." };
+    if ((result.state === "ready") !== result.checks.every(item => passed(item, data)))
+      return { ...empty, reason: "Сохранённый результат не соответствует обязательным компонентам. Повторите проверку готовности." };
     return { ...result, verificationLimits: verification_limits(result.knowledge?.ready === true) };
   } catch { return empty; }
 }

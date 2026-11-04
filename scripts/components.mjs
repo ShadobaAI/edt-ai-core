@@ -59,5 +59,5 @@ export function grant_preparation(state, root, components) {
 export function require_preparation(state, root, component) {
   const file = preparation_file(state, root), record = exists(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
   if (record.root !== resolve(root) || !record.components?.includes(component))
-    throw new ConfigError("Компонент не подготовлен. Один раз выполните «Подготовить и проверить MCP» в настройках для этой папки и экземпляра.");
+    throw new ConfigError("Компонент не подготовлен. Один раз выполните «Подготовить и проверить» в настройках для этой папки и экземпляра.");
 }

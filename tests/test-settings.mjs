@@ -3,24 +3,153 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { fixture, environment, session, node, success, ROOT } from "./helpers.mjs";
-import { dump, load, settings, sleep } from "../scripts/common.mjs";
+import { fixture, environment, session, dialog_session, node, success, ROOT } from "./helpers.mjs";
+import { check_schema, deep_merge, dump, load, parse, settings, sleep } from "../scripts/common.mjs";
 import {
   SettingsBackend,
+  patch_yaml_draft,
   authorize_preparation,
   preparation_scope,
 } from "../scripts/settings_backend.mjs";
-import { instance_file } from "../scripts/project_context.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
+import { project_profile } from "../scripts/profile.mjs";
+import { resolved_settings } from "../scripts/project_context.mjs";
 import { reconnect_file } from "../scripts/project_paths.mjs";
+import { zip, read_project_archive, write_project_archive } from "../scripts/archives.mjs";
+import { zipSync } from "../vendor/deps.mjs";
+
+test("project transfer archives accept only two bounded UTF-8 YAML files", () => {
+  const documents={".ai/project.yaml":"schema_version: '0.2'\n",".ai/project.local.yaml":"{}\n"};
+  assert.deepEqual(read_project_archive(write_project_archive(documents)),documents);
+  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),"../project.local.yaml":Buffer.from("x")})),/Unsafe/);
+  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),".ai/project.local.yaml":Buffer.from("x"),"other":Buffer.from("x")})),/exactly/);
+  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),".ai/PROJECT.yaml":Buffer.from("x")})),/Unsafe/);
+  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from([0xff]),".ai/project.local.yaml":Buffer.from("{}")})),/UTF-8/);
+  assert.throws(()=>write_project_archive({...documents,".ai/project.local.yaml":"x".repeat(2*1024*1024+1)}),/bounded/);
+  const corrupt=Buffer.from(zipSync(Object.fromEntries(Object.entries(documents).map(([name,text])=>[name,Buffer.from(text)])),{level:0}));
+  const dataOffset=30+corrupt.readUInt16LE(26)+corrupt.readUInt16LE(28);corrupt[dataOffset]^=1;
+  assert.throws(()=>read_project_archive(corrupt),/mismatch/);
+});
+
+test("schema-driven field edits preserve surrounding YAML and distinguish scalar values", async () => {
+  const backend = new SettingsBackend("unused-state", "unused-settings");
+  const fields = await backend.main({ action: "document_fields", layerScope: "project_local", text: "flag: false\n" });
+  assert.ok(fields.schema.properties.connections);
+  assert.equal(fields.value.flag, false);
+  let text = "# header\r\na: false # keep\r\nb: 0\r\nc: ''\r\nd: null\r\n";
+  text = patch_yaml_draft(text, { kind: "set", path: ["a"], value: true }).text;
+  assert.equal(text, "# header\r\na: true # keep\r\nb: 0\r\nc: ''\r\nd: null\r\n");
+  text = patch_yaml_draft(text, { kind: "set", path: ["b"], value: 2 }).text;
+  assert.match(text, /b: 2\r\nc: ''\r\nd: null/);
+  const result = patch_yaml_draft("items:\n  - one\n  - two\nnext: 0\n", { kind: "append", path: ["items", 2], value: "three" });
+  assert.equal(result.text, 'items:\n  - one\n  - two\n  - "three"\nnext: 0\n');
+  assert.equal(result.reformatted, false);
+  assert.equal(patch_yaml_draft("items:\n  - one # explanation\n", { kind: "append", path: ["items", 1], value: "two" }).text, 'items:\n  - one # explanation\n  - "two"\n');
+  const moved = patch_yaml_draft("items:\n  - one\n  # note about two\n  - two\n  - three\n", { kind: "move", path: ["items", 0], to: 2 });
+  assert.equal(moved.text,"items:\n  # note about two\n  - two\n  - three\n  - one\n");
+  const anchored = patch_yaml_draft("a: &ref value\nb: *ref\n", { kind: "set", path: ["a"], value: "other" });
+  assert.deepEqual(parse(anchored.text),{a:"other",b:"value"});assert.equal(anchored.reformatted,true);
+  const alias = patch_yaml_draft("connections:\n  edt: &shared\n    url: http://localhost:8000/mcp\n  v8std: *shared\n", { kind: "set", path: ["connections", "v8std", "url"], value: "http://localhost:8001/mcp" });
+  assert.deepEqual(parse(alias.text).connections,{edt:{url:"http://localhost:8000/mcp"},v8std:{url:"http://localhost:8001/mcp"}});
+  const flowComments=patch_yaml_draft("before: 1\nitems: [one, # note\n  two] # tail\nafter: 2\n",{kind:"remove",path:["items",0]});
+  assert.match(flowComments.text,/# note/);assert.match(flowComments.text,/# tail\nafter: 2/);assert.deepEqual(parse(flowComments.text).items,["two"]);
+  const removed=patch_yaml_draft("items:\n  - one # important\n  - two\n",{kind:"remove",path:["items",0]});
+  assert.match(removed.text,/# important/);assert.equal(removed.reformatted,true);assert.deepEqual(parse(removed.text).items,["two"]);
+  const merged=patch_yaml_draft("connections:\n  edt: &base\n    url: http://localhost:8000/mcp\n  v8std:\n    <<: *base\n",{kind:"set",path:["connections","v8std","url"],value:"http://localhost:9000/mcp"});
+  assert.match(merged.text,/<<: \*base/);assert.equal(parse(merged.text).connections.edt.url,"http://localhost:8000/mcp");assert.equal(parse(merged.text).connections.v8std.url,"http://localhost:9000/mcp");
+  const baseText="connections:\n  edt: &base\n    url: http://localhost:8000/mcp\n  v8std:\n    <<: *base\n";
+  const baseEdit=patch_yaml_draft(baseText,{kind:"set",path:["connections","edt","url"],value:"http://localhost:9000/mcp"});
+  assert.equal(parse(baseEdit.text).connections.edt.url,"http://localhost:9000/mcp");assert.equal(parse(baseEdit.text).connections.v8std.url,"http://localhost:8000/mcp");
+  const removeInherited=patch_yaml_draft(baseText,{kind:"remove",path:["connections","v8std","url"]});
+  assert.deepEqual(parse(removeInherited.text).connections.v8std,{});assert.match(removeInherited.text,/\n$/);
+  const override=baseText+"    url: http://localhost:9000/mcp\n";
+  const removeOverride=patch_yaml_draft(override,{kind:"remove",path:["connections","v8std","url"]});
+  assert.equal(parse(removeOverride.text).connections.v8std.url,"http://localhost:8000/mcp");assert.match(removeOverride.text,/<<: \*base/);
+  const nested=patch_yaml_draft("items:\n  - id: one # keep nested\n    path: src\n  - id: two\n    path: src2\n",{kind:"remove",path:["items",0]});
+  assert.match(nested.text,/# keep nested/);assert.deepEqual(parse(nested.text).items,[{id:"two",path:"src2"}]);assert.equal(nested.reformatted,true);
+  assert.throws(() => patch_yaml_draft("{}\n", { kind: "set", path: ["__proto__"], value: {} }), /путь/);
+  const flow = "items: [one,   two, three] # retain\nmap: {a: 'x',  b: 0}\n";
+  assert.equal(patch_yaml_draft(flow, { kind: "move", path: ["items", 0], to: 2 }).text,
+    "items: [two,   three, one] # retain\nmap: {a: 'x',  b: 0}\n");
+  assert.equal(patch_yaml_draft(flow, { kind: "remove", path: ["map", "b"] }).text,
+    "items: [one,   two, three] # retain\nmap: {a: 'x'}\n");
+  assert.equal(patch_yaml_draft(flow, { kind: "append", path: ["items", 3], value: false }).text,
+    "items: [one,   two, three, false] # retain\nmap: {a: 'x',  b: 0}\n");
+});
+
+test("schema dictionary keys remain editable without prototype pollution", () => {
+  for (const key of ["constructor", "prototype", "__proto__"]) {
+    let text="connections:\n  edt:\n    headers_env: {}\n";
+    const field=["connections","edt","headers_env",key];
+    text=patch_yaml_draft(text,{kind:"set",path:field,value:"HEADER_ENV"}).text;
+    const value=parse(text);check_schema(value,"project-local.schema.json");
+    assert.equal(Object.hasOwn(value.connections.edt.headers_env,key),true);
+    const combined=deep_merge({connections:{edt:{headers_env:{}}}},value);
+    assert.equal(combined.connections.edt.headers_env[key],"HEADER_ENV");
+    const runtime=deep_merge({mcp:{required:{edt:{headers_env:{}}}}},{mcp:{required:{edt:value.connections.edt}}});
+    assert.equal(Object.hasOwn(runtime.mcp.required.edt.headers_env,key),true);
+    text=patch_yaml_draft(text,{kind:"set",path:field,value:"CHANGED_ENV"}).text;
+    text=patch_yaml_draft(text,{kind:"remove",path:field}).text;
+    assert.equal(Object.hasOwn(parse(text).connections.edt.headers_env,key),false);
+  }
+  const collection=patch_yaml_draft("knowledge:\n  collection_uris: {}\n",{kind:"set",path:["knowledge","collection_uris","constructor"],value:"viking://resources/example"});
+  check_schema(parse(collection.text),"project-local.schema.json");
+  assert.throws(()=>patch_yaml_draft("{}\n",{kind:"set",path:["constructor"],value:{prototype:{polluted:true}}}),/путь/);
+  assert.throws(()=>deep_merge({},JSON.parse('{"constructor":{"prototype":{"polluted":true}}}')),/Unsafe/);
+  assert.equal(Object.prototype.polluted,undefined);
+});
+
+test("reserved dictionary names survive real profile and connection resolution", t => {
+  const f=fixture(t);
+  f.profile.connections={edt:{headers_env:JSON.parse('{"constructor":"SHARED_ENV"}')}};
+  f.profile.knowledge.mode="transitional";f.profile.knowledge.provider="openviking";f.profile.knowledge.collections=["constructor"];
+  f.profile.knowledge.collection_uris=JSON.parse('{"constructor":"viking://resources/example"}');
+  f.save();
+  dump({connections:{edt:{headers_env:JSON.parse('{"__proto__":"LOCAL_ENV"}')}},knowledge:{collection_uris:JSON.parse('{"constructor":"viking://resources/updated"}')}},path.join(f.root,".ai/project.local.yaml"));
+  const profile=project_profile(f.root),[effective]=resolved_settings(settings(f.env.EDT_AI_SETTINGS),f.root,profile);
+  assert.equal(profile.knowledge.collection_uris.constructor,"viking://resources/updated");
+  assert.equal(Object.hasOwn(effective.mcp.required.edt.headers_env,"__proto__"),true);
+  assert.equal(effective.mcp.required.edt.headers_env.__proto__,"LOCAL_ENV");
+  assert.equal(Object.prototype.polluted,undefined);
+});
+
+
+test("settings MCP exports two profiles as ZIP and previews the decoded documents", async t => {
+  const f=fixture(t); f.save();
+  const shared=path.join(f.root,".ai","project.yaml");fs.writeFileSync(shared,"# retained on export\n"+fs.readFileSync(shared,"utf8"));
+  const {client,choose}=await dialog_session(t,f);choose(path.join(f.base,"project.zip"));
+  const edit=await client.call("settings.edit",{layerScope:"profile",format:"yaml"});
+  const exported=await client.call("settings.transfer_export",{projectRoot:f.root,scope:"both",includeCommandsAndComments:true});
+  const file=exported._meta.data.path;
+  assert.match(file,/\.zip$/i);
+  const decoded=await client.call("settings.transfer_decode",{base64:fs.readFileSync(file).toString("base64")});
+  assert.match(decoded._meta.data.documents.profile,/^# retained on export/);
+  const preview=await client.call("settings.transfer_preview",{projectRoot:f.root,baseRevision:edit._meta.data.baseRevision,documents:decoded._meta.data.documents});
+  assert.equal(preview._meta.data.files.length,2);
+});
+
+test("profile export rejects credentials passed as separate command arguments", async t => {
+  const f=fixture(t);environment(t,f.env);
+  f.profile.testing.commands=[{id:"check",repository_id:"product",argv:["tool","--db-password","my-private-value"],effects:[]}];f.save();
+  const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
+  const safe=await backend.main({action:"transfer_export",scope:"profile",projectRoot:f.root});
+  assert.doesNotMatch(safe.text,/my-private-value/);assert.deepEqual(parse(safe.text).testing.commands,[]);
+  await assert.rejects(backend.main({action:"transfer_export",scope:"profile",projectRoot:f.root,includeCommandsAndComments:true}),/секрет/);
+  f.profile.testing.commands[0].argv=["mysql","-phunter2"];f.save();
+  await assert.rejects(backend.main({action:"transfer_export",scope:"profile",projectRoot:f.root,includeCommandsAndComments:true}),/секрет/);
+  f.profile.testing.commands[0].argv=["curl","--user","alice:hunter2","https://example.org"];f.save();
+  await assert.rejects(backend.main({action:"transfer_export",scope:"profile",projectRoot:f.root,includeCommandsAndComments:true}),/секрет/);
+  f.profile.testing.commands=[];f.save();const file=path.join(f.root,".ai","project.yaml");fs.appendFileSync(file,"# password my-private-value\n");
+  await assert.rejects(backend.main({action:"transfer_export",scope:"profile",projectRoot:f.root,includeCommandsAndComments:true}),/секрет/);
+});
 
 test("settings import restores previous files when read-back verification fails", async t => {
   const f = fixture(t); f.save(); environment(t, f.env);
   const backend = new SettingsBackend(), target = path.join(f.root, ".ai", "project.yaml");
   const original = fs.readFileSync(target), replacement = structuredClone(f.profile);
   replacement.project.id = "replacement";
-  const input = { text: JSON.stringify(replacement), projectRoot: f.root };
-  const preview = await backend.main({ action: "preview", ...input });
+  const input = { documents:{profile:JSON.stringify(replacement)}, projectRoot: f.root, baseRevision:backend.edit_revision() };
+  const preview = await backend.main({ action: "transfer_preview", ...input });
   const read = fs.readFileSync, rename = fs.renameSync;
   let verifyNext = false;
   fs.renameSync = (...args) => {
@@ -33,7 +162,7 @@ test("settings import restores previous files when read-back verification fails"
     return read(...args);
   };
   try {
-    await assert.rejects(backend.main({ action: "apply", ...input, revision: preview.revision, replace: true }), /verification read failure/);
+    await assert.rejects(backend.main({ action: "transfer_apply", ...input, revision: preview.revision, replace: true }), /verification read failure/);
   } finally { fs.readFileSync = read; fs.renameSync = rename; }
   assert.deepEqual(fs.readFileSync(target), original);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
@@ -151,10 +280,35 @@ test("the directory picker binds the canonical project without writes and discar
   assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, other);
 });
 
+test("chat view picker chooses another directory without rebinding the project", async t => {
+  const f = fixture(t); f.save();
+  const other = path.join(f.base, "Other"); fs.mkdirSync(path.join(other, "src"), { recursive: true });
+  dump({ ...f.profile, project: { ...f.profile.project, id: "Other" } }, path.join(other, ".ai/project.yaml"));
+  const { client, choose } = await dialog_session(t, f);
+  const finish = async () => {
+    const start = (await client.call("settings.pick_view_directory", {})).structuredContent;
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+      const job = (await client.call("settings.operation", { operationId: start.id, waitMs: 1000 })).structuredContent;
+      if (job.status !== "running") return job;
+    }
+    assert.fail("view picker did not finish");
+  };
+  choose(other);
+  const picked = await finish(); assert.equal(picked.status, "completed"); assert.equal(picked.result.directory, other);
+  assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, f.root);
+  const viewed = (await client.call("settings.select_profile", { projectRoot: picked.result.directory })).structuredContent;
+  assert.equal(viewed.viewOnly, true); assert.equal(viewed.chatProjectRoot, f.root);
+  assert.equal((await client.call("settings.read", {})).structuredContent.values.projectRoot, f.root);
+  choose(null); assert.equal((await finish()).result.cancelled, true);
+  const unbound = await dialog_session(t, f, { extra: { EDT_AI_PROJECT_ROOT: "" }, roots: [] });
+  await assert.rejects(unbound.client.call("settings.pick_view_directory", {}), /определите каталог/);
+});
+
 test("chat profile tools discover the selected profile and preserve instructions/instance overrides", async (t) => {
   const f = fixture(t), client = await session(t, "mcp/settings.mjs", [], f);
   const catalogue = (await client.request("tools/list")).tools;
-  for (const name of ["settings.profile", "settings.create", "settings.load", "settings.import", "settings.export", "settings.read", "settings.update", "settings.preview", "settings.apply", "settings.export_data", "settings.run_check", "settings.operation"]) {
+  for (const name of ["settings.profile", "settings.create", "settings.load", "settings.import", "settings.export", "settings.read", "settings.update", "settings.preview", "settings.apply", "settings.run_check", "settings.operation"]) {
     assert.ok(catalogue.find(tool => tool.name === name)._meta.ui.visibility.includes("model"));
   }
   const initial = await client.call("settings.read", {});
@@ -172,7 +326,7 @@ test("chat profile tools discover the selected profile and preserve instructions
   });
   assert.equal(created.values.edtUrl, "http://localhost:18111/mcp");
   assert.match(created.sessionGuidance, /сообщите агенту путь к его папке/);
-  assert.match(created.sessionGuidance, /«Проверить готовность»/);
+  assert.match(created.sessionGuidance, /«Подготовить и проверить»/);
   assert.doesNotMatch(created.sessionGuidance, /selectedDirectory|projectRoot|core_runtime_status|roots/);
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), "Existing project rules\n");
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.override.md"), "utf8"), "Override project rules\n");
@@ -243,19 +397,16 @@ test("SessionStart discovers profile data without writes and stops at nested Git
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
 });
 
-test("exported JSON settings import into another repository and keep local overrides private", async (t) => {
-  const f = fixture(t); environment(t, f.env); f.save();
-  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
-  await backend.main({ action: "update", set: { edtUrl: "http://localhost:18112/mcp" } });
-  const exported = await backend.main({ action: "export" });
-  const other = path.join(f.base, "destination");fs.mkdirSync(other);fs.mkdirSync(path.join(other, "src"));
-  process.env.EDT_AI_PROJECT_ROOT = other;
-  const request = { text: exported.text }, preview = await backend.main({ action: "preview", ...request });
-  assert.equal(preview.projectRoot, other);
-  assert.ok(!preview.connectionUrls.edt);
-  await backend.main({ action: "apply", ...request, revision: preview.revision });
-  assert.deepEqual(load(path.join(other, ".ai/project.yaml")), f.profile);
-  assert.equal((await backend.main({ action: "read" })).values.edtUrl, "");
+test("project YAML export imports into another repository without local overrides", async t => {
+  const f=fixture(t); environment(t,f.env); f.save(); const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
+  await backend.main({action:"update",set:{edtUrl:"http://localhost:18112/mcp"}});
+  const exported=await backend.main({action:"transfer_export",scope:"profile",includeCommandsAndComments:true});
+  const other=path.join(f.base,"destination"); fs.mkdirSync(path.join(other,"src"),{recursive:true}); process.env.EDT_AI_PROJECT_ROOT=other;
+  const context=await backend.main({action:"transfer_context"}),args={baseRevision:context.baseRevision,documents:{profile:exported.text}};
+  const preview=await backend.main({action:"transfer_preview",...args}); assert.equal(preview.projectRoot,other);
+  await backend.main({action:"transfer_apply",...args,revision:preview.revision,replace:true});
+  assert.deepEqual(load(path.join(other,".ai/project.yaml")),f.profile);
+  assert.equal((await backend.main({action:"read"})).values.edtUrl,"");
 });
 
 test("settings discovery negotiates legacy sessions and refuses stateless calls before configuration", async (t) => {
@@ -340,260 +491,28 @@ test("the global Settings app stays available when settings or the project profi
   assert.deepEqual(fs.readFileSync(f.env.EDT_AI_SETTINGS), before);
 });
 
-test("manual editing resets removed runtime fields and preserves the unchanged profile bytes", async (t) => {
-  const f = fixture(t); environment(t, f.env); f.save();
-  const profilePath = path.join(f.root, ".ai/project.yaml");
-  fs.writeFileSync(profilePath, "# Keep project explanation\n" + fs.readFileSync(profilePath, "utf8"));
-  dump({ mcp: { managed: { "bsl-ls": { java: "old-java", node: "old-node", configuration: "old.json" } } } }, f.env.EDT_AI_SETTINGS);
-  const client = await session(t, "mcp/settings.mjs", [], f);
-  await client.call("settings.update", { set: { edtUrl: "http://localhost:18120/mcp" } });
-  const overridePath = instance_file(settings(), f.root), override = fs.readFileSync(overridePath);
-  const before = fs.readFileSync(profilePath), stat = fs.statSync(profilePath);
-  const edit = (await client.call("settings.edit", {})).structuredContent, data = JSON.parse(edit.text);
-  for (const field of ["java", "node", "configuration"]) delete data.settings.mcp.managed["bsl-ls"][field];
-  const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
-  const preview = (await client.call("settings.preview", request)).structuredContent;
-  assert.equal(preview.replacesProfile, false);
-  assert.deepEqual(preview.sharedRuntimeChanges["bsl-ls"], { mode: "auto", version: "latest", allow_prerelease: false, java: "java", node: "node", configuration: null, enabled: true });
-  const result = (await client.call("settings.apply", { ...request, revision: preview.revision })).structuredContent;
-  assert.equal(result.backup, null);
-  assert.deepEqual(fs.readFileSync(profilePath), before);
-  assert.equal(fs.statSync(profilePath).mtimeMs, stat.mtimeMs);
-  assert.deepEqual(fs.readFileSync(overridePath), override);
-  assert.equal(fs.readdirSync(path.dirname(profilePath)).filter(name => name.endsWith(".bak.yaml")).length, 0);
-  const stored = load(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"];
-  assert.equal(stored.java, "java"); assert.equal(stored.node, "node"); assert.equal(stored.configuration, null);
+test("profile editor requires confirmation and preserves a backup", async t => {
+  const f=fixture(t); environment(t,f.env); f.save(); const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
+  const edit=await backend.main({action:"edit",layerScope:"profile",format:"yaml"}), data=parse(edit.text); data.project.purpose="Updated purpose";
+  const args={mode:"layer",layerScope:"profile",baseRevision:edit.baseRevision,text:JSON.stringify(data)};
+  const preview=await backend.main({action:"preview",...args});
+  await assert.rejects(backend.main({action:"apply",...args,revision:preview.revision}),/замену/);
+  const result=await backend.main({action:"apply",...args,revision:preview.revision,replace:true});
+  assert.deepEqual(load(result.backup),f.profile); assert.equal(load(path.join(f.root,".ai/project.yaml")).project.purpose,"Updated purpose");
+});
+for(const changed of ["payload","config","override","masked override"]) test("transfer rejects changed "+changed+" without writes",async t=>{
+  const f=fixture(t); environment(t,f.env); f.save(); const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
+  if(changed==="masked override")process.env.EDT_AI_EDT_URL="http://localhost:18104/mcp";
+  const context=await backend.main({action:"transfer_context"}),args={baseRevision:context.baseRevision,documents:{profile:JSON.stringify(f.profile)}};
+  const preview=await backend.main({action:"transfer_preview",...args}),before=fs.readFileSync(path.join(f.root,".ai/project.yaml"));
+  if(changed==="payload")args.documents.profile=JSON.stringify({...f.profile,project:{...f.profile.project,purpose:"different"}});
+  if(changed==="config")dump({mcp:{managed:{"code-index":{version:"1.2.3"}}}},f.env.EDT_AI_SETTINGS);
+  if(changed.includes("override"))dump({connections:{edt:{url:"http://localhost:18105/mcp"}}},path.join(f.root,".ai/project.local.yaml"));
+  await assert.rejects(backend.main({action:"transfer_apply",...args,revision:preview.revision,replace:true}),/изменились/);
+  assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);
 });
 
-test("manual profile changes still require replacement and preserve a backup", async (t) => {
-  const f = fixture(t); environment(t, f.env); f.save();
-  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
-  const edit = await backend.main({ action: "edit" }), data = JSON.parse(edit.text);
-  data.profile.project.purpose = "Updated purpose";
-  const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
-  const preview = await backend.main({ ...request, action: "preview" });
-  assert.equal(preview.replacesProfile, true);
-  await assert.rejects(backend.main({ ...request, action: "apply", revision: preview.revision }), /замену/);
-  const result = await backend.main({ ...request, action: "apply", revision: preview.revision, replace: true });
-  assert.ok(result.backup);
-  assert.deepEqual(load(result.backup), f.profile);
-  assert.equal(load(path.join(f.root, ".ai/project.yaml")).project.purpose, "Updated purpose");
-});
-
-test("an incompatible legacy profile can be repaired in the editor without bypassing preview validation",async t=>{
-  const f=fixture(t);environment(t,f.env);f.profile.compatibility.core=">=0.1.0 <0.2.0";f.save();
-  const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
-  assert.equal((await backend.main({action:"read"})).profile.status,"invalid");
-  const edit=await backend.main({action:"edit"}),document=JSON.parse(edit.text);
-  const args={mode:"edit",baseRevision:edit.baseRevision,text:edit.text};
-  await assert.rejects(backend.main({action:"preview",...args}),/Profile requires core/);
-  document.profile.compatibility.core=">=0.1.0";args.text=JSON.stringify(document);
-  const preview=await backend.main({action:"preview",...args});assert.equal(preview.replacesProfile,true);
-  await backend.main({action:"apply",...args,revision:preview.revision,replace:true});
-  assert.equal((await backend.main({action:"read"})).profile.status,"loaded");
-});
-
-for (const changed of ["shared settings", "profile", "instance", "preview mode"])
-  test("manual edit rejects stale or changed " + changed + " before writes", async (t) => {
-    const f = fixture(t); environment(t, f.env); f.save();
-    const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
-    const edit = await backend.main({ action: "edit" }), data = JSON.parse(edit.text);
-    data.settings.mcp.managed["bsl-ls"].version = "0.99.0";
-    const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
-    const preview = await backend.main({ ...request, action: "preview" });
-    if (changed === "shared settings") dump({ mcp: { managed: { "bsl-ls": { java: "new-java" } } } }, f.env.EDT_AI_SETTINGS);
-    if (changed === "profile") fs.appendFileSync(path.join(f.root, ".ai/project.yaml"), "\n# Concurrent edit\n");
-    if (changed === "instance") await backend.main({ action: "update", set: { edtUrl: "http://localhost:18121/mcp" } });
-    const before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
-    if (changed === "preview mode") { delete request.mode; delete request.baseRevision; }
-    else await assert.rejects(backend.main({ ...request, action: "preview" }), /после загрузки/);
-    await assert.rejects(backend.main({ ...request, action: "apply", revision: preview.revision, replace: true }), /после загрузки|предпросмотра/);
-    assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
-    assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version, "latest");
-  });
-
-test("UI import/export, replacement backup and portable roundtrip preserve profile defaults", async (t) => {
-  const f = fixture(t),
-    client = await session(t, "mcp/settings.mjs", [], f);
-  f.profile.connections = {
-    edt: { url: "http://localhost:18101/mcp" },
-    v8std: { url: "http://localhost:18102/mcp" },
-  };
-  const request = { text: JSON.stringify(f.profile), includeMachineSettings: true },
-    preview = (await client.call("settings.preview", request))
-      .structuredContent;
-  assert.ok(!fs.existsSync(path.join(f.root, ".ai")));
-  await client.call("settings.apply", {
-    ...request,
-    revision: preview.revision,
-  });
-  assert.deepEqual(load(path.join(f.root, ".ai/project.yaml")), f.profile);
-  const again = (await client.call("settings.preview", request))
-    .structuredContent;
-  await assert.rejects(
-    client.call("settings.apply", { ...request, revision: again.revision }),
-    /замену/,
-  );
-  await client.call("settings.apply", {
-    ...request,
-    revision: again.revision,
-    replace: true,
-  });
-  assert.equal(
-    fs
-      .readdirSync(path.join(f.root, ".ai"))
-      .filter((name) => name.endsWith(".bak.yaml")).length,
-    1,
-  );
-  await client.call("settings.update", {
-    set: { edtUrl: "http://localhost:18103/mcp" },
-  });
-  const exported = JSON.parse(
-    (await client.call("settings.export_data", {}))._meta.data.text,
-  );
-  assert.deepEqual(exported.profile, f.profile);
-  assert.ok(!("active_project" in exported.settings));
-  assert.ok(!("required" in exported.settings.mcp));
-  assert.ok(!JSON.stringify(exported).includes("18103"));
-  assert.equal(
-    (await client.call("settings.read", {})).structuredContent.values.edtUrl,
-    "http://localhost:18103/mcp",
-  );
-});
-for (const changed of ["payload", "config", "override", "masked override"])
-  test(
-    "preview rejects changed " + changed + " without writes or backups",
-    async (t) => {
-      const f = fixture(t);
-      environment(t, f.env);
-      f.save();
-      const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS),
-        request = { action: "preview", text: JSON.stringify(f.profile) };
-      const override = instance_file(settings(), f.root);
-      if (changed === "masked override")
-        process.env.EDT_AI_EDT_URL = "http://localhost:18104/mcp";
-      const preview = await backend.main(request),
-        before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
-      if (changed === "payload")
-        request.text = JSON.stringify({
-          ...f.profile,
-          project: { ...f.profile.project, purpose: "different" },
-        });
-      if (changed === "config")
-        dump(
-          { mcp: { managed: { "code-index": { version: "1.2.3" } } } },
-          f.env.EDT_AI_SETTINGS,
-        );
-      if (changed.includes("override"))
-        dump(
-          { connections: { edt: { url: "http://localhost:18105/mcp" } } },
-          override,
-        );
-      await assert.rejects(
-        backend.main({
-          ...request,
-          action: "apply",
-          revision: preview.revision,
-          replace: true,
-        }),
-        /предпросмотра/,
-      );
-      assert.deepEqual(
-        fs.readFileSync(path.join(f.root, ".ai/project.yaml")),
-        before,
-      );
-      assert.equal(
-        fs
-          .readdirSync(path.join(f.root, ".ai"))
-          .filter((name) => name.endsWith(".bak.yaml")).length,
-        0,
-      );
-    },
-  );
-test("settings transaction rolls back profile, instance and shared config on a failed store", async (t) => {
-  const f = fixture(t);
-  environment(t, f.env);
-  f.save();
-  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS),
-    before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
-  const request = {
-    text: JSON.stringify({
-      format: "1c-ai-core-settings",
-      version: 1,
-      settings: {
-        mcp: { required: { edt: { url: "http://localhost:18106/mcp" } } },
-      },
-      profile: f.profile,
-    }),
-  };
-  const preview = await backend.main({ ...request, action: "preview" });
-  backend.store_shared_settings = () => {
-    throw new Error("fixture write failure");
-  };
-  await assert.rejects(
-    backend.main({
-      ...request,
-      action: "apply",
-      revision: preview.revision,
-      replace: true,
-    }),
-    /fixture write failure/,
-  );
-  assert.deepEqual(
-    fs.readFileSync(path.join(f.root, ".ai/project.yaml")),
-    before,
-  );
-  assert.ok(!fs.existsSync(instance_file(settings(), f.root)));
-  assert.ok(!fs.existsSync(f.env.EDT_AI_SETTINGS));
-});
-test("apply reparses under the acquired lock and detects intervening changes", async (t) => {
-  const f = fixture(t);
-  environment(t, f.env);
-  f.save();
-  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS),
-    request = { text: JSON.stringify(f.profile) };
-  const preview = await backend.main({ ...request, action: "preview" }),
-    parse = backend.parse_import.bind(backend);
-  let count = 0;
-  backend.parse_import = (request) => {
-    if (++count === 2)
-      dump(
-        { mcp: { managed: { "bsl-ls": { version: "1.2.3" } } } },
-        f.env.EDT_AI_SETTINGS,
-      );
-    return parse(request);
-  };
-  await assert.rejects(
-    backend.main({
-      ...request,
-      action: "apply",
-      revision: preview.revision,
-      replace: true,
-    }),
-    /предпросмотра/,
-  );
-});
-test("settings import preserves explicit empty required URLs in the current instance", async t => {
-  const f = fixture(t); environment(t, f.env); f.save();
-  const backend = new SettingsBackend();
-  process.env.EDT_AI_INSTANCE = "second";
-  await backend.main({ action: "update", set: { edtUrl: "http://localhost:18117/mcp" } });
-  process.env.EDT_AI_INSTANCE = "first";
-  await backend.main({ action: "update", set: { edtUrl: "http://localhost:18115/mcp", v8stdUrl: "http://localhost:18116/mcp" } });
-  const request = { includeMachineSettings: true, text: JSON.stringify({ format: "1c-ai-core-settings", version: 1,
-    settings: { mcp: { required: { edt: { url: "" }, v8std: { url: "" } } } } }) };
-  const preview = await backend.main({ ...request, action: "preview" });
-  assert.deepEqual(preview.connectionUrls, { edt: "", v8std: "" });
-  assert.equal(preview.writesInstanceConnections, true);
-  const applied = await backend.main({ ...request, action: "apply", revision: preview.revision });
-  assert.equal(applied.values.edtUrl, ""); assert.equal(applied.values.v8stdUrl, "");
-  assert.deepEqual(load(instance_file(settings(), f.root)).connections, { edt: { url: "" }, v8std: { url: "" } });
-  process.env.EDT_AI_INSTANCE = "second";
-  assert.equal((await backend.main({ action: "read" })).values.edtUrl, "http://localhost:18117/mcp");
-  process.env.EDT_AI_INSTANCE = "first";
-  assert.equal((await backend.main({ action: "read" })).values.edtUrl, "");
-});
-test("parallel instances keep overrides before profile init and after import; empty URL disconnects", async (t) => {
+test("parallel instances share project-local settings; empty URL disconnects", async (t) => {
   const f = fixture(t),
     a = await session(t, "mcp/settings.mjs", [], f),
     b = await session(t, "mcp/settings.mjs", [], f, {
@@ -610,7 +529,7 @@ test("parallel instances keep overrides before profile init and after import; em
   f.save();
   assert.equal(
     (await a.call("settings.read", {})).structuredContent.values.edtUrl,
-    "http://localhost:18111/mcp",
+    "http://localhost:18112/mcp",
   );
   assert.equal(
     (await b.call("settings.read", {})).structuredContent.values.edtUrl,
@@ -652,15 +571,8 @@ test("host roots can change; ambiguous/empty roots never borrow the previous pro
     profile.connections.edt.url,
   );
   await assert.rejects(
-    client.call("settings.preview", {
-      text: JSON.stringify({
-        format: "1c-ai-core-settings",
-        version: 1,
-        settings: { active_project: f.root },
-        profile: f.profile,
-      }),
-    }),
-    /другому каталогу/,
+    client.call("settings.transfer_context", { projectRoot: f.root }),
+    /проект текущего чата|другому каталогу/,
   );
   client.roots = [
     { uri: pathToFileURL(f.root).href },
@@ -706,17 +618,12 @@ test("subdirectory and Git root use one binding without a shared EDT URL", async
   assert.equal(read.values.projectRoot, f.root);
   assert.equal(read.preparationScope, f.root + "#first");
   assert.equal(read.values.edtUrl, "");
-  const exported = JSON.parse(
-    (await client.call("settings.export_data", {}))._meta.data.text,
-  );
-  assert.deepEqual(exported.profile, f.profile);
+  const context = (await client.call("settings.transfer_context", { projectRoot: f.root }))._meta.data;
+  assert.equal(context.projectRoot, f.root);
   fs.mkdirSync(path.join(sub, ".git"));
   await assert.rejects(
-    client.call("settings.preview", {
-      text: JSON.stringify(f.profile),
-      projectRoot: f.root,
-    }),
-    /другому каталогу/,
+    client.call("settings.transfer_context", { projectRoot: f.root }),
+    /проект текущего чата|другому каталогу/,
   );
 });
 for (const value of [

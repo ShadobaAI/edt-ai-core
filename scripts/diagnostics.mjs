@@ -157,7 +157,8 @@ export function safe_error_message(error) {
     return "External MCP rejected the request" + (evidence.httpStatus ? " (HTTP " + evidence.httpStatus + ")" : "") +
       (evidence.rpcCode !== undefined ? " (RPC " + evidence.rpcCode + ")" : "") + "; remote error text omitted";
   }
-  if (error?.code === "INVALID_DOCUMENT" || error instanceof SyntaxError) return "Invalid document; input excerpt omitted";
+  if (error?.code === "INVALID_DOCUMENT" || error instanceof SyntaxError) return "Invalid document" +
+    (Number.isSafeInteger(error?.documentLine) && error.documentLine > 0 && error.documentLine <= 2097152 ? ` at line ${error.documentLine}` : "") + "; input excerpt omitted";
   return clean_text(error?.message || "Operation failed").slice(0, 4000);
 }
 // Setup results are operational data. Clean diagnostic prose without rewriting

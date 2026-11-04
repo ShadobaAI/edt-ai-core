@@ -82,7 +82,7 @@ export function windows_folder_api() {
         checked(method(dialog[0], 9, "int32_t", ["uint32_t"], flags));
         checked(method(dialog[0], 17, "int32_t", ["str16"], options.title || (options.save ? "Сохранить файл · 1C AI Core" : "Выберите папку проекта · 1C AI Core")));
         if (options.save && options.filename) checked(method(dialog[0], 15, "int32_t", ["str16"], options.filename));
-        if (options.save) checked(method(dialog[0], 22, "int32_t", ["str16"], "json"));
+        if (options.save) checked(method(dialog[0], 22, "int32_t", ["str16"], options.extension || "json"));
         if (directory && fs.existsSync(directory) && fs.statSync(directory).isDirectory()) {
           const item = shellItem(path.resolve(directory));
           try { checked(method(dialog[0], 12, "int32_t", ["void *"], item)); }

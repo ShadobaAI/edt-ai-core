@@ -365,7 +365,7 @@ export const installed_runtime = (state, config, component, refresh = false, all
       if (current && (refresh || (requested !== "latest" && requested.replace(/^v/, "") !== release?.replace(/^v/, ""))))
         throw new ConfigError("A verified runtime is already active; use settings.updates to download, validate and apply the requested candidate.");
       if (!current && !allow_install)
-        throw new ConfigError("Компонент не установлен или повреждён. Выполните «Проверить готовность» для подготовки runtime.");
+        throw new ConfigError("Компонент не установлен или повреждён. Нажмите «Подготовить и проверить» для подготовки runtime.");
       return ensure_installed(state, config, component, refresh);
     },
     120,

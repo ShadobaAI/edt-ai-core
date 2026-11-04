@@ -7,7 +7,8 @@ import { pathToFileURL } from "node:url";
 import http from "node:http";
 import { fixture, environment, session, dialog_session, ROOT, node } from "./helpers.mjs";
 import { LOG_POLICY, create_diagnostic_logger, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, diagnostic_state, diagnostic_journal, connection_failure, environment_compatibility } from "../scripts/diagnostics.mjs";
-import { support_bundle, saved_support_report } from "../scripts/support_bundle.mjs";
+import { support_bundle, saved_support_report, detailed_log_export } from "../scripts/support_bundle.mjs";
+
 import { save_export_to_path } from "../scripts/settings_export.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
@@ -18,6 +19,16 @@ import { save_readiness } from "../scripts/setup_readiness.mjs";
 import { settings } from "../scripts/common.mjs";
 import { instance_directory } from "../scripts/project_paths.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
+
+test("detailed log export filters the requested period and sanitizes event details", t => {
+  const f = fixture(t), logger = create_diagnostic_logger("fixture", f.state);
+  logger.event("test-event", { token: "private-secret", projectRoot: f.root });
+  const recent = detailed_log_export(f.state, 1), future = detailed_log_export(f.state, 1, Date.now() + 2 * 86400000);
+  assert.match(recent.text, /test-event/);
+  assert.doesNotMatch(recent.text, /private-secret/);
+  assert.doesNotMatch(future.text, /test-event/);
+  assert.throws(() => detailed_log_export(f.state, 30), /период/);
+});
 
 test("errors, retained operations, readiness cache and exports exclude credential representations", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
@@ -182,6 +193,10 @@ test("support collection is partial, bounded, read-only and does not include sou
   const f = fixture(t); environment(t, f.env); f.save();
   fs.writeFileSync(path.join(f.root, "src/private.bsl"), "SOURCE-MUST-NOT-BE-EXPORTED");
   fs.writeFileSync(path.join(f.state, "chat.json"), "CHAT-MUST-NOT-BE-EXPORTED");
+  fs.mkdirSync(path.join(f.root, ".ai/instances"), { recursive: true });
+  fs.writeFileSync(path.join(f.root, ".ai/instances/first.local.yaml"), "legacy: LEGACY-INSTANCE-MUST-NOT-BE-EXPORTED\n");
+  fs.mkdirSync(instance_directory(f.state, f.root), { recursive: true });
+  fs.writeFileSync(path.join(instance_directory(f.state, f.root), "first.yaml"), "legacy: LEGACY-STATE-MUST-NOT-BE-EXPORTED\n");
   fs.writeFileSync(f.env.EDT_AI_SETTINGS, '{"password":"malformed-secret",');
   fs.writeFileSync(path.join(f.state, "runtime-lock.json"), JSON.stringify({ oversized: "x".repeat(300000) }));
   create_diagnostic_logger("fixture", f.state).event("failure", { message: "ECONNREFUSED", projectRoot: f.root });
@@ -193,7 +208,7 @@ test("support collection is partial, bounded, read-only and does not include sou
   assert.equal(report.snapshot.runtimeArtifacts.omitted, "file_size_limit");
   assert.equal(report.snapshot.host.operation.status, "running");
   assert.ok(report.collection.issues.some(issue => issue.section === "current"));
-  for (const secret of ["SOURCE-MUST-NOT", "CHAT-MUST-NOT", "malformed-secret"]) assert.equal(exported.text.includes(secret), false);
+  for (const secret of ["SOURCE-MUST-NOT", "CHAT-MUST-NOT", "malformed-secret", "LEGACY-INSTANCE-MUST-NOT", "LEGACY-STATE-MUST-NOT"]) assert.equal(exported.text.includes(secret), false);
   assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
   assert.equal(fs.existsSync(path.join(f.state, "runtime")), false);
 });
@@ -217,6 +232,15 @@ test("export is app-only, contains no report in model content and survives corru
   assert.equal(text.includes("private-unmarked-598213"), false);
   assert.equal(JSON.stringify(result.content).includes(f.state), false);
   assert.ok(report.events.some(event => event.event === "settings_unavailable"));
+});
+
+test("detailed log export is app-only and writes a sanitized text file through MCP", async t => {
+  const f=fixture(t);create_diagnostic_logger("fixture",f.state).event("log-export-fixture",{token:"not-for-export"});
+  const {client,choose}=await dialog_session(t,f);choose(path.join(f.base,"events.txt"));
+  const tools=(await client.request("tools/list")).tools;
+  assert.deepEqual(tools.find(tool=>tool.name==="settings.export_log")._meta.ui.visibility,["app"]);
+  const result=await client.call("settings.export_log",{days:3}), text=fs.readFileSync(result._meta.data.path,"utf8");
+  assert.match(text,/log-export-fixture/);assert.doesNotMatch(text,/not-for-export/);assert.equal(result._meta.data.text,undefined);
 });
 
 test("an unbound settings app can export without creating a project or preparing runtimes", async t => {

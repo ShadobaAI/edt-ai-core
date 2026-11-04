@@ -3,10 +3,12 @@ import path from "node:path";
 import { atomic_write } from "./common.mjs";
 import { resolve } from "./project_paths.mjs";
 
-const filename = "1c-ai-core-settings.json";
 const state_exports = {
-  settings: { directories: ["exports"], filename },
   diagnostics: { directories: ["diagnostics", "exports"], filename: "1c-ai-core-diagnostics.json" },
+  logs: { directories: ["diagnostics", "exports"], filename: "1c-ai-core-log.txt" },
+  project_profile: { directories: ["exports"], filename: "project.yaml" },
+  project_local: { directories: ["exports"], filename: "project.local.yaml" },
+  project_both: { directories: ["exports"], filename: "1c-ai-core-project.zip" },
 };
 export function state_export_path(state, kind) {
   if (typeof state !== "string" || !state || !Object.hasOwn(state_exports, kind)) throw new Error("Некорректное назначение экспорта.");
@@ -32,7 +34,10 @@ export function save_state_export(state, kind, data, expectedFile, limit) {
 // Callers supply the chosen destination. Reject links and verify the actual
 // bytes; the app handles cancellation before calling this function.
 export function save_export_to_path(file, data, limit = 2 * 1024 * 1024) {
-  if (typeof data?.text !== "string" || Buffer.byteLength(data.text) > limit)
+  let content;
+  if (typeof data?.text === "string") content = Buffer.from(data.text, "utf8");
+  else if (typeof data?.base64 === "string" && data.base64.length <= Math.ceil(limit / 3) * 4 && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data.base64)) content = Buffer.from(data.base64, "base64");
+  if (!content || content.length > limit)
     throw new Error("Файл отсутствует или превышает допустимый размер.");
   if (typeof file !== "string" || !path.isAbsolute(file)) throw new Error("Выберите абсолютный путь к файлу.");
   const directory = path.dirname(file), name = path.basename(file);
@@ -43,20 +48,7 @@ export function save_export_to_path(file, data, limit = 2 * 1024 * 1024) {
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Назначение должно быть обычным файлом, не ссылкой.");
     exists = true;
   } catch (error) { if (error.code !== "ENOENT") throw error; }
-  atomic_write(file, data.text, exists);
-  if (fs.readFileSync(file, "utf8") !== data.text) throw new Error("Не удалось подтвердить сохранение файла.");
-  return { filename: name, path: file, directory, bytes: Buffer.byteLength(data.text) };
-}
-function export_directory(state) {
-  const directory = path.resolve(state, "exports");
-  const stat = fs.lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Каталог экспорта настроек недоступен.");
-  return directory;
-}
-export function saved_settings_export(state) {
-  try {
-    const directory = export_directory(state), file = path.join(directory, filename), stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.isSymbolicLink()) return null;
-    return { filename, path: file, directory, bytes: stat.size };
-  } catch { return null; }
+  atomic_write(file, content, exists);
+  if (!fs.readFileSync(file).equals(content)) throw new Error("Не удалось подтвердить сохранение файла.");
+  return { filename: name, path: file, directory, bytes: content.length };
 }

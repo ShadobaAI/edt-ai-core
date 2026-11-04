@@ -286,10 +286,8 @@ test("profile CLI and settings preview reject an old contract without changing s
   const result = node("scripts/profile.mjs", ["import", f.root, "--input", input, "--replace"], { env: f.env });
   assert.equal(result.status, 1); assert.match(result.stdout, /Unsupported contract version/);
   const backend = new SettingsBackend();
-  await assert.rejects(backend.main({ action: "preview", text: JSON.stringify(old) }), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
-  for (const version of [undefined, 0, 2, "1"]) {
-    await assert.rejects(backend.main({ action: "preview", text: JSON.stringify({ format: "1c-ai-core-settings", version, profile: f.profile }) }), /версия/);
-  }
+  const context = await backend.main({ action: "transfer_context" });
+  await assert.rejects(backend.main({ action: "transfer_preview", baseRevision: context.baseRevision, documents: {profile: JSON.stringify(old)} }), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
   assert.deepEqual(fs.readFileSync(target), before);
   assert.deepEqual(fs.readdirSync(path.dirname(target)), ["project.yaml"]);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);

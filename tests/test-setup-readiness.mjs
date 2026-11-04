@@ -8,7 +8,7 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { edt_fixture as fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { setup_assets } from "../scripts/setup_readiness.mjs";
+import { setup_assets, save_readiness, read_readiness } from "../scripts/setup_readiness.mjs";
 import { instance_directory } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 
@@ -89,20 +89,40 @@ test("one readiness check verifies externals, policy and skills, and passive rea
   const {f,backend,authorization,count}=await ready_fixture(t);
   assert.equal((await backend.main({action:"read"})).readiness.state,"not_checked");
   await assert.rejects(backend.main({action:"check"}),/разрешения/);
-  const result=await backend.main({action:"check",authorization});assert.equal(result.fullReadiness,"verified");assert.equal(result.readiness.state,"ready");
+  const result=await backend.main({action:"check",authorization});assert.equal(result.fullReadiness,"not_ready");assert.equal(result.readiness.state,"blocked");
   for(const id of ["edt","v8std","policy","skills","source-guard","node","profile"])assert.equal(result.readiness.checks.find(check=>check.id===id).state,"ready",id);
   assert.equal(result.readiness.verificationLimits.hostHookTrust,"not_verified");
   assert.equal(result.readiness.verificationLimits.hostHookActivation,"not_verified");
   assert.equal(result.readiness.verificationLimits.deploymentLiveAcceptance,"not_verified");
   assert.equal(result.readiness.checks.find(check=>check.id==="code-index").state,"disabled");
-  const contacted=count();assert.equal((await new SettingsBackend().main({action:"status"})).readiness.state,"ready");assert.equal(count(),contacted);
+  const contacted=count();assert.equal((await new SettingsBackend().main({action:"status"})).readiness.state,"blocked");assert.equal(count(),contacted);
   process.env.EDT_AI_INSTANCE="another";assert.equal((await backend.main({action:"read"})).readiness.state,"not_checked");process.env.EDT_AI_INSTANCE="first";
   f.profile.repositories[0].edt_project="Changed";f.save();assert.equal((await backend.main({action:"read"})).readiness.state,"stale");
 });
 
+test("disabled assigned authorities block readiness and old ready receipts are rejected", async t => {
+  const { f, backend } = await ready_fixture(t), config = backend.effective(backend.current());
+  const external = { edt: { ready: true }, v8std: { ready: true } };
+  const managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
+  const complete = save_readiness(f.state, config, f.profile, managed, external);
+  assert.equal(complete.state, "ready");
+  assert.equal(complete.checks.find(item => item.id === "knowledge").state, "disabled");
+  for (const name of ["code-index", "bsl-ls"]) {
+    const checks = managed.map(item => item.name === name ? { ...item, state: "disabled" } : item);
+    assert.equal(save_readiness(f.state, config, f.profile, checks, external).state, "blocked", name);
+    assert.equal((await read_readiness(f.state, config, f.profile)).state, "blocked", name);
+    const file = path.join(instance_directory(f.state, f.root), "first.readiness.json");
+    const old = JSON.parse(fs.readFileSync(file, "utf8")); old.result.state = "ready";
+    fs.writeFileSync(file, JSON.stringify(old));
+    const restored = await read_readiness(f.state, config, f.profile);
+    assert.equal(restored.state, "not_checked", name);
+    assert.match(restored.reason, /обязательным компонентам/);
+  }
+});
+
 test("automatic readiness makes fresh probes without new launch grants or reconnecting relays",async t=>{
   const {f,backend,count,wrong}=await ready_fixture(t),scope=f.root+"#first";
-  const first=await backend.main({action:"refresh_readiness",scope});assert.equal(first.readiness.state,"ready");
+  const first=await backend.main({action:"refresh_readiness",scope});assert.equal(first.readiness.state,"blocked");
   const calls=count();wrong();
   const second=await backend.main({action:"refresh_readiness",scope});assert.ok(count()>calls);assert.equal(second.readiness.state,"blocked");
   assert.equal(second.external.edt.ready,false);

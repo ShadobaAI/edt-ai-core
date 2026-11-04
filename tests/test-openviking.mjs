@@ -903,7 +903,7 @@ test("disabled knowledge never opens the configured endpoint, including contradi
   }
 });
 
-test("the transport switch preserves its endpoint, retires only its instance and resists an environment URL", async t => {
+test("the transport switch affects both project sessions while keeping their bindings independent", async t => {
   const f = adapterFixture(t), remote = await upstream(t, f);
   const saved = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
   const controls = await session(t, "mcp/settings.mjs", [], f);
@@ -911,6 +911,7 @@ test("the transport switch preserves its endpoint, retires only its instance and
   const second = await session(t, "mcp/openviking.mjs", [], f, { EDT_AI_INSTANCE: "second" });
   const before = (await first.call("knowledge_status", {})).structuredContent;
   const other = (await second.call("knowledge_status", {})).structuredContent;
+  assert.notEqual(before.binding.sessionId, other.binding.sessionId);
   await controls.call("settings.update", { set: { openvikingEnabled: false } });
   const disabled = (await first.call("knowledge_status", {})).structuredContent;
   assert.equal(disabled.state, "disabled"); assert.equal(disabled.connected, false); assert.equal(disabled.binding, null);
@@ -918,7 +919,8 @@ test("the transport switch preserves its endpoint, retires only its instance and
   await assert.rejects(first.call("knowledge_search", { query: "x", collection: "architecture" }), /отключено/);
   assert.equal(remote.requests.length, count);
   assert.deepEqual(remote.closed, ["fixture-1"]);
-  assert.deepEqual((await second.call("knowledge_status", {})).structuredContent.binding, other.binding);
+  const otherDisabled=(await second.call("knowledge_status", {})).structuredContent;
+  assert.equal(otherDisabled.state,"disabled");assert.equal(otherDisabled.binding,null);
   const view = (await controls.call("settings.read", {})).structuredContent;
   assert.equal(view.values.openvikingUrl, remote.url); assert.equal(view.values.openvikingEnabled, false);
   await controls.call("settings.update", { set: { openvikingEnabled: true } });

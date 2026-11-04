@@ -4,13 +4,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture, environment, session, ROOT } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { dump } from "../scripts/common.mjs";
+import { dump, parse } from "../scripts/common.mjs";
 import { profile_history } from "../scripts/profile_history.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { save_readiness } from "../scripts/setup_readiness.mjs";
+import { project_profile } from "../scripts/profile.mjs";
 
 test("the app readiness refresh returns a scoped operation and cannot prepare another profile", async t => {
   const f=fixture(t);f.save();const client=await session(t,"mcp/settings.mjs",[],f);
@@ -55,7 +56,7 @@ test("settings can be saved during background readiness without publishing the o
   const selected=(await client.call("settings.select_profile",{projectRoot:other})).structuredContent;
   assert.equal(selected.viewOnly,false);assert.equal(selected.values.projectRoot,other);
   await client.call("settings.update",{set:{edtUrl:""}});
-  assert.equal((await client.call("settings.edit",{})).isError,undefined);
+  assert.equal((await client.call("settings.edit",{layerScope:"profile",format:"yaml"})).isError,undefined);
   release();
   const done=(await client.call("settings.operation",{operationId:job.id,waitMs:10000})).structuredContent;
   assert.equal(done.status,"completed");assert.equal(done.projectRoot,f.root);assert.equal(done.result.projectRoot,f.root);assert.equal(done.result.superseded,true);
@@ -86,7 +87,7 @@ test("profile status restores both managed checks and expires their scoped evide
   fs.writeFileSync(metadata, JSON.stringify({ pid: process.pid, http_port: server.address().port }));
   const managed = [{ name: "code-index", ready: true, state: "ready", repositories: [{ id: "product", edtProject: "Product", state: "ready" }] }, { name: "bsl-ls", ready: true, state: "ready" }];
   const config = backend.effective(backend.current());
-  const saved = save_readiness(f.state, config, f.profile, managed, { edt: { configured: false, connected: false } });
+  const saved = save_readiness(f.state, config, project_profile(f.root), managed, { edt: { configured: false, connected: false } });
   assert.equal(saved.state, "blocked");
   for (const action of ["read", "status"]) {
     const current = await backend.main({ action });
@@ -106,7 +107,7 @@ test("profile status restores both managed checks and expires their scoped evide
   f.profile.project.id = "changed"; f.save();
   assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "check_stale");
   managed[1] = { name: "bsl-ls", ready: false, state: "error", detail: "API unavailable" };
-  save_readiness(f.state, config, f.profile, managed, {});
+  save_readiness(f.state, config, project_profile(f.root), managed, {});
   const failed = (await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls");
   assert.equal(failed.status, "error"); assert.equal(failed.detail, "API unavailable");
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
@@ -217,6 +218,7 @@ test("history persists across sessions, detects damaged and removed profiles, an
 test("history selection previews another project without rebinding the chat or launching services", async t => {
   const f=fixture(t);f.save();const other=path.join(f.base,"other");fs.mkdirSync(path.join(other,"src"),{recursive:true});
   dump({...f.profile,project:{...f.profile.project,id:"other"}},path.join(other,".ai/project.yaml"));
+  const sourceFile=path.join(other,".ai/project.yaml");fs.writeFileSync(sourceFile,"# history comment\n"+fs.readFileSync(sourceFile,"utf8"));
   const client=await session(t,"mcp/settings.mjs",[],f);
   const preview=(await client.call("settings.select_profile",{projectRoot:other})).structuredContent;
   assert.equal(preview.viewOnly,true);assert.equal(preview.profile.projectId,"other");
@@ -228,10 +230,18 @@ test("history selection previews another project without rebinding the chat or l
   assert.equal(status.summary.components.find(item=>item.id==="code-index").status,"not_checked");
   const document=await client.call("settings.document",{projectRoot:other});
   assert.equal(document.structuredContent,undefined);
-  assert.equal(JSON.parse(document._meta.data.text).profile.project.id,"other");
+  assert.equal(parse(document._meta.data.text).project.id,"other");
+  assert.equal(document._meta.data.text,fs.readFileSync(sourceFile,"utf8"));assert.equal(document._meta.data.format,"yaml");
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   assert.equal(fs.existsSync(path.join(other,".ai/project.local.yaml")),false);
+  const localFile=path.join(other,".ai/project.local.yaml"),localText="project:\n  purpose: local-only\n";
+  fs.writeFileSync(localFile,localText);
+  const localDocument=await client.call("settings.document",{projectRoot:other,layerScope:"project_local"});
+  assert.equal(localDocument._meta.data.text,localText);
+  assert.equal(localDocument._meta.data.layerScope,"project_local");
+  assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
+  assert.equal(fs.readFileSync(localFile,"utf8"),localText);
   await assert.rejects(client.call("settings.update",{set:{projectRoot:other}}),/текущей сессией/);
 });
 
@@ -312,12 +322,12 @@ test("a full settings app restores its scope across connections without locking 
   assert.equal(next.viewOnly,false);assert.equal(next.values.projectRoot,other);
 });
 
-test("reset removes only this instance's URL and restores profile inheritance", async t => {
+test("reset removes the local URL and restores profile inheritance", async t => {
   const f=fixture(t);environment(t,f.env);
   f.profile.connections={edt:{url:"http://localhost:18191/mcp"},v8std:{url:"http://localhost:18192/mcp"}};f.save();
   const backend=new SettingsBackend(),before=fs.readFileSync(path.join(f.root,".ai/project.yaml"));
   await backend.main({action:"update",set:{edtUrl:"http://localhost:18193/mcp",v8stdUrl:"",bslLsEnabled:false}});
-  assert.equal((await backend.main({action:"read"})).connectionSources.edt,"instance");
+  assert.equal((await backend.main({action:"read"})).connectionSources.edt,"project_local");
   await backend.main({action:"reset_connection",connection:"edt"});
   const read=await backend.main({action:"read"});
   assert.equal(read.values.edtUrl,"http://localhost:18191/mcp");assert.equal(read.connectionSources.edt,"profile");

@@ -9,12 +9,9 @@ import {
   load,
   validate_url,
   validate_openviking_url,
-  state_path,
 } from "./common.mjs";
 import {
   locate_project,
-  instance_directory,
-  instance_name,
   resolve,
   exists,
   is_file,
@@ -23,10 +20,10 @@ import {
   contained,
 } from "./project_paths.mjs";
 export { locate_project };
-export function check_instance_override(data) {
+function check_external_override(data) {
   check_schema(data, "project-local.schema.json");
   if (Object.keys(data).some(key => !["schema_version", "connections", "components"].includes(key)))
-    throw new ConfigError("Instance overrides support only connections and components");
+    throw new ConfigError("External overrides support only connections and components");
 }
 export function local_overrides(root) {
   const file = inside(root, ".ai/project.local.yaml");
@@ -35,16 +32,8 @@ export function local_overrides(root) {
   check_schema(data, "project-local.schema.json");
   return data;
 }
-export const instance_file = (config, root, state) =>
-  path.join(
-    instance_directory(state_path(config, state), root),
-    instance_name() + ".yaml",
-  );
-export function instance_files(config, root, state) {
-  const paths = [
-    inside(root, ".ai/instances/" + instance_name() + ".local.yaml"),
-    instance_file(config, root, state),
-  ];
+export function external_override_files() {
+  const paths = [];
   if (process.env.EDT_AI_CONNECTIONS_FILE) {
     const file = resolve(process.env.EDT_AI_CONNECTIONS_FILE);
     if (!is_file(file))
@@ -59,8 +48,7 @@ export function assert_settings_paths(config, root, data, state = null, settings
   if (!data?.roots) return;
   const protectedPaths = [...new Set([...(data.roots.source || []), ...(data.roots.protected || [])])]
     .map(relative => inside(root, relative));
-  const files = [path.join(root, ".ai/project.yaml"), path.join(root, ".ai/project.local.yaml"),
-    path.join(root, ".ai/instances", instance_name() + ".local.yaml"), instance_file(config, root, state)];
+  const files = [path.join(root, ".ai/project.yaml"), path.join(root, ".ai/project.local.yaml")];
   if (state || process.env.EDT_AI_STATE_DIR) files.push(state || process.env.EDT_AI_STATE_DIR);
   if (settingsFile) files.push(settingsFile);
   if (process.env.EDT_AI_CONNECTIONS_FILE) files.push(process.env.EDT_AI_CONNECTIONS_FILE);
@@ -74,7 +62,7 @@ export function resolved_settings(
   config,
   root,
   data = null,
-  instance_override = null,
+  local_candidate = null,
   state = null,
   local_override = null,
 ) {
@@ -105,29 +93,18 @@ export function resolved_settings(
   const sources = Object.fromEntries(
     Object.entries(overrides.connections).filter(([, entry]) => Object.hasOwn(entry, "url")).map(([name]) => [name, "profile"]),
   );
-  const local = local_override === null ? local_overrides(root) : local_override;
-  if (local_override !== null) check_schema(local, "project-local.schema.json");
+  const local = local_override ?? local_candidate ?? local_overrides(root);
+  if (local_override !== null || local_candidate !== null) check_schema(local, "project-local.schema.json");
   merge_overrides(local);
   record_sources(local.connections, "project_local", local.components);
   for (const [name, entry] of Object.entries(local.connections || {}))
     if (Object.hasOwn(entry, "url")) sources[name] = "project_local";
-  const stateOverride = instance_file(config, root, state);
-  for (const file of instance_files(config, root, state)) {
-    let extra;
-    if (instance_override !== null && file === stateOverride)
-      extra = instance_override;
-    else if (exists(file)) extra = load(file);
-    else continue;
+  for (const file of external_override_files()) {
+    const extra = load(file);
     if (extra !== null) {
-      check_instance_override(extra);
+      check_external_override(extra);
       merge_overrides(extra);
-      const source =
-        file === stateOverride
-          ? "instance"
-          : process.env.EDT_AI_CONNECTIONS_FILE &&
-              file === resolve(process.env.EDT_AI_CONNECTIONS_FILE)
-            ? "connections_file"
-            : "repository_instance";
+      const source = "connections_file";
       record_sources(extra.connections, source, extra.components);
       for (const [name, entry] of Object.entries(extra.connections || {}))
         if (Object.hasOwn(entry, "url")) sources[name] = source;

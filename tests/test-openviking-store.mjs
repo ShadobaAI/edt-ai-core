@@ -12,6 +12,7 @@ import { read_openviking_record, save_openviking_record } from "../scripts/openv
 import { credential_binding, search_credential_headers, verify_search_access, surface_fingerprint, operation_fingerprint } from "../scripts/openviking_access.mjs";
 import { binding_fingerprint } from "../scripts/components.mjs";
 import { OpenVikingAdapter } from "../scripts/openviking_adapter.mjs";
+import { SettingsBackend } from "../scripts/settings_backend.mjs";
 
 const url = "https://knowledge.example/mcp", other = "https://other.example/mcp";
 const values = () => ({ credential: "Bearer secret-token", bindingKey: "binding-key-at-least-32-bytes-long", accessPublicKey: "", accessReceipts: "", publicationPublicKey: "", publicationReceipts: "" });
@@ -171,11 +172,14 @@ test("secret values use app metadata only and are absent from export", async t =
   const reopened = await client.call("settings.openviking_read", args);
   assert.deepEqual(reopened._meta.data.values, input);
   assert.equal(JSON.stringify(reopened.content).includes(input.credential), false);
-  for (const name of ["settings.read", "settings.inspect", "settings.export_data", "settings.diagnostics"]) {
+  for (const name of ["settings.read", "settings.inspect", "settings.diagnostics"]) {
     const reply = await client.call(name, {});
     assert.equal(JSON.stringify(reply).includes(input.credential), false, name);
     assert.equal(JSON.stringify(reply).includes(input.bindingKey), false, name);
   }
+  const exported = await new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS).main({action:"transfer_export", scope:"profile", projectRoot:f.root});
+  assert.equal(JSON.stringify(exported).includes(input.credential), false);
+  assert.equal(JSON.stringify(exported).includes(input.bindingKey), false);
 });
 
 test("independent project adapters share a credential but never share selected areas or connections", async t => {

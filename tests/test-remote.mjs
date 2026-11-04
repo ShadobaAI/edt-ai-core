@@ -573,6 +573,18 @@ for (const mode of [
       assert.equal(e.calls.length, 1);
     },
   );
+test("SSE accepts CR, LF and split CRLF line endings without waiting for stream closure", async t => {
+  for (const ending of ["\r", "\n", "\r\n"]) {
+    const e = await endpoint(t, async ({ res, message }) => {
+      res.writeHead(200, { "Content-Type": "Text/Event-Stream; charset=utf-8" });
+      const event = `data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { ok: true } })}${ending}${ending}`;
+      for (const character of event) { res.write(character); if (character === "\r") await sleep(5); }
+    });
+    const client = new RemoteMcp(e.url, 2);
+    assert.deepEqual(await client.request("tools/list"), { ok: true });
+    await client.close();
+  }
+});
 test("SSE notifications invalidate tools without losing the complete tool result", async (t) => {
   const e = await endpoint(t, ({ res, message }) =>
     res
