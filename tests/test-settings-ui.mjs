@@ -29,6 +29,18 @@ test("main navigation contains the three requested sections", () => {
   assert.ok(nav);assert.deepEqual([...nav.matchAll(/role="tab"[^>]*>([^<]+)/g)].map(match=>match[1]),["Компоненты","Конфигурация","Поддержка"]);
 });
 
+test("component operation feedback is live and stays outside collapsed diagnostics", () => {
+  for (const [dialog, notice] of [["componentDialog", "componentDialogStatus"], ["managedDialog", "managedDialogNotice"], ["testingDialog", "testingDialogNotice"]]) {
+    const markup = html.match(new RegExp('<dialog id="' + dialog + '"[\\s\\S]*?</dialog>'))[0];
+    const output = markup.match(new RegExp('<[^>]+id="' + notice + '"[^>]*>'));
+    assert.ok(output, dialog + " must contain operation feedback");
+    assert.match(output[0], /role="status"/); assert.match(output[0], /aria-live="polite"/);
+    const preceding = markup.slice(0, output.index);
+    assert.equal([...preceding.matchAll(/<details\b/g)].length, [...preceding.matchAll(/<\/details>/g)].length,
+      dialog + " feedback must remain visible when diagnostics are collapsed");
+  }
+});
+
 test("readiness preparation states its side effects before the user starts it", () => {
   const panel = html.match(/<div id="readinessPanel"[\s\S]*?<\/details><\/div>/)?.[0];
   assert.match(panel, /id="readinessButton">Подготовить и проверить/);
@@ -3513,8 +3525,9 @@ test("live journal preserves history position and focused records until the user
   const ui=screen(async name=>{if(["settings.read","settings.status"].includes(name))return read;if(name==="settings.diagnostics"){reads++;return data;}throw new Error(name);});await ui.flush();
   ui.elements.get("supportTab").onclick();await ui.flush();
   const journal=ui.elements.get("diagnosticJournal");journal.clientHeight=215;
+  journal.clientTop=1;journal.getBoundingClientRect=()=>({top:500});
   Object.defineProperty(journal,"scrollHeight",{get(){return this.children.length*43;}});
-  journal.children.forEach((row,index)=>{Object.defineProperty(row,"offsetTop",{get(){return journal.children.indexOf(this)*43;}});row.offsetHeight=43;});
+  journal.children.forEach(row=>{row.getBoundingClientRect=()=>{const top=501+journal.children.indexOf(row)*43-journal.scrollTop;return {top,bottom:top+43};};});
   ui.elements.get("journalResumeButton").onclick();assert.equal(journal.scrollTop,430);
   journal.scrollTop=43;journal.events.scroll();
   const row=journal.children[2];row.open=true;row.children[0].focus();
@@ -3566,4 +3579,103 @@ test("a slow initial snapshot preserves the tab selected while it was loading", 
   await ui.flush();ui.elements.get("supportTab").onclick();await ui.flush();release();await ui.flush();
   assert.equal(ui.elements.get("supportPanel").hidden,false);assert.equal(ui.elements.get("supportTab").attributes["aria-selected"],"true");
   ui.lifecycle.pagehide();
+});
+
+for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"]) test(`a failed ${id} save stays visible in its dialog and a successful retry replaces the error`, async () => {
+  const backend = new SettingsBackend("unused", "unused"), failure = "Профиль изменился на диске. Проверьте изменения заново.";
+  const current = { ...read, instance: "default", settingsRevision: "before", values: { ...read.values,
+    edtUrl: "http://edt", v8stdUrl: "http://v8std", openvikingUrl: "", openvikingEnabled: false, codeIndexEnabled: true, bslLsEnabled: true },
+    profile: { ...read.profile, testing: { yaxunit: false, vanessa: false } } };
+  current.layerValues = { profile: { ...current.values } };
+  let failWrites = true, text = "testing:\n  yaxunit: false\n  vanessa: false\n";
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.versions") return { component: args.component, versions: [] };
+    if (name === "settings.edit") return { text, format: "yaml", baseRevision: current.settingsRevision, layerScope: "profile" };
+    if (name === "settings.document_fields") return backend.main({ action: "document_fields", ...args });
+    if (name === "settings.document_patch") return patch_yaml_draft(args.text, args.operation);
+    if (name === "settings.preview") return { revision: "reviewed", projectRoot: current.values.projectRoot,
+      profileId: "generic-1c", replacesProfile: true, repositories: [] };
+    if (["settings.update", "settings.apply"].includes(name)) {
+      if (failWrites) throw new Error(failure);
+      if (name === "settings.apply") text = args.text;
+      else { Object.assign(current.values, args.set); Object.assign(current.layerValues.profile, args.set); }
+      current.settingsRevision = "after";
+      return { settingsRevision: "after", savedTo: "C:/fixture/project/.ai/project.yaml" };
+    }
+    throw new Error(name);
+  });
+  await ui.flush(); ui.document.hidden = true;
+  const item = ui.context.catalogItems(current).find(item => item.id === id);
+  let save, notice;
+  if (item.kind === "external") {
+    ui.context.openConnectionDialog(item, null);
+    const input = ui.elements.get(id + "Url"); input.value = "http://draft/mcp"; input.events.input();
+    save = ui.elements.get("saveButton"); notice = ui.elements.get("componentDialogStatus");
+  } else if (item.kind === "managed") {
+    ui.context.openManagedDialog(item, null); await ui.flush();
+    const input = ui.elements.get(id === "code-index" ? "codeIndexEnabled" : "bslLsEnabled"); input.checked = false; input.events.change();
+    save = ui.elements.get("saveComponentsButton"); notice = ui.elements.get("managedDialogNotice");
+  } else {
+    await ui.context.openTestingSettings(id, null); await ui.flush(); await ui.flush();
+    const input = treeInputs(ui).find(input => input.attributes?.["aria-label"] === "testing." + id);
+    input.checked = true; await input.onchange();
+    await ui.elements.get("reviewEditButton").onclick();
+    ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
+    save = ui.elements.get("applyButton"); notice = ui.elements.get("testingDialogNotice");
+  }
+  assert.equal(save.disabled, false);
+  await save.onclick();
+  assert.ok(notice, "The open dialog must expose operation feedback");
+  assert.equal(notice.hidden, false); assert.equal(notice.textContent, failure);
+  assert.equal(ui.context.hasProfileDraft(), true);
+  await ui.context.refresh();
+  assert.equal(notice.hidden, false); assert.equal(notice.textContent, failure);
+  failWrites = false;
+  await save.onclick();
+  assert.equal(notice.hidden, false); assert.match(notice.textContent, /Сохранено:|Настройки сохранены/);
+  assert.doesNotMatch(notice.textContent, /изменился на диске/);
+  assert.equal(ui.context.hasProfileDraft(), false);
+  const next = structuredClone(current); next.values.projectRoot = "C:/fixture/other";
+  ui.context.renderCurrent(next);
+  assert.equal(notice.hidden, true); assert.equal(notice.textContent, "");
+});
+
+for (const [source, target, noticeId] of [["code-index", "bsl-ls", "managedDialogNotice"], ["yaxunit", "vanessa", "testingDialogNotice"]]) test(`a late ${source} error cannot replace the ${target} operation notice`, async () => {
+  const f = isolatedProbeScreen(source, { startFailed: true }); await f.ui.flush(); await f.open(source);
+  const checking = f.probe(source); await f.ui.flush();
+  f.close(source); await f.open(target);
+  const notice = f.ui.elements.get(noticeId);
+  assert.ok(notice);
+  const message = notice.textContent, hidden = notice.hidden;
+  f.finish(); await checking;
+  assert.equal(notice.textContent, message); assert.equal(notice.hidden, hidden);
+  f.close(target); assert.equal(notice.hidden, true); assert.equal(notice.textContent, "");
+});
+
+for (const expanded of [false, true]) test(`a rolling journal tail preserves the visible record with ancestor-relative offsets${expanded ? " in the full dialog" : ""}`, async () => {
+  const events = Array.from({ length: 200 }, (_, index) => ({ time: new Date(Date.UTC(2026, 10, 5, 12, 0, 200 - index)).toISOString(),
+    level: "info", component: "settings", event: "record-" + (200 - index), detail: {} }));
+  const data = { events, total: 250, truncated: true, session: {}, observedAt: events[0].time };
+  const ui = screen(async name => { if (["settings.read", "settings.status"].includes(name)) return read; if (name === "settings.diagnostics") return data; throw new Error(name); });
+  await ui.flush(); ui.elements.get("supportTab").onclick(); await ui.flush();
+  if (expanded) ui.elements.get("expandJournalButton").onclick();
+  const journal = ui.elements.get("diagnosticJournal"), offsetBase = expanded ? 130 : 500;
+  journal.clientHeight = 217; journal.clientTop = 1;
+  journal.getBoundingClientRect = () => ({ top: offsetBase, height: 219 });
+  Object.defineProperty(journal, "scrollHeight", { get() { return this.children.length * 43; } });
+  for (const row of journal.children) {
+    row.offsetHeight = 43;
+    Object.defineProperty(row, "offsetTop", { get() { return offsetBase + journal.children.indexOf(this) * 43; } });
+    row.getBoundingClientRect = () => { const top = offsetBase + journal.clientTop + journal.children.indexOf(row) * 43 - journal.scrollTop; return { top, bottom: top + 43 }; };
+  }
+  journal.scrollTop = 86; journal.events.scroll();
+  const reading = journal.children[2]; reading.open = true; reading.children[0].focus();
+  events.unshift({ ...events[0], time: "2026-11-05T12:03:21Z", event: "record-201" }); events.pop();
+  await ui.tick(2000);
+  assert.equal(journal.children.length, 200); assert.equal(journal.children[1], reading);
+  assert.equal(journal.scrollTop, 43, "The same record must remain at the same viewport position");
+  assert.equal(reading.open, true); assert.equal(ui.document.activeElement, reading.children[0]);
+  assert.equal(ui.elements.get("journalResumeButton").hidden, false);
+  assert.equal(Boolean(ui.elements.get("journalDialog").open), expanded);
 });
