@@ -13,10 +13,10 @@ import { instance_directory } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 
 async function ready_fixture(t) {
-  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready";
+  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready";const paths=[];
   const server=createServer(async(req,res)=>{
     let text="";for await(const part of req)text+=part;
-    if(!text){res.writeHead(202).end();return;}const message=JSON.parse(text);calls++;
+    if(!text){res.writeHead(202).end();return;}const message=JSON.parse(text);calls++;paths.push(req.url);
     const reply=result=>res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:message.id,result}));
     if (req.url === "/index" && indexFailure) return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: indexFailure } }));
     if(message.method==="server/discover")return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:message.id,error:{code:-32601,message:"legacy"}}));
@@ -33,20 +33,39 @@ async function ready_fixture(t) {
   });server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>{server.closeAllConnections();return new Promise(done=>server.close(done));});
   const backend=new SettingsBackend(),url="http://127.0.0.1:"+server.address().port;
   await backend.main({action:"update",set:{codeIndexEnabled:false,bslLsEnabled:false,edtUrl:url+"/edt",v8stdUrl:url+"/v8std"}});
-  return {f,backend,url,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;},setProjectState:state=>{projectState=state;}};
+  return {f,backend,url,paths,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;},setProjectState:state=>{projectState=state;}};
 }
+
+test("background component refreshes use the same addressed probes and preserve all other receipts",async t=>{
+  const {f,backend,url,paths}=await ready_fixture(t),config=backend.current();
+  for(const id of ["code-index","bsl-ls"])Object.assign(config.mcp.managed[id],{enabled:true,mode:"external",url:url+(id==="code-index"?"/index":"/bsl")});
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true}});
+  const profileBefore=fs.readFileSync(path.join(f.root,".ai/project.yaml")),settingsBefore=fs.readFileSync(f.env.EDT_AI_SETTINGS);
+  for(const component of ["edt","v8std","openviking","code-index","bsl-ls","yaxunit","vanessa"]){
+    const before=(await backend.main({action:"read"})).componentChecks,offset=paths.length;
+    const checked=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component});
+    assert.deepEqual(checked.componentChecks.map(item=>item.id),[component]);
+    const endpoint={edt:"/edt",v8std:"/v8std","code-index":"/index","bsl-ls":"/bsl"}[component];
+    assert.ok(paths.slice(offset).every(value=>value===endpoint));if(endpoint)assert.ok(paths.length>offset);
+    const after=(await backend.main({action:"read"})).componentChecks;
+    assert.deepEqual(after.filter(item=>item.id!==component),before.filter(item=>item.id!==component));
+  }
+  const all=await backend.main({action:"refresh_readiness",scope:f.root+"#first"});assert.equal(all.componentChecks.length,7);
+  assert.equal(all.readiness,undefined);assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),profileBefore);
+  assert.deepEqual(fs.readFileSync(f.env.EDT_AI_SETTINGS),settingsBefore);assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
+});
 
 test("EDT building and mapping failures remain distinct in saved readiness", async t => {
   const { f, backend, setProjectState, wrong } = await ready_fixture(t);
   const scope = f.root + "#first";
   setProjectState("building");
   const result = await backend.main({ action: "refresh_readiness", scope });
-  assert.equal(result.readiness.state, "blocked");
+  assert.equal(result.componentChecks.find(item => item.id === "edt").state, "not_verified");
   assert.equal(result.external.edt.repositories[0].matched, true);
   assert.equal(result.external.edt.failure, undefined);
   assert.match(result.external.edt.detail, /product: EDT сообщает о сборке проекта/);
   assert.match(result.external.edt.detail, /повторите проверку готовности/);
-  const saved = (await backend.main({ action: "read" })).readiness.checks.find(item => item.id === "edt");
+  const saved = (await backend.main({ action: "read" })).componentChecks.find(item => item.id === "edt");
   assert.equal(saved.detail, result.external.edt.detail);
   wrong();
   const mismatch = await backend.main({ action: "refresh_readiness", scope });
@@ -122,9 +141,9 @@ test("disabled assigned authorities block readiness and old ready receipts are r
 
 test("automatic readiness makes fresh probes without new launch grants or reconnecting relays",async t=>{
   const {f,backend,count,wrong}=await ready_fixture(t),scope=f.root+"#first";
-  const first=await backend.main({action:"refresh_readiness",scope});assert.equal(first.readiness.state,"blocked");
+  const first=await backend.main({action:"refresh_readiness",scope});assert.equal(first.componentChecks.length,7);
   const calls=count();wrong();
-  const second=await backend.main({action:"refresh_readiness",scope});assert.ok(count()>calls);assert.equal(second.readiness.state,"blocked");
+  const second=await backend.main({action:"refresh_readiness",scope});assert.ok(count()>calls);assert.equal(second.componentChecks.find(item=>item.id==="edt").state,"not_verified");
   assert.equal(second.external.edt.ready,false);
   const home=instance_directory(f.state,f.root);
   assert.equal(fs.existsSync(path.join(home,"first.preparation.json")),false);
@@ -144,38 +163,30 @@ test("automatic readiness never prepares unapproved components or downloads miss
   const download=t.mock.method(globalThis,"fetch",async()=>{throw new Error("Unexpected download");});
   await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true,edtUrl:"",v8stdUrl:""}});
   const unprepared=await backend.main({action:"refresh_readiness",scope});
-  for(const component of ["code-index","bsl-ls"]){const item=unprepared.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не подготовлен/);}
+  for(const component of ["code-index","bsl-ls"]){const item=unprepared.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не запущен|не проверена/);}
   grant_preparation(f.state,f.root,["code-index","bsl-ls"]);
   const file=path.join(instance_directory(f.state,f.root),"first.preparation.json"),before=fs.readFileSync(file);
   const missing=await backend.main({action:"refresh_readiness",scope});
-  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не установлен или повреждён/);}
+  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не запущен|не проверена/);}
   assert.deepEqual(fs.readFileSync(file),before);assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   process.env.EDT_AI_INSTANCE="another";
-  const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.match(other.managed.find(item=>item.name==="code-index").detail,/не подготовлен/);
+  const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.equal(other.managed.find(item=>item.name==="code-index").state,"stopped");
   assert.equal(download.mock.callCount(),0);
 });
 
-test("a slow Java version probe does not block independent connection checks", async t => {
+test("passive status refresh never probes Java or starts local services", async t => {
   const {f,backend,count}=await ready_fixture(t);
   const config=backend.current();config.mcp.managed["bsl-ls"].java=process.execPath;
   fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
   await backend.main({action:"update",set:{bslLsEnabled:true}});
   grant_preparation(f.state,f.root,["bsl-ls"]);
-  let release,entered;
-  const started=new Promise(resolve=>{entered=resolve;});
-  const original=childProcess.execFile;
-  t.mock.method(childProcess,"execFile",(command,args,options,callback)=>{
-    if(command===process.execPath&&args?.[0]==="-version"){release=()=>callback(null,"",'java version "21"');entered();return;}
-    return original(command,args,options,callback);
-  });
+  const execute=t.mock.method(childProcess,"execFile",()=>{throw new Error("Unexpected Java probe");});
+  const spawn=t.mock.method(childProcess,"spawn",()=>{throw new Error("Unexpected process launch");});
   syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
-  const check=backend.main({action:"refresh_readiness",scope:f.root+"#first"});
-  await started;
-  try {
-    const deadline=Date.now()+3000;
-    while(count()===0&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
-    assert.ok(count()>0,"external probes must progress while Java is pending");
-  } finally {release();await check;}
+  const calls=count(), result=await backend.main({action:"refresh_readiness",scope:f.root+"#first"});
+  assert.ok(count()>calls);assert.equal(result.external.edt.ready,true);
+  assert.equal(result.componentChecks.find(item=>item.id==="bsl-ls").state,"not_verified");
+  assert.equal(execute.mock.callCount(),0);assert.equal(spawn.mock.callCount(),0);
 });
 
 test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{
@@ -187,11 +198,12 @@ test("automatic readiness verifies live managed APIs instead of relying on saved
   fs.mkdirSync(path.join(f.root,".code-index"));fs.writeFileSync(path.join(f.root,".code-index/index.db"),"existing");settle();
   assert.equal((await backend.main({action:"read"})).summary.components.find(item=>item.id==="bsl-ls").status,"external");
   const calls=count(),result=await backend.main({action:"refresh_readiness",scope:f.root+"#first"});
-  assert.ok(count()>calls);assert.equal(result.readiness.state,"ready");
+  assert.ok(count()>calls);assert.equal(result.readiness,undefined);
   assert.equal(indexChecks(),2,"a startup health response without freshness is observed again before completing the check");
   for(const component of ["code-index","bsl-ls"]){
     assert.equal(result.managed.find(item=>item.name===component).ready,true);
-    const summary=(await backend.main({action:"read"})).summary.components.find(item=>item.id===component);assert.equal(summary.status,"ready");assert.equal(summary.mode,"external");assert.equal(summary.checkedAt,result.readiness.checkedAt);
+    const current=await backend.main({action:"read"}),saved=current.componentChecks.find(item=>item.id===component);assert.equal(saved.state,"ready");assert.equal(saved.checkedAt,result.componentChecks.find(item=>item.id===component).checkedAt);
+    assert.equal(current.summary.components.find(item=>item.id===component).mode,"external");
   }
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });

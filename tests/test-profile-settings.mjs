@@ -143,7 +143,8 @@ test("the app readiness refresh returns a scoped operation and cannot prepare an
   const job=(await client.call("settings.refresh_readiness",{scope:f.root+"#first"})).structuredContent;
   const checked=(await client.call("settings.operation",{operationId:job.id,waitMs:10000})).structuredContent;
   assert.equal(checked.status,"completed");assert.equal(checked.action,"refresh_readiness");assert.equal(checked.result.projectRoot,f.root);
-  assert.match(checked.result.managed.find(item=>item.name==="code-index").detail,/не подготовлен/);
+  assert.equal(checked.result.managed.find(item=>item.name==="code-index").state,"stopped");
+  assert.equal(checked.result.componentChecks.length,7);
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
 });

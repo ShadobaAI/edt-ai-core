@@ -120,7 +120,7 @@ button{min-height:36px;border-radius:7px}button.icon-button{min-height:32px}inpu
 <label class="field" for="ovPublicationReceipts">Подтверждения публикации (JSON)</label><textarea id="ovPublicationReceipts" rows="6" spellcheck="false"></textarea>
 </fieldset>
 <div class="notice-box" id="knowledgeSummary" role="status" aria-live="polite"><pre id="knowledgeDetails"></pre></div>
-<div class="actions"><button id="probeButton"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>Проверить</button></div><p class="muted">Проверяются значения в доступных полях; для недоступных полей — действующие значения. Проверка не сохраняет изменения. Каталог инструментов и подключение текущего чата не проверены.</p><pre id="probeResult" hidden></pre></div></div>
+<div class="actions"><button id="probeButton"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>Обновить состояние</button></div><p class="muted">Проверяются значения в доступных полях; для недоступных полей — действующие значения. Проверка не сохраняет изменения. Каталог инструментов и подключение текущего чата не проверены.</p><pre id="probeResult" hidden></pre></div></div>
 </section>
 <section id="editorPanel" role="tabpanel" aria-labelledby="editorTab" hidden>
 <div class="section-heading"><div><h2>Конфигурация</h2><p>Два профиля проекта: переносимый в Git и локальные переопределения.</p></div><div class="catalog-tools"><button id="openImportButton">Импорт</button><button id="openExportButton"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Экспорт</button><button id="openTransferButton" hidden>Импорт и экспорт</button></div></div>
@@ -151,8 +151,8 @@ button{min-height:36px;border-radius:7px}button.icon-button{min-height:32px}inpu
 </section>
 <section id="supportPanel" class="support" role="tabpanel" aria-labelledby="supportTab" hidden><div class="section-heading"><div><h2>Поддержка</h2><p>Сведения об установке, события и подготовка диагностических материалов.</p></div><button id="diagnosticsRefreshButton"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Обновить</button></div><div class="support-grid"><article class="support-card"><h3>О плагине</h3><dl class="diagnostic-facts"><div><dt>Плагин / Node.js</dt><dd id="diagnosticVersions">—</dd></div><div><dt>Операционная система</dt><dd id="diagnosticPlatform">—</dd></div><div><dt>Экземпляр</dt><dd id="diagnosticInstance">—</dd></div><div><dt>Проект текущего чата</dt><dd id="diagnosticProject">—</dd></div><div><dt>Управляемые компоненты</dt><dd id="diagnosticComponents">—</dd></div><div><dt>Последняя операция</dt><dd id="diagnosticOperation">—</dd></div><div><dt>Состояние журнала</dt><dd id="diagnosticLogger">—</dd></div></dl><details class="diagnostic-session"><summary>Каталоги и привязка сессии</summary><pre id="diagnosticContext"></pre></details><p><a href="https://github.com/ShadobaAI/edt-ai-core" target="_blank" rel="noopener noreferrer">Исходный код и документация</a></p><details id="sessionHint" hidden><summary>Подключения текущего чата</summary><p id="sessionHintText"></p></details></article><article class="support-card support-exports"><div class="diagnostics-export"><h2>Файл для поддержки</h2><p>Сохраните файл с недавними логами, версиями, настройками и состоянием плагина для передачи разработчику. В файле остаются пути проектов и адреса серверов; известные секреты скрываются. История чатов и исходники не собираются.</p><p id="diagnosticsDestinationHint" class="muted">Журнал плагина: до 2 МиБ, последние 7 дней. Выберите место сохранения файла.</p><div class="actions"><button id="diagnosticsButton"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Сохранить диагностику</button></div><div id="diagnosticsSaved" hidden><p>Файл сохранён:</p><p id="diagnosticsPath" class="path"></p><button id="openDiagnosticsButton" hidden><svg class="icon" aria-hidden="true"><use href="#i-folder"/></svg>Открыть папку</button></div></div><div class="diagnostics-export"><h2>Подробный журнал</h2><p>Известные секреты скрываются, но в журнале могут остаться пути и адреса серверов.</p><label for="logPeriod">Период</label> <select id="logPeriod"><option value="1">1 день</option><option value="3">3 дня</option><option value="7">7 дней</option></select> <button id="exportLogButton">Сохранить журнал…</button></div></article></div><div class="support-journal"><h2 class="runtime-heading">Журнал плагина</h2><p>События всех сессий на этом компьютере. Новые записи сверху; подробности раскрываются по нажатию.</p><div class="journal-toolbar"><input id="logSearch" type="text" placeholder="Поиск по событию, компоненту, тексту" aria-label="Поиск в журнале"><select id="logLevel" aria-label="Уровень событий"><option value="all">Все уровни</option><option value="error">Ошибки</option><option value="warn">Предупреждения</option><option value="info">Информация</option><option value="debug">Отладка</option></select><span id="journalCount" class="journal-count">Загрузка…</span></div><div id="diagnosticsError" class="diagnostics-error" role="status" hidden></div><div id="diagnosticJournal" class="journal"><p class="journal-empty">Журнал ещё не загружен.</p></div></div></section>
 <dialog id="transferDialog" aria-labelledby="transferTitle"><div class="dialog-heading"><h2 id="transferTitle">Импорт профилей</h2><button id="transferClose" class="icon-button" aria-label="Закрыть">×</button></div><p>Локальные пути и адреса могут быть чувствительными. Проверьте файл перед передачей. Правило Git не защищает файл, который уже отслеживается; если Git недоступен, проверьте индекс самостоятельно.</p><label class="field" for="transferScope">Область</label><select id="transferScope"><option value="profile">Общий профиль · YAML</option><option value="project_local">Локальный профиль · YAML</option><option value="both">Оба профиля · ZIP</option></select><div id="transferExportSection"><p>По умолчанию комментарии и команды тестов исключаются: они могут содержать секреты.</p><label><input id="transferIncludeText" type="checkbox"> Включить команды и комментарии после проверки их содержимого</label><div class="actions"><button id="transferExport">Экспортировать…</button></div></div><div id="transferImportSection"><label id="transferPathLabel" class="field" for="transferPath" hidden>Абсолютный путь к файлу YAML или ZIP</label><input id="transferPath" type="text" autocomplete="off" hidden><div class="actions"><button id="transferPick">Выбрать файл…</button><span id="transferFilename" class="path"></span></div><div class="actions"><button id="transferPreview">Проверить изменения</button><button id="transferClear">Очистить выбор</button></div><div id="transferDetails"></div><label><input id="transferReplace" type="checkbox"> Подтверждаю замену указанных файлов</label><div class="actions"><button id="transferApply">Импортировать</button></div></div><p id="transferStatus" role="status" aria-live="polite"></p></dialog>
-<dialog id="managedCloseConfirm" aria-labelledby="managedCloseTitle"><h2 id="managedCloseTitle">Есть несохранённые изменения</h2><p>Черновик останется в форме, если закрыть настройки.</p><div class="actions"><button id="managedCloseStay">Продолжить редактирование</button><button id="managedCloseKeep">Закрыть и оставить черновик</button></div></dialog><dialog id="managedDialog" aria-labelledby="managedDialogTitle"><div class="dialog-heading"><h2 id="managedDialogTitle"></h2><button id="managedDialogClose" class="icon-button" aria-label="Закрыть настройки">×</button></div><p id="managedDialogStatus" role="status" aria-live="polite"></p><p>Проверка использует сохранённые параметры сервиса, не устанавливает и не запускает его.</p><button id="managedProbeButton">Проверить</button><div id="managedDialogBody"></div></dialog><dialog id="componentDialog" aria-labelledby="componentDialogTitle"><div class="dialog-heading"><h2 id="componentDialogTitle"></h2><button id="componentDialogClose" class="icon-button" aria-label="Закрыть настройки">×</button></div><p id="componentDialogDiagnostic" role="status" aria-live="polite"></p><div id="componentDialogBody"></div><div class="actions"><button id="componentDiscard">Отменить черновик подключения</button></div><p id="componentDialogStatus" role="status" aria-live="polite"></p></dialog><dialog id="componentCloseConfirm" aria-labelledby="componentCloseTitle"><h2 id="componentCloseTitle">Есть несохранённые изменения</h2><p>Черновик останется в форме, если закрыть настройки.</p><div class="actions"><button id="componentCloseStay">Продолжить редактирование</button><button id="componentCloseKeep">Закрыть и оставить черновик</button></div></dialog>
-<dialog id="testingDialog" aria-labelledby="testingDialogTitle"><div class="dialog-heading"><h2 id="testingDialogTitle"></h2><button id="testingDialogClose" class="icon-button" aria-label="Закрыть настройки">×</button></div><p id="testingDialogStatus" role="status" aria-live="polite"></p><p>Поля компонента и YAML используют текущий черновик документа. Проверка изменений покажет все правки этого документа перед сохранением. Проверка компонента использует сохранённый профиль и не запускает тесты.</p><button id="testingProbeButton">Проверить</button><div id="testingDialogBody"></div></dialog>
+<dialog id="managedCloseConfirm" aria-labelledby="managedCloseTitle"><h2 id="managedCloseTitle">Есть несохранённые изменения</h2><p>Черновик останется в форме, если закрыть настройки.</p><div class="actions"><button id="managedCloseStay">Продолжить редактирование</button><button id="managedCloseKeep">Закрыть и оставить черновик</button></div></dialog><dialog id="managedDialog" aria-labelledby="managedDialogTitle"><div class="dialog-heading"><h2 id="managedDialogTitle"></h2><button id="managedDialogClose" class="icon-button" aria-label="Закрыть настройки">×</button></div><p id="managedDialogStatus" role="status" aria-live="polite"></p><p>Проверка использует сохранённые параметры сервиса, не устанавливает и не запускает его.</p><button id="managedProbeButton">Обновить состояние</button><div id="managedDialogBody"></div></dialog><dialog id="componentDialog" aria-labelledby="componentDialogTitle"><div class="dialog-heading"><h2 id="componentDialogTitle"></h2><button id="componentDialogClose" class="icon-button" aria-label="Закрыть настройки">×</button></div><p id="componentDialogDiagnostic" role="status" aria-live="polite"></p><div id="componentDialogBody"></div><div class="actions"><button id="componentDiscard">Отменить черновик подключения</button></div><p id="componentDialogStatus" role="status" aria-live="polite"></p></dialog><dialog id="componentCloseConfirm" aria-labelledby="componentCloseTitle"><h2 id="componentCloseTitle">Есть несохранённые изменения</h2><p>Черновик останется в форме, если закрыть настройки.</p><div class="actions"><button id="componentCloseStay">Продолжить редактирование</button><button id="componentCloseKeep">Закрыть и оставить черновик</button></div></dialog>
+<dialog id="testingDialog" aria-labelledby="testingDialogTitle"><div class="dialog-heading"><h2 id="testingDialogTitle"></h2><button id="testingDialogClose" class="icon-button" aria-label="Закрыть настройки">×</button></div><p id="testingDialogStatus" role="status" aria-live="polite"></p><p>Поля компонента и YAML используют текущий черновик документа. Проверка изменений покажет все правки этого документа перед сохранением. Проверка компонента использует сохранённый профиль и не запускает тесты.</p><button id="testingProbeButton">Обновить состояние</button><div id="testingDialogBody"></div></dialog>
 <dialog id="editorSwitchDialog" aria-labelledby="editorSwitchTitle"><h2 id="editorSwitchTitle">Есть несохранённые изменения</h2><p>Перед сменой профиля сохраните или отмените изменения текущего документа.</p><div class="actions"><button id="editorSwitchSave">Проверить и сохранить</button><button id="editorSwitchDiscard">Отменить изменения</button><button id="editorSwitchStay">Остаться</button></div></dialog>
 <div id="unsavedHint" class="notice-box" hidden>Есть несохранённые изменения. Автообновление не меняет введённые значения.<div class="actions"><button id="discardDraftButton"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Отменить изменения</button></div></div>
 
@@ -174,6 +174,7 @@ const snapshotRevisions=new WeakMap();
 const treeErrors=new Map(),fieldOpen=new Map(),pendingFieldInputs=new Set();let jsonInputs=[],jsonRows=new Map(),fieldDetails=[],fieldsRenderRevision=0,fieldsPatchPending=false,fieldPatchQueue=Promise.resolve();
 const updateResults=new Map();
 const componentObservations=new Map();
+let componentRefresh=null,componentRefreshQueue=[],loadedStatusScope=null;
 const selectedVersions=new Map();
 const versionCatalogs=new Map();let versionOpen=false,versionLimit=50,versionIndex=-1,visibleVersions=[];
 const versionField=component=>component==="bsl-ls"?"bslLsVersion":"codeIndexVersion";
@@ -404,7 +405,7 @@ function catalogItems(current){
       if(isLocal&&local.draft){detail="Проверены несохранённые значения. "+detail;if(state==="ready")state="draft_verified";}
     }
     const required=componentRequired(item.id,current);
-    if(checking&&(activeOperation.action!=="probe"||activeOperation.component===item.id||!activeOperation.component&&item.kind==="external")&&state!=="disabled"&&state!=="missing_config")state="checking";
+    if(checking&&(activeOperation.action==="check"||!activeOperation.component||activeOperation.component===item.id)&&state!=="disabled"&&state!=="missing_config")state="checking";
     return {...item,state,detail,version,required,issue:state==="disabled"?required:state!=="ready"};
   });
 }
@@ -421,9 +422,9 @@ function renderDialogStates(){
 }
 function observeComponentResult(result,operation){
   if(!operationMatchesProfile(operation)||result.superseded)return;
-  const component=operation.action==="probe"?operation.component||result.component:null;
+  const component=["probe","refresh_readiness"].includes(operation.action)?operation.component||result.component:null;
   const checks=result.componentChecks||[...(result.managed||[]).map(item=>({id:item.name,state:item.state==="disabled"?"disabled":item.ready===true?"ready":item.state||"error",detail:item.detail})),...Object.entries(result.external||{}).map(([id,item])=>({id,state:item.ready===true?"ready":item.configured===false?"missing_config":item.connected?"not_verified":"error",detail:item.detail}))];
-  for(const check of checks.filter(check=>!component||check.id===component))componentObservations.set(check.id,{root:operation.projectRoot,instance:operation.instance,revision:operation.probeInputs?operation.probeInputs.revision:currentData?.settingsRevision,signature:operation.probeInputs?operation.probeInputs.signature:componentInputSignature(check.id),draft:result.draft,setup:Boolean(result.readiness),check:{...check,checkedAt:check.checkedAt||result.readiness?.checkedAt||operation.completedAt||new Date().toISOString(),expiresAt:check.expiresAt||result.readiness?.expiresAt||new Date(Date.now()+15*60*1000).toISOString()}});
+  for(const check of checks.filter(check=>!component||check.id===component)){const inputs=operation.componentInputs?.[check.id]||operation.probeInputs;componentObservations.set(check.id,{root:operation.projectRoot,instance:operation.instance,revision:inputs?inputs.revision:currentData?.settingsRevision,signature:inputs?inputs.signature:componentInputSignature(check.id),draft:result.draft,setup:Boolean(result.readiness),check:{...check,checkedAt:check.checkedAt||result.readiness?.checkedAt||operation.completedAt||new Date().toISOString(),expiresAt:check.expiresAt||result.readiness?.expiresAt||new Date(Date.now()+15*60*1000).toISOString()}});}
   renderComponentCatalog(currentData);renderDialogStates();
 }
 function renderComponentCatalog(current){
@@ -446,7 +447,7 @@ function renderComponentCatalog(current){
 }
 $("componentsAll").onclick=()=>{componentFilter="all";renderComponentCatalog(currentData);};
 $("componentsIssues").onclick=()=>{componentFilter="issues";renderComponentCatalog(currentData);};
-function openManagedDialog(item,trigger){if($("managedDialog").open)return;const otherFields=item.id==="code-index"?["bslLsEnabled","bslLsJava"]:["codeIndexEnabled"];if(otherFields.some(field=>dirtyFields.has(field))){notice("Сохраните или отмените черновик другого компонента перед открытием настроек.",true);return;}managedDialogTrigger=trigger;$("codeIndexChoice").hidden=item.id!=="code-index";$("bslLsChoice").hidden=item.id!=="bsl-ls";$("javaSettingsPanel").hidden=item.id!=="bsl-ls";$("managedDialogTitle").textContent=item.name;managedComponent=item.id;$("managedDialogBody").append($("managedControls"));$("connections").snapshotSignature=null;renderServiceSnapshot(currentData);renderDialogStates();$("updateComponent").value=item.id;renderVersion();renderUpdates();$("managedDialog").showModal();syncControls();$(item.id==="code-index"?"codeIndexEnabled":"bslLsEnabled").focus();if(connected&&!currentData?.viewOnly)loadVersions(item.id);}
+function openManagedDialog(item,trigger){if($("managedDialog").open)return;const otherFields=item.id==="code-index"?["bslLsEnabled","bslLsJava"]:["codeIndexEnabled"];if(otherFields.some(field=>dirtyFields.has(field))){notice("Сохраните или отмените черновик другого компонента перед открытием настроек.",true);return;}managedDialogTrigger=trigger;$("codeIndexChoice").hidden=item.id!=="code-index";$("bslLsChoice").hidden=item.id!=="bsl-ls";$("javaSettingsPanel").hidden=item.id!=="bsl-ls";$("managedDialogTitle").textContent=item.name;managedComponent=item.id;$("managedDialogBody").append($("managedControls"));$("connections").snapshotSignature=null;renderServiceSnapshot(currentData);renderDialogStates();$("updateComponent").value=item.id;renderVersion();renderUpdates();$("managedDialog").showModal();syncControls();$(item.id==="code-index"?"codeIndexEnabled":"bslLsEnabled").focus();queueComponentRefresh(item.id);if(connected&&!currentData?.viewOnly)loadVersions(item.id);}
 function requestManagedClose(){if(componentFields.some(field=>dirtyFields.has(field))||dirtyFields.has("bslLsJava")){$("managedCloseConfirm").showModal();return;}$("managedDialog").close();}
 $("managedDialogClose").onclick=requestManagedClose;$("managedDialog").addEventListener("cancel",event=>{event.preventDefault();requestManagedClose();});$("managedDialog").addEventListener("click",event=>{if(event.target!==$("managedDialog"))return;const box=$("managedDialog").getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)requestManagedClose();});
 $("managedCloseStay").onclick=()=>$("managedCloseConfirm").close();$("managedCloseKeep").onclick=()=>{$("managedCloseConfirm").close();$("managedDialog").close();};
@@ -456,6 +457,7 @@ async function openTestingSettings(id,trigger){
   if($("testingDialog").open)return;
   testingComponent=id;testingDialogTrigger=trigger;testingEditorMode=$("editorMode").value;pendingEditorTarget=id;fieldOpen.set("section:Тестирование",true);
   $("testingDialogTitle").textContent=id==="yaxunit"?"YaXUnit":"Vanessa";$("testingDialogBody").append($("editorControls"));$("testingDialog").showModal();renderDialogStates();
+  queueComponentRefresh(id);
   $("editorMode").value="tree";if(!$("settingsText").value)await loadEditor();else renderJsonEditor();syncControls();
 }
 $("testingDialogClose").onclick=()=>$("testingDialog").close();
@@ -466,7 +468,7 @@ function openConnectionDialog(item,trigger){
   dialogComponent=item.id;componentDialogTrigger=trigger;
   for(const name of ["edt","v8std","openviking"])$(name+"Field").hidden=name!==item.id;
   $("openvikingAdvanced").hidden=item.id!=="openviking";$("knowledgeSummary").hidden=item.id!=="openviking"||!currentData?.knowledge;
-  $("componentDialogTitle").textContent=item.name;$("componentDialogStatus").textContent="";renderDialogStates();$("componentDialogBody").append($("connectionSettings"));$("componentDialog").showModal();$(item.id+"Url").focus();
+  $("componentDialogTitle").textContent=item.name;$("componentDialogStatus").textContent="";renderDialogStates();$("componentDialogBody").append($("connectionSettings"));$("componentDialog").showModal();$(item.id+"Url").focus();queueComponentRefresh(item.id);
 }
 function requestComponentClose(){if(connectionFields.some(field=>dirtyFields.has(field))||ovRecordDirty){$("componentCloseConfirm").showModal();return;}$("componentDialog").close();}
 $("componentDialogClose").onclick=requestComponentClose;
@@ -490,7 +492,7 @@ function renderSummary(current){
     $(field).textContent=componentStateLabel(id,item?.state||(enabled===false?"disabled":"not_checked"));
     $(field).title=item?.checkedAt?"Последняя проверка: "+new Date(item.checkedAt).toLocaleString("ru-RU")+(item.detail?". "+userMessage(item.detail):""):item?.detail?userMessage(item.detail):"";
   }
-  $("autoRefreshState").textContent=summary?.observedAt?"Автообновление · "+new Date(summary.observedAt).toLocaleTimeString("ru-RU")+" · готовность — по последней проверке":"Автообновление каждые 8 секунд · без запуска сервисов";
+  $("autoRefreshState").textContent="Автообновление каждую минуту · без запуска сервисов"+(summary?.observedAt?" · "+new Date(summary.observedAt).toLocaleTimeString("ru-RU"):"");
 }
 function renderReadiness(){
   const current=currentData,result=current?.readiness,draft=Boolean(dirtyFields.size||hasProfileDraft()),checking=activeOperation?.status==="running"&&["check","refresh_readiness"].includes(activeOperation.action),loaded=current?.profile?.status==="loaded",requiredIssues=loaded?catalogItems(current).filter(item=>item.required&&item.issue):[],knownIssues=requiredIssues.filter(item=>["disabled","missing_config","error","missing","missing_project","mismatch","stopped"].includes(item.state)),fresh=loaded&&["ready","blocked"].includes(result?.state)&&Number.isFinite(Date.parse(result?.checkedAt))&&(!result.expiresAt||Date.now()<Date.parse(result.expiresAt)),otherIssues=fresh?(result.checks||[]).filter(item=>!["ready","disabled"].includes(item.state)&&!catalogDefinitions.some(component=>component.id===item.id)):[],state=draft?"draft":result?.state==="ready"&&!fresh?"not_checked":knownIssues.length||otherIssues.length?"blocked":checking?"checking":result?.state==="ready"&&requiredIssues.length?"blocked":result?.state||"not_checked";
@@ -577,6 +579,7 @@ function renderCurrent(current,{preserveDraft=false}={}){
   if(!projects.length){const row=document.createElement("tr"),cell=document.createElement("td");cell.setAttribute("colspan","3");cell.textContent=profileContext?.edt?.projectCount===null?"Не удалось проверить файлы .project.":"EDT-проекты с файлом .project не найдены.";row.append(cell);$("profileEdtProjects").append(row);}
   $("profileGitRoot").textContent=profileContext?.git?.status==="detected"?"Git-репозиторий каталога профиля: "+profileContext.git.root:profileContext?.git?.status==="not_repository"?"Каталог профиля не находится в Git-репозитории.":"Git-репозиторий каталога профиля не определён. Подробнее — в сведениях об EDT и Git.";
   renderHistory(current);renderSummary(current);renderServiceSnapshot(current);renderComponentCatalog(current);renderSettingSources(current);renderDestinations();syncControls();renderDialogStates();maybeLoadOvRecord();
+  const statusScope=componentRefreshScope(current);if(statusScope!==loadedStatusScope){loadedStatusScope=statusScope;if(statusScope)queueComponentRefresh();}
 }
 const scopeNames={project_local:"локальных настройках проекта",profile:"профиле проекта",global:"общих настройках"};
 const scopeGenitive={project_local:"локальных настроек проекта",profile:"профиля проекта",global:"общих настроек"};
@@ -638,15 +641,41 @@ async function selectProfile(projectRoot){
   return busy("Открываем профиль…",async()=>{const current=await openSelectedProfile(projectRoot);if(current.profile?.status!=="loaded"){notice((current.profile?.status==="missing"?"Профиль не найден в выбранном каталоге.":"Профиль требует исправления.")+(current.profile?.detail?" "+current.profile.detail:""),true);return;}notice(current.viewOnly?"Открыт просмотр профиля. Каталог текущего чата сохранён.":"Профиль выбран. Настройки относятся к этому каталогу и экземпляру.");}).catch(()=>{});
 }
 async function openSelectedProfile(projectRoot){viewRevision++;const revision=chatInputRevision,current=await tool("settings.select_profile",{projectRoot});if(navigationMode==="project"&&revision!==chatInputRevision)throw new Error("Каталог чата изменился. Выберите профиль заново.");renderSelectedProfile(current);return current;}
-function renderSelectedProfile(current){viewRevision++;dirtyFields.clear();invalidate();renderCurrent(current);show(current.profile?.status==="loaded"?"check":"profile");if(!$("profileError").hidden)$("profileError").open=true;$("directoryChooser").open=false;if(profilesOpen)closeProfiles();scheduleStatus();}
+function renderSelectedProfile(current){viewRevision++;dirtyFields.clear();invalidate();loadedStatusScope=null;renderCurrent(current);show(current.profile?.status==="loaded"?"check":"profile");if(!$("profileError").hidden)$("profileError").open=true;$("directoryChooser").open=false;if(profilesOpen)closeProfiles();scheduleStatus();}
 function operationMatchesProfile(operation){return operation.projectRoot===currentData?.values?.projectRoot&&operation.instance===currentData?.instance;}
-function scheduleStatus(){if(statusTimer)clearTimeout(statusTimer);statusTimer=null;if(!disposed&&connected&&!document.hidden)statusTimer=setTimeout(refreshStatus,8000);}
+function componentRefreshScope(current=currentData){return current?.profile?.status==="loaded"&&!current.viewOnly&&current.preparationScope?JSON.stringify([current.values?.projectRoot,current.instance]):null;}
+function queueComponentRefresh(component=null){
+  const key=componentRefreshScope();if(!key||!connected||disposed||standalone||pendingScope||dirtyFields.has("projectRoot"))return Promise.resolve(false);
+  const covered=[componentRefresh,...componentRefreshQueue].find(item=>item&&item.key===key&&(!item.component||item.component===component));if(covered)return covered.promise;
+  let resolve;const promise=new Promise(done=>{resolve=done;});componentRefreshQueue.push({key,component,promise,resolve,scope:currentData.preparationScope,projectRoot:currentData.values.projectRoot,instance:currentData.instance});
+  Promise.resolve().then(runComponentRefresh);return promise;
+}
+function finishComponentRefresh(success,task=componentRefresh){if(!task||componentRefresh!==task)return;componentRefresh=null;task.resolve(success);Promise.resolve().then(runComponentRefresh);}
+function failComponentRefresh(task,error){
+  if(componentRefresh!==task)return;
+  if(!disposed&&operationMatchesProfile(task)){observeComponentResult({componentChecks:Object.keys(task.componentInputs).map(id=>({id,state:"error",detail:error.message}))},{...task,action:"refresh_readiness"});$("autoRefreshState").textContent="Не удалось обновить состояние · "+userMessage(error.message);}
+  activeOperation={...activeOperation,status:"failed"};finishComponentRefresh(false,task);
+}
+async function runComponentRefresh(){
+  if(disposed||document.hidden||initializing||busyActive||statusPolling||fieldsPatchPending||polling)return;
+  if(componentRefresh){const task=componentRefresh;if(task.operationId&&!checkTimer)pollOperation(task.operationId).catch(error=>failComponentRefresh(task,error));return;}
+  if(!componentRefreshQueue.length)return;
+  if(activeOperation?.status==="running"){if(!checkTimer)pollOperation(activeOperation.id).catch(()=>{});return;}
+  let task;while(componentRefreshQueue.length){task=componentRefreshQueue.shift();if(task.key===componentRefreshScope())break;task.resolve(false);task=null;}if(!task)return;
+  componentRefresh=task;
+  task.componentInputs=Object.fromEntries(catalogDefinitions.filter(item=>!task.component||item.id===task.component).map(item=>[item.id,{revision:currentData.settingsRevision,signature:componentInputSignature(item.id)}]));
+  activeOperation={action:"refresh_readiness",status:"running",component:task.component,projectRoot:task.projectRoot,instance:task.instance};syncControls();
+  try{const operation=await tool("settings.refresh_readiness",{scope:task.scope,...(task.component?{component:task.component}:{})});task.operationId=operation.id;activeOperation=operation;await pollOperation(operation.id,null,operation.status==="running"?null:operation);}
+  catch(error){failComponentRefresh(task,error);}
+  finally{if(!disposed)syncControls();}
+}
+function scheduleStatus(){if(statusTimer)clearTimeout(statusTimer);statusTimer=null;if(!disposed&&connected&&!document.hidden)statusTimer=setTimeout(refreshStatus,60000);}
 async function refreshStatus(){
   if(statusTimer)clearTimeout(statusTimer);statusTimer=null;if(disposed||document.hidden)return;if(statusPolling||busyActive||initializing){scheduleStatus();return;}
   statusPolling=true;const revision=viewRevision;
-  try{if(navigationMode==="project"&&currentData?.viewOnly&&entryProjectRoot&&confirmedInputRevision!==chatInputRevision){const chat=await tool("settings.read");if(disposed||revision!==viewRevision||busyActive)return false;acceptChatSnapshot(chat);}const current=await tool("settings.status",currentData?.viewOnly?{projectRoot:currentData.values.projectRoot}:{});if(disposed||revision!==viewRevision||busyActive)return false;renderCurrent(current,{preserveDraft:true});if(activeMode==="support")await loadDiagnostics();if(current.operation?.status==="running"&&!polling&&!checkTimer)await pollOperation(current.operation.id);return true;}
+  try{if(navigationMode==="project"&&currentData?.viewOnly&&entryProjectRoot&&confirmedInputRevision!==chatInputRevision){const chat=await tool("settings.read");if(disposed||revision!==viewRevision||busyActive)return false;acceptChatSnapshot(chat);}const current=await tool("settings.status",currentData?.viewOnly?{projectRoot:currentData.values.projectRoot}:{});if(disposed||revision!==viewRevision||busyActive)return false;renderCurrent(current,{preserveDraft:true});queueComponentRefresh();if(activeMode==="support")await loadDiagnostics();if(current.operation?.status==="running"&&!polling&&!checkTimer)await pollOperation(current.operation.id);return true;}
   catch{if(!disposed&&revision===viewRevision&&!busyActive)$("autoRefreshState").textContent="Нет свежих данных · повторим автоматически";return false;}
-  finally{statusPolling=false;scheduleStatus();}
+  finally{statusPolling=false;scheduleStatus();runComponentRefresh();}
 }
 function syncControls(){
   if(standalone){for(const control of document.querySelectorAll("button,input,textarea,select"))control.disabled=!(control.id||"").endsWith("Tab")&&!control.versionOption&&!["componentsAll","componentsIssues","updateComponent","versionButton","versionSearch","moreVersionsButton"].includes(control.id);return;}
@@ -716,7 +745,7 @@ function syncControls(){
 async function busy(label,action,scope=null){
   if(pendingScope){notice("Отмените черновик перед переходом к изменившемуся профилю.",true);return;}if(busyActive||fieldsPatchPending)return;interacted=true;viewRevision++;busyActive=true;syncControls();notice(label,false,scope);
   try{return await action();}catch(error){if(scope?.action==="probe"&&scope.component)observeComponentResult({componentChecks:[{id:scope.component,state:"error",detail:error.message}]},scope);notice(error.message,true,scope);throw error;}
-  finally{busyActive=false;syncControls();scheduleStatus();resize();}
+  finally{busyActive=false;syncControls();scheduleStatus();runComponentRefresh();resize();}
 }
 function invalidate(){inputRevision++;lastPreview=null;$("preview").hidden=true;}
 function editorChanged(){return fieldsPatchPending||Boolean(pendingFieldInputs.size)||Boolean(treeErrors.size)||$("settingsText").value!==editorOriginal;}
@@ -961,7 +990,7 @@ $("openViewDirectoryButton").onclick=()=>selectProfile($("viewDirectoryPath").va
 $("viewDirectoryPath").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();selectProfile($("viewDirectoryPath").value.trim());}});
 $("pickViewDirectoryButton").onclick=()=>{if(!confirmedChatRoot()){notice("Сначала определите каталог текущего чата.",true);return;}if(hasProfileDraft()){notice("Сохраните изменения или отмените их перед выбором другого профиля.",true);return;}return busy("Выберите папку для просмотра…",async()=>{viewPickerRevision=chatInputRevision;const operation=await tool("settings.pick_view_directory");activeOperation=operation;await pollOperation(operation.id);}).catch(()=>{viewPickerRevision=null;});};
 $("refreshButton").onclick=async()=>{interacted=true;await refreshStatus();};
-$("headerRefresh").onclick=async()=>{interacted=true;await refreshStatus();};
+$("headerRefresh").onclick=async()=>{interacted=true;if(await refreshStatus())await queueComponentRefresh();};
 $("headerStatus").onclick=()=>{componentFilter="issues";show("check");renderComponentCatalog(currentData);$("readinessDetails").open=true;};
 $("resolveChatButton").onclick=()=>busy("Запрашиваем проект текущего чата…",async()=>{await rpc("ui/message",{role:"user",content:[{type:"text",text:"Открой настройки 1C AI Core для проекта этого чата. Используй каталог текущего чата, не выбирай другой профиль из истории."}]});notice("Запрос отправлен в текущий чат. Настройки откроются с каталогом проекта.");}).catch(()=>{});
 $("historySearch").addEventListener("input",()=>{interacted=true;if(currentData){renderHistory(currentData);syncControls();}});
@@ -1049,7 +1078,7 @@ for(const key of tabs){
   });
 }
 for(const[action,button]of [["create","createButton"],["load","loadButton"]])$(button).onclick=()=>busy(action==="create"?"Создаём профиль…":"Загружаем профиль…",async()=>{
-  const result=await tool("settings."+action,{projectRoot:$("projectRoot").value.trim()});await refresh();
+  const result=await tool("settings."+action,{projectRoot:$("projectRoot").value.trim()});await refresh();queueComponentRefresh();
   const messages=[action==="create"?"Профиль создан. Настройте репозитории в редакторе профиля.":"Профиль загружен."];
   if(action==="create"){
     const instructions=result.projectInstructions;
@@ -1261,13 +1290,14 @@ $("exportLogButton").onclick=async()=>{
 $("openDiagnosticsButton").onclick=async()=>{
   try{await tool("settings.open_diagnostics_directory");notice("Папка с диагностическим файлом открыта.");}catch(error){notice(error.message,true);}
 };
-async function pollOperation(operationId,probeScope=null){
+async function pollOperation(operationId,probeScope=null,initialOperation=null){
   if(polling||disposed)return;polling=true;
+  let operation,pollFailed=false;
   try{
-    if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}const operation=await tool("settings.operation",{...(operationId?{operationId}:{}),waitMs:1000});if(disposed)return;if(operation.action==="probe"){if(!operation.component&&activeOperation?.id===operation.id)operation.component=activeOperation.component;if(probeScope?.component===operation.component)operation.probeInputs=probeScope.probeInputs;}activeOperation=operation;
-    if(operation.status==="running"){notice(["pick_directory","pick_view_directory"].includes(operation.action)?"Открыт системный выбор папки. Выберите папку или нажмите «Отмена» в этом окне. После закрытия выбор обновится автоматически.":"Операция выполняется · "+(operation.projectRoot||"без папки")+" · "+operation.instance+". Ожидаем результат.",false,operation);checkTimer=setTimeout(()=>pollOperation(operation.id,probeScope).catch(error=>notice(error.message,true,operation)),1000);return;}
+    if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}operation=initialOperation||await tool("settings.operation",{...(operationId?{operationId}:{}),waitMs:1000});if(disposed)return;if(componentRefresh?.operationId===operation.id)operation.componentInputs=componentRefresh.componentInputs;if(operation.action==="probe"){if(!operation.component&&activeOperation?.id===operation.id)operation.component=activeOperation.component;if(probeScope?.component===operation.component)operation.probeInputs=probeScope.probeInputs;}activeOperation=operation;
+    if(operation.status==="running"){if(operation.action!=="refresh_readiness")notice(["pick_directory","pick_view_directory"].includes(operation.action)?"Открыт системный выбор папки. Выберите папку или нажмите «Отмена» в этом окне. После закрытия выбор обновится автоматически.":"Операция выполняется · "+(operation.projectRoot||"без папки")+" · "+operation.instance+". Ожидаем результат.",false,operation);checkTimer=setTimeout(()=>pollOperation(operation.id,probeScope).catch(error=>{if(componentRefresh?.operationId===operation.id)failComponentRefresh(componentRefresh,error);else notice(error.message,true,operation);}),1000);return;}
     if(operation.status==="idle"){notice("В этом сеансе ещё нет операций.");return;}
-    if(operation.status!=="completed"){if(operation.action==="probe"&&operation.component)observeComponentResult({componentChecks:[{id:operation.component,state:"error",detail:operation.error}]},operation);if(["pick_java","check_java"].includes(operation.action)&&operationMatchesProfile(operation))$("javaResult").textContent="Ошибка Java: "+userMessage(operation.error);notice(userMessage(operation.error)+(operation.status==="outcome_unknown"?" Проверьте сохранённые настройки и состояние сервисов перед повтором.":""),true,operation);return;}
+    if(operation.status!=="completed"){if(["probe","refresh_readiness"].includes(operation.action))observeComponentResult({componentChecks:catalogDefinitions.filter(item=>!operation.component||item.id===operation.component).map(item=>({id:item.id,state:"error",detail:operation.error}))},operation);if(["pick_java","check_java"].includes(operation.action)&&operationMatchesProfile(operation))$("javaResult").textContent="Ошибка Java: "+userMessage(operation.error);if(operation.action!=="refresh_readiness")notice(userMessage(operation.error)+(operation.status==="outcome_unknown"?" Проверьте сохранённые настройки и состояние сервисов перед повтором.":""),true,operation);return;}
     if(operation.action==="pick_view_directory"){
       const pickerRevision=viewPickerRevision;viewPickerRevision=null;
       if(operation.result?.cancelled){notice("Выбор папки отменён.");return;}
@@ -1301,10 +1331,10 @@ async function pollOperation(operationId,probeScope=null){
       if(!operationMatchesProfile(operation)){notice("Обновление завершилось для другого профиля; его результат здесь не отображается.");return;}
       const data=operation.result;for(const item of data.components||[data]){updateResults.set(item.component,item);if(item.state==="applied"&&selectedVersions.get(item.component)===item.requested)selectedVersions.delete(item.component);if(item.state==="applied"&&item.requested==="latest"){const catalog=versionCatalogs.get(item.component)||{versions:[],expires:0};if(installAllowsPrerelease(item.component))catalog.latestPrerelease=item.release;else catalog.latest=item.release;versionCatalogs.set(item.component,catalog);}}renderUpdates();await refresh();notice("Операция обновления завершена.");return;
     }
-    if(operation.action==="probe"){
+    if(["probe","refresh_readiness"].includes(operation.action)){
       if(!operationMatchesProfile(operation)){notice("Проверка завершена для другого каталога или экземпляра. Результат не применяется к текущему профилю.");return;}
-      const result=operation.result;if(result.superseded){await refresh();notice("Настройки изменились во время проверки. Повторите проверку.",true,operation);return;}observeComponentResult(result,operation);
-      await refresh();renderDialogStates();notice(result.draft?"Проверены несохранённые значения; настройки не изменены.":"Проверка завершена. Результат показан в карточке компонента.",false,operation);return;
+      const result=operation.result;if(result.superseded){await refresh();if(operation.action==="probe")notice("Настройки изменились во время проверки. Повторите проверку.",true,operation);return;}observeComponentResult(result,operation);
+      if(operation.action==="probe"){await refresh();notice(result.draft?"Проверены несохранённые значения; настройки не изменены.":"Проверка завершена. Результат показан в карточке компонента.",false,operation);}else{renderSummary(currentData);renderServiceSnapshot(currentData);renderReadiness();}renderDialogStates();return;
     }
     if(!["check","refresh_readiness"].includes(operation.action)){
       if(operation.action==="pick_directory"&&operation.result?.cancelled){notice("Выбор папки отменён.");return;}
@@ -1314,9 +1344,9 @@ async function pollOperation(operationId,probeScope=null){
         renderSelectedProfile(await tool("settings.select_profile",{projectRoot}));
       }else{if(operation.action==="apply")invalidate();await refresh();}
       const text={load:"Профиль загружен.",create:"Профиль создан.",update:"Подключения сохранены.",apply:"Настройки импортированы.",pick_directory:"Папка выбрана."}[operation.action]||"Операция завершена.";
-      notice(text+" "+(operation.result?.sessionGuidance||currentData?.sessionGuidance||""));return;
+      notice(text+" "+(operation.result?.sessionGuidance||currentData?.sessionGuidance||""));if(["load","create"].includes(operation.action))queueComponentRefresh();return;
     }if(!operation.result?.superseded&&operationMatchesProfile(operation)){observeComponentResult(operation.result,operation);renderCheck(operation.result,operation);}await refresh();
-  }finally{polling=false;syncControls();resize();}
+  }catch(error){pollFailed=true;throw error;}finally{polling=false;if(componentRefresh&&operation&&componentRefresh.operationId===operation.id&&operation.status!=="running")finishComponentRefresh(operation.status==="completed");syncControls();if(!pollFailed)runComponentRefresh();resize();}
 }
 function icon(id){const svg=document.createElementNS("http://www.w3.org/2000/svg","svg"),use=document.createElementNS("http://www.w3.org/2000/svg","use");svg.setAttribute("class","icon");svg.setAttribute("aria-hidden","true");use.setAttribute("href","#i-"+id);svg.append(use);return svg;}
 function renderServiceSnapshot(current){
@@ -1326,10 +1356,11 @@ function renderServiceSnapshot(current){
   const catalog=catalogItems(current);
   const managed=current.summary.components.map(observed=>{
     const latest=catalog.find(item=>item.id===observed.id),item={...observed,status:latest?.state||observed.status,detail:latest?.detail||observed.detail};
-    const evidence=current.componentChecks?.find(check=>check.id===item.id)||checks.find(check=>check.id===item.id);
-    const repositories=item.checkedAt&&!["check_stale","not_checked","stopped"].includes(item.status)?evidence?.repositories:undefined;
-    return {name:item.id,state:item.status,ready:item.status==="ready"||item.status==="disabled",detail:item.detail||({running:"Процесс индекса работает; готовность индекса ещё не подтверждена.",stopped:"Процесс индекса не запущен.",not_checked:"Проверка компонента ещё не выполнена.",check_stale:"Повторите проверку готовности."}[item.status]),checkedAt:item.checkedAt,
-      repositories:Array.isArray(repositories)?repositories.filter(repo=>repo&&typeof repo==="object"):undefined};
+    const local=componentObservations.get(item.id),saved=current.componentChecks?.find(check=>check.id===item.id)||checks.find(check=>check.id===item.id);
+    const evidence=local&&local.root===current.values.projectRoot&&local.instance===current.instance&&(!saved||Date.parse(local.check.checkedAt)>Date.parse(saved.checkedAt))?local.check:saved;
+    const checkedAt=evidence?.checkedAt||item.checkedAt,repositories=checkedAt&&!["check_stale","not_checked","stopped"].includes(item.status)?evidence?.repositories:undefined;
+    return {name:item.id,state:item.status,ready:item.status==="ready"||item.status==="disabled",detail:item.detail||({running:"Процесс индекса работает; готовность индекса ещё не подтверждена.",stopped:"Процесс индекса не запущен.",not_checked:"Проверка компонента ещё не выполнена.",check_stale:"Повторите проверку готовности."}[item.status]),
+      checkedAt,repositories:Array.isArray(repositories)?repositories.filter(repo=>repo&&typeof repo==="object"):undefined};
   });
   const unchecked=readiness.state==="stale"?"check_stale":"not_checked";
   const policy=checks.find(item=>item.id==="policy");if(policy)managed.push({name:"policy",state:fresh?policy.state:unchecked,ready:fresh&&policy.state==="ready",detail:fresh?policy.detail:readiness.reason,checkedAt:readiness.checkedAt});
@@ -1383,7 +1414,7 @@ for(const [button,selected]of [["probeButton",()=>dialogComponent],["managedProb
 };
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(resize).observe(document.querySelector("main"));
 document.addEventListener("visibilitychange",()=>{if(document.hidden){if(statusTimer)clearTimeout(statusTimer);statusTimer=null;}else if(connected)refreshStatus();});
-window.addEventListener("pagehide",()=>{disposed=true;if(statusTimer)clearTimeout(statusTimer);if(checkTimer)clearTimeout(checkTimer);for(const item of waiting.values())clearTimeout(item.timer);waiting.clear();});
+window.addEventListener("pagehide",()=>{disposed=true;if(statusTimer)clearTimeout(statusTimer);if(checkTimer)clearTimeout(checkTimer);for(const item of waiting.values())clearTimeout(item.timer);waiting.clear();for(const task of componentRefreshQueue)task.resolve(false);componentRefreshQueue=[];if(componentRefresh)finishComponentRefresh(false);});
 window.addEventListener("beforeunload",event=>{if(dirtyFields.size||hasProfileDraft()){event.preventDefault();event.returnValue="";}});
 (async()=>{
   if(standalone){
@@ -1405,6 +1436,7 @@ window.addEventListener("beforeunload",event=>{if(dirtyFields.size||hasProfileDr
     initializing=false;
     await restoreRecentProfile();
     scheduleStatus();
+    runComponentRefresh();
     if(initialData)await openInitial();
     if(initialData?.mode!=="operation"&&current.operation?.status==="running")await pollOperation(current.operation.id);
   }catch(error){notice(error.message,true);resize();}

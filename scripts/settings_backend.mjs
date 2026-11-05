@@ -55,7 +55,7 @@ import {
   external_override_files,
   assert_settings_paths,
 } from "./project_context.mjs";
-import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
+import { managed_components, component_enabled, grant_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, index_repositories, repository_projects } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
 import { read_readiness, save_readiness, read_component_checks, save_component_checks, readiness_receipt_revision, readiness_fingerprint } from "./setup_readiness.mjs";
@@ -1008,6 +1008,7 @@ export class SettingsBackend {
         checks = Object.entries(result.external).map(([id, item]) => ({ id, state: item.ready === true ? "ready" : item.configured === false ? "missing_config" : item.connected ? "not_verified" : "error", detail: item.detail, repositories: item.repositories, expiresAt: item.readiness?.expiresAt }));
       }
       const draft = original !== stable(config);
+      if (request.collectOnly) return sanitize_setup_result({ ...result, component, componentChecks: checks, draft, projectRoot: root, instance: instance_name() });
       let superseded;
       const componentChecks = await operation_lock(this.STATE, () => {
         superseded = initialInputs !== readiness_fingerprint(this.STATE, this.effective(this.current()), project_profile(root));
@@ -1297,27 +1298,34 @@ export class SettingsBackend {
       grant_preparation(this.STATE, root, ["code-index"]);
       return action === "rebuild_index" ? runtime.rebuild_index(this.STATE, config, root, data, request.repository) : runtime.restart_index(this.STATE, config, root, data);
     }
-    if (action === "check" || action === "refresh_readiness") {
+    if (action === "refresh_readiness") {
+      const config = this.effective(this.current()), root = config.active_project;
+      if (!root || request.scope !== preparation_scope(root)) throw new ConfigError("Проверка относится к другой папке или экземпляру.");
+      const components = request.component ? [request.component] : ["edt", "v8std", "openviking", ...managed_components, "yaxunit", "vanessa"];
+      if (request.connections !== undefined) throw new ConfigError("Обновление состояния использует сохранённые настройки.");
+      const profile = project_profile(root), initialInputs = readiness_fingerprint(this.STATE, config, profile), initialReceipt = readiness_receipt_revision(this.STATE, root);
+      const results = await Promise.all(components.map(component => this.main({ action: "probe", component, collectOnly: true })));
+      let superseded;
+      const componentChecks = await operation_lock(this.STATE, () => {
+        superseded = initialReceipt !== readiness_receipt_revision(this.STATE, root) || initialInputs !== readiness_fingerprint(this.STATE, this.effective(this.current()), project_profile(root));
+        const checks = results.flatMap(item => item.componentChecks);
+        return superseded ? checks : save_component_checks(this.STATE, config, profile, checks);
+      });
+      return sanitize_setup_result({ projectRoot: root, instance: instance_name(), component: request.component,
+        componentChecks, managed: results.flatMap(item => item.managed || []),
+        external: Object.assign({}, ...results.map(item => item.external)),
+        draft: false, superseded });
+    }
+    if (action === "check") {
       const runtime = await import("./runtime.mjs"),
         policy = await import("./policy_runtime.mjs");
       const config = this.effective(this.current()),
         [root, data] = runtime.project(config.active_project, config, component_enabled(config, "code-index"));
-      const automatic = action === "refresh_readiness";
-      const initialRevision = automatic ? this.revision(config, profile_target(root)) : null;
-      const initialReceipt = automatic ? readiness_receipt_revision(this.STATE, root) : null;
-      const initialInputs = automatic ? readiness_fingerprint(this.STATE, config, data, undefined, { includeDaemonOwner: false }) : null;
-      if (automatic) {
-        if (request.scope !== preparation_scope(root)) throw new ConfigError("Проверка относится к другой папке или экземпляру.");
-      } else {
-        authorize_preparation(request, root);
-        grant_preparation(this.STATE, root, managed_components.filter(component => component_enabled(config, component)));
-      }
+      authorize_preparation(request, root);
+      grant_preparation(this.STATE, root, managed_components.filter(component => component_enabled(config, component)));
       const check_component = async component => {
         if (!component_enabled(config, component)) return { name: component, ready: true, state: "disabled", detail: "Компонент отключён; установка и запуск пропущены." };
         try {
-          // Opening a profile reuses the launch permission for this exact
-          // project and instance; it never grants one or installs a runtime.
-          if (automatic && component_settings(config, component).mode !== "external") require_preparation(this.STATE, root, component);
           const item = await runtime.smoke(
               this.STATE,
               config,
@@ -1327,7 +1335,7 @@ export class SettingsBackend {
               90,
               request.refresh === true,
               null,
-              !automatic,
+              true,
             ),
             ready = item.index_ready !== false;
           return {
@@ -1364,25 +1372,12 @@ export class SettingsBackend {
         };
       } };
       const { probe_connections } = await import("./setup_probe.mjs");
-      let managed, external;
-      if (automatic) {
-        // Independent observations run together; opening a profile must not
-        // wait for each managed process and then every external connection.
-        const [checks, probes] = await Promise.all([
-          Promise.all([...managed_components.map(check_component), check_policy()]),
-          probe_connections(config, root, data, this.STATE),
-        ]);
-        managed = checks; external = probes.external;
-      } else {
-        atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
-        const [components, policyResult, probes] = await Promise.all([
-          (async () => { const items = []; for (const component of managed_components) items.push(await check_component(component)); return items; })(),
-          check_policy(), probe_connections(config, root, data, this.STATE),
-        ]);
-        managed = [...components, policyResult]; external = probes.external;
-      }
-      if (automatic && (initialRevision !== this.revision(this.effective(this.current()), profile_target(root)) || initialReceipt !== readiness_receipt_revision(this.STATE, root) || initialInputs !== readiness_fingerprint(this.STATE, config, data, undefined, { includeDaemonOwner: false })))
-        return sanitize_setup_result({ managed, external, projectRoot: root, instance: instance_name(), superseded: true });
+      atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
+      const [components, policyResult, probes] = await Promise.all([
+        (async () => { const items = []; for (const component of managed_components) items.push(await check_component(component)); return items; })(),
+        check_policy(), probe_connections(config, root, data, this.STATE),
+      ]);
+      const managed = [...components, policyResult], external = probes.external;
       const readiness = save_readiness(this.STATE, config, data, managed, external);
       return sanitize_setup_result({
         managed,
