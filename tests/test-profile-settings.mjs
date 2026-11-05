@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture, environment, session, ROOT } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { dump, parse } from "../scripts/common.mjs";
+import { dump, load, parse } from "../scripts/common.mjs";
 import { profile_history } from "../scripts/profile_history.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
@@ -465,6 +465,31 @@ test("reset removes the local URL and restores profile inheritance", async t => 
   assert.equal(read.values.edtUrl,"http://localhost:18191/mcp");assert.equal(read.connectionSources.edt,"profile");
   assert.equal(read.values.v8stdUrl,"");assert.equal(read.values.bslLsEnabled,false);
   assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);
+});
+
+test("scoped updates remove overrides atomically and reject ambiguous or out-of-scope removals", async t => {
+  const f=fixture(t);environment(t,f.env);
+  f.profile.connections={edt:{url:"http://localhost:18191/mcp"}};f.save();
+  const backend=new SettingsBackend(),localFile=path.join(f.root,".ai/project.local.yaml");
+  await backend.main({action:"update",scope:"project_local",set:{edtUrl:"http://localhost:18192/mcp",bslLsEnabled:false}});
+  const before=fs.readFileSync(localFile),current=await backend.main({action:"read"});
+  for(const request of [
+    {set:{},unset:["edtUrl"]},
+    {scope:"project_local",set:{edtUrl:"http://localhost:18193/mcp"},unset:["edtUrl"]},
+    {scope:"project_local",set:{},unset:["edtUrl","edtUrl"]},
+    {scope:"project_local",set:{},unset:["projectRoot"]},
+    {scope:"global",set:{},unset:["edtUrl"]},
+    {scope:"project_local",set:{},unset:null},
+    {scope:"project_local",set:null,unset:["edtUrl"]},
+    {scope:"project_local",set:{},unset:["unknown"]},
+    {scope:"project_local",set:{},unset:["edtUrl"],expectedRevision:"outdated"},
+    {scope:"project_local",set:{}}
+  ]){await assert.rejects(backend.main({action:"update",...request}));assert.deepEqual(fs.readFileSync(localFile),before);}
+  await backend.main({action:"update",scope:"project_local",set:{bslLsEnabled:true},unset:["edtUrl"],expectedRevision:current.settingsRevision});
+  const restored=await backend.main({action:"read"});
+  assert.equal(restored.values.edtUrl,f.profile.connections.edt.url);assert.equal(restored.connectionSources.edt,"profile");
+  assert.equal(load(localFile).connections?.edt?.url,undefined);assert.equal(restored.values.bslLsEnabled,true);
+  await assert.rejects(backend.main({action:"update",scope:"project_local",set:{},unset:["bslLsEnabled"],expectedRevision:current.settingsRevision}),/изменились/);
 });
 
 test("malformed optional history metadata never blocks a valid profile", async t => {

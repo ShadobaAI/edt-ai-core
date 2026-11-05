@@ -198,9 +198,11 @@ const tools = [
   { name: "settings.rename_profile", title: "Переименовать профиль", description: "Change only project.id in the selected profile, with validation, a backup and a revision check.", inputSchema: { type: "object", properties: { projectId: { type: "string", minLength: 1 }, expectedRevision: { type: "string", minLength: 1 } }, required: ["projectId", "expectedRevision"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.open_directory", title: "Открыть папку проекта", description: "Open the selected project directory in the system file manager.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
-  { name: "settings.update", title: "Сохранить настройки", description: "Update changed plugin settings.",
+  { name: "settings.update", title: "Сохранить настройки", description: "Update changed plugin settings. With an explicit scope, unset removes the listed overrides and restores inheritance; set may be empty only when unset is nonempty.",
     inputSchema: { type: "object", required: ["set"], properties: { set: {
-      type: "object", properties: primitive, minProperties: 1, additionalProperties: false }, scope: { type: "string", enum: ["profile", "project_local", "global"] }, expectedRevision: { type: "string", minLength: 1 } }, additionalProperties: false },
+      type: "object", properties: primitive, additionalProperties: false },
+      unset: { type: "array", minItems: 1, maxItems: Object.keys(primitive).length - 1, uniqueItems: true, items: { type: "string", enum: Object.keys(primitive).filter(key => key !== "projectRoot") } },
+      scope: { type: "string", enum: ["profile", "project_local", "global"] }, expectedRevision: { type: "string", minLength: 1 } }, additionalProperties: false },
     outputSchema: { type: "object", required: ["values"], properties: { values: { type: "object" } } },
     annotations: annotations(false), _meta: shared },
   ...[["settings.import", "Открыть импорт"], ["settings.export", "Открыть экспорт"]].map(([name, title]) => ({

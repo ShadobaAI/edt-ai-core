@@ -622,13 +622,13 @@ export class SettingsBackend {
       ? process.env.EDT_AI_PROJECT_ROOT
       : null;
   }
-  async update_scoped(changes, scope, expectedRevision) {
+  async update_scoped(changes, scope, expectedRevision, unset = []) {
     if (!["profile", "project_local", "global"].includes(scope))
       throw new ConfigError("Неизвестная область сохранения.");
     const connectionFields = ["edtUrl", "v8stdUrl", "openvikingEnabled", "openvikingUrl", "openvikingTimeout", "openvikingMaxResponseBytes", "openvikingConnectionId"];
     const componentFields = ["codeIndexEnabled", "bslLsEnabled", "bslLsJava", "codeIndexVersion", "bslLsVersion"];
     const allowed = scope === "global" ? ["bslLsJava", "codeIndexVersion", "bslLsVersion"] : [...connectionFields, ...componentFields];
-    if (Object.keys(changes).some(key => !allowed.includes(key)))
+    if ([...Object.keys(changes), ...unset].some(key => !allowed.includes(key)))
       throw new ConfigError("Эти настройки нельзя сохранить в выбранную область.");
     return operation_lock(this.STATE, () => {
       const config = this.current(), root = config.active_project;
@@ -665,6 +665,22 @@ export class SettingsBackend {
           const name = key.startsWith("codeIndex") ? "code-index" : "bsl-ls";
           document.components = { ...document.components };
           document.components[name] = { ...document.components[name], [member]: value };
+        }
+      }
+      for (const key of unset) {
+        const member = FIELDS[key].at(-1);
+        if (scope === "global") {
+          let item = document;
+          for (const part of FIELDS[key].slice(0, -1)) item = item?.[part];
+          if (object(item)) delete item[member];
+        } else {
+          const section = connectionFields.includes(key) ? "connections" : "components";
+          const name = section === "connections" ? key.startsWith("openviking") ? "openviking" : key === "edtUrl" ? "edt" : "v8std"
+            : key.startsWith("codeIndex") ? "code-index" : "bsl-ls";
+          if (!document[section]?.[name]) continue;
+          document[section] = { ...document[section], [name]: { ...document[section][name] } };
+          delete document[section][name][member];
+          if (!Object.keys(document[section][name]).length) delete document[section][name];
         }
       }
       if (scope === "profile") merged_profile(root, document, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
@@ -1144,11 +1160,15 @@ export class SettingsBackend {
       });
     }
     if (action === "update") {
-      const changes = request.set || {};
+      const changes = request.set === undefined ? {} : request.set;
+      const unset = request.unset === undefined ? [] : request.unset;
       if (
         !object(changes) ||
-        !Object.keys(changes).length ||
-        Object.keys(changes).some((key) => !Object.hasOwn(FIELDS, key))
+        !Array.isArray(unset) ||
+        !Object.keys(changes).length && !unset.length ||
+        Object.keys(changes).some((key) => !Object.hasOwn(FIELDS, key)) ||
+        unset.some(key => typeof key !== "string" || !Object.hasOwn(FIELDS, key) || Object.hasOwn(changes, key)) ||
+        new Set(unset).size !== unset.length
       )
         throw new ConfigError("Некорректное изменение настроек.");
       for (const [key, value] of Object.entries(changes))
@@ -1158,7 +1178,8 @@ export class SettingsBackend {
             : "string")
         )
           throw new ConfigError("Некорректный тип настройки: " + key);
-      if (request.scope !== undefined) return this.update_scoped(changes, request.scope, request.expectedRevision);
+      if (request.scope !== undefined) return this.update_scoped(changes, request.scope, request.expectedRevision, unset);
+      if (unset.length) throw new ConfigError("Для удаления переопределения укажите область сохранения.");
       if (request.expectedRevision !== undefined) throw new ConfigError("Для проверки ревизии укажите область сохранения.");
       const selected = this.lockedRoot();
       if (
