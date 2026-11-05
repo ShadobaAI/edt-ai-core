@@ -74,14 +74,14 @@ test("addressed external probe contacts only its endpoint and preserves a full s
   assert.equal(result.componentChecks[0].state, "ready", JSON.stringify(result));
   assert.ok(requests.length > 0); assert.ok(requests.every(item => item.path === "/v8std"));
   let current = await backend.main({ action: "read" });
-  assert.deepEqual(current.readiness, setup); assert.equal(current.componentChecks[0].state, "ready");
-  const saved = current.componentChecks[0];
+  assert.deepEqual(current.readiness, setup); assert.equal(current.componentChecks.find(item=>item.id==="v8std").state, "ready");
+  const saved = current.componentChecks.find(item=>item.id==="v8std");
   const draft = await backend.main({ action: "probe", component: "v8std", connections: { v8std: "" } });
   assert.equal(draft.draft, true); assert.equal(draft.componentChecks[0].state, "missing_config");
-  current = await backend.main({ action: "read" }); assert.deepEqual(current.componentChecks[0], saved);
+  current = await backend.main({ action: "read" }); assert.deepEqual(current.componentChecks.find(item=>item.id==="v8std"), saved);
   const old = new Date(Date.now() - 16 * 60 * 1000).toISOString();
   save_component_checks(f.state, config, project_profile(f.root), [{ id: "v8std", state: "ready", checkedAt: old }]);
-  assert.equal(read_component_checks(f.state, config, project_profile(f.root))[0].state, "check_stale");
+  assert.equal(read_component_checks(f.state, config, project_profile(f.root)).find(item=>item.id==="v8std").state, "check_stale");
 });
 
 test("testing probes validate configured contours without claiming their runtime works", async t => {
@@ -237,7 +237,7 @@ test("profile status restores both managed checks and expires their scoped evide
   fs.rmSync(metadata);
   assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "code-index").status, "not_checked");
   f.profile.project.id = "changed"; f.save();
-  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "check_stale");
+  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "ready");
   managed[1] = { name: "bsl-ls", ready: false, state: "error", detail: "API unavailable" };
   save_readiness(f.state, config, project_profile(f.root), managed, {});
   const failed = (await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls");

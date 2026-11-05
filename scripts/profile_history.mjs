@@ -4,6 +4,7 @@ import { atomic_write } from "./common.mjs";
 import { profile_state } from "./profile.mjs";
 import { edt_project_count } from "./directory_context.mjs";
 import { is_dir, is_file, path_identity, project_directory, record_project_owner } from "./project_paths.mjs";
+import { read_component_checks } from "./setup_readiness.mjs";
 
 // User state survives plugin upgrades. Never scan unrelated project directories.
 export function remember_profile(state, root, profile) {
@@ -71,8 +72,13 @@ export function profile_history(state, selectedRoot = null) {
 // Passive observation only: no installation, preparation, process launch or MCP probe.
 export async function profile_summary(state, config, profile, readiness = {}, knowledge = null) {
   const root = config.active_project, components = [];
+  const bsl = root && profile.status === "loaded" ? read_component_checks(state, config, profile).find(item => item.id === "bsl-ls" && item.validity === "inputs") : null;
   for (const id of ["code-index", "bsl-ls"]) {
     const options = config.mcp.managed[id];
+    if (id === "bsl-ls" && bsl && options.enabled !== false && options.mode !== "external") {
+      components.push({ id, status: bsl.state, mode: options.mode || "auto", checkedAt: bsl.checkedAt, detail: bsl.detail });
+      continue;
+    }
     let observationDetail;
     let status = options.enabled === false ? "disabled" : options.mode === "external" ? "external" : "not_checked";
     if (id === "code-index" && status === "not_checked" && root && profile.status === "loaded") {

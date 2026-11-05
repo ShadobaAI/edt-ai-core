@@ -7,9 +7,44 @@ import { setup_knowledge_status, edt_project_building } from "./setup_probe.mjs"
 import { knowledge_evidence_revision } from "./components.mjs";
 import { verification_limits, sanitize_setup_result, register_diagnostic_secrets } from "./diagnostics.mjs";
 import { project_profile } from "./profile.mjs";
+import { which } from "./processes.mjs";
 
 const digest = file => is_file(file) ? sha256(fs.readFileSync(file)) : "missing";
 const receipt_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".readiness.json");
+const local_bsl = config => config.mcp.managed["bsl-ls"].mode !== "external";
+
+// Local API compatibility survives time passing and unrelated project changes.
+// Inspect launch inputs without executing Java or starting the language server.
+export function bsl_readiness_fingerprint(state, config) {
+  const options = config.mcp.managed["bsl-ls"];
+  const fileDigest = file => { try { return digest(file); } catch { return "unavailable"; } };
+  const executable = command => { try { const file = which(command); return file ? [fs.realpathSync.native(file), fileDigest(file)] : null; } catch { return "unavailable"; } };
+  let runtime = null;
+  try {
+    const entry = JSON.parse(fs.readFileSync(path.join(state, "runtime-lock.json"), "utf8"))["bsl-ls"];
+    if (entry) { const { candidate, previous, ...active } = entry; runtime = active; }
+  } catch {}
+  let jar = "missing";
+  try { if (runtime?.path) jar = digest(inside(state, runtime.path)); } catch { jar = "invalid"; }
+  let configuration = null;
+  try { if (options.configuration) configuration = fileDigest(path.isAbsolute(options.configuration) ? options.configuration : inside(config.active_project, options.configuration)); }
+  catch { configuration = "invalid"; }
+  return sha256(stable({ root: config.active_project, instance: instance_name(), options, runtime, jar,
+    java: executable(options.java || "java"), node: executable(options.node || process.execPath),
+    configuration,
+    javaOptions: ["JAVA_HOME", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"].map(name => process.env[name] || null),
+    adapter: fileDigest(inside(ROOT, "mcp/bsl-ls-proxy.mjs")) }));
+}
+
+function component_record(state, config, check, checkedAt, fingerprint) {
+  const { name, ready, ...result } = check;
+  const durable = check.id === "bsl-ls" && local_bsl(config) && ["ready", "error"].includes(check.state);
+  const observedAt = check.checkedAt || checkedAt;
+  const inputRevision = durable ? check.inputRevision || bsl_readiness_fingerprint(state, config) : null;
+  return { fingerprint: inputRevision || fingerprint, result: sanitize_setup_result({ ...result, checkedAt: observedAt,
+    ...(durable ? { validity: "inputs", inputRevision, expiresAt: null } : {
+      expiresAt: new Date(Math.min(Date.parse(observedAt) + 15 * 60 * 1000, Number.isFinite(Date.parse(check.expiresAt)) ? Date.parse(check.expiresAt) : Infinity)).toISOString() }) }) };
+}
 export const readiness_receipt_revision = (state, root) => digest(receipt_file(state, root));
 function passed(item, profile) {
   if (item.state === "ready") return true;
@@ -78,6 +113,9 @@ export function save_readiness(state, config, profile, managed, external) {
   const safe = sanitize_setup_result(result);
   const components = component_receipt(state, config.active_project).components || {};
   for (const id of [...managed.map(item => item.name), ...Object.keys(external)]) delete components[id];
+  const bsl = managed.find(item => item.name === "bsl-ls");
+  if (bsl && local_bsl(config) && ["ready", "error"].includes(bsl.state))
+    components["bsl-ls"] = component_record(state, config, { ...bsl, id: "bsl-ls" }, safe.checkedAt);
   atomic_write(receipt_file(state, config.active_project), JSON.stringify({ version: 3, fingerprint: readiness_fingerprint(state, config, profile, assets), result: safe, components }));
   return safe;
 }
@@ -93,19 +131,20 @@ function component_receipt(state, root) {
 }
 
 // Addressed observations share the setup receipt and its project/instance and
-// expiry rules, but never turn a partial check into full setup acceptance.
+// expiry rules, except local BSL LS compatibility which expires on input changes.
+// Partial checks never turn into full setup acceptance.
 export function save_component_checks(state, config, profile, checks) {
   register_diagnostic_secrets(config);
   const receipt = component_receipt(state, config.active_project), checkedAt = new Date().toISOString();
   const fingerprint = readiness_fingerprint(state, config, profile);
   receipt.version = 3; receipt.components ||= {};
   for (const check of checks) {
-    const observedAt = check.checkedAt || checkedAt;
-    receipt.components[check.id] = { fingerprint, result: sanitize_setup_result({ ...check, checkedAt: observedAt,
-      expiresAt: new Date(Math.min(Date.parse(observedAt) + 15 * 60 * 1000, Number.isFinite(Date.parse(check.expiresAt)) ? Date.parse(check.expiresAt) : Infinity)).toISOString() }) };
+    if (check.id === "bsl-ls" && local_bsl(config) && check.validity === "inputs" && check.state === "check_stale") continue;
+    receipt.components[check.id] = component_record(state, config, check, checkedAt, fingerprint);
   }
   atomic_write(receipt_file(state, config.active_project), JSON.stringify(receipt));
-  return checks.map(check => receipt.components[check.id].result);
+  return checks.map(check => check.id === "bsl-ls" && local_bsl(config) && check.validity === "inputs" && check.state === "check_stale"
+    ? sanitize_setup_result(check) : receipt.components[check.id].result);
 }
 
 export function read_component_checks(state, config, profile) {
@@ -113,10 +152,18 @@ export function read_component_checks(state, config, profile) {
   const entries = Object.values(component_receipt(state, config.active_project).components || {});
   if (!entries.length) return [];
   const fingerprint = readiness_fingerprint(state, config, profile.status ? project_profile(config.active_project) : profile);
+  const bslFingerprint = entries.some(entry => entry?.result?.id === "bsl-ls" && entry.result.validity === "inputs") && local_bsl(config)
+    ? bsl_readiness_fingerprint(state, config) : null;
   return entries.flatMap(entry => {
     if (!entry || typeof entry !== "object") return [];
     const { fingerprint: saved, result } = entry;
-    if (!result || typeof result.id !== "string" || typeof result.state !== "string" || !Number.isFinite(Date.parse(result.checkedAt)) || !Number.isFinite(Date.parse(result.expiresAt))) return [];
+    if (!result || typeof result.id !== "string" || typeof result.state !== "string" || !Number.isFinite(Date.parse(result.checkedAt))) return [];
+    if (result.id === "bsl-ls" && result.validity === "inputs" && bslFingerprint) {
+      const invalid = saved !== bslFingerprint || Date.now() < Date.parse(result.checkedAt);
+      return [{ ...result, expiresAt: null, inputRevision: bslFingerprint, ...(invalid ? { state: "check_stale", lastState: result.state,
+        detail: "Окружение или настройки BSL LS изменились. Повторите «Подготовить и проверить»." } : {}) }];
+    }
+    if (!Number.isFinite(Date.parse(result.expiresAt))) return [];
     return [{ ...result, ...(saved !== fingerprint || Date.now() < Date.parse(result.checkedAt) || Date.now() - Date.parse(result.checkedAt) > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt)
       ? { state: "check_stale", lastState: result.lastState || result.state, detail: saved === fingerprint && result.state === "check_stale" && result.detail ? result.detail : "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." } : {}) }];
   });

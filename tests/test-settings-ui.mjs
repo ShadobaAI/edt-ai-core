@@ -32,7 +32,8 @@ test("readiness preparation states its side effects before the user starts it", 
   const panel = html.match(/<div id="readinessPanel"[\s\S]*?<\/details><\/div>/)?.[0];
   assert.match(panel, /id="readinessButton">Подготовить и проверить/);
   assert.match(panel, /скачать компоненты и запустить включённые сервисы/);
-  assert.match(panel, /пассивного обновления состояния/);
+  assert.match(panel, /Для обновления состояния используйте кнопку в шапке/);
+  assert.match(html, /При изменении окружения подготовленного BSL LS Java запускается только на время проверки/);
 });
 
 test("the components tab starts with compact counters and filters without a repeated heading",()=>{
@@ -189,6 +190,24 @@ test("compact counters explain their composition and expose only relevant refres
   f.ui.elements.get("componentsIssues").onclick();assert.equal(f.ui.elements.get("countAll").textContent,"7");
   vm.runInContext('activeOperation.status="completed";componentObservations.get("v8std").check.expiresAt=new Date(Date.now()+60000).toISOString()',f.ui.context);
   f.ui.context.renderComponentCatalog(f.current);assert.equal(f.ui.elements.get("countCheckingGroup").hidden,true);assert.equal(f.ui.elements.get("countStaleGroup").hidden,true);
+});
+
+test("durable BSL checks ignore setup expiry and unrelated revisions but respect newer server input changes",async()=>{
+  const checkedAt=new Date(Date.now()-20*60000).toISOString(),proof={id:"bsl-ls",state:"ready",checkedAt,expiresAt:null,validity:"inputs",inputRevision:"basis-a"};
+  const current={...read,instance:"default",settingsRevision:"r1",values:{...read.values,bslLsEnabled:true},
+    readiness:{state:"stale",checkedAt,expiresAt:new Date(Date.now()-5*60000).toISOString(),checks:[{id:"bsl-ls",state:"ready"}]},
+    componentChecks:[proof],summary:{components:[{id:"bsl-ls",mode:"auto",status:"ready",checkedAt}]}};
+  const ui=screen(async name=>["settings.read","settings.status"].includes(name)?current:{versions:[]});await ui.flush();
+  const state=()=>ui.context.catalogItems(current).find(item=>item.id==="bsl-ls").state;
+  assert.equal(state(),"ready");
+  ui.context.observeComponentResult({managed:[{...proof,name:"bsl-ls",ready:true,checkedAt:new Date().toISOString()}],readiness:current.readiness},
+    {action:"check",projectRoot:current.values.projectRoot,instance:current.instance});
+  assert.equal(vm.runInContext('componentObservations.get("bsl-ls").check.expiresAt',ui.context),null);
+  current.settingsRevision="unrelated-change";ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(state(),"ready");
+  current.componentChecks=[{...proof,state:"check_stale",lastState:"ready",inputRevision:"basis-b",detail:"Окружение BSL LS изменилось"}];
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(state(),"check_stale");
+  current.readiness={...current.readiness,state:"ready",checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60000).toISOString()};
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(state(),"check_stale","newer full setup must not hide older independent BSL invalidation");
 });
 
 test("compact component cards retain the full diagnostic in their tooltip and dialog",async()=>{

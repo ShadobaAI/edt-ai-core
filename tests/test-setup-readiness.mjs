@@ -6,11 +6,14 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
+import { fileURLToPath } from "node:url";
 import { edt_fixture as fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { setup_assets, save_readiness, read_readiness, save_component_checks } from "../scripts/setup_readiness.mjs";
-import { instance_directory, project_directory } from "../scripts/project_paths.mjs";
+import { setup_assets, save_readiness, read_readiness, save_component_checks, read_component_checks } from "../scripts/setup_readiness.mjs";
+import { instance_directory, project_directory, sha256 } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
+import { zip } from "../scripts/archives.mjs";
+import { alive } from "../scripts/processes.mjs";
 
 async function ready_fixture(t) {
   const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready";const paths=[];
@@ -167,14 +170,14 @@ test("automatic readiness never prepares unapproved components or downloads miss
   grant_preparation(f.state,f.root,["code-index","bsl-ls"]);
   const file=path.join(instance_directory(f.state,f.root),"first.preparation.json"),before=fs.readFileSync(file);
   const missing=await backend.main({action:"refresh_readiness",scope});
-  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не запущен|не проверена/);}
+  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не запущен|не установлен/);}
   assert.deepEqual(fs.readFileSync(file),before);assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   process.env.EDT_AI_INSTANCE="another";
   const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.equal(other.managed.find(item=>item.name==="code-index").state,"stopped");
   assert.equal(download.mock.callCount(),0);
 });
 
-test("passive status refresh never probes Java or starts local services", async t => {
+test("status reads and missing prepared artifacts never probe Java or start local services", async t => {
   const {f,backend,count}=await ready_fixture(t);
   const config=backend.current();config.mcp.managed["bsl-ls"].java=process.execPath;
   fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
@@ -183,13 +186,126 @@ test("passive status refresh never probes Java or starts local services", async 
   const execute=t.mock.method(childProcess,"execFile",()=>{throw new Error("Unexpected Java probe");});
   const spawn=t.mock.method(childProcess,"spawn",()=>{throw new Error("Unexpected process launch");});
   syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  await backend.main({action:"status"});
   const calls=count(), result=await backend.main({action:"refresh_readiness",scope:f.root+"#first"});
   assert.ok(count()>calls);assert.equal(result.external.edt.ready,true);
-  assert.equal(result.componentChecks.find(item=>item.id==="bsl-ls").state,"not_verified");
+  assert.equal(result.componentChecks.find(item=>item.id==="bsl-ls").state,"error");
   assert.equal(execute.mock.callCount(),0);assert.equal(spawn.mock.callCount(),0);
 });
 
-test("passive managed probes preserve expired API evidence without renewing it or launching services", async t => {
+test("local BSL compatibility survives setup expiry and unrelated changes without launching Java", async t => {
+  const {f,backend,authorization}=await ready_fixture(t);
+  await backend.main({action:"update",set:{bslLsEnabled:true}});
+  const config=backend.effective(backend.current());
+  save_readiness(f.state,config,f.profile,[{name:"bsl-ls",state:"ready",ready:true}],{});
+  const saved=read_component_checks(f.state,config,f.profile).find(item=>item.id==="bsl-ls");
+  assert.equal(saved.validity,"inputs");assert.equal(saved.expiresAt,null);
+  const now=Date.now();t.mock.method(Date,"now",()=>now+20*60000);
+  const execute=t.mock.method(childProcess,"execFile",()=>{throw new Error("Unexpected Java probe");});
+  syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  f.profile.project.id="renamed";f.save();fs.writeFileSync(path.join(f.root,"src/Changed.bsl"),"// changed source");
+  await backend.main({action:"update",set:{v8stdUrl:""}});
+  for(let i=0;i<2;i++){
+    const result=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"}),check=result.componentChecks[0];
+    assert.equal(check.state,"ready");assert.equal(check.checkedAt,saved.checkedAt);assert.equal(check.expiresAt,null);
+    const current=await backend.main({action:"read"});assert.equal(current.readiness.state,"stale");
+    assert.equal(current.summary.components.find(item=>item.id==="bsl-ls").status,"ready");
+  }
+  const repeated=await backend.main({action:"check",authorization});
+  assert.equal(repeated.managed.find(item=>item.name==="bsl-ls").state,"ready");
+  assert.equal(repeated.managed.find(item=>item.name==="bsl-ls").checkedAt,saved.checkedAt);
+  assert.equal(execute.mock.callCount(),0);
+});
+
+test("first BSL preparation accepts its own installation, reuses unchanged API evidence and rejects input races", async t => {
+  const {f,backend,authorization}=await ready_fixture(t),configuration=path.join(f.root,"bsl.json");
+  fs.writeFileSync(configuration,"{}");
+  await backend.main({action:"update",set:{bslLsEnabled:true,bslLsJava:process.execPath}});
+  const config=backend.current();Object.assign(config.mcp.managed["bsl-ls"],{node:process.execPath,configuration});
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
+  const bytes=zip({"META-INF/MANIFEST.MF":Buffer.from("fixture")}),hash=sha256(bytes),fetch=globalThis.fetch;
+  t.mock.method(globalThis,"fetch",(url,options)=>{
+    if(String(url).startsWith("https://api.github.com/repos/1c-syntax/bsl-language-server/"))return Promise.resolve(new Response(JSON.stringify({tag_name:"v1.1.0",assets:[{
+      name:"bsl-language-server-1.1.0-exec.jar",size:bytes.length,digest:"sha256:"+hash,browser_download_url:"https://github.com/1c-syntax/bsl-language-server/releases/download/v1.1.0/server.jar"}]})));
+    if(String(url).startsWith("https://github.com/1c-syntax/bsl-language-server/releases/download/"))return Promise.resolve(new Response(bytes));
+    return fetch(url,options);
+  });
+  const originalSpawn=childProcess.spawn,proxy=fileURLToPath(new URL("../mcp/bsl-ls-proxy.mjs",import.meta.url)),preload=new URL("./fixtures/bsl-spawn.mjs",import.meta.url).href;
+  let launches=0,mutate=false;const pidFiles=[];
+  t.mock.method(childProcess,"spawn",(command,args,options)=>{
+    if(args[0]!==proxy)return originalSpawn(command,args,options);
+    const pidFile=path.join(f.base,"bsl-"+(++launches)+".pid");pidFiles.push(pidFile);
+    return originalSpawn(command,["--import",preload,...args],{...options,env:{...options.env,BSL_TEST_PID_FILE:pidFile}});
+  });
+  t.mock.method(childProcess,"execFile",(_command,_args,_options,callback)=>{
+    if(mutate)fs.writeFileSync(configuration,'{"changed":"during-check"}');
+    queueMicrotask(()=>callback(null,"",'java version "21"'));
+  });
+  syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
+  const first=await backend.main({action:"check",authorization}),bsl=first.managed.find(item=>item.name==="bsl-ls");
+  assert.equal(bsl.state,"ready",bsl.detail);assert.equal(bsl.ready,true);assert.equal(bsl.expiresAt,null);assert.equal(launches,1);
+  const second=await backend.main({action:"check",authorization});assert.equal(second.managed.find(item=>item.name==="bsl-ls").checkedAt,bsl.checkedAt);assert.equal(launches,1);
+  fs.writeFileSync(configuration,'{"changed":"before-check"}');mutate=true;
+  const changed=await backend.main({action:"check",authorization}),invalid=changed.managed.find(item=>item.name==="bsl-ls");
+  assert.equal(invalid.state,"check_stale");assert.equal(invalid.ready,false);assert.equal(launches,2);
+  mutate=false;
+  const refreshed=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
+  assert.equal(refreshed.componentChecks[0].state,"ready");assert.equal(refreshed.componentChecks[0].expiresAt,null);assert.equal(launches,3);
+  await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});assert.equal(launches,3,"unchanged inputs must not start another JVM");
+  fs.writeFileSync(configuration,'{"changed":"on-disk"}');
+  const refreshedAgain=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
+  assert.equal(refreshedAgain.componentChecks[0].state,"ready");assert.equal(launches,4,"invalidated inputs must be rechecked automatically");
+  fs.writeFileSync(configuration,'{"changed":"before-lock-contention"}');
+  const write=fs.writeFileSync;let lockWrites=0;
+  t.mock.method(fs,"writeFileSync",(file,...args)=>{
+    if(file===path.join(f.state,"operation.lock")&&++lockWrites===2)throw new Error("Another runtime operation holds fixture lock");
+    return write(file,...args);
+  });
+  const busy=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
+  assert.equal(busy.componentChecks[0].state,"preparing");assert.equal(busy.componentChecks[0].validity,undefined);assert.equal(launches,4);
+  const retry=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
+  assert.equal(retry.componentChecks[0].state,"ready");assert.equal(launches,5,"temporary lock contention must allow the next refresh to retry");
+  for(const file of pidFiles)assert.equal(alive(Number(fs.readFileSync(file,"utf8"))),false);
+});
+
+test("local BSL evidence follows its launch inputs and a passive refresh cannot rebase invalid evidence", async t => {
+  const {f,backend}=await ready_fixture(t);
+  const java=path.join(f.base,process.platform==="win32"?"java.exe":"java"),configuration=path.join(f.root,"bsl.json"),jar=path.join(f.state,"fixture.jar");
+  fs.writeFileSync(java,"java-a",{mode:0o755});fs.writeFileSync(configuration,"{}");fs.writeFileSync(jar,"jar-a");
+  await backend.main({action:"update",set:{bslLsEnabled:true,bslLsJava:java}});
+  const settings=backend.current();settings.mcp.managed["bsl-ls"].configuration=configuration;
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(settings));
+  const lock=path.join(f.state,"runtime-lock.json");fs.writeFileSync(lock,JSON.stringify({"bsl-ls":{path:"fixture.jar"}}));
+  const config=backend.effective(backend.current()),proof=save_component_checks(f.state,config,f.profile,[{id:"bsl-ls",state:"ready"}])[0];
+  const state=()=>read_component_checks(f.state,config,f.profile)[0].state;
+  for(const [file,changed,original]of [[jar,"jar-b","jar-a"],[java,"java-b","java-a"],[configuration,'{"changed":true}',"{}"]]){
+    fs.writeFileSync(file,changed);assert.equal(state(),"check_stale");fs.writeFileSync(file,original);assert.equal(state(),"ready");
+  }
+  fs.writeFileSync(lock,JSON.stringify({"bsl-ls":{path:"fixture.jar"},"code-index":{release:"changed"}}));assert.equal(state(),"ready");
+  config.mcp.managed["bsl-ls"].node="missing-node-fixture";assert.equal(state(),"check_stale");config.mcp.managed["bsl-ls"].node=settings.mcp.managed["bsl-ls"].node;
+  config.mcp.managed["bsl-ls"].configuration="../outside.json";assert.equal(state(),"check_stale");config.mcp.managed["bsl-ls"].configuration=configuration;
+  const oldOptions=process.env.JAVA_TOOL_OPTIONS;process.env.JAVA_TOOL_OPTIONS="-Dfixture=changed";assert.equal(state(),"check_stale");
+  if(oldOptions===undefined)delete process.env.JAVA_TOOL_OPTIONS;else process.env.JAVA_TOOL_OPTIONS=oldOptions;
+  fs.writeFileSync(configuration,'{"changed":true}');
+  const result=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
+  assert.equal(result.componentChecks[0].state,"check_stale");assert.equal(result.componentChecks[0].checkedAt,proof.checkedAt);
+  assert.equal(state(),"check_stale");fs.writeFileSync(configuration,"{}");assert.equal(state(),"ready");
+  process.env.EDT_AI_INSTANCE="another";assert.deepEqual(read_component_checks(f.state,config,f.profile),[]);
+});
+
+test("external BSL checks keep their time limit and local legacy evidence is not promoted", async t => {
+  const {f,backend}=await ready_fixture(t),config=backend.effective(backend.current());
+  config.mcp.managed["bsl-ls"].mode="external";
+  const saved=save_component_checks(f.state,config,f.profile,[{id:"bsl-ls",state:"ready"}])[0];
+  assert.ok(saved.expiresAt);assert.equal(saved.validity,undefined);
+  const now=Date.now();t.mock.method(Date,"now",()=>now+20*60000);
+  assert.equal(read_component_checks(f.state,config,f.profile)[0].state,"check_stale");
+  config.mcp.managed["bsl-ls"].mode="auto";
+  assert.equal(read_component_checks(f.state,config,f.profile)[0].state,"check_stale");
+});
+
+test("passive managed probes preserve index expiry and durable BSL evidence without launching services", async t => {
   const {f,backend}=await ready_fixture(t);
   await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true}});
   const config=backend.effective(backend.current()),home=path.join(project_directory(f.state,f.root),"code-index");
@@ -202,15 +318,16 @@ test("passive managed probes preserve expired API evidence without renewing it o
   receipt.result.checkedAt=checkedAt;receipt.result.expiresAt=expiresAt;fs.writeFileSync(file,JSON.stringify(receipt));
   // Reproduce the old loop: a newer liveness-only observation used to hide
   // the older setup API result as soon as its 15-minute validity expired.
-  save_component_checks(f.state,config,f.profile,[{id:"code-index",state:"running"},{id:"bsl-ls",state:"not_verified"}]);
+  save_component_checks(f.state,config,f.profile,[{id:"code-index",state:"running"}]);
   const spawn=t.mock.method(childProcess,"spawn",()=>{throw new Error("Unexpected service launch");});syncBuiltinESMExports();
   t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
   for(const component of ["code-index","bsl-ls"]){
     const result=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component}),check=result.componentChecks[0];
-    assert.equal(check.state,"check_stale");assert.equal(check.checkedAt,checkedAt);assert.equal(check.expiresAt,expiresAt);
-    assert.match(check.detail,/Подготовить и проверить/);
+    assert.equal(check.state,component==="bsl-ls"?"ready":"check_stale");
+    if(component==="code-index"){assert.equal(check.checkedAt,checkedAt);assert.equal(check.expiresAt,expiresAt);assert.match(check.detail,/Подготовить и проверить/);}
+    else assert.equal(check.expiresAt,null);
     const saved=(await backend.main({action:"read"})).componentChecks.find(item=>item.id===component);
-    assert.equal(saved.state,"check_stale");assert.match(saved.detail,/Подготовить и проверить/);
+    assert.equal(saved.state,check.state);if(component==="code-index")assert.match(saved.detail,/Подготовить и проверить/);
   }
   assert.equal(spawn.mock.callCount(),0);
   process.env.EDT_AI_INSTANCE="another";

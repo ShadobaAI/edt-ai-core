@@ -55,10 +55,10 @@ import {
   external_override_files,
   assert_settings_paths,
 } from "./project_context.mjs";
-import { managed_components, component_enabled, grant_preparation, component_settings } from "./components.mjs";
+import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, index_repositories, repository_projects } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
-import { read_readiness, save_readiness, read_component_checks, save_component_checks, readiness_receipt_revision, readiness_fingerprint } from "./setup_readiness.mjs";
+import { read_readiness, save_readiness, read_component_checks, save_component_checks, readiness_receipt_revision, readiness_fingerprint, bsl_readiness_fingerprint } from "./setup_readiness.mjs";
 import { project_directory } from "./project_paths.mjs";
 import { knowledge_status } from "./knowledge.mjs";
 
@@ -463,6 +463,13 @@ export function authorize_preparation(request, root) {
     throw new ConfigError(
       "Разрешение подготовки относится к другой папке или экземпляру.",
     );
+}
+async function bsl_check_inputs(state, config, runtime, allowInstall, refresh = false) {
+  const jar = await runtime.installed_runtime(state, config, "bsl-ls", refresh, allowInstall);
+  return operation_lock(state, () => {
+    if (runtime.artifact(state, "bsl-ls") !== jar) throw Object.assign(new ConfigError("Версия BSL LS изменилась. Повторите проверку."), { inputsChanged: true });
+    return { jar, inputRevision: bsl_readiness_fingerprint(state, config) };
+  });
 }
 export class SettingsBackend {
   constructor(
@@ -983,6 +990,7 @@ export class SettingsBackend {
       if (component !== undefined && !["edt", "v8std", "openviking", ...managed_components, "yaxunit", "vanessa"].includes(component)) throw new ConfigError("Выберите компонент для проверки.");
       if (component && Object.keys(request.connections || {}).some(name => name !== component)) throw new ConfigError("Адресная проверка принимает настройки только выбранного компонента.");
       const profile = project_profile(root), original = stable(config), initialInputs = readiness_fingerprint(this.STATE, config, profile);
+      const initialBsl = component === "bsl-ls" && component_settings(config, component).mode !== "external" ? bsl_readiness_fingerprint(this.STATE, config) : null;
       if (request.connections !== undefined) {
         if (!object(request.connections) || Object.keys(request.connections).some(name => !["edt", "v8std", "openviking"].includes(name)))
           throw new ConfigError("Некорректные подключения для проверки.");
@@ -1001,16 +1009,17 @@ export class SettingsBackend {
       if (managed_components.includes(component)) {
         const runtime = await import("./runtime.mjs"), options = component_settings(config, component);
         const readiness = await read_readiness(this.STATE, config, profile);
-        const setupCheck = ["ready", "blocked", "stale"].includes(readiness.state) ? readiness.checks.find(item => item.id === component) : null;
+        const saved = read_component_checks(this.STATE, config, profile).find(item => item.id === component);
+        const setupCheck = saved?.validity === "inputs" ? null : ["ready", "blocked", "stale"].includes(readiness.state) ? readiness.checks.find(item => item.id === component) : null;
         const apiStates = ["ready", "error", "stale", "missing", "mismatch", "missing_project", "indexing"];
         const prior = [setupCheck && { ...setupCheck, ...(readiness.state === "stale" ? { state: "check_stale", lastState: setupCheck.state } : {}), checkedAt: readiness.checkedAt, expiresAt: readiness.expiresAt },
-          read_component_checks(this.STATE, config, profile).find(item => item.id === component)]
+          saved]
           .filter(item => item && apiStates.includes(item.lastState || item.state)).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt))[0];
         const retainedNotice = "Сохранён актуальный результат последней проверки API; новый запуск сервиса не выполнялся.";
         const retained = prior && ["ready", "error", "stale", "missing", "mismatch", "missing_project", "indexing"].includes(prior.state)
           ? { ...prior, detail: prior.detail?.includes(retainedNotice) ? prior.detail : (prior.detail ? prior.detail + " " : "") + retainedNotice } : null;
-        const expired = prior?.state === "check_stale" ? { id: component, state: "check_stale", lastState: prior.lastState, checkedAt: prior.checkedAt, expiresAt: prior.expiresAt,
-          detail: (component === "code-index" ? "Процесс индекса работает, но подтверждение актуальности индекса устарело." : "Подтверждение API BSL LS устарело; автоматическое обновление не запускает новую JVM.") + " Для новой проверки используйте «Подготовить и проверить»." } : null;
+        const expired = prior?.state === "check_stale" ? { ...prior, id: component, state: "check_stale", lastState: prior.lastState, checkedAt: prior.checkedAt, expiresAt: prior.expiresAt,
+          detail: prior.validity === "inputs" ? prior.detail : (component === "code-index" ? "Процесс индекса работает, но подтверждение актуальности индекса устарело." : "Подтверждение API BSL LS устарело; автоматическое обновление не запускает новую JVM.") + " Для новой проверки используйте «Подготовить и проверить»." } : null;
         let check = { id: component, state: "not_verified", detail: "Работоспособность не проверена: требуется разрешённая подготовка и запуск компонента." };
         if (!component_enabled(config, component)) check = { id: component, state: "disabled", detail: "Компонент отключён." };
         else if (options.mode === "external") {
@@ -1021,7 +1030,27 @@ export class SettingsBackend {
         } else if (component === "code-index") {
           const health = await runtime.daemon_health(path.join(project_directory(this.STATE, root), "code-index"));
           check = health && (retained || expired) ? retained || expired : { ...check, state: health ? "running" : "stopped", detail: health ? "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
-        } else if (retained || expired) check = retained || expired;
+        } else if (saved?.validity === "inputs" && saved.state !== "check_stale") check = retained || saved;
+        else {
+          let prepared = false;
+          try { require_preparation(this.STATE, root, component); prepared = true; } catch { /* Do not grant launch permission during observation. */ }
+          check = expired || check;
+          if (prepared) {
+            let inputRevision = null;
+            try {
+              const inputs = await bsl_check_inputs(this.STATE, config, runtime, false);
+              const { jar } = inputs; inputRevision = inputs.inputRevision;
+              await runtime.smoke(this.STATE, config, root, profile, component, 30, false, jar, false);
+              check = { id: component, state: "ready", inputRevision };
+            } catch (error) {
+              const busy = error.remote !== true && error.message.includes("Another runtime operation");
+              check = { id: component, state: error.inputsChanged ? "check_stale" : busy ? "preparing" : "error", ...(error.inputsChanged ? { validity: "inputs" } : {}), inputRevision,
+                detail: busy ? "Подготовка окружения выполняется…" : safe_error_message(error) };
+            }
+            if (inputRevision && inputRevision !== bsl_readiness_fingerprint(this.STATE, config))
+              check = { ...check, state: "check_stale", validity: "inputs", expiresAt: null, detail: "Окружение BSL LS изменилось во время проверки. Повторите проверку." };
+          }
+        }
         checks = [check]; result = { managed: [{ name: component, ...check, ready: check.state === "ready" }], external: {} };
       } else if (["yaxunit", "vanessa"].includes(component)) {
         const enabled = profile.testing[component], configured = Boolean(profile.testing[component + "_config"]);
@@ -1037,7 +1066,8 @@ export class SettingsBackend {
       if (request.collectOnly) return sanitize_setup_result({ ...result, component, componentChecks: checks, draft, projectRoot: root, instance: instance_name() });
       let superseded;
       const componentChecks = await operation_lock(this.STATE, () => {
-        superseded = initialInputs !== readiness_fingerprint(this.STATE, this.effective(this.current()), project_profile(root));
+        const latest = this.effective(this.current());
+        superseded = initialInputs !== readiness_fingerprint(this.STATE, latest, project_profile(root)) || initialBsl !== null && initialBsl !== bsl_readiness_fingerprint(this.STATE, latest);
         return !superseded && !draft ? save_component_checks(this.STATE, config, profile, checks) : checks;
       });
       return sanitize_setup_result({ ...result, component, componentChecks, draft, superseded, projectRoot: root, instance: instance_name() });
@@ -1335,10 +1365,12 @@ export class SettingsBackend {
       const components = request.component ? [request.component] : ["edt", "v8std", "openviking", ...managed_components, "yaxunit", "vanessa"];
       if (request.connections !== undefined) throw new ConfigError("Обновление состояния использует сохранённые настройки.");
       const profile = project_profile(root), initialInputs = readiness_fingerprint(this.STATE, config, profile), initialReceipt = readiness_receipt_revision(this.STATE, root);
+      const initialBsl = components.includes("bsl-ls") && component_settings(config, "bsl-ls").mode !== "external" ? bsl_readiness_fingerprint(this.STATE, config) : null;
       const results = await Promise.all(components.map(component => this.main({ action: "probe", component, collectOnly: true })));
       let superseded;
       const componentChecks = await operation_lock(this.STATE, () => {
-        superseded = initialReceipt !== readiness_receipt_revision(this.STATE, root) || initialInputs !== readiness_fingerprint(this.STATE, this.effective(this.current()), project_profile(root));
+        const latest = this.effective(this.current());
+        superseded = initialReceipt !== readiness_receipt_revision(this.STATE, root) || initialInputs !== readiness_fingerprint(this.STATE, latest, project_profile(root)) || initialBsl !== null && initialBsl !== bsl_readiness_fingerprint(this.STATE, latest);
         const checks = results.flatMap(item => item.componentChecks);
         return superseded ? checks : save_component_checks(this.STATE, config, profile, checks);
       });
@@ -1356,7 +1388,17 @@ export class SettingsBackend {
       grant_preparation(this.STATE, root, managed_components.filter(component => component_enabled(config, component)));
       const check_component = async component => {
         if (!component_enabled(config, component)) return { name: component, ready: true, state: "disabled", detail: "Компонент отключён; установка и запуск пропущены." };
+        const localBsl = component === "bsl-ls" && component_settings(config, component).mode !== "external";
+        let inputRevision = null, selectedArtifact = null;
+        if (localBsl && request.refresh !== true) {
+          const saved = read_component_checks(this.STATE, config, data).find(item => item.id === component && item.validity === "inputs" && item.state === "ready");
+          if (saved) return { ...saved, name: component, ready: true };
+        }
         try {
+          if (localBsl) {
+            const inputs = await bsl_check_inputs(this.STATE, config, runtime, true, request.refresh === true);
+            selectedArtifact = inputs.jar; inputRevision = inputs.inputRevision;
+          }
           const item = await runtime.smoke(
               this.STATE,
               config,
@@ -1364,8 +1406,8 @@ export class SettingsBackend {
               data,
               component,
               90,
-              request.refresh === true,
-              null,
+              localBsl ? false : request.refresh === true,
+              selectedArtifact,
               true,
             ),
             ready = item.index_ready !== false;
@@ -1373,6 +1415,7 @@ export class SettingsBackend {
             name: component,
             ready,
             state: ready ? "ready" : item.index_state || "not_checked",
+            ...(localBsl ? { inputRevision: inputRevision || bsl_readiness_fingerprint(this.STATE, config) } : {}),
             ...(item.index ? { repositories: item.index.repositories, ...(item.index.missingProjects?.length ? { detail: "Не найден или неоднозначен .project для: " + item.index.missingProjects.join(", ") } : {}), ...(item.index.retryable ? { retryable: true, detail: "Индекс найден; сервис ещё не подтвердил актуальность данных." } : {}) } : {}),
             version: item.server?.version,
           };
@@ -1381,7 +1424,8 @@ export class SettingsBackend {
           return {
             name: component,
             ready: false,
-            state: busy ? "preparing" : "error",
+            state: error.inputsChanged ? "check_stale" : busy ? "preparing" : "error",
+            ...(inputRevision ? { inputRevision } : {}),
             detail: busy ? "Подготовка окружения выполняется…" : safe_error_message(error),
           };
         }
@@ -1409,7 +1453,13 @@ export class SettingsBackend {
         check_policy(), probe_connections(config, root, data, this.STATE),
       ]);
       const managed = [...components, policyResult], external = probes.external;
+      const bsl = managed.find(item => item.name === "bsl-ls");
+      if (bsl?.inputRevision && bsl.inputRevision !== bsl_readiness_fingerprint(this.STATE, config)) {
+        bsl.ready = false; bsl.state = "check_stale"; bsl.detail = "Окружение BSL LS изменилось во время проверки. Повторите проверку.";
+      }
       const readiness = save_readiness(this.STATE, config, data, managed, external);
+      const savedBsl = read_component_checks(this.STATE, config, data).find(item => item.id === "bsl-ls" && item.validity === "inputs");
+      if (savedBsl && bsl) Object.assign(bsl, savedBsl, { ready: savedBsl.state === "ready" });
       return sanitize_setup_result({
         managed,
         projectRoot: root,
