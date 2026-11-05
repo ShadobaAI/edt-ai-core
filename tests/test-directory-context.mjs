@@ -3,7 +3,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { fixture, environment, session, node, success } from "./helpers.mjs";
+import { fixture, environment, session, node_async, success } from "./helpers.mjs";
 import { dump, inside, parse, settings } from "../scripts/common.mjs";
 import { locate_project, resolve, ProfileNotFound } from "../scripts/project_paths.mjs";
 import { project_profile } from "../scripts/profile.mjs";
@@ -45,7 +45,7 @@ test("a unique nested canonical profile keeps its own relative paths and rejects
   const other = path.join(f.root, "another");
   dump(f.profile, path.join(other, ".ai/project.yaml"));
   assert.throws(() => locate_project(f.root), /В выбранном каталоге несколько профилей \.ai\/project\.yaml/);
-  const refused = node("scripts/profile.mjs", ["init", f.root]);
+  const refused = await node_async("scripts/profile.mjs", ["init", f.root]);
   assert.notEqual(refused.status, 0);
   assert.match(refused.stdout, /несколько профилей/);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
@@ -70,7 +70,7 @@ test("nested profile selection remembers the user visit without writing project 
   assert.ok(view.profileHistory[0].lastOpened);
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
-  const context = success(node("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
+  const context = success(await node_async("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
   assert.match(context, /directoryContext/);
   assert.match(context, /"status":"loaded"/);
 });
@@ -260,7 +260,7 @@ test("EDT descriptors enrich the selected directory using folder names without r
     view = (await client.call("settings.profile", {})).structuredContent;
   assert.equal(view.profile.status, "missing");
   assert.deepEqual(view.directoryContext, context);
-  const hook = success(node("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
+  const hook = success(await node_async("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
   assert.match(hook, /configuration/);
   assert.doesNotMatch(hook, /displayName|Base & Library/);
   assert.match(hook, /8\.5\.1/);

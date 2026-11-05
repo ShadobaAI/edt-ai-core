@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { ROOT, load, dump } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
@@ -69,6 +69,21 @@ export function node(file, args = [], options = {}) {
     shell: false,
     timeout: 20000,
     ...options,
+  });
+}
+// Async tests must not block their event loop while a CLI fixture runs.
+export function node_async(file, args = [], options = {}) {
+  const { input, ...execution } = options;
+  return new Promise(resolve => {
+    const child = execFile(process.execPath, [path.resolve(ROOT, file), ...args], {
+      encoding: "utf8", windowsHide: true, shell: false,
+      timeout: 20000, killSignal: "SIGKILL", ...execution,
+    }, (error, stdout, stderr) => resolve({
+      error: error && typeof error.code !== "number" ? error : undefined,
+      status: child.exitCode, signal: child.signalCode, stdout, stderr,
+    }));
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
   });
 }
 export function success(result) {

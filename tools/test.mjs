@@ -1,6 +1,7 @@
 // No shell/glob expansion; identical invocation on Windows, Linux and macOS.
 import fs from "node:fs";
-import { spawnSync } from "node:child_process";
+import { run_tests } from "./test-runner.mjs";
+
 const files = fs
   .readdirSync("tests")
   .filter(
@@ -8,10 +9,4 @@ const files = fs
   )
   .sort()
   .map((file) => "tests/" + file);
-const result = spawnSync(process.execPath, ["--test", ...files], {
-  stdio: "inherit",
-  windowsHide: true,
-  shell: false,
-});
-if (result.error) throw result.error;
-process.exitCode = result.status ?? 1;
+process.exitCode = await run_tests(files);
