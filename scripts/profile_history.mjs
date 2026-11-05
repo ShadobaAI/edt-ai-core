@@ -90,7 +90,7 @@ export async function profile_summary(state, config, profile, readiness = {}, kn
     }
     const check = readiness.checks?.find(item => item.id === id);
     const checked = check && profile.status === "loaded" && status !== "disabled" &&
-      (id === "bsl-ls" || status === "running" || status === "external");
+      (check.state !== "ready" || id === "bsl-ls" || status === "running" || status === "external");
     if (checked) status = ["ready", "blocked"].includes(readiness.state) ? check.state : readiness.state === "stale" ? "check_stale" : "not_checked";
     components.push({ id, status, mode: options.mode || "auto", ...(checked ? { checkedAt: readiness.checkedAt,
       detail: readiness.state === "stale" ? readiness.reason : check.detail } : observationDetail ? { detail: observationDetail } : {}) });

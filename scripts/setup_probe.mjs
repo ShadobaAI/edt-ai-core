@@ -36,12 +36,12 @@ export function setup_knowledge_status(profile, config, root, observation, state
 
 // Read-only external acceptance for setup, without launching managed services,
 // publishing their schemas to the model, or inventing native tool arguments.
-export async function probe_connections(config, root, profile, state) {
+export async function probe_connections(config, root, profile, state, component = null) {
   register_diagnostic_secrets(config);
   const observationKey = stable([resolve(root), profile, config]);
   const knowledge = knowledge_status(profile, config);
-  const names = ["edt", "v8std"];
-  if (knowledge.state !== "disabled") names.push("openviking");
+  const names = component ? [component] : ["edt", "v8std"];
+  if (!component && knowledge.state !== "disabled") names.push("openviking");
   const external = Object.fromEntries(await Promise.all(names.map(async name => {
     if (name === "openviking" && ["invalid", "not_configured"].includes(knowledge.state))
       return [name, { configured: false, connected: false, ready: false, state: knowledge.state, failure: { category: "configuration" }, detail: knowledge.detail }];

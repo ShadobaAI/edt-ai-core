@@ -76,8 +76,50 @@ export function save_readiness(state, config, profile, managed, external) {
   result.expiresAt = new Date(Math.min(Date.parse(result.checkedAt) + 15 * 60 * 1000,
     knowledge.ready ? Date.parse(knowledge.readiness.expiresAt) : Infinity)).toISOString();
   const safe = sanitize_setup_result(result);
-  atomic_write(receipt_file(state, config.active_project), JSON.stringify({ version: 3, fingerprint: readiness_fingerprint(state, config, profile, assets), result: safe }));
+  const components = component_receipt(state, config.active_project).components || {};
+  for (const id of [...managed.map(item => item.name), ...Object.keys(external)]) delete components[id];
+  atomic_write(receipt_file(state, config.active_project), JSON.stringify({ version: 3, fingerprint: readiness_fingerprint(state, config, profile, assets), result: safe, components }));
   return safe;
+}
+
+function component_receipt(state, root) {
+  try {
+    const receipt = JSON.parse(fs.readFileSync(receipt_file(state, root), "utf8"));
+    if (receipt?.version !== 3) return {};
+    if (!receipt.components || typeof receipt.components !== "object" || Array.isArray(receipt.components)) receipt.components = {};
+    return receipt;
+  }
+  catch { return {}; }
+}
+
+// Addressed observations share the setup receipt and its project/instance and
+// expiry rules, but never turn a partial check into full setup acceptance.
+export function save_component_checks(state, config, profile, checks) {
+  register_diagnostic_secrets(config);
+  const receipt = component_receipt(state, config.active_project), checkedAt = new Date().toISOString();
+  const fingerprint = readiness_fingerprint(state, config, profile);
+  receipt.version = 3; receipt.components ||= {};
+  for (const check of checks) {
+    const observedAt = check.checkedAt || checkedAt;
+    receipt.components[check.id] = { fingerprint, result: sanitize_setup_result({ ...check, checkedAt: observedAt,
+      expiresAt: new Date(Math.min(Date.parse(observedAt) + 15 * 60 * 1000, Number.isFinite(Date.parse(check.expiresAt)) ? Date.parse(check.expiresAt) : Infinity)).toISOString() }) };
+  }
+  atomic_write(receipt_file(state, config.active_project), JSON.stringify(receipt));
+  return checks.map(check => receipt.components[check.id].result);
+}
+
+export function read_component_checks(state, config, profile) {
+  if (!config.active_project || profile.status && profile.status !== "loaded") return [];
+  const entries = Object.values(component_receipt(state, config.active_project).components || {});
+  if (!entries.length) return [];
+  const fingerprint = readiness_fingerprint(state, config, profile.status ? project_profile(config.active_project) : profile);
+  return entries.flatMap(entry => {
+    if (!entry || typeof entry !== "object") return [];
+    const { fingerprint: saved, result } = entry;
+    if (!result || typeof result.id !== "string" || typeof result.state !== "string" || !Number.isFinite(Date.parse(result.checkedAt)) || !Number.isFinite(Date.parse(result.expiresAt))) return [];
+    return [{ ...result, ...(saved !== fingerprint || Date.now() < Date.parse(result.checkedAt) || Date.now() - Date.parse(result.checkedAt) > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt)
+      ? { state: "check_stale", detail: "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." } : {}) }];
+  });
 }
 
 export async function read_readiness(state, config, profile) {

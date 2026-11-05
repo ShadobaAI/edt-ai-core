@@ -27,6 +27,7 @@ import { grant_preparation } from "../scripts/components.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
 import { settings } from "../scripts/common.mjs";
+import { instance_directory } from "../scripts/project_paths.mjs";
 
 async function unbound(t, f, file = "mcp/settings.mjs", args = []) {
   const client = new McpClient([process.execPath, path.join(ROOT, file), ...args], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
@@ -129,6 +130,7 @@ test("empty host roots can bind a relay without spawning substitutes or changing
 test("one bounded setup probe verifies external connections and refuses a wrong EDT path", async t => {
   const f = fixture(t), upstream = await endpoint(t, f.root);
   f.profile.connections = { edt: { url: upstream.url }, v8std: { url: upstream.url } }; f.save();
+  const profileBefore = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
   const client = await unbound(t, f); await client.call("settings.inspect", { projectRoot: f.root });
   const run = async () => {
     const operation = (await client.call("settings.probe_connections", {})).structuredContent;
@@ -142,7 +144,15 @@ test("one bounded setup probe verifies external connections and refuses a wrong 
   assert.equal(result.chatRelay, "not_verified");
   assert.match(result.detail, /каталог инструментов/i);
   assert.equal(upstream.calls.filter(name => name === "tools/call").length, 1);
-  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), ["projects"]);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), profileBefore);
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+  const receiptDirectory = instance_directory(f.state, f.root);
+  assert.deepEqual(fs.readdirSync(receiptDirectory), ["first.readiness.json"]);
+  const receipt = JSON.parse(fs.readFileSync(path.join(receiptDirectory, "first.readiness.json"), "utf8"));
+  assert.deepEqual(Object.keys(receipt.components).sort(), ["edt", "v8std"]);
+  assert.equal(receipt.result, undefined, "external probes do not assert full setup readiness");
   f.profile.repositories[0].path = "src"; f.save();
   assert.equal((await run()).external.edt.repositories[0].matched, false);
   await assert.rejects(client.call("settings.operation", { waitMs: 10001 }), /диапазона/);

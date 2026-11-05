@@ -58,7 +58,8 @@ import {
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, index_repositories, repository_projects } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
-import { read_readiness, save_readiness, readiness_receipt_revision, readiness_fingerprint } from "./setup_readiness.mjs";
+import { read_readiness, save_readiness, read_component_checks, save_component_checks, readiness_receipt_revision, readiness_fingerprint } from "./setup_readiness.mjs";
+import { project_directory } from "./project_paths.mjs";
 import { knowledge_status } from "./knowledge.mjs";
 
 // Ensure the local layer is ignored before writing it. Keep existing rules,
@@ -955,6 +956,10 @@ export class SettingsBackend {
     if (action === "probe") {
       const config = this.effective(this.current()), root = config.active_project;
       if (!root) throw new ConfigError("Выберите папку проекта.");
+      const component = request.component;
+      if (component !== undefined && !["edt", "v8std", "openviking", ...managed_components, "yaxunit", "vanessa"].includes(component)) throw new ConfigError("Выберите компонент для проверки.");
+      if (component && Object.keys(request.connections || {}).some(name => name !== component)) throw new ConfigError("Адресная проверка принимает настройки только выбранного компонента.");
+      const profile = project_profile(root), original = stable(config), initialInputs = readiness_fingerprint(this.STATE, config, profile);
       if (request.connections !== undefined) {
         if (!object(request.connections) || Object.keys(request.connections).some(name => !["edt", "v8std", "openviking"].includes(name)))
           throw new ConfigError("Некорректные подключения для проверки.");
@@ -969,8 +974,46 @@ export class SettingsBackend {
           config.mcp.required[name].url = url ? validate_url(url, name) : "";
         }
       }
-      const { probe_connections } = await import("./setup_probe.mjs");
-      return probe_connections(config, root, project_profile(root), this.STATE);
+      let result, checks;
+      if (managed_components.includes(component)) {
+        const runtime = await import("./runtime.mjs"), options = component_settings(config, component);
+        const readiness = await read_readiness(this.STATE, config, profile);
+        const setupCheck = ["ready", "blocked"].includes(readiness.state) ? readiness.checks.find(item => item.id === component) : null;
+        const prior = [setupCheck && { ...setupCheck, checkedAt: readiness.checkedAt, expiresAt: readiness.expiresAt },
+          read_component_checks(this.STATE, config, profile).find(item => item.id === component)]
+          .filter(Boolean).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt))[0];
+        const retainedNotice = "Сохранён актуальный результат последней проверки API; новый запуск сервиса не выполнялся.";
+        const retained = prior && ["ready", "error", "stale", "missing", "mismatch", "missing_project", "indexing"].includes(prior.state)
+          ? { ...prior, detail: prior.detail?.includes(retainedNotice) ? prior.detail : (prior.detail ? prior.detail + " " : "") + retainedNotice } : null;
+        let check = { id: component, state: "not_verified", detail: "Работоспособность не проверена: требуется разрешённая подготовка и запуск компонента." };
+        if (!component_enabled(config, component)) check = { id: component, state: "disabled", detail: "Компонент отключён." };
+        else if (options.mode === "external") {
+          try {
+            const observed = await runtime.smoke(this.STATE, config, root, profile, component, 30, false, null, false);
+            check = { id: component, state: observed.index_ready === false ? observed.index_state || "not_verified" : "ready", repositories: observed.index?.repositories };
+          } catch (error) { check = { id: component, state: "error", detail: safe_error_message(error) }; }
+        } else if (component === "code-index") {
+          const health = await runtime.daemon_health(path.join(project_directory(this.STATE, root), "code-index"));
+          check = health && retained ? retained : { ...check, state: health ? "running" : "stopped", detail: health ? "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
+        } else if (retained) check = retained;
+        checks = [check]; result = { managed: [{ name: component, ...check, ready: check.state === "ready" }], external: {} };
+      } else if (["yaxunit", "vanessa"].includes(component)) {
+        const enabled = profile.testing[component], configured = Boolean(profile.testing[component + "_config"]);
+        checks = [{ id: component, state: !enabled ? "disabled" : configured ? "configured" : "missing_config",
+          detail: !enabled ? "Возможность отключена в профиле." : configured ? "Настройка профиля проверена. Работоспособность тестового контура не проверена; запуск тестов требует отдельного разрешения." : "В профиле отсутствует блок testing." + component + "_config." }];
+        result = { managed: [], external: {} };
+      } else {
+        const { probe_connections } = await import("./setup_probe.mjs");
+        result = await probe_connections(config, root, profile, this.STATE, component);
+        checks = Object.entries(result.external).map(([id, item]) => ({ id, state: item.ready === true ? "ready" : item.configured === false ? "missing_config" : item.connected ? "not_verified" : "error", detail: item.detail, repositories: item.repositories, expiresAt: item.readiness?.expiresAt }));
+      }
+      const draft = original !== stable(config);
+      let superseded;
+      const componentChecks = await operation_lock(this.STATE, () => {
+        superseded = initialInputs !== readiness_fingerprint(this.STATE, this.effective(this.current()), project_profile(root));
+        return !superseded && !draft ? save_component_checks(this.STATE, config, profile, checks) : checks;
+      });
+      return sanitize_setup_result({ ...result, component, componentChecks, draft, superseded, projectRoot: root, instance: instance_name() });
     }
     if (action === "read" || action === "status") {
       const { installed_versions } = await import("./runtime.mjs");
@@ -990,6 +1033,9 @@ export class SettingsBackend {
       let readiness = await read_readiness(this.STATE, effective, profile);
       const knowledge = profile.status === "loaded" ? knowledge_status(project_profile(config.active_project), effective) : null;
       const summary = await profile_summary(this.STATE, effective, profile, readiness, knowledge);
+      const componentChecks = read_component_checks(this.STATE, effective, profile).map(item =>
+        item.id === "code-index" && item.state === "ready" && summary.components.some(observed => observed.id === item.id && observed.status === "not_checked" && observed.detail)
+          ? { ...item, state: "not_checked", detail: "Не удалось подтвердить доступность процесса индекса. Повторите проверку компонента." } : item);
       if (readiness.state === "ready" && summary.components.some(item => item.id === "code-index" && item.status === "not_checked" && item.detail)) {
         readiness = { ...readiness, state: "blocked", reason: "Не удалось подтвердить доступность процесса индекса.",
           checks: readiness.checks.map(item => item.id === "code-index" ? { ...item, state: "not_checked", detail: "Не удалось подтвердить доступность процесса индекса. Повторите проверку готовности." } : item) };
@@ -1003,6 +1049,8 @@ export class SettingsBackend {
         profileDirectoryContext,
         edtPortSuggestion: edt_port_suggestion(actual.edtUrl, profileDirectoryContext?.edt?.connection),
         readiness,
+        componentChecks,
+        testing: profile.status === "loaded" ? Object.fromEntries(Object.entries(project_profile(config.active_project).testing).filter(([key]) => ["yaxunit", "vanessa", "yaxunit_config", "vanessa_config"].includes(key))) : null,
         knowledge,
         environmentCompatibility: environment_compatibility({ projectRoot: config.active_project }),
         sessionGuidance: session_guidance,

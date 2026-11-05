@@ -105,6 +105,110 @@ const read = { values: { projectRoot: "C:/fixture/project" }, preparationScope: 
   profile: { status: "loaded", projectId: "Project", profileId: "generic-1c", repositories: [] },
   schema: { properties: { projectRoot: { readOnly: true } } } };
 
+test("components have no duplicate overview or standalone service disclosure", () => {
+  assert.doesNotMatch(html, /overviewDetails|managedSettings|overview-details|managed-settings|Сведения о проекте и проверка готовности|Управление сервисами и версиями/);
+  assert.equal([...html.matchAll(/id="readinessButton"/g)].length, 1);
+  for (const id of ["managedControlsHolder", "javaSettingsPanel", "versionPicker", "indexActions", "testingDialog"]) assert.match(html, new RegExp(`id="${id}"`));
+});
+
+for (const statuses of [[], ["loaded"], ["invalid"], ["missing"], ["unavailable"], ["loaded", "loaded"]]) test(`global settings history selection: ${statuses.join(",") || "empty"}`, async () => {
+  const history = statuses.map((status, i) => ({ status, projectRoot: `C:/history/${i}` }));
+  let selected = null;
+  const ui = screen(async (name, args) => {
+    if (name === "settings.read") return { ...read, values: { projectRoot: "" }, profile: { status: "unselected" }, projectSelection: { locked: false }, profileHistory: history };
+    if (name === "settings.select_profile") { selected = args.projectRoot; return { ...read, values: { projectRoot: selected }, profile: { ...read.profile, status: statuses[0] === "unavailable" ? "missing" : statuses[0], detail: "Ошибка единственного профиля" }, projectSelection: { locked: false } }; }
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.flush();
+  assert.equal(selected, statuses.length === 1 ? history[0].projectRoot : null);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, statuses.length === 1 ? 1 : 0);
+  if (statuses[0] === "invalid") { assert.equal(ui.elements.get("profileError").hidden, false); assert.equal(ui.elements.get("profileError").open, true); assert.match(ui.elements.get("profileErrorText").textContent, /Ошибка единственного профиля/); assert.match(ui.elements.get("status").textContent, /Ошибка единственного профиля/); }
+  if (statuses.length > 1) assert.equal(ui.elements.get("profileBrowser").hidden, false);
+  assert.equal(ui.calls.filter(call => ["settings.update", "settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
+});
+
+test("history never autoselects a profile for a chat or an unresolved selection", async () => {
+  for (const selection of [{ locked: true }, { locked: false, detail: "Каталог неоднозначен" }]) {
+    const ui = screen(async name => { assert.equal(name, "settings.read"); return { ...read, values: { projectRoot: "" }, profile: { status: "unselected" }, projectSelection: selection, profileHistory: [{ projectRoot: "C:/history", status: "loaded" }] }; });
+    await ui.flush(); assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, 0);
+  }
+});
+
+test("component evidence keeps success and errors until its inputs, lifetime or scope change", async () => {
+  const checkedAt = new Date().toISOString(), expiresAt = new Date(Date.now() + 60000).toISOString();
+  const current = { ...read, instance: "default", settingsRevision: "r1", values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std" }, componentChecks: [
+    { id: "edt", state: "ready", checkedAt, expiresAt }, { id: "bsl-ls", state: "error", detail: "Ошибка API", checkedAt, expiresAt }], summary: { components: [{ id: "bsl-ls", status: "not_checked" }] } };
+  const ui = screen(async () => current); await ui.flush();
+  const state = id => ui.context.catalogItems(current).find(item => item.id === id).state;
+  assert.equal(state("edt"), "ready"); assert.equal(state("bsl-ls"), "error");
+  await ui.context.refresh(); assert.equal(state("edt"), "ready");
+  current.componentChecks[0].expiresAt = new Date(Date.now() - 1).toISOString(); assert.equal(state("edt"), "check_stale");
+  current.componentChecks[1].state = "check_stale"; assert.equal(state("bsl-ls"), "check_stale");
+  current.componentChecks = []; current.instance = "other"; ui.context.renderCurrent(current); assert.equal(state("edt"), "not_checked");
+  current.readiness = { state: "ready", checks: [] }; ui.context.renderCurrent(current); assert.notEqual(ui.elements.get("headerStatusTitle").textContent, "Готово");
+});
+
+test("YaXUnit and Vanessa save from their dialogs through the real YAML preview/apply without navigating or losing other drafts", async t => {
+  const f = fixture(t);
+  f.profile.testing.yaxunit_config = { repository_id: "product", runner: "edt", results: "test-results" };
+  f.profile.testing.vanessa_config = { repository_id: "product", runtime_profile: "vanessa.json", features: "features", results: "ui-results", server_name: "vanessa" };
+  f.save(); const client = await session(t, "mcp/settings.mjs", [], f);
+  const ui = screen((name, args, meta) => client.request("tools/call", { name, arguments: args, _meta: meta }), { navigation: "project", rawResults: true });
+  ui.document.hidden = true;
+  const until = async predicate => { const deadline = Date.now() + 10000; while (!predicate()) { assert.ok(Date.now() < deadline, ui.elements.get("status").textContent); await new Promise(resolve => setTimeout(resolve, 20)); } };
+  const controls = () => { const found = []; const visit = node => { if (["input", "select"].includes(node.tag)) found.push(node); for (const child of node.children || []) visit(child); }; visit(ui.elements.get("jsonTree")); return found; };
+  await until(() => ui.elements.get("profileTitle").textContent === f.profile.project.id);
+  ui.elements.get("v8stdUrl").value = "http://unsaved/mcp"; ui.elements.get("v8stdUrl").events.input();
+  for (const id of ["yaxunit", "vanessa"]) {
+    await ui.context.openTestingSettings(id, null);
+    await until(() => controls().some(input => input.attributes?.["aria-label"] === `testing.${id}`));
+    assert.equal(ui.elements.get("checkPanel").hidden, false); assert.equal(ui.elements.get("testingDialog").open, true);
+    const inputs = controls(); assert.equal(inputs.some(input => input.attributes?.["aria-label"] === `testing.${id === "yaxunit" ? "vanessa" : "yaxunit"}`), false);
+    ui.elements.get("settingsText").value += "# unrelated draft comment\n";
+    ui.elements.get("settingsText").events.input();
+    await ui.context.patchField({ kind: "set", path: ["testing", id], value: true });
+    await ui.elements.get("reviewEditButton").onclick(); assert.equal(ui.elements.get("preview").hidden, false);
+    ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
+    await ui.elements.get("applyButton").onclick();
+    assert.equal(load(path.join(f.root, ".ai/project.yaml")).testing[id], true, ui.elements.get("status").textContent + "\n" + ui.elements.get("editorValidation").textContent);
+    assert.match(fs.readFileSync(path.join(f.root, ".ai/project.yaml"), "utf8"), /unrelated draft comment/);
+    assert.equal(ui.elements.get("v8stdUrl").value, "http://unsaved/mcp");
+    assert.equal(ui.elements.get("checkPanel").hidden, false); assert.equal(ui.elements.get("testingDialog").open, true);
+    ui.elements.get("testingDialogClose").onclick();
+    assert.equal(ui.elements.get("editorControls").parentElement, ui.elements.get("editorControlsHolder"));
+  }
+});
+
+for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"]) test(`the ${id} dialog probes only its component and updates its card`, async () => {
+  const current = { ...read, instance: "default", settingsRevision: "before", values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std", openvikingEnabled: true, openvikingUrl: "http://knowledge", codeIndexEnabled: true, bslLsEnabled: true },
+    profile: { ...read.profile, testing: { yaxunit: true, vanessa: true } }, summary: { components: [] }, readiness: { state: "not_checked" } };
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.versions") return { component: args.component, versions: [{ version: "1.0" }] };
+    if (name === "settings.edit") return { text: "testing: {}\n", format: "yaml", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return new SettingsBackend("unused", "unused").main({ action: "document_fields", ...args });
+    if (name === "settings.probe_connections") {
+      assert.equal(args.component, id); assert.ok(Object.keys(args.connections || {}).every(key => key === id));
+      return { id: "component-probe", component: id, status: "running" };
+    }
+    if (name === "settings.operation") return { id: "component-probe", component: id, action: "probe", status: "completed", projectRoot: current.values.projectRoot, instance: current.instance,
+      result: { external: {}, componentChecks: [{ id, state: id === "yaxunit" || id === "vanessa" ? "configured" : "ready", detail: "Проверен выбранный компонент" }] } };
+    throw new Error(name);
+  }); await ui.flush();
+  const before = JSON.parse(JSON.stringify(ui.context.catalogItems(current))).filter(item => item.id !== id);
+  const item = ui.context.catalogItems(current).find(item => item.id === id);
+  if (item.kind === "external") ui.context.openConnectionDialog(item, null);
+  else if (item.kind === "managed") ui.context.openManagedDialog(item, null);
+  else await ui.context.openTestingSettings(id, null);
+  await ui.elements.get(item.kind === "external" ? "probeButton" : item.kind === "managed" ? "managedProbeButton" : "testingProbeButton").onclick();
+  const after = JSON.parse(JSON.stringify(ui.context.catalogItems(current)));
+  assert.deepEqual(after.filter(item => item.id !== id), before);
+  assert.equal(after.find(item => item.id === id).state, item.kind === "testing" ? "configured" : "ready");
+  assert.match(ui.elements.get(item.kind === "external" ? "componentDialogDiagnostic" : item.kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent, /Проверен выбранный компонент/);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
+  assert.equal(ui.calls.filter(call => ["settings.update", "settings.run_check", "settings.refresh_readiness"].includes(call.params?.name)).length, 0);
+});
+
 test("settings UI saves, previews a local document, and renames through the real MCP server", async t => {
   const f = fixture(t); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
@@ -394,6 +498,7 @@ test("an unsaved OpenViking disable is included in the probe and survives refres
     if (name === "settings.probe_connections") { draft = args.connections.openviking; return { id: "off-probe", status: "completed", result: { external: {} } }; }
     throw new Error(name);
   }); await ui.flush();
+  ui.context.openConnectionDialog({id:"openviking",name:"openviking"},null);
   const enabled = ui.elements.get("openvikingEnabled");
   enabled.checked = false; enabled.events.change();
   await ui.elements.get("probeButton").onclick();
@@ -1141,16 +1246,16 @@ test("switching the update component hides unrelated results and scopes every ac
 
 test("external connection button polls one read-only probe and displays project readiness", async () => {
   let probes = 0;
-  const ui = screen(async (name) => {
+  const ui = screen(async (name,args) => {
     if (name === "settings.read") return read;
-    if (name === "settings.probe_connections") { probes++; return { id: "probe", status: "running" }; }
-    if (name === "settings.operation") return { projectRoot: read.values.projectRoot, instance: read.instance, id: "probe", status: "completed", action: "probe", result: { external: { edt: { configured: true, connected: true, repositories: [{ id: "product", matched: true, ready: false, state: "building" }] }, v8std: { configured: true, connected: true } } } };
+    if (name === "settings.probe_connections") { assert.equal(args.component,"edt");probes++; return { id: "probe", status: "running" }; }
+    if (name === "settings.operation") return { projectRoot: read.values.projectRoot, instance: read.instance, id: "probe", status: "completed", action: "probe", result: { external: { edt: { configured: true, connected: true, repositories: [{ id: "product", matched: true, ready: false, state: "building" }] } } } };
     throw new Error(name);
   });
-  await ui.flush(); await ui.elements.get("probeButton").onclick();
+  await ui.flush(); ui.context.openConnectionDialog({id:"edt",name:"edt"},null); await ui.elements.get("probeButton").onclick();
   assert.equal(probes, 1);
   assert.match(ui.elements.get("probeResult").textContent, /product: сборка/);
-  assert.match(ui.elements.get("probeResult").textContent, /v8std: подключение проверено/);
+  assert.doesNotMatch(ui.elements.get("probeResult").textContent, /v8std:/);
   assert.match(ui.elements.get("probeResult").textContent, /Каталог инструментов и подключение текущего чата не проверены/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
 });
@@ -1325,7 +1430,7 @@ for (const failsToStart of [false, true]) test(`a picker ${failsToStart ? "start
 test("a locked project remains locked and preparation polling does not restart it", async () => {
   let polls = 0;
   const ui = screen(async name => {
-    if (name === "settings.read") return read;
+    if (name === "settings.read") return {...read,instance:"A"};
     if (name === "settings.run_check") return { id: "one", status: "running" };
     if (name === "settings.operation") return ++polls === 1
       ? { id: "one", action: "check", projectRoot: "C:/fixture/project", instance: "A", status: "running" }
@@ -1601,10 +1706,11 @@ test("connection checks use unsaved fields without saving and preserve drafts", 
     if(name==="settings.operation")return {projectRoot:read.values.projectRoot,instance:read.instance,id:"draft-probe",status:"completed",action:"probe",result:{external:{edt:{configured:true,connected:true},v8std:{configured:false,connected:false}}}};
     throw new Error(name);
   });await ui.flush();
+  ui.context.openConnectionDialog({id:"edt",name:"edt"},null);
   ui.elements.get("edtUrl").value="http://localhost:4001/mcp";ui.elements.get("edtUrl").events.input();
   ui.elements.get("v8stdUrl").value="";ui.elements.get("v8stdUrl").events.input();
   await ui.elements.get("probeButton").onclick();
-  assert.equal(JSON.stringify(checked),JSON.stringify({edt:"http://localhost:4001/mcp",v8std:""}));
+  assert.equal(JSON.stringify(checked),JSON.stringify({edt:"http://localhost:4001/mcp"}));
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
   assert.equal(ui.elements.get("edtUrl").value,"http://localhost:4001/mcp");
   assert.equal(ui.elements.get("unsavedHint").hidden,false);
@@ -1623,6 +1729,7 @@ test("a long OpenViking draft probe is polled by ID and preserves transport and 
     }
     throw new Error(name);
   }); await ui.flush();
+  ui.context.openConnectionDialog({id:"openviking",name:"openviking"},null);
   const field = ui.elements.get("openvikingUrl"); field.value = "https://draft.example/mcp"; field.events.input();
   ui.elements.get("settingsText").value = "draft document"; ui.elements.get("settingsText").events.input();
   await ui.elements.get("probeButton").onclick(); await ui.tick(1000);
@@ -1647,6 +1754,7 @@ for (const changed of ["root", "instance"]) test(`late probe from another ${chan
     }
     throw new Error(name);
   }); await ui.flush();
+  ui.context.openConnectionDialog({id:"edt",name:"edt"},null);
   const checking = ui.elements.get("probeButton").onclick(); await ui.flush();
   ui.context.renderCurrent({ ...first, ...(changed === "root" ? { values: { projectRoot: "C:/other" } } : { instance: "second" }) });
   finish(); await checking;
@@ -1883,12 +1991,13 @@ test("component catalogue uses fresh evidence and treats disabled required servi
   assert.equal(cards().length,7);assert.equal(card("EDT").children[0].children[1].textContent,"Готов");
   assert.equal(ui.elements.get("countAll").textContent,"7");assert.equal(ui.elements.get("countReady").textContent,"3");
   assert.equal(ui.elements.get("countIssues").textContent,"1");assert.equal(ui.elements.get("countDisabled").textContent,"3");
-  assert.equal(ui.elements.get("profileOverview").parentElement,ui.elements.get("overviewDetails"));
+  assert.equal(ui.elements.has("overviewDetails"),false);
+  assert.equal(ui.elements.get("profileOverview").parentElement,ui.elements.get("selectedProfileContext"));
   assert.equal(card("OpenViking").children[0].children[1].textContent,"Отключён");
   assert.match(ui.elements.get("readinessTitle").textContent,/требуется внимание/);
   assert.match(ui.elements.get("readinessDetail").textContent,/Code Index/);
   ui.elements.get("componentsIssues").onclick();assert.ok(card("Code Index"));assert.equal(card("OpenViking"),undefined);
-  card("Code Index").children[2].children[1].onclick();assert.equal(ui.elements.get("managedSettings").open,true);
+  card("Code Index").children[2].children[1].onclick();assert.equal(ui.elements.get("managedControls").parentElement,ui.elements.get("managedDialogBody"));
   current.readiness={...current.readiness,state:"stale"};ui.context.renderCurrent(current,{preserveDraft:true});
   ui.elements.get("componentsAll").onclick();assert.equal(card("EDT").children[0].children[1].textContent,"Проверка устарела");
   assert.equal(card("BSL LS").children[0].children[1].textContent,"Проверка устарела");
@@ -1949,7 +2058,7 @@ test("managed component dialog keeps a draft and collapses its panel on close", 
   assert.equal(ui.elements.get("codeIndexChoice").hidden,true);assert.equal(ui.elements.get("bslLsChoice").hidden,false);assert.equal(ui.elements.get("javaSettingsPanel").hidden,false);assert.equal(ui.elements.get("updateComponent").disabled,true);
   ui.elements.get("bslLsEnabled").checked=false;ui.elements.get("bslLsEnabled").events.change();ui.elements.get("managedDialogClose").onclick();
   assert.equal(ui.elements.get("managedCloseConfirm").open,true);ui.elements.get("managedCloseKeep").onclick();
-  assert.equal(ui.elements.get("managedDialog").open,false);assert.equal(ui.elements.get("managedSettings").open,false);assert.equal(ui.elements.get("bslLsEnabled").checked,false);assert.equal(ui.elements.get("codeIndexChoice").hidden,false);assert.equal(ui.elements.get("updateComponent").disabled,false);
+  assert.equal(ui.elements.get("managedDialog").open,false);assert.equal(ui.elements.get("managedControls").parentElement,ui.elements.get("managedControlsHolder"));assert.equal(ui.elements.get("bslLsEnabled").checked,false);assert.equal(ui.elements.get("codeIndexChoice").hidden,false);assert.equal(ui.elements.get("updateComponent").disabled,false);
   cards.find(card=>card.children[0].children[0].textContent==="Code Index").children[2].children[1].onclick();
   assert.equal(ui.elements.get("managedDialog").open,false);assert.match(ui.elements.get("status").textContent,/черновик другого компонента/);
 });
@@ -2007,14 +2116,14 @@ test("enabled testing capabilities are not falsely claimed ready or treated as f
   const current={...read,profile:{...read.profile,testing:{yaxunit:true,vanessa:true}},values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();
   const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),testCard=cards.find(item=>item.children[0].children[0].textContent==="YaXUnit");
-  assert.equal(testCard.children[0].children[1].textContent,"Не проверен");assert.equal(ui.elements.get("headerStatusTitle").textContent,"Готово");
+  assert.equal(testCard.children[0].children[1].textContent,"Не настроен");assert.equal(ui.elements.get("headerStatusTitle").textContent,"Готово");
 });
 
 test("header names non-component readiness failures and opens their details", async () => {
   const current={...read,values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"blocked",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",label:"EDT",state:"ready"},{id:"v8std",label:"v8std",state:"ready"},{id:"policy",label:"Политика",state:"error"}]},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();assert.equal(ui.elements.get("headerStatusTitle").textContent,"Требует внимания");
   assert.match(ui.elements.get("headerStatusReason").textContent,/Политика/);
-  ui.elements.get("headerStatus").onclick();assert.equal(ui.elements.get("readinessChecks").open,true);assert.equal(ui.elements.get("checkPanel").hidden,false);
+  ui.elements.get("headerStatus").onclick();assert.equal(ui.elements.get("readinessDetails").open,true);assert.equal(ui.elements.get("checkPanel").hidden,false);
 });
 
 test("a manual status refresh leaves the form usable and preserves edits made while waiting", async () => {
@@ -2435,12 +2544,12 @@ test("a viewed profile stays visible while the new chat scope is confirmed", asy
   const selections=ui.calls.filter(call=>call.params?.name==="settings.select_profile");assert.equal(selections[1].params._meta["1c-ai-core/projectRoot"],second);
 });
 
-test("the full settings workspace restores the most recent available profile without a folder dialog", async () => {
+test("the full settings workspace requires a manual choice when several history entries exist", async () => {
   const ui=screen(async(name,args)=>{
     if(name==="settings.read")return {...read,values:{projectRoot:""},profile:{status:"unselected"},schema:{},profileHistory:[{projectRoot:"C:/gone",status:"unavailable"},{projectRoot:read.values.projectRoot,status:"loaded"}]};
     assert.equal(name,"settings.select_profile");assert.equal(args.projectRoot,read.values.projectRoot);return read;
   });await ui.flush();
-  assert.equal(ui.elements.get("profileBrowser").hidden,true);assert.equal(ui.elements.get("profileTitle").textContent,"Project");
+  assert.equal(ui.elements.get("profileBrowser").hidden,false);assert.equal(ui.calls.filter(call=>call.params?.name==="settings.select_profile").length,0);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.pick_directory").length,0);
 });
 

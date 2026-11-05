@@ -18,7 +18,7 @@ export class SettingsOperations {
     if (this.active?.status === "running" || (background && this.background?.status === "running")) {
       throw new Error(`Операция ${this.current().id} ещё выполняется. Проверьте settings.operation; повтор не запущен.`);
     }
-    const job = { id: randomUUID(), action, ...context, status: "running", startedAt: new Date().toISOString() };
+    const job = { id: randomUUID(), action, ...context, ...(action === "probe" && args.component ? { component: args.component } : {}), status: "running", startedAt: new Date().toISOString() };
     this.observe("operation_started", { id: job.id, action, ...context });
     if (background) this.background = job;
     else this.active = job;

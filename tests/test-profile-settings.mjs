@@ -10,8 +10,125 @@ import { McpClient } from "../scripts/mcp_client.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { save_readiness } from "../scripts/setup_readiness.mjs";
+import { save_readiness, read_component_checks, save_component_checks } from "../scripts/setup_readiness.mjs";
 import { project_profile } from "../scripts/profile.mjs";
+
+test("addressed probes preserve other results, do not prepare services and expire per instance", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const backend = new SettingsBackend(), original = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
+  const seen = new Set();
+  for (const component of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"]) {
+    const result = await backend.main({ action: "probe", component });
+    assert.deepEqual(result.componentChecks.map(item => item.id), [component]);
+    assert.ok(Object.keys(result.external).every(id => id === component));
+    assert.ok((result.managed || []).every(item => item.name === component));
+    assert.notEqual(result.componentChecks[0].state, "ready");
+    seen.add(component);
+    const current = await backend.main({ action: "read" });
+    assert.deepEqual(new Set(current.componentChecks.map(item => item.id)), seen);
+    assert.equal(current.readiness.state, "not_checked", "a partial probe cannot assert full setup readiness");
+  }
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), original);
+  for (const file of [f.env.EDT_AI_SETTINGS, path.join(f.state, "runtime-lock.json"), path.join(f.state, "runtime")]) assert.equal(fs.existsSync(file), false);
+  const before = (await backend.main({ action: "read" })).componentChecks;
+  process.env.EDT_AI_INSTANCE = "other";
+  assert.deepEqual((await backend.main({ action: "read" })).componentChecks, []);
+  process.env.EDT_AI_INSTANCE = f.env.EDT_AI_INSTANCE;
+  assert.deepEqual((await backend.main({ action: "read" })).componentChecks, before);
+  f.profile.project.id = "changed-profile"; f.save();
+  assert.ok((await backend.main({ action: "read" })).componentChecks.every(item => item.state === "check_stale"));
+  await assert.rejects(backend.main({ action: "probe", component: "unknown" }), /компонент/);
+  await assert.rejects(backend.main({ action: "probe", component: "edt", connections: { v8std: "" } }), /только выбранного/);
+});
+
+test("addressed external probe contacts only its endpoint and preserves a full setup receipt", async t => {
+  const f = fixture(t); environment(t, f.env);
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(200).end(); return; }
+    let raw = ""; for await (const chunk of req) raw += chunk;
+    const message = JSON.parse(raw); requests.push({ path: req.url, method: message.method });
+    if (!Object.hasOwn(message, "id")) { res.writeHead(202).end(); return; }
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result:
+      message.method === "server/discover" ? { supportedVersions: ["2026-07-28"], serverInfo: { name: "fixture", version: "1" } } : { tools: [{ name: "fixture", inputSchema: { type: "object" } }] } }));
+  }); server.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  f.profile.connections = { edt: { url: base + "/edt" }, v8std: { url: base + "/v8std" } }; f.save();
+  const backend = new SettingsBackend(), config = backend.effective(backend.current());
+  const setup = save_readiness(f.state, config, project_profile(f.root), [{ name: "bsl-ls", ready: false, state: "error", detail: "BSL error" }], {});
+  const result = await backend.main({ action: "probe", component: "v8std" });
+  assert.equal(result.componentChecks[0].state, "ready", JSON.stringify(result));
+  assert.ok(requests.length > 0); assert.ok(requests.every(item => item.path === "/v8std"));
+  let current = await backend.main({ action: "read" });
+  assert.deepEqual(current.readiness, setup); assert.equal(current.componentChecks[0].state, "ready");
+  const saved = current.componentChecks[0];
+  const draft = await backend.main({ action: "probe", component: "v8std", connections: { v8std: "" } });
+  assert.equal(draft.draft, true); assert.equal(draft.componentChecks[0].state, "missing_config");
+  current = await backend.main({ action: "read" }); assert.deepEqual(current.componentChecks[0], saved);
+  const old = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+  save_component_checks(f.state, config, project_profile(f.root), [{ id: "v8std", state: "ready", checkedAt: old }]);
+  assert.equal(read_component_checks(f.state, config, project_profile(f.root))[0].state, "check_stale");
+});
+
+test("testing probes validate configured contours without claiming their runtime works", async t => {
+  const f = fixture(t); environment(t, f.env);
+  f.profile.testing.yaxunit = true;
+  f.profile.testing.yaxunit_config = { repository_id: "product", runner: "edt", results: "test-results" };
+  f.profile.testing.vanessa = true;
+  f.profile.testing.vanessa_config = { repository_id: "product", runtime_profile: "vanessa.json", features: "features", results: "ui-results", server_name: "vanessa" };
+  f.save(); const backend = new SettingsBackend();
+  for (const component of ["yaxunit", "vanessa"]) {
+    const result = await backend.main({ action: "probe", component });
+    assert.equal(result.componentChecks[0].state, "configured"); assert.match(result.componentChecks[0].detail, /не проверена/);
+    assert.deepEqual(result.external, {});
+  }
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+  const current = await backend.main({ action: "read" });
+  assert.deepEqual(current.testing.yaxunit_config, f.profile.testing.yaxunit_config);
+  assert.deepEqual(current.testing.vanessa_config, f.profile.testing.vanessa_config);
+  assert.equal(current.testing.commands, undefined);
+});
+
+test("external managed probes use the existing smoke gate only for the selected service", async t => {
+  const f = fixture(t); environment(t, f.env);
+  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
+  const requests = [];
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST") { res.writeHead(200).end(); return; }
+    let raw = ""; for await (const chunk of req) raw += chunk;
+    const message = JSON.parse(raw); requests.push([req.url, message.method]);
+    if (!Object.hasOwn(message, "id")) { res.writeHead(202).end(); return; }
+    const tools = req.url === "/bsl-ls" ? ["register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder"].map(name => ({ name })).concat([
+      { name: "analyzer", inputSchema: { type: "object", properties: { workspaceFolder: { type: "string" } }, required: ["workspaceFolder"] } }]) : [{ name: "health", inputSchema: { type: "object" } }];
+    const result = message.method === "server/discover" ? { supportedVersions: ["2026-07-28"], serverInfo: { name: "fixture", version: "1" } }
+      : message.method === "tools/list" ? { tools }
+      : { structuredContent: { mcp: { status: "ok" }, daemon: { status: "online" }, repos: [{ repo: "product", root_path: f.root, path_status: { status: "ready" }, data_version: { stale: false } }] } };
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  }); server.listen(0, "127.0.0.1"); await once(server, "listening"); t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  f.profile.components = Object.fromEntries(["code-index", "bsl-ls"].map(id => [id, { enabled: true, mode: "external", url: base + "/" + id }])); f.save();
+  const backend = new SettingsBackend();
+  for (const component of ["code-index", "bsl-ls"]) {
+    requests.length = 0;
+    const result = await backend.main({ action: "probe", component });
+    assert.deepEqual(result.componentChecks.map(item => [item.id, item.state]), [[component, "ready"]], JSON.stringify(result));
+    assert.ok(requests.length); assert.ok(requests.every(([url]) => url === "/" + component));
+    assert.equal((await backend.main({ action: "read" })).componentChecks.find(item => item.id === component).state, "ready");
+  }
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
+
+test("local checks retain the last API result without extending its lifetime or hiding errors", async t => {
+  const f = fixture(t); environment(t, f.env); f.save(); const backend = new SettingsBackend();
+  const config = backend.effective(backend.current()), profile = project_profile(f.root);
+  for (const state of ["ready", "error"]) {
+    const saved = save_component_checks(f.state, config, profile, [{ id: "bsl-ls", state, detail: "Последняя проверка", checkedAt: new Date(Date.now() - 1000).toISOString() }])[0];
+    const checked = (await backend.main({ action: "probe", component: "bsl-ls" })).componentChecks[0];
+    assert.equal(checked.state, state); assert.equal(checked.checkedAt, saved.checkedAt); assert.equal(checked.expiresAt, saved.expiresAt);
+    assert.deepEqual((await backend.main({ action: "probe", component: "bsl-ls" })).componentChecks[0], checked);
+  }
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
 
 test("the app readiness refresh returns a scoped operation and cannot prepare another profile", async t => {
   const f=fixture(t);f.save();const client=await session(t,"mcp/settings.mjs",[],f);
