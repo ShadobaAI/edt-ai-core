@@ -204,7 +204,7 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
   const after = JSON.parse(JSON.stringify(ui.context.catalogItems(current)));
   assert.deepEqual(after.filter(item => item.id !== id), before);
   assert.equal(after.find(item => item.id === id).state, item.kind === "testing" ? "configured" : "ready");
-  assert.match(ui.elements.get(item.kind === "external" ? "componentDialogDiagnostic" : item.kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent, /Проверен выбранный компонент/);
+  assert.match(ui.elements.get(item.kind === "external" ? "probeResult" : item.kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent, /Проверен выбранный компонент/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   assert.equal(ui.calls.filter(call => ["settings.update", "settings.run_check", "settings.refresh_readiness"].includes(call.params?.name)).length, 0);
 });
@@ -1249,15 +1249,65 @@ test("external connection button polls one read-only probe and displays project 
   const ui = screen(async (name,args) => {
     if (name === "settings.read") return read;
     if (name === "settings.probe_connections") { assert.equal(args.component,"edt");probes++; return { id: "probe", status: "running" }; }
-    if (name === "settings.operation") return { projectRoot: read.values.projectRoot, instance: read.instance, id: "probe", status: "completed", action: "probe", result: { external: { edt: { configured: true, connected: true, repositories: [{ id: "product", matched: true, ready: false, state: "building" }] } } } };
+    if (name === "settings.operation") return { projectRoot: read.values.projectRoot, instance: read.instance, id: "probe", status: "completed", action: "probe", result: { external: { edt: { configured: true, connected: true, detail: "product: EDT сообщает о сборке проекта", repositories: [{ id: "product", matched: true, ready: false, state: "building" }] } } } };
     throw new Error(name);
   });
   await ui.flush(); ui.context.openConnectionDialog({id:"edt",name:"edt"},null); await ui.elements.get("probeButton").onclick();
   assert.equal(probes, 1);
-  assert.match(ui.elements.get("probeResult").textContent, /product: сборка/);
+  assert.equal(ui.elements.get("probeResult").textContent, "product: EDT сообщает о сборке проекта");
   assert.doesNotMatch(ui.elements.get("probeResult").textContent, /v8std:/);
-  assert.match(ui.elements.get("probeResult").textContent, /Каталог инструментов и подключение текущего чата не проверены/);
+  assert.match(html, /Каталог инструментов и подключение текущего чата не проверены/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
+});
+
+test("EDT diagnostics show each project once and follow the current component evidence", async () => {
+  const detail = "crm-production: готов\ncrm-yaxunit: проект не открыт или его состояние открытия не подтверждено";
+  const current = { ...read, values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std" } };
+  const ui = screen(async name => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.probe_connections") return { id: "edt-probe", status: "running" };
+    if (name === "settings.operation") return { projectRoot: read.values.projectRoot, instance: read.instance, id: "edt-probe", status: "completed", action: "probe",
+      result: { external: { edt: { configured: true, connected: true, ready: false, detail, repositories: [
+        { id: "crm-production", matched: true, open: true, ready: true, state: "ready" },
+        { id: "crm-yaxunit", matched: true, open: false, ready: false, state: "ready" },
+      ] } } } };
+    throw new Error(name);
+  }); await ui.flush();
+  ui.context.openConnectionDialog({ id: "edt", name: "EDT" }, null); await ui.elements.get("probeButton").onclick();
+  const output = () => ui.elements.get("componentDialogDiagnostic").textContent + "\n" + ui.elements.get("probeResult").textContent;
+  assert.equal(ui.elements.get("probeResult").textContent, detail);
+  assert.equal(ui.elements.get("probeResult").hidden, false);
+  assert.equal(output().match(/crm-production:/g).length, 1);
+  assert.equal(output().match(/crm-yaxunit:/g).length, 1);
+  assert.doesNotMatch(output(), /подключение проверено|crm-yaxunit: не готов/i);
+  await ui.context.refresh(); assert.equal(ui.elements.get("probeResult").textContent, detail);
+  ui.elements.get("componentDialog").close();
+  ui.context.openConnectionDialog({ id: "v8std", name: "v8std" }, null);
+  assert.equal(ui.elements.get("probeResult").hidden, true);
+  assert.equal(ui.elements.get("probeResult").textContent, "");
+  ui.elements.get("componentDialog").close();
+  ui.context.openConnectionDialog({ id: "edt", name: "EDT" }, null);
+  assert.equal(ui.elements.get("probeResult").textContent, detail);
+  vm.runInContext('componentObservations.get("edt").check.expiresAt=new Date(Date.now()-1).toISOString()', ui.context);
+  ui.context.renderDialogStates();
+  assert.equal(ui.elements.get("componentDialogDiagnostic").textContent, "Проверка устарела");
+  vm.runInContext('componentObservations.get("edt").check.checkedAt=new Date(Date.now()-1000).toISOString()', ui.context);
+  current.componentChecks = [{ id: "edt", state: "ready", detail: "crm-production: готов\ncrm-yaxunit: готов",
+    checkedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() }];
+  await ui.context.refresh();
+  assert.equal(ui.elements.get("probeResult").textContent, "crm-production: готов\ncrm-yaxunit: готов");
+  assert.equal(output().match(/crm-yaxunit:/g).length, 1);
+});
+
+for (const [state, detail] of [["ready", "crm-production: готов"], ["error", "Сервер EDT недоступен"]]) test(`the EDT dialog displays saved ${state} diagnostics once`, async () => {
+  const current = { ...read, values: { ...read.values, edtUrl: "http://edt" }, componentChecks: [{ id: "edt", state, detail,
+    checkedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() }] };
+  const ui = screen(async () => current); await ui.flush();
+  ui.context.openConnectionDialog({ id: "edt", name: "EDT" }, null);
+  assert.equal(ui.elements.get("probeResult").textContent, detail);
+  assert.equal(ui.elements.get("probeResult").hidden, false);
+  assert.equal(ui.elements.get("componentDialogDiagnostic").textContent.includes(detail), false);
+  assert.doesNotMatch(ui.elements.get("probeResult").textContent, /подключение проверено/i);
 });
 
 test("manual settings require a fresh preview after editing and apply the reviewed text", async () => {

@@ -120,7 +120,7 @@ button{min-height:36px;border-radius:7px}button.icon-button{min-height:32px}inpu
 <label class="field" for="ovPublicationReceipts">Подтверждения публикации (JSON)</label><textarea id="ovPublicationReceipts" rows="6" spellcheck="false"></textarea>
 </fieldset>
 <div class="notice-box" id="knowledgeSummary" role="status" aria-live="polite"><pre id="knowledgeDetails"></pre></div>
-<div class="actions"><button id="probeButton"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>Проверить</button></div><p class="muted">Проверяются значения в доступных полях; для недоступных полей — действующие значения. Проверка не сохраняет изменения.</p><pre id="probeResult" hidden></pre></div></div>
+<div class="actions"><button id="probeButton"><svg class="icon" aria-hidden="true"><use href="#i-activity"/></svg>Проверить</button></div><p class="muted">Проверяются значения в доступных полях; для недоступных полей — действующие значения. Проверка не сохраняет изменения. Каталог инструментов и подключение текущего чата не проверены.</p><pre id="probeResult" hidden></pre></div></div>
 </section>
 <section id="editorPanel" role="tabpanel" aria-labelledby="editorTab" hidden>
 <div class="section-heading"><div><h2>Конфигурация</h2><p>Два профиля проекта: переносимый в Git и локальные переопределения.</p></div><div class="catalog-tools"><button id="openImportButton">Импорт</button><button id="openExportButton"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Экспорт</button><button id="openTransferButton" hidden>Импорт и экспорт</button></div></div>
@@ -411,7 +411,11 @@ function catalogItems(current){
 function componentInputSignature(id){return JSON.stringify((id==="openviking"?openvikingFields:["edt","v8std"].includes(id)?[id+"Url"]:[]).map(field=>transportValue(field)));}
 function renderDialogStates(){
   for(const [id,control]of [[dialogComponent,"componentDialogStatus"],[managedComponent,"managedDialogStatus"],[testingComponent,"testingDialogStatus"]]){
-    if(!id)continue;const item=catalogItems(currentData).find(item=>item.id===id);$(control==="componentDialogStatus"?"componentDialogDiagnostic":control).textContent=componentStateLabel(id,item.state)+(item.detail?" · "+userMessage(item.detail):"");
+    if(!id)continue;const item=catalogItems(currentData).find(item=>item.id===id);
+    if(control==="componentDialogStatus"){
+      $("componentDialogDiagnostic").textContent=componentStateLabel(id,item.state);
+      $("probeResult").textContent=item.detail?userMessage(item.detail):"";$("probeResult").hidden=!item.detail;
+    }else $(control).textContent=componentStateLabel(id,item.state)+(item.detail?" · "+userMessage(item.detail):"");
   }
 }
 function observeComponentResult(result,operation){
@@ -1297,8 +1301,7 @@ async function pollOperation(operationId){
     }
     if(operation.action==="probe"){
       if(!operationMatchesProfile(operation)){notice("Проверка завершена для другого каталога или экземпляра. Результат не применяется к текущему профилю.");return;}
-      const result=operation.result;if(result.superseded){await refresh();notice("Настройки изменились во время проверки. Повторите проверку.",true);return;}observeComponentResult(result,operation);$("probeResult").hidden=false;
-      $("probeResult").textContent=Object.entries(result.external||{}).map(([name,item])=>name+": "+(!item.configured?"адрес не указан":item.connected?"подключение проверено":"ошибка подключения")+(item.detail?"\n"+userMessage(item.detail):"")+(item.repositories?"\n"+item.repositories.map(repository=>repository.id+": "+(!repository.matched?"путь или имя не совпадают":repository.ready?"готов":({building:"сборка",closed:"закрыт",error:"ошибка"}[repository.state]||"не готов"))).join("\n"):"")).join("\n\n")+"\n\nЭто отдельная проверка серверов. Каталог инструментов и подключение текущего чата не проверены.";
+      const result=operation.result;if(result.superseded){await refresh();notice("Настройки изменились во время проверки. Повторите проверку.",true);return;}observeComponentResult(result,operation);
       await refresh();renderDialogStates();notice(result.draft?"Проверены несохранённые значения; настройки не изменены.":"Проверка завершена. Результат показан в карточке компонента.");return;
     }
     if(!["check","refresh_readiness"].includes(operation.action)){

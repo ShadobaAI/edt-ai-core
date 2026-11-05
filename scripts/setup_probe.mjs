@@ -97,7 +97,7 @@ export async function probe_connections(config, root, profile, state, component 
                 return { id: repository.id, matched: Boolean(project), ready: Boolean(project?.open === true && project?.state === "ready" && project?.edtProject === true), ...(project ? { state: project.state, open: project.open } : {}) };
               });
               result.projectReadiness = result.repositories.length && result.repositories.every(item => item.ready) ? "verified" : "not_ready";
-              if (result.projectReadiness !== "verified") result.detail = edt_project_detail(result.repositories);
+              result.detail = edt_project_detail(result.repositories) || "Не найдены настроенные проекты для проверки готовности EDT.";
             }
           }
         }
