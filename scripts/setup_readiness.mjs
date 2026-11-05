@@ -3,7 +3,7 @@ import path from "node:path";
 import { ROOT, load, stable, atomic_write, inside } from "./common.mjs";
 import { exists, is_file, sha256, instance_directory, instance_name, reconnect_file, project_directory } from "./project_paths.mjs";
 import { edt_connection, repository_projects } from "./directory_context.mjs";
-import { setup_knowledge_status } from "./setup_probe.mjs";
+import { setup_knowledge_status, edt_project_building } from "./setup_probe.mjs";
 import { knowledge_evidence_revision } from "./components.mjs";
 import { verification_limits, sanitize_setup_result, register_diagnostic_secrets } from "./diagnostics.mjs";
 import { project_profile } from "./profile.mjs";
@@ -68,7 +68,7 @@ export function save_readiness(state, config, profile, managed, external) {
     { id: "knowledge", label: "Режим знаний", state: knowledge.state === "disabled" ? "disabled" : knowledge.state === "ready" ? "ready" : knowledge.state === "invalid" ? "error" : "not_verified", detail: knowledge.detail },
     ...managed.map(item => ({ id: item.name, label: ({ "code-index": "Индекс кода", "bsl-ls": "BSL LS", policy: "Политика" })[item.name] || item.name, state: item.state === "disabled" ? "disabled" : item.ready ? "ready" : item.state || "error", detail: item.detail,
       ...(item.repositories ? { repositories: item.repositories } : {}) })),
-    ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : item.connected ? "not_verified" : "error", ...(item.failure ? { failure: item.failure } : {}), detail: item.detail || (!item.configured ? "Укажите адрес сервера в настройках подключений." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
+    ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : id === "edt" && edt_project_building(item) ? "building" : item.connected ? "not_verified" : "error", ...(item.failure ? { failure: item.failure } : {}), detail: item.detail || (!item.configured ? "Укажите адрес сервера в настройках подключений." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
     ...assets.checks];
   const result = { state: checks.every(item => passed(item, profile)) ? "ready" : "blocked", checkedAt: new Date().toISOString(), checks, scope: "setup", knowledge,
     verificationLimits: verification_limits(knowledge.ready),
@@ -118,7 +118,7 @@ export function read_component_checks(state, config, profile) {
     const { fingerprint: saved, result } = entry;
     if (!result || typeof result.id !== "string" || typeof result.state !== "string" || !Number.isFinite(Date.parse(result.checkedAt)) || !Number.isFinite(Date.parse(result.expiresAt))) return [];
     return [{ ...result, ...(saved !== fingerprint || Date.now() < Date.parse(result.checkedAt) || Date.now() - Date.parse(result.checkedAt) > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt)
-      ? { state: "check_stale", detail: "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." } : {}) }];
+      ? { state: "check_stale", lastState: result.lastState || result.state, detail: saved === fingerprint && result.state === "check_stale" && result.detail ? result.detail : "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." } : {}) }];
   });
 }
 

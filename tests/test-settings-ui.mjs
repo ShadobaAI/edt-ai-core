@@ -13,6 +13,7 @@ import { patch_yaml_draft, SettingsBackend } from "../scripts/settings_backend.m
 
 const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const componentName = card => card.children[0].children[0].children[0].textContent;
 
 test("static settings controls have unique IDs and script references point to real elements", () => {
   const markup = html.split("<script>")[0], ids = [...markup.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
@@ -193,10 +194,12 @@ test("compact component cards retain the full diagnostic in their tooltip and di
   const detail="Ошибка сервера компонента. ".repeat(30).trim(),current={...read,values:{...read.values,bslLsEnabled:true},
     summary:{components:[{id:"bsl-ls",status:"external",mode:"external"}]},componentChecks:[{id:"bsl-ls",state:"error",detail,checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60000).toISOString()}]};
   const ui=screen(async name=>name==="settings.versions"?{versions:[]}:current);await ui.flush();
-  const card=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children).find(card=>card.children[0].children[0].textContent==="BSL LS");
+  const card=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children).find(card=>componentName(card)==="BSL LS");
   const reason=card.children[1].children[0];assert.equal(reason.title,detail);assert.equal(reason.children[0].textContent,detail);
   ui.context.openManagedDialog(ui.context.catalogItems(current).find(item=>item.id==="bsl-ls"),null);await ui.flush();
   assert.ok(ui.elements.get("managedDialogStatus").textContent.endsWith(detail));
+  assert.equal(ui.elements.get("managedDialogState").attributes["data-tone"],"error");
+  assert.equal(ui.elements.get("managedDialogDiagnostic").textContent,"Ошибка проверки");
 });
 
 test("header profile summary clears unavailable profile data and respects read-only and disabled states",async()=>{
@@ -398,10 +401,26 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
   const after = JSON.parse(JSON.stringify(ui.context.catalogItems(current)));
   assert.deepEqual(after.filter(item => item.id !== id), before);
   assert.equal(after.find(item => item.id === id).state, item.kind === "testing" ? "configured" : "ready");
+  const prefix=item.kind==="external"?"componentDialog":item.kind==="managed"?"managedDialog":"testingDialog";
+  assert.equal(ui.elements.get(prefix+"State").attributes["data-state"],item.kind==="testing"?"configured":"ready");
+  assert.equal(ui.elements.get(prefix+"State").attributes["data-tone"],item.kind==="testing"?"warning":"good");
+  const refresh=ui.elements.get(item.kind==="external"?"probeButton":item.kind==="managed"?"managedProbeButton":"testingProbeButton");
+  assert.equal(refresh.attributes["aria-label"],"Обновить состояние "+item.name);assert.equal(refresh.attributes["aria-busy"],"false");
   assert.match(ui.elements.get(item.kind === "external" ? "probeResult" : item.kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent, /Проверен выбранный компонент/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   assert.equal(ui.calls.filter(call => ["settings.update", "settings.run_check"].includes(call.params?.name)).length, 0);
   assert.ok(ui.calls.filter(call => call.params?.name === "settings.refresh_readiness").every(call => !call.params.arguments.component || call.params.arguments.component === id));
+});
+
+test("EDT building evidence has an actionable state instead of an unconfirmed connection", async () => {
+  const current={...read,instance:"default",values:{...read.values,edtUrl:"http://edt"},componentChecks:[{id:"edt",state:"building",detail:"Тестовый проект: EDT сообщает о сборке проекта",checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60000).toISOString()}]};
+  const ui=screen(async()=>current);await ui.flush();
+  const item=ui.context.catalogItems(current).find(item=>item.id==="edt");ui.context.openConnectionDialog(item,null);
+  assert.equal(ui.elements.get("componentDialogDiagnostic").textContent,"Идёт сборка EDT-проекта");
+  assert.equal(ui.elements.get("componentDialogState").attributes["data-tone"],"warning");
+  assert.match(ui.elements.get("probeResult").textContent,/EDT сообщает о сборке/);
+  const card=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children).find(card=>componentName(card)==="EDT");
+  assert.equal(card.children[0].children[1].textContent,"Идёт сборка");assert.equal(ui.elements.get("headerStatusTitle").textContent,"Требует внимания");
 });
 
 test("settings UI saves, previews a local document, and renames through the real MCP server", async t => {
@@ -1533,7 +1552,7 @@ function isolatedProbeScreen(source, { delayed = false, failed = false, startFai
   }, { deferredClose });
   const item = id => ui.context.catalogItems(current).find(item => item.id === id);
   const open = async id => {
-    const card = ui.elements.get("componentCatalog").children.flatMap(group => group.children[1].children).find(card => card.children[0].children[0].textContent === item(id).name);
+    const card = ui.elements.get("componentCatalog").children.flatMap(group => group.children[1].children).find(card => componentName(card) === item(id).name);
     await card.children.at(-1).children[1].onclick();
     await ui.flush();
   };
@@ -2344,7 +2363,7 @@ test("component catalogue uses fresh evidence and treats disabled required servi
     summary:{components:[{id:"code-index",status:"disabled"},{id:"bsl-ls",status:"ready",checkedAt:"2026-10-22T12:00:00Z"}]},installedVersions:{"bsl-ls":"1.2.3"}};
   const ui=screen(async()=>current);await ui.flush();
   const cards=()=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children);
-  const card=name=>cards().find(item=>item.children[0].children[0].textContent===name);
+  const card=name=>cards().find(item=>componentName(item)===name);
   assert.equal(cards().length,7);assert.equal(card("EDT").children[0].children[1].textContent,"Готов");
   assert.equal(ui.elements.get("countAll").textContent,"7");assert.equal(ui.elements.get("countReady").textContent,"3");
   assert.equal(ui.elements.get("countIssues").textContent,"1");assert.equal(ui.elements.get("countDisabled").textContent,"3");
@@ -2384,7 +2403,7 @@ test("component actions target their service and preserve an unrelated document 
   const current={...read,profile:{...read.profile,testing:{yaxunit:true,vanessa:true}},values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std",openvikingEnabled:false,codeIndexEnabled:true,bslLsEnabled:true},
     knowledge:{provider:"openviking",mode:"kora",required:true},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
   const ui=screen(async(name,args)=>name==="settings.edit"?{text:'{"mcp":{}}',baseRevision:"base",layerScope:args.layerScope}:name==="settings.versions"?{component:args.component,versions:[]}:current);await ui.flush();
-  const cards=()=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),card=name=>cards().find(item=>item.children[0].children[0].textContent===name);
+  const cards=()=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),card=name=>cards().find(item=>componentName(item)===name);
   ui.elements.get("componentsIssues").onclick();assert.ok(card("OpenViking"));assert.match(ui.elements.get("readinessDetail").textContent,/OpenViking/);
   card("BSL LS").children[2].children[1].onclick();assert.equal(ui.elements.get("updateComponent").value,"bsl-ls");assert.equal(ui.elements.get("managedDialog").open,true);assert.equal(ui.document.activeElement,ui.elements.get("bslLsEnabled"));ui.elements.get("managedDialogClose").onclick();
   ui.elements.get("editorDocument").value="project_local";ui.elements.get("editorDocument").events.change();await ui.flush();
@@ -2402,7 +2421,7 @@ test("testing cards open and focus the matching profile field", async () => {
     throw new Error(name);
   });
   await ui.flush();const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children);
-  cards.find(card=>card.children[0].children[0].textContent==="YaXUnit").children[2].children[1].onclick();
+  cards.find(card=>componentName(card)==="YaXUnit").children[2].children[1].onclick();
   await ui.flush();await ui.flush();await ui.flush();
   const section=ui.elements.get("jsonTree").children.find(item=>item.children[0].textContent==="Тестирование");
   assert.equal(section.open,true);assert.equal(ui.document.activeElement.attributes?.["aria-label"],"testing.yaxunit");
@@ -2411,12 +2430,12 @@ test("testing cards open and focus the matching profile field", async () => {
 test("managed component dialog keeps a draft and collapses its panel on close", async () => {
   const current={...read,values:{...read.values,codeIndexEnabled:true,bslLsEnabled:true},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children);
-  cards.find(card=>card.children[0].children[0].textContent==="BSL LS").children[2].children[1].onclick();
+  cards.find(card=>componentName(card)==="BSL LS").children[2].children[1].onclick();
   assert.equal(ui.elements.get("codeIndexChoice").hidden,true);assert.equal(ui.elements.get("bslLsChoice").hidden,false);assert.equal(ui.elements.get("javaSettingsPanel").hidden,false);assert.equal(ui.elements.get("updateComponent").disabled,true);
   ui.elements.get("bslLsEnabled").checked=false;ui.elements.get("bslLsEnabled").events.change();ui.elements.get("managedDialogClose").onclick();
   assert.equal(ui.elements.get("managedCloseConfirm").open,true);ui.elements.get("managedCloseKeep").onclick();
   assert.equal(ui.elements.get("managedDialog").open,false);assert.equal(ui.elements.get("managedControls").parentElement,ui.elements.get("managedControlsHolder"));assert.equal(ui.elements.get("bslLsEnabled").checked,false);assert.equal(ui.elements.get("codeIndexChoice").hidden,false);assert.equal(ui.elements.get("updateComponent").disabled,false);
-  cards.find(card=>card.children[0].children[0].textContent==="Code Index").children[2].children[1].onclick();
+  cards.find(card=>componentName(card)==="Code Index").children[2].children[1].onclick();
   assert.equal(ui.elements.get("managedDialog").open,false);assert.match(ui.elements.get("status").textContent,/черновик другого компонента/);
 });
 
@@ -2431,7 +2450,7 @@ test("separate import and export actions expose the selected transfer flow", asy
 test("connection dialog keeps its draft and prevents saving it from another component", async () => {
   const current={...read,values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"not_checked"},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();
-  const card=name=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children).find(item=>item.children[0].children[0].textContent===name);
+  const card=name=>ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children).find(item=>componentName(item)===name);
   card("EDT").children[2].children[1].onclick();assert.equal(ui.elements.get("componentDialog").open,true);
   assert.equal(ui.elements.get("edtField").hidden,false);assert.equal(ui.elements.get("v8stdField").hidden,true);
   ui.elements.get("connectionScope").value="project_local";ui.elements.get("connectionScope").events.change();
@@ -2448,7 +2467,7 @@ test("connection dialog keeps its draft and prevents saving it from another comp
 test("discarding a connection draft does not release a pending external project change", async () => {
   const current={...read,instance:"first",values:{...read.values,edtUrl:"http://edt",bslLsJava:"java"},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();
-  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),edt=cards.find(item=>item.children[0].children[0].textContent==="EDT");
+  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),edt=cards.find(item=>componentName(item)==="EDT");
   edt.children[2].children[1].onclick();ui.elements.get("edtUrl").value="http://draft";ui.elements.get("edtUrl").events.input();
   ui.elements.get("bslLsJava").value="other-draft";ui.elements.get("bslLsJava").events.input();
   ui.context.renderCurrent({...current,values:{...current.values,projectRoot:"C:/new"}},{preserveDraft:true});
@@ -2465,14 +2484,14 @@ test("component catalogue shows checking instead of the previous ready receipt d
   const current={...read,instance:"default",values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();
   current.operation={id:"check",action:"check",status:"running",projectRoot:read.values.projectRoot,instance:"default"};ui.context.renderCurrent(current,{preserveDraft:true});
-  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),edt=cards.find(item=>item.children[0].children[0].textContent==="EDT");
+  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),edt=cards.find(item=>componentName(item)==="EDT");
   assert.equal(edt.children[0].children[1].textContent,"Проверяется…");
 });
 
 test("enabled testing capabilities are not falsely claimed ready or treated as failed setup checks", async () => {
   const current={...read,profile:{...read.profile,testing:{yaxunit:true,vanessa:true}},values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();
-  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),testCard=cards.find(item=>item.children[0].children[0].textContent==="YaXUnit");
+  const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),testCard=cards.find(item=>componentName(item)==="YaXUnit");
   assert.equal(testCard.children[0].children[1].textContent,"Не настроен");assert.equal(ui.elements.get("headerStatusTitle").textContent,"Готово");
 });
 
@@ -2922,12 +2941,146 @@ test("scoped connection edits show the destination and preserve higher-priority 
   ui.elements.get("connectionScope").value = "profile"; ui.elements.get("connectionScope").events.change();
   assert.match(ui.elements.get("connectionDestination").textContent, /project.yaml/);
   assert.match(ui.elements.get("connectionScopeHint").textContent, /приоритетный/);
-  assert.equal(ui.elements.get("edtUrl").value, "http://old-profile/mcp");
+  assert.equal(ui.elements.get("edtUrl").value, "");assert.equal(ui.elements.get("edtUrl").placeholder,"http://local/mcp");
   assert.match(ui.elements.get("edtSource").textContent, /Действует: http:\/\/local/);
   const field = ui.elements.get("edtUrl"); field.value = "http://project/mcp"; field.events.input();
   await ui.elements.get("saveButton").onclick();
   assert.equal(saved.scope, "profile"); assert.equal(saved.expectedRevision, "rev1"); assert.equal(saved.set.edtUrl, "http://project/mcp");
-  assert.equal(field.value, "http://project/mcp");
+  assert.equal(field.value, "");assert.equal(field.placeholder,"http://local/mcp");assert.equal(current.layerValues.profile.edtUrl,"http://project/mcp");
+});
+
+test("connection scope defaults follow only the fields of the opened server", async () => {
+  const current={...read,values:{...read.values,edtUrl:"http://shared/mcp",v8stdUrl:"",openvikingTimeout:25},
+    connectionSources:{edt:"profile",v8std:"project_local",openviking:"profile"},valueSources:{openvikingEnabled:"profile",openvikingTimeout:"project_local"},
+    layerValues:{profile:{edtUrl:"http://shared/mcp",v8stdUrl:"http://shared-v8/mcp",openvikingTimeout:30},project_local:{v8stdUrl:"",openvikingTimeout:25}}};
+  const ui=screen(async()=>current);await ui.flush();
+  for(const [id,scope]of [["edt","profile"],["v8std","project_local"],["openviking","project_local"]]){
+    ui.context.openConnectionDialog(ui.context.catalogItems(current).find(item=>item.id===id),null);
+    assert.equal(ui.elements.get("connectionScope").value,scope,id);
+    assert.equal(ui.elements.get(scope==="profile"?"connectionSharedButton":"connectionLocalButton").attributes["aria-pressed"],"true");
+    assert.equal(ui.elements.get("connectionScopeHint").textContent,"",id+" ignores other servers' sources");
+    ui.elements.get("componentDialog").close();
+  }
+  assert.equal(ui.elements.get("v8stdUrl").value,"");
+});
+
+test("inherited URLs are placeholders, probes use their value, and only explicit edits are saved", async () => {
+  const shared="http://shared/mcp",local="http://local/mcp",updates=[];
+  const current={...read,instance:"first",values:{...read.values,edtUrl:shared},connectionSources:{edt:"profile"},
+    layerValues:{profile:{edtUrl:shared},project_local:{}},writePaths:{profile:"C:/project/.ai/project.yaml",project_local:"C:/project/.ai/project.local.yaml"}};
+  let probed;
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.update"){
+      updates.push(args);Object.assign(current.layerValues[args.scope],args.set);
+      const scope=Object.hasOwn(current.layerValues.project_local,"edtUrl")?"project_local":"profile";
+      current.values.edtUrl=current.layerValues[scope].edtUrl;current.connectionSources.edt=scope;return {savedTo:current.writePaths[args.scope]};
+    }
+    if(name==="settings.probe_connections"){probed=args.connections.edt;return {id:"hint-probe",status:"running"};}
+    if(name==="settings.operation")return {id:"hint-probe",action:"probe",component:"edt",projectRoot:current.values.projectRoot,instance:"first",status:"completed",result:{external:{}}};
+    throw new Error(name);
+  });await ui.flush();ui.context.openConnectionDialog(ui.context.catalogItems(current).find(item=>item.id==="edt"),null);
+  const field=ui.elements.get("edtUrl");assert.equal(field.value,shared);
+  ui.elements.get("connectionLocalButton").onclick();assert.equal(field.value,"");assert.equal(field.placeholder,shared);assert.equal(ui.elements.get("saveButton").disabled,true);
+  await ui.elements.get("probeButton").onclick();assert.equal(probed,shared);assert.equal(updates.length,0);
+  field.value="temporary";field.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);
+  field.value="";field.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(field.placeholder,shared);
+  field.value=local;field.events.input();await ui.elements.get("saveButton").onclick();
+  assert.equal(updates.length,1);assert.equal(updates[0].scope,"project_local");assert.equal(updates[0].set.edtUrl,local);assert.equal(field.value,local);
+  ui.elements.get("connectionSharedButton").onclick();assert.equal(current.layerValues.profile.edtUrl,shared);assert.equal(field.value,"");assert.equal(field.placeholder,local);
+  field.value="http://draft/mcp";field.events.input();ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,"http://draft/mcp");
+  ui.elements.get("componentDiscard").onclick();assert.equal(field.value,"");assert.equal(field.placeholder,local);
+  ui.elements.get("connectionLocalButton").onclick();field.value="";field.events.input();await ui.elements.get("saveButton").onclick();
+  assert.equal(updates.at(-1).set.edtUrl,"");assert.equal(current.values.edtUrl,"");assert.equal(field.value,"");assert.notEqual(field.placeholder,shared);
+});
+
+test("inherited OpenViking fields preserve record identity and numeric probe values", async () => {
+  const url="https://knowledge.example/mcp",current={...read,instance:"first",values:{...read.values,openvikingEnabled:true,openvikingUrl:url,openvikingTimeout:30,openvikingMaxResponseBytes:4096,openvikingConnectionId:"team"},
+    connectionSources:{openviking:"profile"},valueSources:{openvikingEnabled:"profile",openvikingTimeout:"project_local",openvikingMaxResponseBytes:"settings",openvikingConnectionId:"settings"},
+    layerValues:{profile:{openvikingEnabled:true,openvikingUrl:url,openvikingTimeout:20},project_local:{openvikingTimeout:30}}};
+  let probed;
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.openviking_read")return {revision:"record",values:{}};
+    if(name==="settings.probe_connections"){probed=args;return {id:"ov-hint-probe",status:"running"};}
+    if(name==="settings.operation")return {id:"ov-hint-probe",action:"probe",component:"openviking",projectRoot:current.values.projectRoot,instance:"first",status:"completed",result:{external:{}}};
+    throw new Error(name);
+  });await ui.flush();ui.context.openConnectionDialog(ui.context.catalogItems(current).find(item=>item.id==="openviking"),null);
+  assert.equal(ui.elements.get("openvikingUrl").value,"");assert.equal(ui.elements.get("openvikingUrl").placeholder,url);
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext("ovIdentity()",ui.context))),{url,connectionId:"team"});
+  ui.elements.get("connectionSharedButton").onclick();
+  const timeout=ui.elements.get("openvikingTimeout");assert.equal(timeout.value,"");assert.equal(timeout.placeholder,"30");
+  assert.equal(vm.runInContext('transportValue("openvikingMaxResponseBytes")',ui.context),4096);
+  await ui.elements.get("probeButton").onclick();assert.equal(probed.connections,undefined);
+  timeout.value="31";timeout.events.input();await ui.elements.get("probeButton").onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(probed.connections.openviking)),{timeout_seconds:31});
+  timeout.value="";timeout.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(timeout.placeholder,"30");
+});
+
+test("Java checks use the inherited executable while selected paths become editable drafts", async () => {
+  const java="C:/LocalJava/bin/java.exe",picked="C:/PickedJava/bin/java.exe",current={...read,instance:"first",values:{...read.values,bslLsJava:java},managedValueSources:{bslLsJava:"project_local"},
+    layerValues:{profile:{bslLsJava:"old-java"},project_local:{bslLsJava:java},global:{bslLsJava:"java"}}};
+  let command,action;
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.check_java"){command=args.command;action="check_java";return {id:"java-hint",status:"running"};}
+    if(name==="settings.pick_java"){action="pick_java";return {id:"java-hint",status:"running"};}
+    if(name==="settings.operation")return {id:"java-hint",action,projectRoot:current.values.projectRoot,instance:"first",status:"completed",result:{path:action==="pick_java"?picked:java,version:"21"}};
+    throw new Error(name);
+  });await ui.flush();ui.elements.get("javaSharedButton").onclick();
+  const field=ui.elements.get("bslLsJava");assert.equal(field.value,"");assert.equal(field.placeholder,java);
+  await ui.elements.get("checkJavaButton").onclick();assert.equal(command,java);assert.equal(ui.elements.get("saveJavaButton").disabled,true);
+  await ui.elements.get("pickJavaButton").onclick();assert.equal(field.value,picked);assert.equal(ui.elements.get("saveJavaButton").disabled,false);
+});
+
+test("managed scope defaults separate enablement, versions and Java", async () => {
+  const current={...read,values:{...read.values,codeIndexEnabled:true,bslLsEnabled:false,bslLsJava:"java"},
+    managedValueSources:{codeIndexEnabled:"profile",codeIndexVersion:"project_local",bslLsEnabled:"project_local",bslLsJava:"settings"},
+    layerValues:{profile:{codeIndexEnabled:true,bslLsEnabled:true},project_local:{codeIndexVersion:"v1.2.3",bslLsEnabled:false},global:{bslLsJava:"java"}}};
+  const ui=screen(async(name,args)=>name==="settings.versions"?{component:args.component,versions:[{version:"v1.2.3"}]}:current);await ui.flush();
+  const open=id=>ui.context.openManagedDialog(ui.context.catalogItems(current).find(item=>item.id===id),null);
+  open("code-index");assert.equal(ui.elements.get("componentScope").value,"profile");ui.elements.get("managedDialog").close();
+  open("bsl-ls");assert.equal(ui.elements.get("componentScope").value,"project_local");assert.equal(ui.elements.get("bslLsEnabled").checked,false);
+  assert.equal(ui.elements.get("javaScope").value,"global");assert.equal(ui.elements.get("javaGlobalButton").attributes["aria-pressed"],"true");
+  ui.elements.get("managedDialog").close();
+  for(const source of ["profile","project_local"]){
+    current.managedValueSources.bslLsJava=source;open("bsl-ls");assert.equal(ui.elements.get("javaScope").value,source);ui.elements.get("managedDialog").close();
+  }
+});
+
+test("document scope defaults include all local YAML settings and respect each testing dialog", async () => {
+  const backend=new SettingsBackend("unused-state","unused-settings"),current={...read,localOverridePaths:[["project","purpose"],["testing","yaxunit"]]};
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.edit")return {text:"testing:\n  yaxunit: false\n  vanessa: false\n",format:"yaml",baseRevision:"base",layerScope:args.layerScope};
+    if(name==="settings.document_fields")return backend.main({action:"document_fields",...args});
+    throw new Error(name);
+  });await ui.flush();
+  ui.context.show("editor");await ui.flush();await ui.flush();
+  assert.equal(ui.elements.get("editorDocument").value,"project_local");
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.edit").at(-1).params.arguments.layerScope,"project_local");
+  await ui.context.openTestingSettings("yaxunit",null);assert.equal(ui.elements.get("editorDocument").value,"project_local");ui.elements.get("testingDialog").close();
+  await ui.context.openTestingSettings("vanessa",null);assert.equal(ui.elements.get("editorDocument").value,"profile");ui.elements.get("testingDialog").close();
+  current.localOverridePaths.push(["testing","commands"]);
+  await ui.context.openTestingSettings("vanessa",null);assert.equal(ui.elements.get("editorDocument").value,"project_local");ui.elements.get("testingDialog").close();
+  current.localOverridePaths=[];
+  ui.context.show("editor");await ui.flush();assert.equal(ui.elements.get("editorDocument").value,"profile");
+});
+
+test("manual scope choices and drafts survive refresh while another project gets its own defaults", async () => {
+  const current={...read,instance:"first",connectionSources:{edt:"profile"},managedValueSources:{bslLsJava:"profile"},values:{...read.values,edtUrl:"http://shared/mcp",bslLsJava:"project-java"}};
+  const ui=screen(async()=>current);await ui.flush();
+  assert.equal(ui.elements.get("connectionScope").value,"profile");
+  ui.elements.get("connectionLocalButton").onclick();ui.elements.get("javaGlobalButton").onclick();
+  ui.context.renderCurrent(current,{preserveDraft:true});
+  assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.equal(ui.elements.get("javaScope").value,"global");
+  const field=ui.elements.get("edtUrl");field.value="http://draft/mcp";field.events.input();
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,"http://draft/mcp");assert.equal(ui.elements.get("connectionScope").value,"project_local");
+  ui.elements.get("discardDraftButton").onclick();
+  ui.context.renderCurrent({...current,values:{...current.values,projectRoot:"C:/another"}});
+  assert.equal(ui.elements.get("connectionScope").value,"profile");assert.equal(ui.elements.get("javaScope").value,"profile");
+  ui.context.renderCurrent({...current,instance:"second",connectionSources:{edt:"project_local"},managedValueSources:{bslLsJava:"settings"}});
+  assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.equal(ui.elements.get("javaScope").value,"global");
 });
 
 test("scope controls use accessible segments beside the save action", () => {
@@ -2958,7 +3111,7 @@ test("project scopes keep drafts isolated and save through the real MCP", async 
   ui.elements.get("connectionSharedButton").onclick();
   assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"true");
   assert.equal(ui.elements.get("connectionLocalButton").attributes["aria-pressed"],"false");
-  assert.equal(ui.elements.get("edtUrl").value,"http://localhost:8111/mcp");assert.match(ui.elements.get("edtSource").textContent,/приоритет выше/);
+  assert.equal(ui.elements.get("edtUrl").value,"");assert.equal(ui.elements.get("edtUrl").placeholder,"http://localhost:8222/mcp");assert.match(ui.elements.get("edtSource").textContent,/приоритет выше/);
   ui.elements.get("edtUrl").value="http://localhost:8333/mcp";ui.elements.get("edtUrl").events.input();
   ui.elements.get("connectionSharedButton").onclick();
   ui.elements.get("connectionLocalButton").onclick();assert.equal(ui.elements.get("connectionScope").value,"profile");
@@ -2979,7 +3132,7 @@ test("environment URLs remain read-only and explain the higher-priority source",
   const ui = screen(async name => { if (["settings.read", "settings.status"].includes(name)) return current; throw new Error(name); });
   await ui.flush();
   ui.elements.get("connectionScope").value = "profile"; ui.elements.get("connectionScope").events.change();
-  assert.equal(ui.elements.get("edtUrl").value, "http://profile/mcp");
+  assert.equal(ui.elements.get("edtUrl").value, "");assert.equal(ui.elements.get("edtUrl").placeholder,"http://env/mcp");
   assert.equal(ui.elements.get("edtUrl").readOnly, true);
   assert.match(ui.elements.get("edtSource").textContent, /Действует: http:\/\/env\/mcp — переменная окружения EDT_AI_EDT_URL.*приоритет выше/);
 });
@@ -3114,7 +3267,7 @@ test("saving one group preserves other drafts and rebases them only to the confi
   assert.equal(enabled.checked, true); assert.equal(ui.elements.get("componentLocalButton").attributes["aria-pressed"], "true");
   await ui.elements.get("saveButton").onclick(); assert.equal(enabled.checked, true);
   await ui.elements.get("saveComponentsButton").onclick(); assert.deepEqual(revisions, ["one", "two"]);
-  assert.deepEqual(scopes, ["project_local", "project_local"]);
+  assert.deepEqual(scopes, ["profile", "project_local"]);
   ui.elements.get("componentSharedButton").onclick();
   assert.equal(ui.elements.get("componentSharedButton").attributes["aria-pressed"], "true");
 });

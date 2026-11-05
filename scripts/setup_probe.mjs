@@ -9,6 +9,7 @@ import { connection_failure, verification_limits, safe_error_message, register_d
 import { repository_projects } from "./directory_context.mjs";
 
 const observations = new WeakMap();
+export const edt_project_building = item => item.connected === true && item.repositories?.some(repo => repo.matched === true && repo.open === true && repo.ready !== true && repo.state === "building");
 function edt_project_detail(repositories) {
   const lines = repositories.map(item => {
     let status = "готов";

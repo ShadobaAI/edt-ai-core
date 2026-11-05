@@ -8,8 +8,8 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { edt_fixture as fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { setup_assets, save_readiness, read_readiness } from "../scripts/setup_readiness.mjs";
-import { instance_directory } from "../scripts/project_paths.mjs";
+import { setup_assets, save_readiness, read_readiness, save_component_checks } from "../scripts/setup_readiness.mjs";
+import { instance_directory, project_directory } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 
 async function ready_fixture(t) {
@@ -60,7 +60,7 @@ test("EDT building and mapping failures remain distinct in saved readiness", asy
   const scope = f.root + "#first";
   setProjectState("building");
   const result = await backend.main({ action: "refresh_readiness", scope });
-  assert.equal(result.componentChecks.find(item => item.id === "edt").state, "not_verified");
+  assert.equal(result.componentChecks.find(item => item.id === "edt").state, "building");
   assert.equal(result.external.edt.repositories[0].matched, true);
   assert.equal(result.external.edt.failure, undefined);
   assert.match(result.external.edt.detail, /product: EDT сообщает о сборке проекта/);
@@ -187,6 +187,34 @@ test("passive status refresh never probes Java or starts local services", async 
   assert.ok(count()>calls);assert.equal(result.external.edt.ready,true);
   assert.equal(result.componentChecks.find(item=>item.id==="bsl-ls").state,"not_verified");
   assert.equal(execute.mock.callCount(),0);assert.equal(spawn.mock.callCount(),0);
+});
+
+test("passive managed probes preserve expired API evidence without renewing it or launching services", async t => {
+  const {f,backend}=await ready_fixture(t);
+  await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true}});
+  const config=backend.effective(backend.current()),home=path.join(project_directory(f.state,f.root),"code-index");
+  fs.mkdirSync(home,{recursive:true});fs.writeFileSync(path.join(home,"daemon.json"),JSON.stringify({pid:process.pid,http_port:45678}));
+  const fetch=globalThis.fetch;
+  t.mock.method(globalThis,"fetch",(url,options)=>String(url)==="http://127.0.0.1:45678/health"?Promise.resolve(new Response(JSON.stringify({pid:process.pid,status:"running",paths:[]}))):fetch(url,options));
+  save_readiness(f.state,config,f.profile,[{name:"code-index",state:"stale",ready:false},{name:"bsl-ls",state:"ready",ready:true}],{edt:{ready:true},v8std:{ready:true}});
+  const file=path.join(instance_directory(f.state,f.root),"first.readiness.json"),receipt=JSON.parse(fs.readFileSync(file,"utf8"));
+  const checkedAt=new Date(Date.now()-16*60000).toISOString(),expiresAt=new Date(Date.now()-60000).toISOString();
+  receipt.result.checkedAt=checkedAt;receipt.result.expiresAt=expiresAt;fs.writeFileSync(file,JSON.stringify(receipt));
+  // Reproduce the old loop: a newer liveness-only observation used to hide
+  // the older setup API result as soon as its 15-minute validity expired.
+  save_component_checks(f.state,config,f.profile,[{id:"code-index",state:"running"},{id:"bsl-ls",state:"not_verified"}]);
+  const spawn=t.mock.method(childProcess,"spawn",()=>{throw new Error("Unexpected service launch");});syncBuiltinESMExports();
+  t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  for(const component of ["code-index","bsl-ls"]){
+    const result=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component}),check=result.componentChecks[0];
+    assert.equal(check.state,"check_stale");assert.equal(check.checkedAt,checkedAt);assert.equal(check.expiresAt,expiresAt);
+    assert.match(check.detail,/Подготовить и проверить/);
+    const saved=(await backend.main({action:"read"})).componentChecks.find(item=>item.id===component);
+    assert.equal(saved.state,"check_stale");assert.match(saved.detail,/Подготовить и проверить/);
+  }
+  assert.equal(spawn.mock.callCount(),0);
+  process.env.EDT_AI_INSTANCE="another";
+  const other=await backend.main({action:"probe",component:"bsl-ls"});assert.equal(other.componentChecks[0].state,"not_verified");
 });
 
 test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{

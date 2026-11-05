@@ -126,6 +126,7 @@ function readSettings(actual) {
     values: actual.values, instance: actual.instance, connectionSources: actual.connectionSources,
     valueSources: actual.valueSources, managedValueSources: actual.managedValueSources,
     settingsRevision: actual.settingsRevision, writePaths: actual.writePaths, layerValues: actual.layerValues,
+    localOverridePaths: actual.localOverridePaths,
     installedVersions: actual.installedVersions,
     preparationScope: actual.preparationScope,
     profile: actual.profile, directoryContext: actual.directoryContext, sessionGuidance: actual.sessionGuidance,
@@ -480,7 +481,7 @@ async function call(name, args, meta = {}) {
     const { saved_support_report } = await import("../scripts/support_bundle.mjs");
     const saved = latestDiagnosticsExport || saved_support_report(state);
     if (!saved) throw new Error("Сначала сохраните диагностический файл.");
-    await folder_action("open", saved.directory);
+    await folder_action("open", saved.directory, { select: saved.path });
     return { content: [{ type: "text", text: "Папка диагностики открыта." }] };
   }
   const readOnlyEntry = ["settings.inspect", "settings.read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.check", "settings.versions"].includes(name);

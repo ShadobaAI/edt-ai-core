@@ -539,11 +539,11 @@ export class SettingsBackend {
       );
     return config;
   }
-  setting_layers(config, profile) {
+  setting_scope_data(config, profile) {
     const root = config.active_project;
-    if (!root || profile.status !== "loaded") return {};
+    if (!root || profile.status !== "loaded") return { layerValues: {}, localOverridePaths: [] };
     const files = { profile: profile_target(root), project_local: inside(root, ".ai/project.local.yaml") };
-    const layers = {};
+    const layers = {}, localOverridePaths = [];
     for (const [scope, file] of Object.entries(files)) {
       const document = exists(file) ? load(file) : {}, fields = {};
       if (scope !== "profile" && exists(file)) {
@@ -556,9 +556,16 @@ export class SettingsBackend {
         if (entry && Object.hasOwn(entry, parts.at(-1))) fields[key] = structuredClone(entry[parts.at(-1)]);
       }
       layers[scope] = fields;
+      if (scope === "project_local") {
+        const collect = (value, parts = []) => {
+          if (value === null || typeof value !== "object" || Array.isArray(value) || parts.at(-1) === "headers_env") localOverridePaths.push(parts);
+          else for (const [key, child] of Object.entries(value)) collect(child, [...parts, key]);
+        };
+        collect(document);
+      }
     }
     layers.global = Object.fromEntries(Object.entries(FIELDS).filter(([, parts]) => parts[1] === "managed").map(([key, parts]) => [key, structuredClone(config.mcp.managed[parts[2]]?.[parts.at(-1)])]).filter(([, value]) => value !== undefined));
-    return layers;
+    return { layerValues: layers, localOverridePaths };
   }
   store_shared_settings(config) {
     const saved = settings(this.CONFIG);
@@ -978,13 +985,16 @@ export class SettingsBackend {
       if (managed_components.includes(component)) {
         const runtime = await import("./runtime.mjs"), options = component_settings(config, component);
         const readiness = await read_readiness(this.STATE, config, profile);
-        const setupCheck = ["ready", "blocked"].includes(readiness.state) ? readiness.checks.find(item => item.id === component) : null;
-        const prior = [setupCheck && { ...setupCheck, checkedAt: readiness.checkedAt, expiresAt: readiness.expiresAt },
+        const setupCheck = ["ready", "blocked", "stale"].includes(readiness.state) ? readiness.checks.find(item => item.id === component) : null;
+        const apiStates = ["ready", "error", "stale", "missing", "mismatch", "missing_project", "indexing"];
+        const prior = [setupCheck && { ...setupCheck, ...(readiness.state === "stale" ? { state: "check_stale", lastState: setupCheck.state } : {}), checkedAt: readiness.checkedAt, expiresAt: readiness.expiresAt },
           read_component_checks(this.STATE, config, profile).find(item => item.id === component)]
-          .filter(Boolean).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt))[0];
+          .filter(item => item && apiStates.includes(item.lastState || item.state)).sort((a, b) => Date.parse(b.checkedAt) - Date.parse(a.checkedAt))[0];
         const retainedNotice = "Сохранён актуальный результат последней проверки API; новый запуск сервиса не выполнялся.";
         const retained = prior && ["ready", "error", "stale", "missing", "mismatch", "missing_project", "indexing"].includes(prior.state)
           ? { ...prior, detail: prior.detail?.includes(retainedNotice) ? prior.detail : (prior.detail ? prior.detail + " " : "") + retainedNotice } : null;
+        const expired = prior?.state === "check_stale" ? { id: component, state: "check_stale", lastState: prior.lastState, checkedAt: prior.checkedAt, expiresAt: prior.expiresAt,
+          detail: (component === "code-index" ? "Процесс индекса работает, но подтверждение актуальности индекса устарело." : "Подтверждение API BSL LS устарело; автоматическое обновление не запускает новую JVM.") + " Для новой проверки используйте «Подготовить и проверить»." } : null;
         let check = { id: component, state: "not_verified", detail: "Работоспособность не проверена: требуется разрешённая подготовка и запуск компонента." };
         if (!component_enabled(config, component)) check = { id: component, state: "disabled", detail: "Компонент отключён." };
         else if (options.mode === "external") {
@@ -994,8 +1004,8 @@ export class SettingsBackend {
           } catch (error) { check = { id: component, state: "error", detail: safe_error_message(error) }; }
         } else if (component === "code-index") {
           const health = await runtime.daemon_health(path.join(project_directory(this.STATE, root), "code-index"));
-          check = health && retained ? retained : { ...check, state: health ? "running" : "stopped", detail: health ? "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
-        } else if (retained) check = retained;
+          check = health && (retained || expired) ? retained || expired : { ...check, state: health ? "running" : "stopped", detail: health ? "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
+        } else if (retained || expired) check = retained || expired;
         checks = [check]; result = { managed: [{ name: component, ...check, ready: check.state === "ready" }], external: {} };
       } else if (["yaxunit", "vanessa"].includes(component)) {
         const enabled = profile.testing[component], configured = Boolean(profile.testing[component + "_config"]);
@@ -1003,9 +1013,9 @@ export class SettingsBackend {
           detail: !enabled ? "Возможность отключена в профиле." : configured ? "Настройка профиля проверена. Работоспособность тестового контура не проверена; запуск тестов требует отдельного разрешения." : "В профиле отсутствует блок testing." + component + "_config." }];
         result = { managed: [], external: {} };
       } else {
-        const { probe_connections } = await import("./setup_probe.mjs");
+        const { probe_connections, edt_project_building } = await import("./setup_probe.mjs");
         result = await probe_connections(config, root, profile, this.STATE, component);
-        checks = Object.entries(result.external).map(([id, item]) => ({ id, state: item.ready === true ? "ready" : item.configured === false ? "missing_config" : item.connected ? "not_verified" : "error", detail: item.detail, repositories: item.repositories, expiresAt: item.readiness?.expiresAt }));
+        checks = Object.entries(result.external).map(([id, item]) => ({ id, state: item.ready === true ? "ready" : item.configured === false ? "missing_config" : id === "edt" && edt_project_building(item) ? "building" : item.connected ? "not_verified" : "error", detail: item.detail, repositories: item.repositories, expiresAt: item.readiness?.expiresAt }));
       }
       const draft = original !== stable(config);
       if (request.collectOnly) return sanitize_setup_result({ ...result, component, componentChecks: checks, draft, projectRoot: root, instance: instance_name() });
@@ -1063,7 +1073,7 @@ export class SettingsBackend {
           .map(([key, parts]) => [key, fieldSources.components?.[parts.at(-2)]?.[parts.at(-1)] || "settings"])),
         settingsRevision: config.active_project && profile.status === "loaded" ? this.revision(config, profile_target(config.active_project)) : null,
         writePaths: config.active_project ? { profile: profile_target(config.active_project), project_local: inside(config.active_project, ".ai/project.local.yaml"), global: this.CONFIG } : {},
-        layerValues: this.setting_layers(config, profile),
+        ...this.setting_scope_data(config, profile),
         preparationScope: preparation_scope(actual.projectRoot),
         profileHistory: profile_history(this.STATE, actual.projectRoot),
         profileHistoryHidden: profile_hidden(this.STATE, actual.projectRoot),

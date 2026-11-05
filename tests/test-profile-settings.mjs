@@ -13,6 +13,20 @@ import { once } from "node:events";
 import { save_readiness, read_component_checks, save_component_checks } from "../scripts/setup_readiness.mjs";
 import { project_profile } from "../scripts/profile.mjs";
 
+test("scope metadata includes local YAML leaves without exposing their values", async t => {
+  const f=fixture(t),directory=path.join(f.root,".ai");fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory,"project.yaml"),JSON.stringify(f.profile));
+  fs.writeFileSync(path.join(directory,"project.local.yaml"),JSON.stringify({project:{purpose:"machine-specific"},testing:{yaxunit:false,commands:[]},connections:{edt:{url:""}},components:{"code-index":{},"bsl-ls":{enabled:false,headers_env:{}}}}));
+  const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS),config={active_project:f.root,mcp:{managed:{"bsl-ls":{java:"java"}}}};
+  const result=backend.setting_scope_data(config,{status:"loaded"});
+  assert.deepEqual(result.localOverridePaths,[["project","purpose"],["testing","yaxunit"],["testing","commands"],["connections","edt","url"],["components","bsl-ls","enabled"],["components","bsl-ls","headers_env"]]);
+  assert.equal(result.layerValues.project_local.bslLsEnabled,false);assert.equal(result.layerValues.project_local.edtUrl,"");
+  assert.equal(result.layerValues.global.bslLsJava,"java");
+  assert.deepEqual(backend.setting_scope_data(config,{status:"invalid"}),{layerValues:{},localOverridePaths:[]});
+  const client=await session(t,"mcp/settings.mjs",[],f),snapshot=(await client.call("settings.read",{})).structuredContent;
+  assert.deepEqual(snapshot.localOverridePaths,result.localOverridePaths);
+});
+
 test("addressed probes preserve other results, do not prepare services and expire per instance", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const backend = new SettingsBackend(), original = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
