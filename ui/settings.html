@@ -243,7 +243,7 @@ const knowledgeProvider=value=>({none:"источник не выбран",openv
 const knowledgeAction=value=>({discovery:"изучение",design:"проектирование",implementation:"изменение",review:"ревью",runtime:"работа с приложением"})[value]||"другое действие";
 const installAllowsPrerelease=component=>{const field=component==="bsl-ls"?"bslLsAllowPrerelease":"codeIndexAllowPrerelease";return currentData?.managedValueSources?.[field]&&currentData.managedValueSources[field]!=="settings"&&currentData.values?.[field]===true;};
 const versionLabel=value=>value==="latest"?($("updateComponent").value==="bsl-ls"||installAllowsPrerelease($("updateComponent").value)?"Последняя подходящая версия":"Последняя стабильная версия"):value;
-function notice(text,error=false){const message=error?userMessage(text):text;status.textContent=message;status.classList.toggle("error",error);if(profilesOpen)$("profileChooserStatus").textContent=message;if($("componentDialog").open)$("componentDialogStatus").textContent=message;if($("transferDialog").open)$("transferStatus").textContent=message;}
+function notice(text,error=false,scope=null){const message=error?userMessage(text):text;status.textContent=message;status.classList.toggle("error",error);if(profilesOpen)$("profileChooserStatus").textContent=message;if($("componentDialog").open&&(!scope||operationMatchesProfile(scope)&&(!scope.component||scope.component===dialogComponent)))$("componentDialogStatus").textContent=message;if($("transferDialog").open)$("transferStatus").textContent=message;}
 function rpc(method,params={}){
   if(window.parent===window)return Promise.reject(new Error("Откройте настройки 1C AI Core в Codex."));
   return new Promise((resolve,reject)=>{
@@ -410,18 +410,20 @@ function catalogItems(current){
 }
 function componentInputSignature(id){return JSON.stringify((id==="openviking"?openvikingFields:["edt","v8std"].includes(id)?[id+"Url"]:[]).map(field=>transportValue(field)));}
 function renderDialogStates(){
+  const items=catalogItems(currentData);
   for(const [id,control]of [[dialogComponent,"componentDialogStatus"],[managedComponent,"managedDialogStatus"],[testingComponent,"testingDialogStatus"]]){
-    if(!id)continue;const item=catalogItems(currentData).find(item=>item.id===id);
+    const item=id?items.find(item=>item.id===id):null;
     if(control==="componentDialogStatus"){
-      $("componentDialogDiagnostic").textContent=componentStateLabel(id,item.state);
-      $("probeResult").textContent=item.detail?userMessage(item.detail):"";$("probeResult").hidden=!item.detail;
-    }else $(control).textContent=componentStateLabel(id,item.state)+(item.detail?" · "+userMessage(item.detail):"");
+      $("componentDialogDiagnostic").textContent=item?componentStateLabel(id,item.state):"";
+      $("probeResult").textContent=item?.detail?userMessage(item.detail):"";$("probeResult").hidden=!item?.detail;
+    }else $(control).textContent=item?componentStateLabel(id,item.state)+(item.detail?" · "+userMessage(item.detail):""):"";
   }
 }
 function observeComponentResult(result,operation){
   if(!operationMatchesProfile(operation)||result.superseded)return;
+  const component=operation.action==="probe"?operation.component||result.component:null;
   const checks=result.componentChecks||[...(result.managed||[]).map(item=>({id:item.name,state:item.state==="disabled"?"disabled":item.ready===true?"ready":item.state||"error",detail:item.detail})),...Object.entries(result.external||{}).map(([id,item])=>({id,state:item.ready===true?"ready":item.configured===false?"missing_config":item.connected?"not_verified":"error",detail:item.detail}))];
-  for(const check of checks)componentObservations.set(check.id,{root:operation.projectRoot,instance:operation.instance,revision:currentData?.settingsRevision,signature:componentInputSignature(check.id),draft:result.draft,setup:Boolean(result.readiness),check:{...check,checkedAt:check.checkedAt||result.readiness?.checkedAt||operation.completedAt||new Date().toISOString(),expiresAt:check.expiresAt||result.readiness?.expiresAt||new Date(Date.now()+15*60*1000).toISOString()}});
+  for(const check of checks.filter(check=>!component||check.id===component))componentObservations.set(check.id,{root:operation.projectRoot,instance:operation.instance,revision:operation.probeInputs?operation.probeInputs.revision:currentData?.settingsRevision,signature:operation.probeInputs?operation.probeInputs.signature:componentInputSignature(check.id),draft:result.draft,setup:Boolean(result.readiness),check:{...check,checkedAt:check.checkedAt||result.readiness?.checkedAt||operation.completedAt||new Date().toISOString(),expiresAt:check.expiresAt||result.readiness?.expiresAt||new Date(Date.now()+15*60*1000).toISOString()}});
   renderComponentCatalog(currentData);renderDialogStates();
 }
 function renderComponentCatalog(current){
@@ -448,7 +450,7 @@ function openManagedDialog(item,trigger){if($("managedDialog").open)return;const
 function requestManagedClose(){if(componentFields.some(field=>dirtyFields.has(field))||dirtyFields.has("bslLsJava")){$("managedCloseConfirm").showModal();return;}$("managedDialog").close();}
 $("managedDialogClose").onclick=requestManagedClose;$("managedDialog").addEventListener("cancel",event=>{event.preventDefault();requestManagedClose();});$("managedDialog").addEventListener("click",event=>{if(event.target!==$("managedDialog"))return;const box=$("managedDialog").getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)requestManagedClose();});
 $("managedCloseStay").onclick=()=>$("managedCloseConfirm").close();$("managedCloseKeep").onclick=()=>{$("managedCloseConfirm").close();$("managedDialog").close();};
-$("managedDialog").addEventListener("close",()=>{$("managedControlsHolder").append($("managedControls"));managedComponent=null;$("codeIndexChoice").hidden=false;$("bslLsChoice").hidden=false;$("javaSettingsPanel").hidden=false;syncControls();(managedDialogTrigger?.isConnected?managedDialogTrigger:$("headerStatus")).focus();managedDialogTrigger=null;});
+$("managedDialog").addEventListener("close",()=>{if($("managedDialog").open)return;$("managedControlsHolder").append($("managedControls"));managedComponent=null;$("codeIndexChoice").hidden=false;$("bslLsChoice").hidden=false;$("javaSettingsPanel").hidden=false;syncControls();(managedDialogTrigger?.isConnected?managedDialogTrigger:$("headerStatus")).focus();managedDialogTrigger=null;});
 async function openTestingSettings(id,trigger){
   if(fieldsPatchPending||pendingFieldInputs.size){notice("Дождитесь завершения изменения поля.",true);return;}
   if($("testingDialog").open)return;
@@ -457,7 +459,7 @@ async function openTestingSettings(id,trigger){
   $("editorMode").value="tree";if(!$("settingsText").value)await loadEditor();else renderJsonEditor();syncControls();
 }
 $("testingDialogClose").onclick=()=>$("testingDialog").close();
-$("testingDialog").addEventListener("close",()=>{$("editorControlsHolder").append($("editorControls"));testingComponent=null;pendingEditorTarget=null;$("editorMode").value=testingEditorMode||"text";renderJsonEditor();syncControls();(testingDialogTrigger?.isConnected?testingDialogTrigger:$("headerStatus")).focus();testingDialogTrigger=null;});
+$("testingDialog").addEventListener("close",()=>{if($("testingDialog").open)return;$("editorControlsHolder").append($("editorControls"));testingComponent=null;pendingEditorTarget=null;$("editorMode").value=testingEditorMode||"text";renderJsonEditor();syncControls();(testingDialogTrigger?.isConnected?testingDialogTrigger:$("headerStatus")).focus();testingDialogTrigger=null;});
 function openConnectionDialog(item,trigger){
   if($("componentDialog").open)return;
   if(connectionFields.some(field=>dirtyFields.has(field)&&!field.startsWith(item.id))||(ovRecordDirty&&item.id!=="openviking")){notice("Сохраните или отмените черновик другого подключения перед настройкой этого компонента.",true);return;}
@@ -470,7 +472,7 @@ function requestComponentClose(){if(connectionFields.some(field=>dirtyFields.has
 $("componentDialogClose").onclick=requestComponentClose;
 $("componentDialog").addEventListener("cancel",event=>{event.preventDefault();requestComponentClose();});
 $("componentDialog").addEventListener("click",event=>{if(event.target!==$("componentDialog"))return;const box=$("componentDialog").getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)requestComponentClose();});
-$("componentDialog").addEventListener("close",()=>{$("connectionSettingsHolder").append($("connectionSettings"));for(const name of ["edt","v8std","openviking"])$(name+"Field").hidden=false;$("openvikingAdvanced").hidden=false;dialogComponent=null;renderKnowledge(currentData||{});(componentDialogTrigger?.isConnected?componentDialogTrigger:$("headerStatus")).focus();componentDialogTrigger=null;});
+$("componentDialog").addEventListener("close",()=>{if($("componentDialog").open)return;$("connectionSettingsHolder").append($("connectionSettings"));for(const name of ["edt","v8std","openviking"])$(name+"Field").hidden=false;$("openvikingAdvanced").hidden=false;dialogComponent=null;$("componentDialogStatus").textContent="";renderDialogStates();renderKnowledge(currentData||{});(componentDialogTrigger?.isConnected?componentDialogTrigger:$("headerStatus")).focus();componentDialogTrigger=null;});
 $("componentCloseStay").onclick=()=>$("componentCloseConfirm").close();
 $("componentCloseKeep").onclick=()=>{$("componentCloseConfirm").close();$("componentDialog").close();};
 $("componentDiscard").onclick=()=>{
@@ -711,9 +713,9 @@ function syncControls(){
   for(const id of ["managedProbeButton","testingProbeButton"])$(id).disabled||=!loaded||blocked||observing;
   renderReadiness();renderComponentCatalog(currentData);renderDialogStates();
 }
-async function busy(label,action){
-  if(pendingScope){notice("Отмените черновик перед переходом к изменившемуся профилю.",true);return;}if(busyActive||fieldsPatchPending)return;interacted=true;viewRevision++;busyActive=true;syncControls();notice(label);
-  try{return await action();}catch(error){notice(error.message,true);throw error;}
+async function busy(label,action,scope=null){
+  if(pendingScope){notice("Отмените черновик перед переходом к изменившемуся профилю.",true);return;}if(busyActive||fieldsPatchPending)return;interacted=true;viewRevision++;busyActive=true;syncControls();notice(label,false,scope);
+  try{return await action();}catch(error){if(scope?.action==="probe"&&scope.component)observeComponentResult({componentChecks:[{id:scope.component,state:"error",detail:error.message}]},scope);notice(error.message,true,scope);throw error;}
   finally{busyActive=false;syncControls();scheduleStatus();resize();}
 }
 function invalidate(){inputRevision++;lastPreview=null;$("preview").hidden=true;}
@@ -1259,13 +1261,13 @@ $("exportLogButton").onclick=async()=>{
 $("openDiagnosticsButton").onclick=async()=>{
   try{await tool("settings.open_diagnostics_directory");notice("Папка с диагностическим файлом открыта.");}catch(error){notice(error.message,true);}
 };
-async function pollOperation(operationId){
+async function pollOperation(operationId,probeScope=null){
   if(polling||disposed)return;polling=true;
   try{
-    if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}const operation=await tool("settings.operation",{...(operationId?{operationId}:{}),waitMs:1000});if(disposed)return;activeOperation=operation;
-    if(operation.status==="running"){notice(["pick_directory","pick_view_directory"].includes(operation.action)?"Открыт системный выбор папки. Выберите папку или нажмите «Отмена» в этом окне. После закрытия выбор обновится автоматически.":"Операция выполняется · "+(operation.projectRoot||"без папки")+" · "+operation.instance+". Ожидаем результат.");checkTimer=setTimeout(()=>pollOperation(operation.id).catch(error=>notice(error.message,true)),1000);return;}
+    if(checkTimer){clearTimeout(checkTimer);checkTimer=null;}const operation=await tool("settings.operation",{...(operationId?{operationId}:{}),waitMs:1000});if(disposed)return;if(operation.action==="probe"){if(!operation.component&&activeOperation?.id===operation.id)operation.component=activeOperation.component;if(probeScope?.component===operation.component)operation.probeInputs=probeScope.probeInputs;}activeOperation=operation;
+    if(operation.status==="running"){notice(["pick_directory","pick_view_directory"].includes(operation.action)?"Открыт системный выбор папки. Выберите папку или нажмите «Отмена» в этом окне. После закрытия выбор обновится автоматически.":"Операция выполняется · "+(operation.projectRoot||"без папки")+" · "+operation.instance+". Ожидаем результат.",false,operation);checkTimer=setTimeout(()=>pollOperation(operation.id,probeScope).catch(error=>notice(error.message,true,operation)),1000);return;}
     if(operation.status==="idle"){notice("В этом сеансе ещё нет операций.");return;}
-    if(operation.status!=="completed"){if(["pick_java","check_java"].includes(operation.action)&&operationMatchesProfile(operation))$("javaResult").textContent="Ошибка Java: "+userMessage(operation.error);notice(userMessage(operation.error)+(operation.status==="outcome_unknown"?" Проверьте сохранённые настройки и состояние сервисов перед повтором.":""),true);return;}
+    if(operation.status!=="completed"){if(operation.action==="probe"&&operation.component)observeComponentResult({componentChecks:[{id:operation.component,state:"error",detail:operation.error}]},operation);if(["pick_java","check_java"].includes(operation.action)&&operationMatchesProfile(operation))$("javaResult").textContent="Ошибка Java: "+userMessage(operation.error);notice(userMessage(operation.error)+(operation.status==="outcome_unknown"?" Проверьте сохранённые настройки и состояние сервисов перед повтором.":""),true,operation);return;}
     if(operation.action==="pick_view_directory"){
       const pickerRevision=viewPickerRevision;viewPickerRevision=null;
       if(operation.result?.cancelled){notice("Выбор папки отменён.");return;}
@@ -1301,8 +1303,8 @@ async function pollOperation(operationId){
     }
     if(operation.action==="probe"){
       if(!operationMatchesProfile(operation)){notice("Проверка завершена для другого каталога или экземпляра. Результат не применяется к текущему профилю.");return;}
-      const result=operation.result;if(result.superseded){await refresh();notice("Настройки изменились во время проверки. Повторите проверку.",true);return;}observeComponentResult(result,operation);
-      await refresh();renderDialogStates();notice(result.draft?"Проверены несохранённые значения; настройки не изменены.":"Проверка завершена. Результат показан в карточке компонента.");return;
+      const result=operation.result;if(result.superseded){await refresh();notice("Настройки изменились во время проверки. Повторите проверку.",true,operation);return;}observeComponentResult(result,operation);
+      await refresh();renderDialogStates();notice(result.draft?"Проверены несохранённые значения; настройки не изменены.":"Проверка завершена. Результат показан в карточке компонента.",false,operation);return;
     }
     if(!["check","refresh_readiness"].includes(operation.action)){
       if(operation.action==="pick_directory"&&operation.result?.cancelled){notice("Выбор папки отменён.");return;}
@@ -1368,16 +1370,17 @@ async function performCheck(){
 $("readinessButton").onclick=()=>busy("Подготавливаем сервисы и проверяем готовность…",performCheck).catch(()=>{});
 $("rebuildIndexButton").onclick=()=>busy("Пересоздаём индекс выбранного EDT-проекта…",async()=>{if(hasProfileDraft())throw new Error("Сохраните или отмените изменения перед пересозданием индекса.");const current=await refresh();if(!current.preparationScope)throw new Error("Выберите папку проекта.");const job=await tool("settings.rebuild_index",{repository:$("indexRepository").value,authorization:{scope:current.preparationScope,effects:["launch"],evidence:"Пользователь нажал «Пересоздать индекс» для выбранного EDT-проекта."}});activeOperation=job;await pollOperation(job.id);}).catch(()=>{});
 $("restartIndexButton").onclick=()=>busy("Применяем состав проектов индекса…",async()=>{if(hasProfileDraft())throw new Error("Сохраните или отмените изменения перед применением состава проектов.");const current=await refresh();if(!current.preparationScope)throw new Error("Выберите папку проекта.");const job=await tool("settings.restart_index",{authorization:{scope:current.preparationScope,effects:["launch"],evidence:"Пользователь нажал «Применить состав проектов» в настройках индекса."}});activeOperation=job;await pollOperation(job.id);}).catch(()=>{});
-async function probeComponent(component){
+async function probeComponent(component,scope){
   if(!component)throw new Error("Откройте компонент для проверки.");
   const current=currentData;if(current.operation?.status==="running"){await pollOperation(current.operation.id);return;}
   const connections={};if(["edt","v8std"].includes(component)&&!$(component+"Url").readOnly)connections[component]=$(component+"Url").value.trim();
   if(component==="openviking"){const draft={};for(const [index,field]of openvikingFields.entries())if(!$(field).readOnly&&(dirtyFields.has(field)||scopedSaved(current,field)!==savedField(current.values,field)))draft[openvikingMembers[index]]=transportValue(field);if(Object.keys(draft).length)connections.openviking=draft;}
-  const operation=await tool("settings.probe_connections",{component,...(Object.keys(connections).length?{connections}:{})});activeOperation={...operation,component};await pollOperation(operation.id);
+  const operation=await tool("settings.probe_connections",{component,...(Object.keys(connections).length?{connections}:{})});activeOperation={...operation,component};await pollOperation(operation.id,scope);
 }
-$("probeButton").onclick=()=>busy("Проверяем компонент…",()=>probeComponent(dialogComponent)).catch(()=>{});
-$("managedProbeButton").onclick=()=>busy("Проверяем компонент…",()=>probeComponent(managedComponent)).catch(()=>{});
-$("testingProbeButton").onclick=()=>busy("Проверяем настройку тестового контура…",()=>probeComponent(testingComponent)).catch(()=>{});
+for(const [button,selected]of [["probeButton",()=>dialogComponent],["managedProbeButton",()=>managedComponent],["testingProbeButton",()=>testingComponent]])$(button).onclick=()=>{
+  const component=selected(),scope={action:"probe",component,projectRoot:currentData?.values?.projectRoot,instance:currentData?.instance,probeInputs:{revision:currentData?.settingsRevision,signature:componentInputSignature(component)}};
+  return busy("Проверяем компонент…",()=>probeComponent(component,scope),scope).catch(()=>{});
+};
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(resize).observe(document.querySelector("main"));
 document.addEventListener("visibilitychange",()=>{if(document.hidden){if(statusTimer)clearTimeout(statusTimer);statusTimer=null;}else if(connected)refreshStatus();});
 window.addEventListener("pagehide",()=>{disposed=true;if(statusTimer)clearTimeout(statusTimer);if(checkTimer)clearTimeout(checkTimer);for(const item of waiting.values())clearTimeout(item.timer);waiting.clear();});

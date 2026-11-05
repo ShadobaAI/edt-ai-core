@@ -34,7 +34,7 @@ test("readiness preparation states its side effects before the user starts it", 
 });
 
 function screen(handler, options = {}) {
-  const elements = new Map(), timers = new Map(), calls = [], downloads = [], blobs = [];
+  const elements = new Map(), timers = new Map(), calls = [], downloads = [], blobs = [], closeEvents = [];
   let nextTimer = 0, message, observedResize;const lifecycle = {}, documentEvents = {};
   class Element {
     constructor(tag = "div") { Object.assign(this, { tag, style: {}, disabled: false, readOnly: false, hidden: false, checked: false, value: "", files: [], textContent: "", children: [], events: {} });
@@ -52,7 +52,7 @@ function screen(handler, options = {}) {
     insertBefore(child, next) { this.append(child); this.children.splice(this.children.indexOf(child), 1); this.children.splice(next ? this.children.indexOf(next) : this.children.length, 0, child); }
     click() { if (this.tag === "a") downloads.push({ filename: this.download, href: this.href }); }
     showModal() { this.open = true; }
-    close() { this.open = false; this.events.close?.(); }
+    close() { this.open = false; if (options.deferredClose) closeEvents.push(() => this.events.close?.()); else this.events.close?.(); }
     remove() { if (this.parentNode) { if (this.contains(document.activeElement)) document.activeElement = document.body; this.parentNode.children = this.parentNode.children.filter(item => item !== this); this.parentNode = null; } }
     focus() { document.activeElement = this; }
     getBoundingClientRect() { return { height: options.height?.() ?? 500 }; }
@@ -98,6 +98,7 @@ function screen(handler, options = {}) {
   const flush = () => new Promise(resolve => setImmediate(resolve));
   return { context, elements, timers, calls, downloads, blobs, flush, document, lifecycle, documentEvents, media, resize: () => observedResize(),
     deliver(data) { message({ source: parent, origin: "https://fixture.invalid", data }); },
+    flushCloseEvents() { for (const close of closeEvents.splice(0)) close(); },
     async tick(ms = 1000) { const [id, timer] = [...timers].find(([, timer]) => timer.ms === ms) || []; assert.ok(timer); timers.delete(id); timer.fn(); await flush(); } };
 }
 
@@ -1308,6 +1309,117 @@ for (const [state, detail] of [["ready", "crm-production: готов"], ["error"
   assert.equal(ui.elements.get("probeResult").hidden, false);
   assert.equal(ui.elements.get("componentDialogDiagnostic").textContent.includes(detail), false);
   assert.doesNotMatch(ui.elements.get("probeResult").textContent, /подключение проверено/i);
+});
+
+function isolatedProbeScreen(source, { delayed = false, failed = false, startFailed = false, deferredClose = false } = {}) {
+  const ids = ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"], checkedAt = new Date(Date.now() - 1000).toISOString();
+  const current = { ...read, instance: "default", settingsRevision: "saved", values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std",
+    openvikingEnabled: true, openvikingUrl: "http://knowledge", codeIndexEnabled: true, bslLsEnabled: true },
+    profile: { ...read.profile, testing: { yaxunit: true, vanessa: true } }, testing: { yaxunit_config: {}, vanessa_config: {} }, summary: { components: [] },
+    componentChecks: ids.filter(id => id !== source).map(id => ({ id, state: "not_verified", detail: "Собственная диагностика " + id,
+      checkedAt, expiresAt: new Date(Date.now() + 60000).toISOString() })) };
+  let finish;
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.versions") return { component: args.component, versions: [] };
+    if (name === "settings.edit") return { text: "testing: {}\n", format: "yaml", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return new SettingsBackend("unused", "unused").main({ action: "document_fields", ...args });
+    if (name === "settings.probe_connections") {
+      assert.equal(args.component, source);
+      if (startFailed) { await new Promise(resolve => { finish = resolve; }); throw new Error("Ошибка проверки " + source); }
+      return { id: "probe-" + source, component: source, action: "probe", status: "running" };
+    }
+    if (name === "settings.operation") {
+      if (delayed) await new Promise(resolve => { finish = resolve; });
+      return { id: "probe-" + source, component: source, action: "probe", projectRoot: current.values.projectRoot, instance: current.instance,
+        status: failed ? "failed" : "completed", ...(failed ? { error: "Ошибка проверки " + source } : { result: { component: source,
+          componentChecks: [{ id: source, state: "not_verified", detail: "Результат проверки " + source }] } }) };
+    }
+    throw new Error(name);
+  }, { deferredClose });
+  const item = id => ui.context.catalogItems(current).find(item => item.id === id);
+  const open = async id => {
+    const card = ui.elements.get("componentCatalog").children.flatMap(group => group.children[1].children).find(card => card.children[0].children[0].textContent === item(id).name);
+    await card.children.at(-1).children[1].onclick();
+    await ui.flush();
+  };
+  const close = id => ui.elements.get(item(id).kind === "external" ? "componentDialogClose" : item(id).kind === "managed" ? "managedDialogClose" : "testingDialogClose").onclick();
+  const diagnostic = id => ui.elements.get(item(id).kind === "external" ? "probeResult" : item(id).kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent;
+  const probe = id => ui.elements.get(item(id).kind === "external" ? "probeButton" : item(id).kind === "managed" ? "managedProbeButton" : "testingProbeButton").onclick();
+  return { ui, current, ids, item, open, close, diagnostic, probe, finish: () => finish() };
+}
+
+for (const source of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"]) {
+  test(`a completed ${source} probe stays isolated when opening every other component`, async () => {
+    const f = isolatedProbeScreen(source); await f.ui.flush(); await f.open(source); await f.probe(source);
+    assert.match(f.diagnostic(source), new RegExp("Результат проверки " + source));
+    f.close(source);
+    assert.equal(f.ui.elements.get("probeResult").hidden, true);
+    assert.equal(f.ui.elements.get("probeResult").textContent, "");
+    for (const target of f.ids.filter(id => id !== source)) {
+      await f.open(target);
+      assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
+      assert.doesNotMatch(f.diagnostic(target), /Результат проверки/);
+      await f.ui.context.refresh();
+      assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
+      f.close(target);
+    }
+    await f.open(source); assert.match(f.diagnostic(source), new RegExp("Результат проверки " + source));
+    assert.equal(f.ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
+  });
+
+  for (const failed of [false, true]) test(`a late ${failed ? "failed" : "completed"} ${source} probe cannot overwrite another component dialog`, async () => {
+    const f = isolatedProbeScreen(source, { delayed: true, failed }), target = source === "v8std" ? "edt" : "v8std";
+    await f.ui.flush(); await f.open(source); const checking = f.probe(source); await f.ui.flush();
+    f.close(source); await f.open(target); f.finish(); await checking;
+    assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
+    assert.doesNotMatch(f.ui.elements.get("componentDialogStatus").textContent, new RegExp("Ошибка проверки " + source));
+    f.close(target); await f.open(source);
+    assert.match(f.diagnostic(source), new RegExp((failed ? "Ошибка проверки " : "Результат проверки ") + source));
+    assert.equal(f.ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
+  });
+
+  test(`a late ${source} probe request error stays in its component`, async () => {
+    const f = isolatedProbeScreen(source, { startFailed: true }), target = source === "v8std" ? "edt" : "v8std";
+    await f.ui.flush(); await f.open(source); const checking = f.probe(source); await f.ui.flush();
+    f.close(source); await f.open(target); f.finish(); await checking;
+    assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
+    assert.doesNotMatch(f.ui.elements.get("componentDialogStatus").textContent, new RegExp("Ошибка проверки " + source));
+    f.close(target); await f.open(source);
+    assert.match(f.diagnostic(source), new RegExp("Ошибка проверки " + source));
+  });
+}
+
+for (const [source, target, dialog, component, controls, body] of [
+  ["edt", "v8std", "componentDialog", "dialogComponent", "connectionSettings", "componentDialogBody"],
+  ["code-index", "bsl-ls", "managedDialog", "managedComponent", "managedControls", "managedDialogBody"],
+  ["yaxunit", "vanessa", "testingDialog", "testingComponent", "editorControls", "testingDialogBody"],
+]) test(`a queued ${source} dialog close cannot clear the newly opened ${target} dialog`, async () => {
+  const f = isolatedProbeScreen(source, { deferredClose: true }); await f.ui.flush();
+  await f.open(source); f.close(source); await f.open(target); f.ui.flushCloseEvents();
+  assert.equal(f.ui.elements.get(dialog).open, true);
+  assert.equal(vm.runInContext(component, f.ui.context), target);
+  assert.equal(f.ui.elements.get(controls).parentElement, f.ui.elements.get(body));
+  assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
+});
+
+test("an addressed result cannot update unrelated component observations", async () => {
+  const f = isolatedProbeScreen("edt"); await f.ui.flush();
+  f.ui.context.observeComponentResult({ componentChecks: [{ id: "edt", state: "ready", detail: "Результат проверки edt" },
+    { id: "v8std", state: "error", detail: "Чужая диагностика edt" }] },
+  { action: "probe", component: "edt", projectRoot: read.values.projectRoot, instance: "default" });
+  await f.open("v8std");
+  assert.equal(f.diagnostic("v8std"), "Собственная диагностика v8std");
+  assert.equal(vm.runInContext('componentObservations.has("v8std")', f.ui.context), false);
+});
+
+for (const startFailed of [false, true]) test(`a late probe ${startFailed ? "request" : "operation"} error retains its original settings revision`, async () => {
+  const f = isolatedProbeScreen("edt", { delayed: true, failed: true, startFailed }); await f.ui.flush(); await f.open("edt");
+  const checking = f.probe("edt"); await f.ui.flush();
+  f.current.settingsRevision = "changed"; f.ui.context.renderCurrent(f.current, { preserveDraft: true });
+  f.finish(); await checking;
+  assert.equal(f.item("edt").state, "check_stale");
+  assert.equal(f.ui.elements.get("componentDialogDiagnostic").textContent, "Проверка устарела");
 });
 
 test("manual settings require a fresh preview after editing and apply the reviewed text", async () => {
