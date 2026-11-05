@@ -3302,13 +3302,13 @@ test("managed cancellation clears a staged reset while preserving connection and
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
 });
 
-test("catalog grids follow the three plus two plus two grouping and readiness reuses passive refresh",async()=>{
+test("catalog grids follow the three plus two plus two grouping and header refresh checks all components",async()=>{
   const f=liveStatusScreen();await f.ui.flush();
   const groups=f.ui.elements.get("componentCatalog").children;
   assert.deepEqual(groups.map(group=>group.children[1].children.length),[3,2,2]);
   assert.deepEqual(groups.map(group=>group.children[1].className),["catalog-grid","catalog-grid two","catalog-grid two"]);
   assert.equal(f.ui.elements.get("headerProjectName").textContent,f.current.profile.projectId);assert.equal(f.ui.elements.get("headerProjectPath").textContent,f.current.values.projectRoot);
-  const requests=f.requests.length;await f.ui.elements.get("refreshReadinessButton").onclick();
+  const requests=f.requests.length;await f.ui.elements.get("headerRefresh").onclick();
   assert.equal(f.requests.length,requests+1);assert.equal(f.requests.at(-1).name,"settings.refresh_readiness");assert.equal(f.requests.at(-1).component,undefined);
   assert.equal(f.ui.calls.filter(call=>["settings.run_check","settings.updates","settings.update"].includes(call.params?.name)).length,0);
 });
