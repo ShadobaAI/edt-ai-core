@@ -15,6 +15,7 @@ const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "u
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const componentName = card => card.children[0].children[0].children[0].textContent;
 const componentButton = card => card.children[0].children.at(-1);
+const headerState = (ui,name) => ui.elements.get("headerComponentStatuses").children.find(item=>item.textContent.startsWith(name+": "))?.textContent.slice(name.length+2);
 
 test("static settings controls have unique IDs and script references point to real elements", () => {
   const markup = html.split("<script>")[0], ids = [...markup.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
@@ -244,7 +245,7 @@ test("profile loading, each minute and the refresh header perform fresh checks o
   f.current.values.projectRoot="C:/fixture/second";f.current.preparationScope="C:/fixture/second#default";
   f.ui.context.renderSelectedProfile(f.current);await f.ui.flush();
   assert.equal(f.requests.length,4);assert.equal(f.requests[3].scope,"C:/fixture/second#default");
-  await f.ui.elements.get("loadButton").onclick();await f.ui.flush();assert.equal(f.requests.length,5);assert.equal(f.requests[4].component,undefined);
+  await f.ui.elements.get("headerRefresh").onclick();await f.ui.flush();assert.equal(f.requests.length,5);assert.equal(f.requests[4].component,undefined);
 });
 
 for(const id of ["edt","v8std","openviking","code-index","bsl-ls","yaxunit","vanessa"])test(`opening ${id} refreshes only that component and its button can refresh again`,async()=>{
@@ -480,6 +481,7 @@ test("settings UI saves, previews a local document, and renames through the real
   assert.equal(ui.context.editorChanged(), false);
   ui.elements.get("editorMode").value = "tree"; ui.elements.get("editorMode").events.change();
   await until(() => treeInputs(ui).some(input => input.attributes?.["aria-label"] === "connections.edt.url"), "schema fields through MCP");
+  assert.match(vm.runInContext('jsonRows.get(JSON.stringify(["connections","edt","url"])).origin.textContent',ui.context),/Действует:.*локальные настройки проекта/);
   ui.elements.get("editorMode").value = "text"; ui.elements.get("editorMode").events.change();
   const updated = "connections:\n  edt:\n    url: http://127.0.0.1:8123/mcp\n# keep this comment\ncomponents:\n  bsl-ls:\n    java: fixture-java\n\n";
   ui.elements.get("settingsText").value = updated;
@@ -1088,7 +1090,7 @@ test("project transfer reviews YAML and requires replacement confirmation", asyn
     if(name==="settings.transfer_apply"){applied=args;return {backups:[{scope:"profile",path:"backup.yaml"}]};}
     throw new Error(name);
   });
-  await ui.flush();ui.elements.get("openTransferButton").onclick();
+  await ui.flush();ui.elements.get("openImportButton").onclick();
   ui.elements.get("transferScope").value="profile";
   ui.elements.get("transferPath").value="C:/input/project.yaml";await ui.elements.get("transferPick").onclick();
   await ui.elements.get("transferPreview").onclick();
@@ -1103,7 +1105,7 @@ test("project transfer reviews YAML and requires replacement confirmation", asyn
 test("profile table and header show detected EDT projects separately from the shared Git repository", async () => {
   const projects=[{name:"configuration",displayName:"Base",directory:"C:/fixture/project/configuration"},{name:"extension",displayName:"<Extension>",directory:"C:/fixture/project/extension"},{name:"other",directory:"C:/fixture/project/other"}];
   const ui=screen(async()=>({...read,profile:{...read.profile,repositories:[{id:"shared",path:read.values.projectRoot}]},directoryContext:{edt:{detectedProjects:projects.slice(0,1),projectCount:1},git:{status:"not_repository"}},profileDirectoryContext:{edt:{detectedProjects:projects,projectCount:3},git:{status:"detected",root:read.values.projectRoot}}}));
-  await ui.flush();assert.equal(ui.elements.get("profileEdtProjectCount").textContent,"EDT-проектов: 3");
+  await ui.flush();assert.match(ui.elements.get("headerProfileFacts").textContent,/EDT-проектов: 3/);
   const rows=ui.elements.get("profileEdtProjects").children;assert.equal(rows.length,3);
   assert.deepEqual(rows.map(row=>row.children.map(cell=>cell.textContent)),projects.map(project=>[project.name,project.displayName||"—",project.directory]));
   assert.equal(ui.elements.get("profileGitRoot").textContent,"Git-репозиторий каталога профиля: "+read.values.projectRoot);
@@ -1807,7 +1809,7 @@ for (const delayed of [false, true]) test(`picking another project replaces the 
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.pick_directory").length, 1);
   await ui.tick(60000);
   assert.equal(ui.elements.get("projectRoot").value, nextRoot);
-  assert.doesNotMatch(ui.elements.get("autoRefreshState").textContent, /Нет свежих данных/);
+  assert.doesNotMatch(ui.elements.get("headerRefresh").title, /Нет свежих данных/);
   assert.equal(ui.calls.filter(call => ["settings.create", "settings.run_check"].includes(call.params?.name)).length, 0);
 });
 
@@ -1959,7 +1961,7 @@ test("profile creation reports restart guidance without preparing services", asy
   assert.equal(ui.elements.get("createButton").hidden, false);
   await ui.elements.get("createButton").onclick();
   assert.equal(ui.elements.get("createButton").hidden, true);
-  assert.equal(ui.elements.get("refreshButton").disabled, false);
+  assert.equal(ui.elements.get("headerRefresh").disabled, false);
   assert.match(ui.elements.get("status").textContent, /новый чат/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
   assert.match(ui.elements.get("status").textContent, /дополнить правила команды/);
@@ -2246,7 +2248,7 @@ test("reopening settings resumes the pending picker and enables preparation only
   selected = true;
   await ui.tick();
   assert.equal(ui.elements.get("profileTitle").textContent, "selected-profile");
-  assert.equal(ui.elements.get("refreshButton").disabled, false);
+  assert.equal(ui.elements.get("headerRefresh").disabled, false);
   assert.equal(ui.elements.get("readinessButton").disabled, false);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.run_check").length, 0);
   assert.equal([...ui.timers.values()].filter(timer => timer.ms === 1000).length, 0);
@@ -2295,7 +2297,7 @@ test("echoed load and operation results do not navigate, refresh recursively or 
   }, { echo: true });
   await ui.flush();
   ui.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { structuredContent: { mode: "profile" } } });
-  await ui.elements.get("loadButton").onclick();
+  await ui.context.tool("settings.load",{projectRoot:read.values.projectRoot});await ui.context.refresh();
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.read").length, 2);
   assert.equal(ui.elements.get("checkPanel").hidden, false);
   ui.elements.get("checkTab").onclick();
@@ -2342,18 +2344,19 @@ test("opening, selecting and reloading a profile render its service status immed
   const ui = screen(async (name, args) => {
     if (name === "settings.read") return snapshot();
     if (name === "settings.select_profile") { projectRoot = args.projectRoot; running = true; return snapshot(); }
-    if (name === "settings.load") { running = false; return {}; }
+    if (name === "settings.status") { running = false; return snapshot(); }
     throw new Error(name);
   });
   await ui.flush();
-  assert.equal(ui.elements.get("indexSummary").textContent, "Не запущен");
-  assert.equal(ui.elements.get("bslSummary").textContent, "Отключён");
+  assert.equal(headerState(ui,"Code Index"),"Требует подготовки");
+  assert.equal(headerState(ui,"BSL LS"),"Отключён");
   await ui.context.selectProfile("C:/fixture/other");
-  assert.equal(ui.elements.get("indexSummary").textContent, "Процесс работает");
-  await ui.elements.get("loadButton").onclick();
-  assert.equal(ui.elements.get("indexSummary").textContent, "Не запущен");
-  assert.match(ui.elements.get("autoRefreshState").textContent, /Автообновление/);
-  assert.equal(ui.calls.filter(call => ["settings.status", "settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
+  assert.equal(headerState(ui,"Code Index"),"Процесс работает");
+  await ui.elements.get("headerRefresh").onclick();
+  assert.equal(headerState(ui,"Code Index"),"Требует подготовки");
+  assert.match(ui.elements.get("headerRefresh").title, /автообновление/);
+  assert.equal(ui.calls.filter(call => ["settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.status").length, 1);
 });
 
 test("opening and observing a profile keep managed status and service results consistent", async () => {
@@ -2373,22 +2376,22 @@ test("opening and observing a profile keep managed status and service results co
   });
   const contents = node => [node.textContent, ...node.children.map(contents)].join(" ");
   await ui.flush();
-  assert.equal(ui.elements.get("indexSummary").textContent, "Индекс актуален");
-  assert.equal(ui.elements.get("bslSummary").textContent, "API доступен");
+  assert.equal(headerState(ui,"Code Index"),"Готов");
+  assert.equal(headerState(ui,"BSL LS"),"Готов");
   assert.equal(ui.elements.get("connections").hidden, false);
   assert.match(contents(ui.elements.get("connections")), /API доступен/);
   assert.match(contents(ui.elements.get("connections")), /Product: готов/);
   const detail=ui.elements.get("connections").children[1];detail.open=true;
   await ui.tick(60000);assert.equal(ui.elements.get("connections").children[1],detail);
   stale = true; await ui.tick(60000);
-  assert.equal(ui.elements.get("indexSummary").textContent, "Не запущен");
-  assert.equal(ui.elements.get("bslSummary").textContent, "Проверка устарела");
+  assert.equal(headerState(ui,"Code Index"),"Требует подготовки");
+  assert.equal(headerState(ui,"BSL LS"),"Проверка устарела");
   assert.doesNotMatch(contents(ui.elements.get("connections")), /API доступен|Индекс актуален/);
   assert.doesNotMatch(contents(ui.elements.get("connections")), /Product: готов/);
   assert.match(contents(ui.elements.get("connections")), /Проверка устарела/);
   assert.equal(ui.elements.get("connections").children[1].open,true);
   await ui.context.selectProfile("C:/fixture/other");
-  assert.equal(ui.elements.get("bslSummary").textContent,"API доступен");
+  assert.equal(headerState(ui,"BSL LS"),"Готов");
   assert.equal(ui.elements.get("connections").children[1].open,false);
   assert.equal(ui.calls.filter(call=>["settings.run_check","settings.probe_connections"].includes(call.params?.name)).length,0);
 });
@@ -2408,9 +2411,9 @@ test("opening, refreshing and switching projects only observe status, including 
   await ui.flush();
   assert.match(ui.elements.get("readinessTitle").textContent, /устарел|провер/i);
   await ui.tick(60000); await ui.tick(60000);
-  await ui.elements.get("refreshButton").onclick();
+  await ui.elements.get("headerRefresh").onclick();
   await ui.context.selectProfile("C:/fixture/next");
-  await ui.elements.get("loadButton").onclick();
+  await ui.elements.get("headerRefresh").onclick();
   ui.document.hidden = true; ui.documentEvents.visibilitychange();
   ui.document.hidden = false; ui.documentEvents.visibilitychange(); await ui.flush();
   assert.ok(statusCalls >= 4);
@@ -2431,7 +2434,7 @@ test("component catalogue uses fresh evidence and treats disabled required servi
   assert.equal(ui.elements.get("countAll").textContent,"7");assert.equal(ui.elements.get("countReady").textContent,"3");
   assert.equal(ui.elements.get("countIssues").textContent,"1");assert.equal(ui.elements.get("countDisabled").textContent,"3");
   assert.equal(ui.elements.has("overviewDetails"),false);
-  assert.equal(ui.elements.get("profileOverview").parentElement,ui.elements.get("selectedProfileContext"));
+  assert.equal(ui.elements.get("profileOverview").hidden,true);
   assert.equal(card("OpenViking").children[0].children[1].textContent,"Отключён");
   assert.match(ui.elements.get("readinessTitle").textContent,/требуется внимание/);
   assert.match(ui.elements.get("readinessDetail").textContent,/Code Index/);
@@ -2574,7 +2577,7 @@ test("a manual status refresh leaves the form usable and preserves edits made wh
     throw new Error(name);
   });
   await ui.flush();
-  const pending=ui.elements.get("refreshButton").onclick();await ui.flush();
+  const pending=ui.elements.get("headerRefresh").onclick();await ui.flush();
   assert.equal(ui.elements.get("edtUrl").disabled,false);
   ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
   release();await pending;
@@ -2588,10 +2591,10 @@ test("a manual status refresh reports failure without overwriting a later action
     if(name==="settings.status"){await new Promise(resolve=>{release=resolve;});throw new Error("unavailable");}
     throw new Error(name);
   });
-  await ui.flush();const pending=ui.elements.get("refreshButton").onclick();await ui.flush();
+  await ui.flush();const pending=ui.elements.get("headerRefresh").onclick();await ui.flush();
   ui.context.notice("Настройки сохранены.");release();await pending;
   assert.equal(ui.elements.get("status").textContent,"Настройки сохранены.");
-  assert.match(ui.elements.get("autoRefreshState").textContent,/Нет свежих данных/);
+  assert.match(ui.elements.get("headerRefresh").title,/Нет свежих данных/);
 });
 
 test("a failed status request for the previous profile does not mark the selected profile stale", async () => {
@@ -2602,10 +2605,10 @@ test("a failed status request for the previous profile does not mark the selecte
     if(name==="settings.select_profile")return {...read,instance:"default",values:{projectRoot:args.projectRoot}};
     throw new Error(name);
   });
-  await ui.flush();const pending=ui.elements.get("refreshButton").onclick();await ui.flush();
+  await ui.flush();const pending=ui.elements.get("headerRefresh").onclick();await ui.flush();
   await ui.context.selectProfile("C:/fixture/other");
-  const indicator=ui.elements.get("autoRefreshState").textContent;
-  release();await pending;assert.equal(ui.elements.get("autoRefreshState").textContent,indicator);
+  const indicator=ui.elements.get("headerRefresh").title;
+  release();await pending;assert.equal(ui.elements.get("headerRefresh").title,indicator);
 });
 
 test("an existing readiness check completed on the first poll does not trigger another check", async () => {
@@ -2645,7 +2648,7 @@ test("minute status refresh preserves drafts without preparation or foreground p
   await ui.tick(60000);await ui.tick(60000);
   assert.equal(observations,2);
   assert.equal(ui.elements.get("edtUrl").value,"draft");assert.equal(ui.elements.get("codeIndexEnabled").checked,false);
-  assert.equal(ui.elements.get("indexSummary").textContent,"Процесс работает");
+  assert.equal(headerState(ui,"Code Index"),"Процесс работает");
   assert.equal(ui.calls.filter(call=>["settings.run_check","settings.probe_connections","settings.update"].includes(call.params?.name)).length,0);
   ui.elements.get("discardDraftButton").onclick();
   assert.equal(ui.elements.get("edtUrl").value,"changed-on-disk");
@@ -2708,7 +2711,7 @@ test("profile cards show EDT project counts instead of repository counts", async
   assert.equal(cards.find(card => card.children[0].textContent === "Project").children[2].textContent, "EDT-проектов: 2");
   assert.equal(cards.find(card => card.children[0].textContent === "Other").children[2].textContent, "EDT-проектов: 0");
   assert.equal(cards.find(card => card.children[0].textContent === "Old").children[2].textContent, "EDT-проектов: —");
-  assert.equal(ui.elements.get("profileEdtProjectCount").textContent, "EDT-проектов: 2");
+  assert.match(ui.elements.get("headerProfileFacts").textContent,/EDT-проектов: 2/);
 });
 
 test("typing a new directory requires explicit selection and leaves current settings intact", async () => {
@@ -2816,9 +2819,9 @@ test("automatic selection after removal does not rebind a locked chat and report
 test("a failed automatic observation retries and keeps the last successful profile visible", async () => {
   let attempts=0;
   const ui=screen(async name=>{if(name==="settings.read")return read;if(name==="settings.status"&&++attempts===1)throw new Error("offline");return {...read,summary:{observedAt:"2026-10-21T12:00:00Z",components:[]}};});
-  await ui.flush();await ui.tick(60000);assert.match(ui.elements.get("autoRefreshState").textContent,/Нет свежих данных/);
+  await ui.flush();await ui.tick(60000);assert.match(ui.elements.get("headerRefresh").title,/Нет свежих данных/);
   assert.equal(ui.elements.get("profileTitle").textContent,"Project");await ui.tick(60000);
-  assert.equal(attempts,2);assert.match(ui.elements.get("autoRefreshState").textContent,/Автообновление/);
+  assert.equal(attempts,2);assert.match(ui.elements.get("headerRefresh").title,/автообновление/);
 });
 
 test("keyboard navigation skips unavailable profile tabs and dirty drafts guard the folder picker", async () => {
@@ -3404,38 +3407,100 @@ test("diagnostics show and filter safe text, stay available during an operation,
   assert.equal(ui.elements.get("diagnosticsRefreshButton").disabled,false);assert.equal(ui.elements.get("diagnosticJournal").children.length,2);
   assert.equal(ui.elements.get("expandJournalButton").disabled,false);assert.equal(ui.elements.get("journalDialogClose").disabled,false);
   assert.match(ui.elements.get("diagnosticOperation").textContent,/Выполняется · подготовка и проверка готовности/);
-  assert.equal(ui.elements.get("diagnosticJournal").children[0].children[0].children[2].textContent,"edt · <failure>");
-  assert.equal(ui.elements.get("diagnosticJournal").children[0].children[0].children[1].textContent,"ошибка");
-  assert.match(ui.elements.get("diagnosticJournal").children[0].children[1].textContent,/ECONNREFUSED/);
+  assert.equal(ui.elements.get("diagnosticJournal").children.at(-1).children[0].children[2].textContent,"edt · <failure>");
+  assert.equal(ui.elements.get("diagnosticJournal").children.at(-1).children[0].children[1].textContent,"ошибка");
+  assert.match(ui.elements.get("diagnosticJournal").children.at(-1).children[1].textContent,/ECONNREFUSED/);
   assert.equal(data.events[0].level,"error");assert.equal(data.events[0].detail.message,"ECONNREFUSED");
   ui.elements.get("logLevel").value="error";ui.elements.get("logLevel").events.change();assert.equal(ui.elements.get("diagnosticJournal").children.length,1);
   ui.elements.get("logSearch").value="absent";ui.elements.get("logSearch").events.input();assert.match(ui.elements.get("diagnosticJournal").children[0].textContent,/Нет записей/);
   await ui.elements.get("diagnosticsRefreshButton").onclick();assert.equal(logs,2);
-  await ui.tick(60000);assert.equal(logs,3);
+  await ui.tick(2000);assert.equal(logs,3);
   ui.elements.get("checkTab").onclick();await ui.tick(60000);assert.equal(logs,3);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,0);
 });
 
-test("journal previews five filtered records and expands without losing filters, disclosure state or focus", async () => {
+test("journal scrolls the complete chronological history and expands without losing filters, disclosure state or focus", async () => {
   let reads=0;
   const events=Array.from({length:8},(_,index)=>({time:new Date(Date.UTC(2026,10,5,12,0,8-index)).toISOString(),level:index===7?"error":"info",component:"settings",event:"record-"+index,detail:{index}}));
   const data={events,total:events.length,session:{logger:{}},observedAt:events[0].time};
   const ui=screen(async name=>{if(["settings.read","settings.status"].includes(name))return read;if(name==="settings.diagnostics"){reads++;return data;}throw new Error(name);});await ui.flush();
   ui.elements.get("supportTab").onclick();await ui.flush();
   const journal=ui.elements.get("diagnosticJournal"),dialog=ui.elements.get("journalDialog"),expand=ui.elements.get("expandJournalButton"),controls=ui.elements.get("journalControls");
-  assert.equal(journal.children.length,5);assert.equal(ui.elements.get("journalCount").textContent,"Показано: 5 из 8");
+  assert.equal(journal.children.length,8);assert.equal(ui.elements.get("journalCount").textContent,"8 из 8");
+  assert.equal(journal.children.at(-1).children[0].children[2].textContent,"settings · record-0");
   const oldRow=journal.children[0];oldRow.open=true;expand.onclick();
   assert.equal(dialog.open,true);assert.equal(controls.parentElement,ui.elements.get("journalDialogBody"));assert.equal(journal.children.length,8);assert.equal(journal.children[0].open,true);assert.equal(reads,1);
   oldRow.open=false;oldRow.events.toggle();dialog.events.cancel({preventDefault(){}});
-  assert.equal(dialog.open,false);assert.equal(controls.parentElement,ui.elements.get("journalPreviewHolder"));assert.equal(journal.children.length,5);assert.equal(journal.children[0].open,true);assert.equal(ui.document.activeElement,expand);
+  assert.equal(dialog.open,false);assert.equal(controls.parentElement,ui.elements.get("journalPreviewHolder"));assert.equal(journal.children.length,8);assert.equal(journal.children[0].open,false);assert.equal(ui.document.activeElement,expand);
   ui.elements.get("logLevel").value="error";ui.elements.get("logLevel").events.change();assert.equal(journal.children.length,1);assert.equal(journal.children[0].children[0].children[2].textContent,"settings · record-7");
   expand.onclick();assert.equal(journal.children.length,1);assert.equal(ui.elements.get("logLevel").value,"error");
   ui.elements.get("logSearch").value="not present";ui.elements.get("logSearch").events.input();assert.match(journal.children[0].textContent,/Нет записей/);
   ui.elements.get("journalDialogClose").onclick();assert.equal(ui.elements.get("logSearch").value,"not present");assert.match(journal.children[0].textContent,/Нет записей/);
   ui.elements.get("logSearch").value="";ui.elements.get("logSearch").events.input();ui.elements.get("logLevel").value="all";ui.elements.get("logLevel").events.change();expand.onclick();
   events.unshift({...events[0],time:"2026-11-05T12:00:09Z",event:"new-record"});await ui.context.loadDiagnostics();
-  assert.equal(reads,2);assert.equal(journal.children.length,9);assert.equal(journal.children[0].children[0].children[2].textContent,"settings · new-record");assert.equal(journal.children[1].open,true);
+  assert.equal(reads,2);assert.equal(journal.children.length,9);assert.equal(journal.children.at(-1).children[0].children[2].textContent,"settings · new-record");assert.equal(journal.children[0].open,false);
   dialog.getBoundingClientRect=()=>({left:10,right:100,top:10,bottom:100});dialog.events.click({target:dialog,clientX:30,clientY:30});assert.equal(dialog.open,true);
-  dialog.events.click({target:dialog,clientX:5,clientY:30});assert.equal(dialog.open,false);assert.equal(journal.children.length,5);assert.equal(ui.document.activeElement,expand);
+  dialog.events.click({target:dialog,clientX:5,clientY:30});assert.equal(dialog.open,false);assert.equal(journal.children.length,9);assert.equal(ui.document.activeElement,expand);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,0);
+});
+
+test("live journal preserves history position and focused records until the user resumes following", async () => {
+  const events=Array.from({length:10},(_,index)=>({time:new Date(Date.UTC(2026,10,5,12,0,20-index)).toISOString(),level:"info",component:"settings",event:"record-"+index,detail:{index}}));
+  const data={events,total:events.length,session:{logger:{}},observedAt:events[0].time};let reads=0;
+  const ui=screen(async name=>{if(["settings.read","settings.status"].includes(name))return read;if(name==="settings.diagnostics"){reads++;return data;}throw new Error(name);});await ui.flush();
+  ui.elements.get("supportTab").onclick();await ui.flush();
+  const journal=ui.elements.get("diagnosticJournal");journal.clientHeight=215;
+  Object.defineProperty(journal,"scrollHeight",{get(){return this.children.length*43;}});
+  journal.children.forEach((row,index)=>{Object.defineProperty(row,"offsetTop",{get(){return journal.children.indexOf(this)*43;}});row.offsetHeight=43;});
+  ui.elements.get("journalResumeButton").onclick();assert.equal(journal.scrollTop,430);
+  journal.scrollTop=43;journal.events.scroll();
+  const row=journal.children[2];row.open=true;row.children[0].focus();
+  events.unshift({...events[0],time:"2026-11-05T12:00:21Z",event:"newest"});
+  await ui.tick(2000);
+  assert.equal(journal.children.length,11);assert.equal(journal.children[2],row);assert.equal(row.open,true);
+  assert.equal(journal.scrollTop,43);assert.equal(ui.document.activeElement,row.children[0]);
+  assert.equal(ui.elements.get("journalResumeButton").hidden,false);assert.match(ui.elements.get("journalResumeButton").textContent,/\(1\)/);
+  ui.elements.get("journalResumeButton").onclick();assert.equal(journal.scrollTop,473);assert.equal(ui.elements.get("journalResumeButton").hidden,true);
+  ui.elements.get("journalFollowButton").onclick();assert.equal(ui.elements.get("journalFollowButton").attributes["aria-pressed"],"false");
+  const position=journal.scrollTop;events.unshift({...events[0],time:"2026-11-05T12:00:22Z",event:"later"});await ui.tick(2000);assert.equal(journal.scrollTop,position);
+  ui.document.hidden=true;ui.documentEvents.visibilitychange();assert.ok(![...ui.timers.values()].some(timer=>timer.ms===2000));
+  ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.flush();assert.equal(reads,4);
+  ui.elements.get("checkTab").onclick();assert.ok(![...ui.timers.values()].some(timer=>timer.ms===2000));
+  ui.lifecycle.pagehide();assert.ok(![...ui.timers.values()].some(timer=>timer.ms===2000));
+  assert.equal(ui.calls.filter(call=>["settings.run_check","settings.probe_connections"].includes(call.params?.name)).length,0);
+});
+
+test("the configuration form shows backend effective sources and preserves overridden saved file values", async () => {
+  const sources={};for(const [path,source]of [[["connections","edt","url"],"environment:EDT_AI_EDT_URL"],[["project","purpose"],"project_local"],[["components","bsl-ls","java"],"settings"]])sources[JSON.stringify(path)]=source;
+  const current={...read,configurationValues:{connections:{edt:{url:"http://environment/mcp"}},project:{purpose:"local purpose"},components:{"bsl-ls":{java:"java"}}},configurationSources:sources};
+  const text="connections:\n  edt:\n    url: http://shared/mcp\nproject:\n  purpose: shared purpose\n";
+  const ui=screen(async(name,args)=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.edit")return {text,format:"yaml",layerScope:"profile",baseRevision:"base"};
+    if(name==="settings.document_fields")return new SettingsBackend("unused","unused").main({action:"document_fields",...args});
+    throw new Error(name);
+  });await ui.flush();ui.elements.get("editorTab").onclick();await ui.flush();await ui.flush();
+  const rows=vm.runInContext("jsonRows",ui.context),url=rows.get(JSON.stringify(["connections","edt","url"]));
+  assert.match(url.origin.textContent,/http:\/\/environment\/mcp.*EDT_AI_EDT_URL/);
+  assert.match(rows.get(JSON.stringify(["project","purpose"])).origin.textContent,/local purpose.*локальные настройки/);
+  assert.match(ui.elements.get("editorOriginNote").textContent,/Внешние переопределения/);
+  assert.equal(treeInputs(ui).find(input=>input.attributes?.["aria-label"]==="connections.edt.url").value,"http://shared/mcp");
+  assert.equal(ui.elements.get("settingsText").value,text);
+});
+
+test("profile editing lives in its dropdown row and returns focus after cancellation", async () => {
+  const ui=screen(async name=>{if(["settings.read","settings.status"].includes(name))return {...read,profileHistory:[{...read.profile,projectRoot:read.values.projectRoot}]};throw new Error(name);});await ui.flush();
+  ui.elements.get("profileToggleButton").onclick();ui.elements.get("renameButton").onclick();
+  const card=ui.elements.get("profileHistory").children[0];
+  assert.equal(ui.elements.get("renameButton").parentElement,card);assert.equal(ui.elements.get("renameArea").parentElement,card);
+  assert.equal(ui.elements.get("profileBrowser").hidden,false);assert.equal(ui.elements.get("profileOverview").hidden,true);
+  ui.elements.get("renameCancelButton").onclick();assert.equal(ui.elements.get("renameArea").hidden,true);assert.equal(ui.document.activeElement,ui.elements.get("renameButton"));
+});
+
+test("a slow initial snapshot preserves the tab selected while it was loading", async () => {
+  let release;const gate=new Promise(resolve=>{release=resolve;});
+  const ui=screen(async name=>{if(name==="settings.read"){await gate;return read;}if(name==="settings.diagnostics")return {events:[],session:{},observedAt:new Date().toISOString()};throw new Error(name);});
+  await ui.flush();ui.elements.get("supportTab").onclick();await ui.flush();release();await ui.flush();
+  assert.equal(ui.elements.get("supportPanel").hidden,false);assert.equal(ui.elements.get("supportTab").attributes["aria-selected"],"true");
+  ui.lifecycle.pagehide();
 });

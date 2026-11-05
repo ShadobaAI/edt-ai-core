@@ -10,6 +10,40 @@ import { resolved_settings } from "../scripts/project_context.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 
+test("configuration presentation reuses resolved values and reports each saved source without writing", async t => {
+  const f=fixture(t);environment(t,f.env);
+  f.profile.connections={edt:{url:"http://shared/mcp",timeout_seconds:11,headers_env:{Authorization:"SHARED_TOKEN"}},openviking:{enabled:false}};
+  f.profile.components={"bsl-ls":{java:"shared-java",configuration:"shared.json"}};f.save();
+  const local=path.join(f.root,".ai/project.local.yaml"),external=path.join(f.base,"connections.yaml");
+  dump({project:{purpose:"local purpose"},connections:{edt:{headers_env:{}}},components:{"bsl-ls":{java:"local-java",configuration:null}}},local);
+  dump({connections:{edt:{timeout_seconds:19},v8std:{url_env:"CUSTOM_V8STD_URL"}},components:{"bsl-ls":{node:"external-node"}}},external);
+  process.env.EDT_AI_CONNECTIONS_FILE=external;process.env.EDT_AI_EDT_URL="http://environment/mcp";process.env.SHARED_TOKEN="not-a-display-value";t.after(()=>{delete process.env.SHARED_TOKEN;});
+  const shared=path.join(f.root,".ai/project.yaml"),before=[shared,local,external].map(file=>fs.readFileSync(file,"utf8"));
+  const backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS),snapshot=await backend.main({action:"read"});
+  const values=snapshot.configurationValues,source=path=>snapshot.configurationSources[JSON.stringify(path)];
+  assert.equal(values.project.id,f.profile.project.id);assert.equal(source(["project","id"]),"profile");
+  assert.equal(values.project.purpose,"local purpose");assert.equal(source(["project","purpose"]),"project_local");
+  assert.equal(values.connections.edt.url,snapshot.values.edtUrl);assert.equal(source(["connections","edt","url"]),"environment:EDT_AI_EDT_URL");
+  assert.equal(values.connections.edt.timeout_seconds,19);assert.equal(source(["connections","edt","timeout_seconds"]),"connections_file");
+  assert.equal(values.connections.v8std.url_env,"CUSTOM_V8STD_URL");assert.equal(source(["connections","v8std","url_env"]),"connections_file");
+  assert.deepEqual(values.connections.edt.headers_env,{});assert.equal(source(["connections","edt","headers_env"]),"project_local");
+  assert.equal(values.components["bsl-ls"].node,"external-node");assert.equal(source(["components","bsl-ls","node"]),"connections_file");
+  assert.equal(values.components["bsl-ls"].java,"local-java");assert.equal(values.components["bsl-ls"].configuration,null);
+  assert.equal(source(["components","bsl-ls","configuration"]),"project_local");
+  assert.equal(source(["components","code-index","version"]),"settings");
+  assert.ok(!JSON.stringify(snapshot).includes("not-a-display-value"));
+  assert.deepEqual([shared,local,external].map(file=>fs.readFileSync(file,"utf8")),before);
+});
+
+test("configuration sources follow replaced arrays and local header dictionaries", async t => {
+  const f=fixture(t);environment(t,f.env);f.save();
+  dump({repositories:[{id:"local",path:".",alias:"local",edt_project:null}],connections:{v8std:{headers_env:{"X-Api-Key":"LOCAL_TOKEN"}}}},path.join(f.root,".ai/project.local.yaml"));
+  const data=await new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS).main({action:"read"});
+  assert.equal(data.configurationValues.repositories.length,1);
+  assert.equal(data.configurationValues.repositories[0].id,"local");
+  assert.equal(data.configurationSources[JSON.stringify(["repositories",0,"edt_project"])],"project_local");
+  assert.equal(data.configurationSources[JSON.stringify(["connections","v8std","headers_env","X-Api-Key"])],"project_local");
+});
 
 
 

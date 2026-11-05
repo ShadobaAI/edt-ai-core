@@ -127,6 +127,7 @@ function readSettings(actual) {
     valueSources: actual.valueSources, managedValueSources: actual.managedValueSources,
     settingsRevision: actual.settingsRevision, writePaths: actual.writePaths, layerValues: actual.layerValues,
     localOverridePaths: actual.localOverridePaths,
+    configurationValues: actual.configurationValues, configurationSources: actual.configurationSources,
     installedVersions: actual.installedVersions,
     preparationScope: actual.preparationScope,
     profile: actual.profile, directoryContext: actual.directoryContext, sessionGuidance: actual.sessionGuidance,

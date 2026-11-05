@@ -69,11 +69,17 @@ export function resolved_settings(
   assert_settings_paths(config, root, data, state);
   let overrides = { connections: data?.connections || {}, components: data?.components || {} };
   const fieldSources = {
+    connections: {},
+    connectionVariables: {},
     openviking: Object.fromEntries(Object.keys(config.mcp.optional.openviking).map(key => [key, "settings"])),
     components: Object.fromEntries(Object.entries(config.mcp.managed).map(([name, item]) =>
       [name, Object.fromEntries(Object.keys(item).map(key => [key, "settings"]))])),
   };
   const record_sources = (connections, source, components = {}) => {
+    for (const [name, item] of Object.entries(connections || {})) {
+      fieldSources.connections[name] ||= {};
+      for (const key of Object.keys(item)) fieldSources.connections[name][key] = source;
+    }
     for (const key of Object.keys(connections?.openviking || {})) fieldSources.openviking[key] = source;
     for (const [name, item] of Object.entries(components || {})) {
       fieldSources.components[name] ||= {};
@@ -136,6 +142,7 @@ export function resolved_settings(
   }
   for (const [name, entry] of Object.entries(overlay)) {
     if (entry.url) name === "openviking" ? validate_openviking_url(entry.url) : validate_url(entry.url, name);
+    if (Object.hasOwn(entry, "url_env")) fieldSources.connectionVariables[name] = entry.url_env;
     delete entry.url_env; // Resolution metadata is not part of the transport contract.
   }
   const openviking = overlay.openviking;

@@ -546,7 +546,7 @@ export class SettingsBackend {
       );
     return config;
   }
-  setting_scope_data(config, profile) {
+  setting_scope_data(config, profile, effective = null, sources = {}, fieldSources = {}) {
     const root = config.active_project;
     if (!root || profile.status !== "loaded") return { layerValues: {}, localOverridePaths: [] };
     const files = { profile: profile_target(root), project_local: inside(root, ".ai/project.local.yaml") };
@@ -572,7 +572,38 @@ export class SettingsBackend {
       }
     }
     layers.global = Object.fromEntries(Object.entries(FIELDS).filter(([, parts]) => parts[1] === "managed").map(([key, parts]) => [key, structuredClone(config.mcp.managed[parts[2]]?.[parts.at(-1)])]).filter(([, value]) => value !== undefined));
-    return { layerValues: layers, localOverridePaths };
+    if (!effective) return { layerValues: layers, localOverridePaths };
+    // Read-only presentation metadata. Resolution stays in project_profile and
+    // resolved_settings; the form never computes its own effective settings.
+    const configurationValues = structuredClone(project_profile(root));
+    const configurationSources = {};
+    const prefix = (a, b) => a.length <= b.length && a.every((part, index) => String(part) === String(b[index]));
+    const collectSources = (value, parts = [], source = null) => {
+      const origin = source || (localOverridePaths.some(path => prefix(path, parts)) ? "project_local" : "profile");
+      configurationSources[JSON.stringify(parts)] = origin;
+      if (value && typeof value === "object")
+        for (const [key, child] of Object.entries(value)) collectSources(child, [...parts, Array.isArray(value) ? Number(key) : key], source);
+    };
+    collectSources(configurationValues);
+    const schema = JSON.parse(fs.readFileSync(new URL("../schemas/project-profile.schema.json", import.meta.url), "utf8"));
+    for (const section of ["connections", "components"]) {
+      for (const [name, definition] of Object.entries(schema.properties[section].properties)) {
+        const entry = section === "components" ? effective.mcp.managed[name]
+          : name === "openviking" ? effective.mcp.optional[name] : effective.mcp.required[name];
+        for (const key of Object.keys(definition.properties)) {
+          const variable = section === "connections" && key === "url_env" && Object.hasOwn(fieldSources.connectionVariables || {}, name);
+          if (!variable && (!entry || !Object.hasOwn(entry, key))) continue;
+          const value = variable ? fieldSources.connectionVariables[name] : entry[key];
+          configurationValues[section] ||= {};
+          configurationValues[section][name] ||= {};
+          configurationValues[section][name][key] = structuredClone(value);
+          const source = section === "connections" && key === "url" ? sources[name]
+            : fieldSources[section]?.[name]?.[key];
+          collectSources(value, [section, name, key], source || "settings");
+        }
+      }
+    }
+    return { layerValues: layers, localOverridePaths, configurationValues, configurationSources };
   }
   store_shared_settings(config) {
     const saved = settings(this.CONFIG);
@@ -1119,7 +1150,7 @@ export class SettingsBackend {
           .map(([key, parts]) => [key, fieldSources.components?.[parts.at(-2)]?.[parts.at(-1)] || "settings"])),
         settingsRevision: config.active_project && profile.status === "loaded" ? this.revision(config, profile_target(config.active_project)) : null,
         writePaths: config.active_project ? { profile: profile_target(config.active_project), project_local: inside(config.active_project, ".ai/project.local.yaml"), global: this.CONFIG } : {},
-        ...this.setting_scope_data(config, profile),
+        ...this.setting_scope_data(config, profile, effective, sources, fieldSources),
         preparationScope: preparation_scope(actual.projectRoot),
         profileHistory: profile_history(this.STATE, actual.projectRoot),
         profileHistoryHidden: profile_hidden(this.STATE, actual.projectRoot),
