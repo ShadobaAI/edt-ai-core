@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
+import { fileURLToPath } from "node:url";
 import { edt_fixture as fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { setup_assets, save_readiness, read_readiness, save_component_checks, read_component_checks } from "../scripts/setup_readiness.mjs";
@@ -13,6 +14,7 @@ import { instance_directory, project_directory, sha256 } from "../scripts/projec
 import { grant_preparation } from "../scripts/components.mjs";
 import { zip } from "../scripts/archives.mjs";
 import { alive } from "../scripts/processes.mjs";
+import { index_config } from "../scripts/runtime.mjs";
 
 async function ready_fixture(t) {
   const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready";const paths=[];
@@ -331,6 +333,100 @@ test("passive managed probes preserve index expiry and durable BSL evidence with
   assert.equal(spawn.mock.callCount(),0);
   process.env.EDT_AI_INSTANCE="another";
   const other=await backend.main({action:"probe",component:"bsl-ls"});assert.equal(other.componentChecks[0].state,"not_verified");
+});
+
+async function live_index_fixture(t) {
+  const { f, backend } = await ready_fixture(t);
+  await backend.main({ action: "update", set: { codeIndexEnabled: true } });
+  const home = path.join(project_directory(f.state, f.root), "code-index"), binary = Buffer.from("managed index fixture");
+  const exe = path.join(f.state, "runtime/code-index/fixture", sha256(binary), "bsl-indexer.exe");
+  fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, binary);
+  fs.mkdirSync(home, { recursive: true }); index_config(home, f.root, f.profile);
+  fs.mkdirSync(path.join(f.root, ".code-index")); fs.writeFileSync(path.join(f.root, ".code-index/index.db"), "existing");
+  const daemon = createServer((req, res) => {
+    assert.equal(req.method, "GET"); assert.equal(req.url, "/health");
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ pid: process.pid, status: "running", paths: [{ path: f.root, status: "ready" }] }));
+  });
+  daemon.listen(0, "127.0.0.1"); await once(daemon, "listening");
+  t.after(() => { daemon.closeAllConnections(); return new Promise(done => daemon.close(done)); });
+  fs.writeFileSync(path.join(home, "daemon.json"), JSON.stringify({ pid: process.pid, http_port: daemon.address().port }));
+  fs.writeFileSync(path.join(home, "owner.json"), JSON.stringify({ pid: process.pid, project_root: f.root, executable: exe }));
+  const spawn = childProcess.spawn, reader = fileURLToPath(new URL("./fixtures/index-reader.mjs", import.meta.url)), starts = [];
+  t.mock.method(childProcess, "spawn", (command, args, options) => {
+    if (options.cwd !== home) return spawn(command, args, options);
+    assert.equal(path.basename(args[0]), "process_supervisor.mjs", "observation must not launch a daemon");
+    const child = spawn(command, args, options), send = child.send.bind(child);
+    child.send = (message, ...rest) => {
+      if (message.command) {
+        assert.equal(message.command, exe);
+        assert.deepEqual(message.args, ["serve", "--config", path.join(home, "daemon.toml")]);
+        starts.push(message);
+        message = { ...message, command: process.execPath, args: [reader] };
+      }
+      return send(message, ...rest);
+    };
+    return child;
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const fetch = globalThis.fetch;
+  t.mock.method(globalThis, "fetch", (url, options) => {
+    assert.match(String(url), /^http:\/\/127\.0\.0\.1:/, "observation must not download or query releases");
+    return fetch(url, options);
+  });
+  const health = (status = "ready", stale = false) => ({ mcp: { status: "ok" }, daemon: { status: "online" },
+    repos: [{ repo: "product", root_path: f.root, path_status: { status }, data_version: { stale } }] });
+  const setHealth = (...results) => fs.writeFileSync(path.join(home, "health-fixture.json"), JSON.stringify({ results }));
+  const refresh = () => backend.main({ action: "refresh_readiness", scope: f.root + "#first", component: "code-index" });
+  return { f, backend, home, exe, starts, health, setHealth, refresh };
+}
+
+test("prepared index refresh replaces liveness and cached results with current read-only API evidence", async t => {
+  const { f, backend, home, starts, health, setHealth, refresh } = await live_index_fixture(t);
+  const config = backend.effective(backend.current()), files = ["daemon.json", "owner.json", "daemon.toml"];
+  const before = files.map(file => fs.readFileSync(path.join(home, file)));
+  grant_preparation(f.state, f.root, ["code-index"]);
+  save_component_checks(f.state, config, f.profile, [{ id: "code-index", state: "running" }]);
+  setHealth(health("initial_indexing"), health());
+  let result = await refresh();
+  assert.equal(result.managed[0].state, "ready", result.managed[0].detail);
+  assert.equal(result.managed[0].ready, true); assert.equal(result.componentChecks[0].repositories[0].state, "ready");
+  const events = () => fs.readFileSync(path.join(home, "reader-events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  assert.equal(events().filter(event => event.method === "tools/call").length, 2, "a building index is observed again before reporting readiness");
+  for (const [body, expected] of [[health("ready", true), "stale"], [health(), "ready"],
+    [{ isError: true, content: [{ type: "text", text: "private external error" }] }, "error"],
+    [{ ...health(), repos: [{ ...health().repos[0], root_path: f.base }] }, "mismatch"]]) {
+    setHealth(body); result = await refresh();
+    assert.equal(result.managed[0].state, expected, result.managed[0].detail);
+    const current = await backend.main({ action: "read" });
+    assert.equal(current.componentChecks.find(item => item.id === "code-index").state, expected);
+    assert.doesNotMatch(JSON.stringify(result), /private external error/);
+  }
+  for (const event of events()) assert.equal(alive(event.pid), false, "temporary readers must close before the check completes");
+  assert.equal(starts.length, 5);
+  files.forEach((file, i) => assert.deepEqual(fs.readFileSync(path.join(home, file)), before[i]));
+  assert.deepEqual(fs.readdirSync(path.join(home, "readers")), []);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+  assert.equal((await backend.main({ action: "read" })).readiness.state, "not_checked");
+});
+
+test("index observation never launches an unapproved, stopped, foreign or modified runtime", async t => {
+  const { f, home, exe, starts, health, setHealth, refresh } = await live_index_fixture(t);
+  setHealth(health());
+  assert.equal((await refresh()).managed[0].state, "running"); assert.equal(starts.length, 0);
+  grant_preparation(f.state, f.root, ["code-index"]);
+  process.env.EDT_AI_INSTANCE = "another";
+  const other = await new SettingsBackend().main({ action: "refresh_readiness", scope: f.root + "#another", component: "code-index" });
+  assert.equal(other.managed[0].state, "running"); assert.equal(starts.length, 0);
+  process.env.EDT_AI_INSTANCE = "first";
+  const ownerFile = path.join(home, "owner.json"), owner = JSON.parse(fs.readFileSync(ownerFile));
+  for (const change of [value => value.pid++, value => value.project_root = f.base]) {
+    const invalid = structuredClone(owner); change(invalid); fs.writeFileSync(ownerFile, JSON.stringify(invalid));
+    const result = await refresh(); assert.equal(result.managed[0].state, "error"); assert.match(result.managed[0].detail, /Владелец/);
+  }
+  fs.writeFileSync(ownerFile, JSON.stringify(owner)); fs.writeFileSync(exe, "modified artifact");
+  assert.match((await refresh()).managed[0].detail, /исполняемый файл/);
+  fs.writeFileSync(path.join(home, "daemon.json"), "{}");
+  assert.equal((await refresh()).managed[0].state, "stopped"); assert.equal(starts.length, 0);
 });
 
 test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{

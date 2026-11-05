@@ -1061,6 +1061,18 @@ export class SettingsBackend {
         } else if (component === "code-index") {
           const health = await runtime.daemon_health(path.join(project_directory(this.STATE, root), "code-index"));
           check = health && (retained || expired) ? retained || expired : { ...check, state: health ? "running" : "stopped", detail: health ? "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
+          let prepared = false;
+          try { require_preparation(this.STATE, root, component); prepared = true; } catch { /* Observation never grants preparation permission. */ }
+          if (health && prepared) {
+            try {
+              const observed = await runtime.observe_index(this.STATE, config, root, profile);
+              check = observed ? { id: component, state: observed.index_state, repositories: observed.index.repositories }
+                : { id: component, state: "stopped", detail: "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
+            } catch (error) {
+              const busy = error.remote !== true && error.code === "RUNTIME_BUSY";
+              check = { id: component, state: busy ? "preparing" : "error", detail: busy ? "Подготовка окружения выполняется…" : safe_error_message(error) };
+            }
+          }
         } else if (saved?.validity === "inputs" && saved.state !== "check_stale") check = retained || saved;
         else {
           let prepared = false;

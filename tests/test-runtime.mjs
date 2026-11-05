@@ -367,7 +367,7 @@ test("index status distinguishes existing ready data, active indexing, stale dat
   fs.mkdirSync(path.join(f.root,".code-index"));fs.writeFileSync(path.join(f.root,".code-index/index.db"),"existing");
   assert.equal(index_status(body,f.root,f.profile).state,"ready");
   assert.equal(index_status(body,f.root,f.profile).repositories[0].present,true);
-  for(const [status,stale,expected] of [["indexing",false,"indexing"],["ready",true,"stale"],["error",false,"error"],["unknown",undefined,"not_checked"]]){
+  for(const [status,stale,expected] of [["indexing",false,"indexing"],["initial_indexing",false,"indexing"],["reindexing_batch",false,"indexing"],["reindexing_extras",false,"indexing"],["ready",true,"stale"],["error",false,"error"],["unknown",undefined,"not_checked"]]){
     const changed=structuredClone(body);changed.repos[0].path_status.status=status;changed.repos[0].data_version.stale=stale;
     assert.equal(index_status(changed,f.root,f.profile).state,expected);
   }

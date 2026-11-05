@@ -36,7 +36,7 @@ import { launch, stop_child, alive, which, run_sync } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
-import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, native_environment } from "./components.mjs";
+import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, require_preparation, native_environment } from "./components.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
@@ -857,7 +857,7 @@ export function index_status(body, root, data) {
     if (!item || !item.root_path || path_key(item.root_path) !== path_key(directory)) state = "mismatch";
     else if (item.path_status?.error || item.path_status?.status === "error") state = "error";
     else if (item.data_version?.stale === true) state = "stale";
-    else if (["indexing", "initializing", "pending", "reindexing", "reindexing_extras"].includes(item.path_status?.status)) state = "indexing";
+    else if (["indexing", "initializing", "initial_indexing", "pending", "reindexing", "reindexing_batch", "reindexing_extras"].includes(item.path_status?.status)) state = "indexing";
     else if (item.path_status?.status === "ready" && item.data_version?.stale === false) state = "ready";
     else if (!present) state = "missing";
     return { id: repo.id, edtProject: repo.edt_project, alias: repo.alias, present, state };
@@ -927,6 +927,61 @@ async function run_index(exe, directory, home, environment, state) {
     if (child) await stop_child(child, 0);
   }
 }
+async function probe_client(client, component, root, data) {
+  const server = await client.initialize(),
+    tools = (await all_pages(client, "tools/list", "tools")).tools;
+  if (!tools.length)
+    throw new ConfigError(component + " не предоставляет инструментов MCP");
+  if (component === "bsl-ls") validate_bsl_tools(tools);
+  const result = {
+    component,
+    status: "mcp_ready",
+    server: server.serverInfo,
+    tools: tools.map((tool) => tool.name),
+  };
+  if (component === "code-index") {
+    const deadline = Date.now() + 4000;
+    do {
+      const health = await client.request("tools/call", { name: "health", arguments: {} });
+      if (health.isError) throw Object.assign(new ConfigError("Проверка состояния code-index не удалась; текст внешней ошибки скрыт"), { remote: true });
+      const body = health.structuredContent || JSON.parse(health.content.find(part => part.type === "text").text);
+      result.index = index_status(body, root, data);
+      if ((result.index.state !== "indexing" && !result.index.retryable) || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;
+      await sleep(250);
+    } while (true);
+    result.index_ready = result.index.ready;
+    result.index_state = result.index.state;
+    result.readiness_scope =
+      "Проверены пути репозиториев и актуальность данных; проверяйте покрытие конкретной операции в каждом ответе";
+  }
+  return result;
+}
+
+// Observe only the existing daemon through its immutable read-only client.
+// Do not use launch_command: it can prepare config and start a stopped daemon.
+export async function observe_index(state, config, root, data) {
+  require_preparation(state, root, "code-index");
+  const lease = await acquire_reader(state, root);
+  let client;
+  try {
+    const home = path.join(project_home(state, root), "code-index"), health = await daemon_health(home);
+    if (!health) return null;
+    const owner = read_json(path.join(home, "owner.json"), {});
+    if (!owner.project_root || path_key(owner.project_root) !== path_key(root) || owner.pid !== health.pid)
+      throw new ConfigError("Владелец демона проекта не совпадает; повторное использование запрещено");
+    if (!owned_executable(state, owner))
+      throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
+    if (!pathsMatch(health, root, data))
+      throw new ConfigError("Пути репозиториев демона проекта не совпадают с выбранным профилем");
+    const options = component_settings(config, "code-index");
+    client = new McpClient([owner.executable, "serve", "--config", path.join(home, "daemon.toml")], home,
+      { ...native_environment(config), CODE_INDEX_HOME: home }, options.timeout_seconds || 30, { maxBytes: options.max_response_bytes });
+    return await probe_client(client, "code-index", root, data);
+  } finally {
+    try { await client?.close(); } finally { await lease.close(); }
+  }
+}
+
 export async function smoke(
   state,
   config,
@@ -960,33 +1015,7 @@ export async function smoke(
     client = new McpClient(command, cwd, env, options.timeout_seconds || timeout, { maxBytes: options.max_response_bytes });
   }
   try {
-    const server = await client.initialize(),
-      tools = (await all_pages(client, "tools/list", "tools")).tools;
-    if (!tools.length)
-      throw new ConfigError(component + " не предоставляет инструментов MCP");
-    if (component === "bsl-ls") validate_bsl_tools(tools);
-    const result = {
-      component,
-      status: "mcp_ready",
-      server: server.serverInfo,
-      tools: tools.map((tool) => tool.name),
-    };
-    if (component === "code-index") {
-      const deadline = Date.now() + 4000;
-      do {
-        const health = await client.request("tools/call", { name: "health", arguments: {} });
-        if (health.isError) throw Object.assign(new ConfigError("Проверка состояния code-index не удалась; текст внешней ошибки скрыт"), { remote: true });
-        const body = health.structuredContent || JSON.parse(health.content.find(part => part.type === "text").text);
-        result.index = index_status(body, root, data);
-        if ((result.index.state !== "indexing" && !result.index.retryable) || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;
-        await sleep(250);
-      } while (true);
-      result.index_ready = result.index.ready;
-      result.index_state = result.index.state;
-      result.readiness_scope =
-        "Проверены пути репозиториев и актуальность данных; проверяйте покрытие конкретной операции в каждом ответе";
-    }
-    return result;
+    return await probe_client(client, component, root, data);
   } finally {
     await client.close();
   }
