@@ -14,14 +14,14 @@ export const OPENVIKING_LIMITS = Object.freeze({ concurrent: 2, queued: 8, candi
   tools: 256, collections: 64, metadataChars: 8000, resultChars: 32000, contentChars: 24000, readinessMs: 15 * 60 * 1000 });
 
 function compiler(schema) {
-  if (!object(schema)) throw new Error("Missing live MCP schema");
+  if (!object(schema)) throw new Error("Отсутствует действующая схема MCP");
   const Compiler = /draft-07/.test(schema.$schema || "") ? Ajv : Ajv2020;
   return new Compiler({ strict: false, allErrors: true, ownProperties: true, validateFormats: false }).compile(schema);
 }
 export function knowledge_uri(uri) {
   if (typeof uri !== "string" || uri.length > 2048 || !/^viking:\/\/resources\/[\p{L}\p{N}._/-]+$/u.test(uri) ||
       uri.slice("viking://resources/".length).split("/").some(part => !part || part === "." || part === ".."))
-    throw Object.assign(new Error("Knowledge URI must be a canonical shared resources path"), { category: "access_scope" });
+    throw Object.assign(new Error("URI знаний должен быть каноническим общим путём ресурсов"), { category: "access_scope" });
   return uri;
 }
 function result_text(result) {
@@ -57,13 +57,13 @@ export class OpenVikingAdapter {
     this.active = 0; this.waiters = []; this.closed = false;
   }
   async connect() {
-    if (this.closed) throw new Error("OpenViking adapter is closed");
+    if (this.closed) throw new Error("Адаптер OpenViking закрыт");
     const status = knowledge_status(this.profile, this.config);
     if (status.state !== "not_verified") throw new Error(status.detail);
     const map = this.profile.knowledge.collection_uris || {};
-    if (this.profile.knowledge.collections.length > OPENVIKING_LIMITS.collections) throw new Error("Selected collection budget exceeded");
+    if (this.profile.knowledge.collections.length > OPENVIKING_LIMITS.collections) throw new Error("Превышено допустимое число выбранных коллекций");
     this.collections = new Map(this.profile.knowledge.collections.map(id => {
-      if (!map[id]) throw new Error("Explicit knowledge.collection_uris mapping required: " + id);
+      if (!map[id]) throw new Error("Требуется явное сопоставление knowledge.collection_uris: " + id);
       return [id, knowledge_uri(map[id])];
     }));
     let phase = "authorization";
@@ -73,18 +73,18 @@ export class OpenVikingAdapter {
       phase = "access_scope";
       this.access = verify_search_access(this.options, this.collections, Date.now(), this.state);
       this.accessRevision = access_revision(this.options, this.state);
-      if (initialRevision !== this.accessRevision) throw new Error("OpenViking connection credentials changed during authorization; reconnect required");
+      if (initialRevision !== this.accessRevision) throw new Error("Учётные данные OpenViking изменились во время проверки разрешения; переподключитесь");
       phase = "transport";
       await this.client.initialize();
       if (this.closed) {
         // A late initialize may assign a remote session after close() ran.
         await this.client.close();
-        throw new Error("OpenViking adapter closed during connection");
+        throw new Error("Адаптер OpenViking закрыт во время подключения");
       }
       this.validateBinding?.();
       phase = "server_contract";
       await this.refreshContract();
-      if (this.closed) throw new Error("OpenViking adapter closed during connection");
+      if (this.closed) throw new Error("Адаптер OpenViking закрыт во время подключения");
       this.confirmPublication();
       this.connected = true;
       return this.status();
@@ -109,8 +109,8 @@ export class OpenVikingAdapter {
       this.validateBinding?.(); this.checkAccess();
       if (!this.connected || this.closed || this.readiness.epoch !== this.retrievalEpoch() ||
           Date.now() < Date.parse(this.readiness.checkedAt) || Date.now() >= Date.parse(this.readiness.expiresAt))
-        throw new Error("Search readiness expired or connection context changed; repeat the readiness check");
-      if (!this.checkPublication()) throw new Error("Search readiness requires a confirmed publication snapshot");
+        throw new Error("Проверка готовности поиска устарела или контекст подключения изменился; повторите проверку готовности");
+      if (!this.checkPublication()) throw new Error("Для готовности поиска нужен подтверждённый снимок публикации");
       return { ...structuredClone(this.readiness), state: "ready" };
     } catch (error) { return { state: "not_verified", detail: access_error(error, this.options, this.credentialHeaders, "server_contract", this.state).message }; }
   }
@@ -119,12 +119,12 @@ export class OpenVikingAdapter {
     this.readinessPromise = (async () => {
       this.readiness = null;
       const receipt = this.checkPublication();
-      if (!receipt) throw new Error("Search readiness requires a confirmed publication snapshot");
+      if (!receipt) throw new Error("Для готовности поиска нужен подтверждённый снимок публикации");
       const manifest = load_manifest_catalog(this.projectRoot, this.profile.knowledge.manifest, [...this.collections.keys()]);
       const retrieval = {}, checked = [];
       for (const [collection, root] of this.collections) {
         const found = await this.search({ query: "readiness", collection, limit: 1 }, retrieval);
-        if (found.serverPartial) throw new Error("Readiness search returned a partial response");
+        if (found.serverPartial) throw new Error("Поиск при проверке готовности вернул неполный ответ");
         const sample = manifest.data.materials.find(item => item.collection === collection);
         if (sample) await this.material(root + "/" + sample.id + ".md", collection, retrieval, 1000);
         checked.push({ collection, search: "verified", read: sample ? "sample_verified" : "empty_published_collection" });
@@ -136,7 +136,7 @@ export class OpenVikingAdapter {
         epoch: retrieval.epoch, collections: checked, indexCompleteness: "externally_attested",
         publication: this.publicationStatus(), readBoundary: "externally_attested", liveTestByPlugin: "scoped_search_and_sample_read" };
       const status = this.status();
-      if (!status.ready) throw new Error(status.readiness.detail || "Search readiness could not be confirmed");
+      if (!status.ready) throw new Error(status.readiness.detail || "Не удалось подтвердить готовность поиска");
       return status;
     })();
     try { return await this.readinessPromise; }
@@ -146,11 +146,11 @@ export class OpenVikingAdapter {
   confirmPublication() {
     if (!this.profile.knowledge.manifest) return;
     try {
-      if (!this.projectRoot) throw new Error("Publication requires this binding's project root and manifest");
+      if (!this.projectRoot) throw new Error("Для публикации нужны корень проекта и манифест этой привязки");
       const manifest = load_manifest_catalog(this.projectRoot, this.profile.knowledge.manifest, [...this.collections.keys()]);
       const scope = this.access.team_roots.filter(root => [...this.collections.values()].every(uri => uri === root || uri.startsWith(root + "/")))
         .sort((a, b) => b.length - a.length)[0];
-      if (!scope) throw new Error("Publication requires one assigned team area containing the selected collections");
+      if (!scope) throw new Error("Для публикации нужна одна назначенная область команды с выбранными коллекциями");
       this.publication = new PublicationConfirmation({ endpoint: this.options.url, connectionId: this.options.connection_id || "", state: this.state, scope,
         deploymentId: this.access.verification.deployment_id, manifest, collections: this.collections });
       this.publicationManifestSha256 = manifest.sha256;
@@ -159,10 +159,10 @@ export class OpenVikingAdapter {
   checkPublication() {
     try {
     if (!this.profile.knowledge.manifest) return null; // Setup-only discovery never claims a snapshot.
-    if (!this.publication) throw new Error(this.publicationError || "Publication is not confirmed");
+    if (!this.publication) throw new Error(this.publicationError || "Публикация не подтверждена");
     const receipt = this.publication.check();
     const current = load_manifest_catalog(this.projectRoot, this.profile.knowledge.manifest, [...this.collections.keys()]);
-    if (current.sha256 !== this.publicationManifestSha256) throw new Error("Publication manifest changed; reconnect required");
+    if (current.sha256 !== this.publicationManifestSha256) throw new Error("Манифест публикации изменился; переподключитесь");
     return receipt;
     } catch (error) { throw Object.assign(error, { category: "index" }); }
   }
@@ -179,11 +179,11 @@ export class OpenVikingAdapter {
     try {
     const access = verify_search_access(this.options, this.collections, Date.now(), this.state);
     if (this.accessRevision && this.accessRevision !== access_revision(this.options, this.state))
-      throw new Error("OpenViking access confirmation or identity changed; reconnect required");
+      throw new Error("Подтверждение доступа или идентичность OpenViking изменились; переподключитесь");
     if (this.access && this.access.credential_binding !== access.credential_binding)
-      throw new Error("OpenViking connection credentials changed; reconnect required");
+      throw new Error("Учётные данные подключения OpenViking изменились; переподключитесь");
     if (this.access && stable(this.access) !== stable(access))
-      throw new Error("OpenViking selected access confirmation changed; reconnect required");
+      throw new Error("Выбранное подтверждение доступа OpenViking изменилось; переподключитесь");
     return access;
     } catch (error) { throw Object.assign(error, { category: "access_scope" }); }
   }
@@ -194,20 +194,20 @@ export class OpenVikingAdapter {
       let pageContext;
       const tools = (await all_pages({ request: async (method, params) => {
         const page = await this.request(method, params), current = stable(page._meta ?? null);
-        if (pageContext !== undefined && pageContext !== current) throw new Error("OpenViking response context changed during discovery; discard mixed pages");
+        if (pageContext !== undefined && pageContext !== current) throw new Error("Контекст ответа OpenViking изменился во время обнаружения; отбросьте смешанные страницы");
         pageContext = current;
         return page;
       } }, "tools/list", "tools", {
         maxPages: OPENVIKING_LIMITS.toolPages, maxItems: OPENVIKING_LIMITS.tools })).tools;
-      if (this.closed) throw new Error("OpenViking adapter closed during discovery");
-      if (revision !== this.client.tools_revision) throw new Error("OpenViking contract changed during discovery");
+      if (this.closed) throw new Error("Адаптер OpenViking закрыт во время обнаружения");
+      if (revision !== this.client.tools_revision) throw new Error("Контракт OpenViking изменился во время обнаружения");
       verify_search_surface(this.checkAccess(), tools, this.client.initialization);
       const compile = tool => ({ ...tool, input: compiler(tool.inputSchema), output: tool.outputSchema ? compiler(tool.outputSchema) : null });
       this.searchTool = tools.find(tool => ["find", "search"].includes(tool.name) &&
         ["query", "target_uri", "limit"].every(key => Object.hasOwn(tool.inputSchema?.properties || {}, key)));
       this.readTool = tools.find(tool => tool.name === "read" &&
         ["uris", "offset", "limit"].every(key => Object.hasOwn(tool.inputSchema?.properties || {}, key)));
-      if (!this.searchTool || !this.readTool) throw new Error("Unsupported live OpenViking search/read contract");
+      if (!this.searchTool || !this.readTool) throw new Error("Неподдерживаемый действующий контракт поиска и чтения OpenViking");
       this.searchTool = compile(this.searchTool); this.readTool = compile(this.readTool);
       // Test the actual scoped argument shapes before any native operation.
       const target = this.collections.values().next().value;
@@ -220,25 +220,25 @@ export class OpenVikingAdapter {
     finally { this.refreshPromise = null; }
   }
   async ensureContract(force = false) {
-    if (!this.connected) throw new Error("OpenViking is not connected");
+    if (!this.connected) throw new Error("OpenViking не подключён");
     if (force || this.contractRevision !== this.client.tools_revision) await this.refreshContract();
   }
   async request(method, params) {
-    if (this.closed) throw new Error("OpenViking adapter is closed");
+    if (this.closed) throw new Error("Адаптер OpenViking закрыт");
     this.validateRequest(method, params);
     if (this.active < OPENVIKING_LIMITS.concurrent) this.active++;
     else {
-      if (this.waiters.length >= OPENVIKING_LIMITS.queued) throw new Error("OpenViking request queue budget exceeded");
+      if (this.waiters.length >= OPENVIKING_LIMITS.queued) throw new Error("Превышен допустимый размер очереди запросов OpenViking");
       await new Promise((resolve, reject) => this.waiters.push({ resolve, reject }));
     }
     try {
-      if (this.closed) throw new Error("OpenViking adapter is closed");
+      if (this.closed) throw new Error("Адаптер OpenViking закрыт");
       this.validateBinding?.();
       this.checkAccess();
       if (method === "tools/call") this.checkPublication();
       this.validateRequest(method, params);
       const result = await this.client.request(method, params);
-      if (this.closed) throw new Error("OpenViking adapter closed during request");
+      if (this.closed) throw new Error("Адаптер OpenViking закрыт во время запроса");
       this.validateBinding?.(); this.checkAccess();
       if (method === "tools/call") this.checkPublication();
       return result;
@@ -253,28 +253,28 @@ export class OpenVikingAdapter {
     if (transport && ["server/discover", "initialize", "notifications/initialized"].includes(method)) return;
     if (method === "tools/list") return;
     if (method !== "tools/call" || !this.searchTool || !this.readTool)
-      throw new Error("OpenViking operation is outside the permitted search/read surface");
+      throw new Error("Операция OpenViking выходит за разрешённый API поиска и чтения");
     if (this.contractRevision !== this.client.tools_revision)
-      throw new Error("OpenViking approved contract changed before the operation; rediscovery required");
+      throw new Error("Подтверждённый контракт OpenViking изменился перед операцией; повторите обнаружение");
     const args = params.arguments;
     if (!object(args) || Object.keys(params).some(key => !["name", "arguments"].includes(key)))
-      throw new Error("Invalid OpenViking operation envelope");
+      throw new Error("Некорректное сообщение операции OpenViking");
     if (params.name === this.searchTool.name) {
       if (typeof args.query !== "string" || !args.query.trim() || args.query.length > 8000 ||
           !Number.isInteger(args.limit) || args.limit < 1 || args.limit > Math.min(this.requirements.max_results, OPENVIKING_LIMITS.candidates) ||
           ![...this.collections.values()].includes(args.target_uri) ||
           stable(args) !== stable(this.searchArgs(args.query, args.target_uri, args.limit)))
-        throw new Error("OpenViking search must use the selected team collection and bounded arguments");
+        throw new Error("Поиск OpenViking должен использовать выбранную коллекцию команды и ограниченные аргументы");
       this.arguments(this.searchTool, args);
     } else if (params.name === this.readTool.name) {
       const collection = [...this.collections].find(([, root]) => typeof args.uris === "string" && args.uris.startsWith(root + "/"))?.[0];
       if (!collection || args.offset !== 0 || !Number.isInteger(args.limit) || args.limit < 1 || args.limit > 1000 ||
           Object.keys(args).some(key => !["uris", "offset", "limit"].includes(key)))
-        throw new Error("OpenViking read must use a selected team material and bounded arguments");
+        throw new Error("Чтение OpenViking должно использовать материал выбранной команды и ограниченные аргументы");
       this.scoped(args.uris, collection);
       this.publication?.entry(args.uris, collection);
       this.arguments(this.readTool, args);
-    } else throw new Error("OpenViking operation is outside the permitted search/read surface");
+    } else throw new Error("Операция OpenViking выходит за разрешённый API поиска и чтения");
   }
   arguments(tool, args) {
     if (!tool.input(args)) throw new RemoteContractError("Incompatible live arguments for " + tool.name);
@@ -291,7 +291,7 @@ export class OpenVikingAdapter {
   }
   assertRetrieval(retrieval) {
     if (!this.connected || this.closed || retrieval.epoch !== this.retrievalEpoch())
-      throw new Error("OpenViking connection, contract or resources changed during retrieval; discard this result");
+      throw new Error("Подключение, контракт или ресурсы OpenViking изменились во время получения данных; отбросьте результат");
   }
   async invoke(role, args, retrieval = {}) {
     // An explicit list is also required when the server omits list_changed.
@@ -307,7 +307,7 @@ export class OpenVikingAdapter {
     // Opaque MCP response metadata is only a change detector, never proof of
     // publication. Missing/changing context cannot silently join another page.
     if (retrieval.responseContext !== undefined && retrieval.responseContext !== responseContext)
-      throw new Error("OpenViking response context changed during retrieval; discard mixed results");
+      throw new Error("Контекст ответа OpenViking изменился во время получения данных; отбросьте смешанные результаты");
     retrieval.responseContext = responseContext;
     if (tool.output && !tool.output(result.structuredContent)) throw new RemoteContractError("Invalid live output for " + tool.name);
     const text = result_text(result);
@@ -319,12 +319,12 @@ export class OpenVikingAdapter {
   }
   collection(id) {
     const uri = this.collections?.get(id);
-    if (!uri) throw Object.assign(new Error("Collection is outside the selected profile"), { category: "access_scope" });
+    if (!uri) throw Object.assign(new Error("Коллекция отсутствует в выбранном профиле"), { category: "access_scope" });
     return uri;
   }
   scoped(uri, collection) {
     knowledge_uri(uri);
-    if (!uri.startsWith(this.collection(collection) + "/") || !uri.endsWith(".md")) throw Object.assign(new Error("Material is outside the selected collection"), { category: "access_scope" });
+    if (!uri.startsWith(this.collection(collection) + "/") || !uri.endsWith(".md")) throw Object.assign(new Error("Материал находится вне выбранной коллекции"), { category: "access_scope" });
     return uri;
   }
   async search({ query, collection, limit = this.requirements.max_results }, retrieval = {}) {
@@ -333,7 +333,7 @@ export class OpenVikingAdapter {
   }
   async searchResults({ query, collection, limit }, retrieval) {
     if (typeof query !== "string" || !query.trim() || query.length > 8000 || !Number.isInteger(limit) || limit < 1 || limit > this.requirements.max_results)
-      throw new Error("Invalid knowledge search arguments");
+      throw new Error("Некорректные аргументы поиска знаний");
     const effectiveLimit = Math.min(limit, OPENVIKING_LIMITS.candidates);
     const target = this.collection(collection);
     const reply = await this.invoke("search", () => this.searchArgs(query, target, effectiveLimit), retrieval), text = reply.text;
@@ -371,8 +371,8 @@ export class OpenVikingAdapter {
     const window = text.slice(0, this.requirements.max_material_chars);
     let metadata;
     try { metadata = parse_material(window); }
-    catch { throw new Error("Invalid or over-budget material metadata; parser excerpt omitted"); }
-    if (JSON.stringify(metadata).length > OPENVIKING_LIMITS.metadataChars) throw new Error("Knowledge metadata budget exceeded");
+    catch { throw new Error("Метаданные материала некорректны или превышают лимит; фрагмент разбора скрыт"); }
+    if (JSON.stringify(metadata).length > OPENVIKING_LIMITS.metadataChars) throw new Error("Превышен допустимый размер метаданных знаний");
     const body = window.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
     return { metadata, body, text, serverPartial: reply.partial, partial: reply.partial || line_count(text) >= limit || window.length < text.length };
   }
@@ -382,20 +382,20 @@ export class OpenVikingAdapter {
   }
   async readResult({ uri, collection, offset, limit, charOffset, continuation }) {
     this.scoped(uri, collection);
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000 || !Number.isSafeInteger(charOffset) || charOffset < 0) throw new Error("Invalid material line/character range");
-    if (offset !== 0) throw new Error("Line offsets require a verified publication snapshot; restart at offset 0 with a larger line limit");
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 1000 || !Number.isSafeInteger(charOffset) || charOffset < 0) throw new Error("Некорректный диапазон строк или символов материала");
+    if (offset !== 0) throw new Error("Для смещения строк нужен проверенный снимок публикации; начните со смещения 0 с большим лимитом строк");
     const retrieval = {}, material = await this.material(uri, collection, retrieval, limit);
     const materialFingerprint = sha256(material.text);
     if (continuation && (continuation.materialRevision !== material.metadata.revision ||
         continuation.materialFingerprint !== materialFingerprint || continuation.responseContext !== retrieval.responseContext))
-      throw new Error("Material revision changed or response context changed during continuation; discard this result");
-    if (!knowledge_material_active(material.metadata)) throw new Error("Inactive knowledge material is excluded from active retrieval");
+      throw new Error("Редакция материала или контекст ответа изменились при продолжении; отбросьте результат");
+    if (!knowledge_material_active(material.metadata)) throw new Error("Неактивный материал знаний исключён из текущей выборки");
     const reply = { text: material.text, partial: material.serverPartial };
     const text = reply.text;
     const windowFingerprint = sha256(text);
     if (continuation && charOffset > 0 && continuation.windowFingerprint !== windowFingerprint)
-      throw new Error("Material window changed during continuation; discard this result");
-    if (charOffset > text.length) throw new Error("Character offset exceeds the returned material window");
+      throw new Error("Окно материала изменилось при продолжении; отбросьте результат");
+    if (charOffset > text.length) throw new Error("Смещение символов превышает возвращённое окно материала");
     const summary = knowledge_material_summary(material.metadata);
     if (this.publication) summary.evidence = { ...summary.evidence, metadata: "published_declaration", publication: "verified" };
     const textBudget = OPENVIKING_LIMITS.contentChars - JSON.stringify({ uri, collection, ...summary }).length - 1024;
@@ -421,7 +421,7 @@ export class OpenVikingAdapter {
     this.readiness = null;
     this.publication = null;
     this.searchTool = null; this.readTool = null; this.collections?.clear();
-    for (const waiter of this.waiters.splice(0)) waiter.reject(new Error("OpenViking adapter closed while queued"));
+    for (const waiter of this.waiters.splice(0)) waiter.reject(new Error("Адаптер OpenViking закрыт во время ожидания в очереди"));
     this.closePromise = this.client.close();
     await this.closePromise;
   }
@@ -434,7 +434,7 @@ export class WorkflowKnowledge {
   async require(profile, config, root, action = "workflow", validateBinding = null) {
     const epoch = this.generation;
     const next = (this.pending || Promise.resolve()).catch(() => {}).then(() => {
-      if (epoch !== this.generation) throw new Error("Knowledge workflow binding changed before readiness");
+      if (epoch !== this.generation) throw new Error("Привязка рабочего процесса знаний изменилась до проверки готовности");
       return this.bind(profile, config, root, action, validateBinding, epoch);
     });
     this.pending = next;
@@ -445,7 +445,7 @@ export class WorkflowKnowledge {
     const context = stable([root, profile, config]);
     if (gate.allowed) {
       if (this.context !== context) await this.retire();
-      if (epoch !== this.generation) throw new Error("Knowledge workflow binding changed before dispatch");
+      if (epoch !== this.generation) throw new Error("Привязка рабочего процесса знаний изменилась до отправки запроса");
       validateBinding?.();
       return gate;
     }
@@ -456,15 +456,15 @@ export class WorkflowKnowledge {
     if (key !== this.key || !this.adapter?.status().ready) {
       await this.retire();
       const validate = () => {
-        if (epoch !== this.generation) throw new Error("Knowledge workflow binding changed during readiness");
+        if (epoch !== this.generation) throw new Error("Привязка рабочего процесса знаний изменилась во время проверки готовности");
         validateBinding?.();
-        if (key !== stable([context, knowledge_binding_fingerprint(config, root, profile)])) throw new Error("Knowledge workflow evidence changed; repeat readiness");
+        if (key !== stable([context, knowledge_binding_fingerprint(config, root, profile)])) throw new Error("Подтверждения рабочего процесса знаний изменились; повторите проверку готовности");
       };
       validate();
       const owner = new OpenVikingAdapter(profile, config, null, validate, root);
       this.adapter = owner;
       try { await owner.connect(); await owner.verifyReadiness(); validate(); }
-      catch (error) { if (this.adapter === owner) await this.retire(); else await owner.close(); throw new Error("Knowledge workflow blocked: " + error.message); }
+      catch (error) { if (this.adapter === owner) await this.retire(); else await owner.close(); throw new Error("Рабочий процесс заблокирован настройкой знаний: " + error.message); }
       this.key = key; this.context = context;
       this.confirmation = knowledge_confirmation(profile, config, () => owner.status());
     }

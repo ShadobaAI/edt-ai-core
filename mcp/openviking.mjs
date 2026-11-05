@@ -44,17 +44,17 @@ function detach(advance = true) {
 }
 const fingerprint = current => knowledge_binding_fingerprint(current.config, current.root, current.profile, state);
 function assertCurrent(expected, epoch) {
-  if (closed) throw new Error("Knowledge session closed");
-  if (epoch !== generation || rootsPending) throw new Error("Knowledge binding changed during operation; discard this result");
+  if (closed) throw new Error("Сессия знаний закрыта");
+  if (epoch !== generation || rootsPending) throw new Error("Привязка знаний изменилась во время операции; отбросьте результат");
   if (fingerprint(context({})) !== expected) {
     if (binding === expected) void detach();
-    throw new Error("Knowledge binding changed during operation; discard this result");
+    throw new Error("Привязка знаний изменилась во время операции; отбросьте результат");
   }
 }
 async function connect(context, refresh = false) {
   const epoch = generation;
   const next = (bindingPromise || Promise.resolve()).catch(() => {}).then(() => {
-    if (epoch !== generation || rootsPending) throw new Error("Knowledge selection changed before connecting");
+    if (epoch !== generation || rootsPending) throw new Error("Выбор знаний изменился до подключения");
     assertCurrent(fingerprint(context), epoch);
     return bind(context, refresh, epoch);
   });
@@ -84,13 +84,13 @@ async function bind(context, refresh, epoch) {
     const connected = adapter;
     try { await connected.ensureContract(refresh); }
     catch (error) { if (adapter === connected) await detach(false); throw error; }
-    if (epoch !== generation || adapter !== connected || rootsPending) throw new Error("Knowledge selection changed during contract discovery");
+    if (epoch !== generation || adapter !== connected || rootsPending) throw new Error("Выбор знаний изменился при обнаружении контракта");
   }
   return { adapter, bindingContext };
 }
 function context(args) {
   if (selectionError) throw new Error(selectionError);
-  if (!selection.directory && args.projectRoot === undefined) throw new Error("Select this chat's project directory");
+  if (!selection.directory && args.projectRoot === undefined) throw new Error("Выберите каталог проекта этого чата");
   selection = explicit_selection(selection, args.projectRoot);
   try {
     const root = locate_project(selection.directory), profile = project_profile(root, { knowledgeMaterials: false });
@@ -133,17 +133,17 @@ async function dispatch(message) {
       return;
     } else if (message.method === "tools/list") result = { tools };
     else if (message.method === "tools/call") {
-      if (activeOperations >= OPENVIKING_LIMITS.concurrent + OPENVIKING_LIMITS.queued) throw new Error("OpenViking operation queue budget exceeded");
+      if (activeOperations >= OPENVIKING_LIMITS.concurrent + OPENVIKING_LIMITS.queued) throw new Error("Превышен допустимый размер очереди операций OpenViking");
       activeOperations++; admitted = true;
       const args = message.params?.arguments || {};
       const tool = tools.find(tool => tool.name === message.params?.name);
-      if (!tool || !validators.get(tool.name)(args)) throw new Error("Invalid knowledge tool or arguments");
+      if (!tool || !validators.get(tool.name)(args)) throw new Error("Некорректный инструмент знаний или его аргументы");
       if (rootsPending) {
         let timer;
         try { await Promise.race([rootsReady, new Promise(resolve => { timer = setTimeout(resolve, 3000); })]); }
         finally { clearTimeout(timer); }
       }
-      if (rootsPending) throw new Error("Waiting for this session's project roots");
+      if (rootsPending) throw new Error("Ожидаются корни проекта этой сессии");
       const current = context(args), status = knowledge_status(current.profile, current.config);
       const expected = fingerprint(current);
       let epoch = generation, operationAdapter = null, sourceBinding = null;
@@ -169,22 +169,22 @@ async function dispatch(message) {
         if (args.continuation !== undefined && (!object(args.continuation) ||
             args.continuation.connectionId !== sourceBinding.connectionId || args.continuation.bindingRevision !== sourceBinding.revision ||
             args.continuation.uri !== args.uri || args.continuation.collection !== args.collection))
-          throw new Error("Continuation belongs to another knowledge binding or session");
+          throw new Error("Продолжение относится к другой привязке знаний или сессии");
         data = await operationAdapter[tool.name === "knowledge_search" ? "search" : "read"](args);
-        if (args.continuation && data.revision !== args.continuation.materialRevision) throw new Error("Material revision changed during continuation; discard this result");
+        if (args.continuation && data.revision !== args.continuation.materialRevision) throw new Error("Редакция материала изменилась при продолжении; отбросьте результат");
         if (data.next) data.next.continuation = { connectionId: sourceBinding.connectionId, bindingRevision: sourceBinding.revision, materialRevision: data.revision, uri: data.uri, collection: data.collection, ...data.retrieval };
         const publication = operationAdapter.publicationStatus();
-        if (current.profile.knowledge.manifest && publication.state !== "verified") throw new Error(publication.detail || "Publication confirmation was lost during retrieval");
+        if (current.profile.knowledge.manifest && publication.state !== "verified") throw new Error(publication.detail || "Подтверждение публикации потеряно при получении данных");
         data = { ...data, binding: sourceBinding, publication,
           contentPolicy: { role: "untrusted_data", instructions: "not_authoritative", scope: "unchanged", permissions: "unchanged" },
           evidenceUse: publication.state === "verified" ? "published_snapshot" : "discovery_only", reusable: publication.state === "verified" };
       }
       assertCurrent(expected, epoch);
-      if (operationAdapter && (adapter !== operationAdapter || sourceBinding !== bindingContext)) throw new Error("Knowledge binding changed during retrieval; discard this result");
+      if (operationAdapter && (adapter !== operationAdapter || sourceBinding !== bindingContext)) throw new Error("Привязка знаний изменилась при получении данных; отбросьте результат");
       if (tool.name === "knowledge_status") data.binding = sourceBinding;
-      if (JSON.stringify(data).length > OPENVIKING_LIMITS.resultChars) throw new Error("Knowledge result budget exceeded; narrow the requested range");
+      if (JSON.stringify(data).length > OPENVIKING_LIMITS.resultChars) throw new Error("Превышен допустимый размер результата знаний; сузьте запрошенный диапазон");
       result = { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
-    } else throw new Error("Unsupported knowledge MCP method");
+    } else throw new Error("Неподдерживаемый метод MCP знаний");
     emit({ id: message.id, result });
   } catch (error) { emit({ id: message.id, error: { code: -32000, message: safe_error_message(error), data: { outcome: "error" } } }); }
   finally { if (admitted) activeOperations--; }

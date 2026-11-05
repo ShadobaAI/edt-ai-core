@@ -1,4 +1,5 @@
 // Bounded Streamable HTTP only: no redirects, reconnects, or legacy SSE fallback.
+import { core_version } from "../scripts/compatibility.mjs";
 export async function withHttpMcp(config, use, {
   env = process.env, timeout = 10000, maxBytes = 1024 * 1024,
 } = {}) {
@@ -24,36 +25,36 @@ export async function withHttpMcp(config, use, {
     headers.set("Content-Type", "application/json");
     headers.delete("Mcp-Session-Id");
     headers.delete("MCP-Protocol-Version");
-  } catch { throw new Error("invalid MCP HTTP configuration or missing credential environment variable"); }
+  } catch { throw new Error("Некорректные настройки HTTP MCP или не задана переменная окружения с учётными данными"); }
   if (!Number.isFinite(timeout) || timeout <= 0 || !Number.isFinite(maxBytes) || maxBytes <= 0) {
-    throw new Error("invalid MCP HTTP limits");
+    throw new Error("Некорректные ограничения HTTP MCP");
   }
   const controller = new AbortController();
   let id = 0, bytes = 0, session, finished = false;
   const version = "2025-03-26";
-  const timedOut = () => new Error("MCP HTTP session timed out");
+  const timedOut = () => new Error("Истекло время сессии HTTP MCP");
   const fetchSafe = async (options) => {
     try { return await fetch(url, { redirect: "error", ...options }); }
-    catch { throw controller.signal.aborted ? timedOut() : new Error("MCP HTTP transport failed"); }
+    catch { throw controller.signal.aborted ? timedOut() : new Error("Ошибка транспорта HTTP MCP"); }
   };
   const parse = (text) => {
     try { return JSON.parse(text); }
-    catch { throw new Error("invalid MCP HTTP JSON"); }
+    catch { throw new Error("Некорректный JSON HTTP MCP"); }
   };
   const check = (message, expected) => {
     let found = false, result;
     const messages = Array.isArray(message) ? message : [message];
-    if (!messages.length) throw new Error("invalid MCP HTTP envelope");
+    if (!messages.length) throw new Error("Некорректное сообщение HTTP MCP");
     for (const item of messages) {
       if (!item || typeof item !== "object" || Array.isArray(item) || item.jsonrpc !== "2.0") {
-        throw new Error("invalid MCP HTTP envelope");
+        throw new Error("Некорректное сообщение HTTP MCP");
       }
       if (typeof item.method === "string") {
-        if (Object.hasOwn(item, "id")) throw new Error("MCP HTTP server requests unsupported");
+        if (Object.hasOwn(item, "id")) throw new Error("Запросы сервера HTTP MCP не поддерживаются");
         continue;
       }
-      if (item.id !== expected || found) throw new Error("unexpected MCP HTTP response id");
-      if (Object.hasOwn(item, "error") || !Object.hasOwn(item, "result")) throw new Error("MCP HTTP request failed");
+      if (item.id !== expected || found) throw new Error("Неожиданный идентификатор ответа HTTP MCP");
+      if (Object.hasOwn(item, "error") || !Object.hasOwn(item, "result")) throw new Error("Запрос HTTP MCP не удался");
       found = true; result = item.result;
     }
     return { found, result };
@@ -62,12 +63,12 @@ export async function withHttpMcp(config, use, {
     const type = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
     if (!["application/json", "text/event-stream"].includes(type) || !response.body) {
       await response.body?.cancel();
-      throw new Error("unsupported MCP HTTP response transport");
+      throw new Error("Неподдерживаемый транспорт ответа HTTP MCP");
     }
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let buffer = "", eventData = [], eventType = "";
     const dispatch = () => {
-      if (eventType === "endpoint") throw new Error("legacy MCP SSE transport unsupported");
+      if (eventType === "endpoint") throw new Error("Устаревший транспорт MCP SSE не поддерживается");
       const data = eventData.join("\n");
       eventData = []; eventType = "";
       return data ? check(parse(data), expected) : { found: false };
@@ -76,10 +77,10 @@ export async function withHttpMcp(config, use, {
       while (true) {
         let chunk;
         try { chunk = await reader.read(); }
-        catch { throw controller.signal.aborted ? timedOut() : new Error("MCP HTTP response interrupted"); }
+        catch { throw controller.signal.aborted ? timedOut() : new Error("Ответ HTTP MCP прерван"); }
         if (chunk.value) {
           bytes += chunk.value.byteLength;
-          if (bytes > maxBytes) throw new Error("MCP HTTP output budget exceeded");
+          if (bytes > maxBytes) throw new Error("Превышен допустимый размер ответа HTTP MCP");
         }
         buffer += decoder.decode(chunk.value, { stream: !chunk.done });
         if (type === "text/event-stream") {
@@ -100,21 +101,21 @@ export async function withHttpMcp(config, use, {
         const answer = check(parse(buffer), expected);
         if (answer.found) return answer.result;
       }
-      throw new Error("incomplete MCP HTTP response");
+      throw new Error("Неполный ответ HTTP MCP");
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   };
   const post = async (method, params, notification = false) => {
-    if (finished) throw new Error("MCP HTTP session closed");
+    if (finished) throw new Error("Сессия HTTP MCP закрыта");
     const next = notification ? undefined : ++id;
     const response = await fetchSafe({ method: "POST", headers, signal: controller.signal,
       body: JSON.stringify({ jsonrpc: "2.0", id: next, method, ...(params === undefined ? {} : { params }) }) });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`MCP HTTP status ${response.status}`);
+      throw new Error(`Состояние HTTP MCP: ${response.status}`);
     }
     if (notification) {
       await response.body?.cancel();
-      if (response.status !== 202) throw new Error("invalid MCP HTTP notification acknowledgement");
+      if (response.status !== 202) throw new Error("Некорректное подтверждение уведомления HTTP MCP");
       return;
     }
     if (method === "initialize") {
@@ -122,7 +123,7 @@ export async function withHttpMcp(config, use, {
       if (session !== null && !/^[\x21-\x7e]+$/.test(session)) {
         await response.body?.cancel();
         session = null;
-        throw new Error("invalid MCP HTTP session id");
+        throw new Error("Некорректный идентификатор сессии HTTP MCP");
       }
       if (session) headers.set("Mcp-Session-Id", session);
     }
@@ -135,13 +136,13 @@ export async function withHttpMcp(config, use, {
   try {
     return await Promise.race([(async () => {
       const initialized = await post("initialize", { protocolVersion: version, capabilities: {},
-        clientInfo: { name: "1c-ai-core", version: "0.1.1" } });
+        clientInfo: { name: "1c-ai-core", version: core_version } });
       // Some HTTP servers negotiate the older message schema on the same endpoint.
       // This does not opt into the deprecated GET + endpoint-event SSE transport.
       if (![version, "2024-11-05"].includes(initialized?.protocolVersion) || typeof initialized.serverInfo?.name !== "string" ||
           !initialized.serverInfo.name || typeof initialized.serverInfo?.version !== "string" || !initialized.serverInfo.version ||
           !initialized.capabilities || typeof initialized.capabilities !== "object" || Array.isArray(initialized.capabilities)) {
-        throw new Error("incomplete MCP HTTP initialize");
+        throw new Error("Неполный ответ инициализации HTTP MCP");
       }
       headers.set("MCP-Protocol-Version", initialized.protocolVersion);
       await post("notifications/initialized", undefined, true);

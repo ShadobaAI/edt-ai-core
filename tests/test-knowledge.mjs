@@ -228,13 +228,13 @@ test("KORA blocks native relay calls, batches, resources and prompts while keepi
   assert.equal(status.knowledge.mode, "kora");
   assert.equal(status.knowledge.koraReady, false);
   await client.call("core_runtime_tools", {});
-  await assert.rejects(client.call("read_metadata", {}), /Knowledge workflow blocked/);
+  await assert.rejects(client.call("read_metadata", {}), /Рабочий процесс заблокирован настройкой знаний/);
   const batch = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "read_metadata", arguments: {} }, { name: "read_metadata", arguments: {} }] } });
   assert.equal(batch.isError, true);
   assert.equal(batch.structuredContent.completed, 0);
   assert.equal(batch.structuredContent.results[0].error.outcome, "not_executed");
   for (const [method, args] of [["resources/list", {}], ["resources/read", { uri: "fixture://data" }], ["prompts/get", { name: "fixture" }]])
-    await assert.rejects(client.request(method, args), /Knowledge workflow blocked/);
+    await assert.rejects(client.request(method, args), /Рабочий процесс заблокирован настройкой знаний/);
   assert.equal(workflowCalls, 1);
 });
 

@@ -68,10 +68,16 @@ test("installation commits the saved version only after validation and restores 
       console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result}));
     });`);
   const spawn=childProcess.spawn,spawnSync=childProcess.spawnSync,rename=fs.renameSync;
+  const replace=path.join(f.base,"updates-spawn.mjs");
+  fs.writeFileSync(replace,`import cp from 'node:child_process'; import {syncBuiltinESMExports} from 'node:module';
+    const spawn=cp.spawn;
+    cp.spawn=(command,args,options)=>args.some(arg=>String(arg).endsWith('bsl-ls-proxy.mjs'))
+      ? spawn(process.execPath,[${JSON.stringify(server)},process.env.UPDATE_FIXTURE_MODE],options) : spawn(command,args,options);
+    syncBuiltinESMExports();`);
   t.mock.method(childProcess,"spawn",(command,args,options)=>{
-    if(args?.some(arg=>String(arg).endsWith("bsl-ls-proxy.mjs"))){
+    if(path.basename(args?.[0]||"")==="process_supervisor.mjs" && options.cwd===f.root){
       assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version,expectedSaved);
-      return spawn(process.execPath,[server,valid?"valid":"invalid"],options);
+      return spawn(process.execPath,["--import",pathToFileURL(replace).href,...args],{...options,env:{...options.env,UPDATE_FIXTURE_MODE:valid?"valid":"invalid"}});
     }
     return spawn(command,args,options);
   });
@@ -97,7 +103,7 @@ test("installation commits the saved version only after validation and restores 
     assert.equal(await installed_runtime(f.state,settings(f.env.EDT_AI_SETTINGS),"bsl-ls"),original);
   };
   offline=true;await assert.rejects(install("v2.0.0"),/offline/);await unchanged();offline=false;
-  valid=false;await assert.rejects(install("v2.0.0"),/native multi-workspace API/);await unchanged();valid=true;
+  valid=false;await assert.rejects(install("v2.0.0"),/В BSL LS отсутствует собственный API нескольких рабочих областей/);await unchanged();valid=true;
   for(const target of ["settings","activation"]){failWrite=target;await assert.rejects(install("v2.0.0"),/Simulated write failure/);await unchanged();}
   failWrite="";
   assert.equal((await install("v2.0.0")).release,"v2.0.0");expectedSaved="v2.0.0";

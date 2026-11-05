@@ -126,7 +126,7 @@ test("managed BSL binding fails closed on a lifecycle-incompatible native catalo
   const status = (await client.call("core_runtime_status", {}))
     .structuredContent;
   assert.equal(status.ready, false);
-  assert.match(status.detail, /native multi-workspace API/);
+  assert.match(status.detail, /В BSL LS отсутствует собственный API нескольких рабочих областей/);
   assert.deepEqual(
     (await client.request("tools/list")).tools.map((tool) => tool.name),
     ["core_runtime_status", "core_runtime_tools", "core_runtime_call"],

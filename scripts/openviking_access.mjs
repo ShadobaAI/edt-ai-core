@@ -2,7 +2,7 @@ import { createHmac, createPublicKey, randomBytes, verify } from "node:crypto";
 import { check_schema, stable } from "./common.mjs";
 import { sha256 } from "./project_paths.mjs";
 import { RemoteRpcError } from "./remote_client.mjs";
-import { connection_failure } from "./diagnostics.mjs";
+import { connection_failure, safe_error_message } from "./diagnostics.mjs";
 import { read_openviking_record } from "./openviking_store.mjs";
 
 const revisionKey = randomBytes(32);
@@ -41,7 +41,7 @@ function instant(value) {
 function credentials(values) {
   const value = values.credential, name = value?.startsWith("Bearer ") ? "authorization" : "x-api-key";
   if (!value || /[\r\n]/.test(value) || (/^Bearer(?:\s|$)/i.test(value) && !/^Bearer \S+$/.test(value)))
-    throw new Error("OpenViking search credential is missing or invalid");
+    throw new Error("Учётные данные поиска OpenViking отсутствуют или некорректны");
   return [[name, value]];
 }
 export function search_credential_headers(options, state) {
@@ -50,41 +50,44 @@ export function search_credential_headers(options, state) {
 export function access_error(error, options, pinnedHeaders = {}, phase = "server_contract", state) {
   const classification = connection_failure(error, phase);
   if (error instanceof SyntaxError)
-    return Object.assign(new Error("OpenViking returned invalid JSON; response excerpt omitted"), classification);
+    return Object.assign(new Error("OpenViking вернул некорректный JSON; фрагмент ответа скрыт"), classification);
   // Upstream text is untrusted and can encode a credential arbitrarily. Keep
   // numeric transport evidence; never forward that text as a diagnostic.
   if (error instanceof RemoteRpcError) {
     const codes = [Number.isInteger(error.status) ? "HTTP " + error.status : null,
       Number.isInteger(error.code) ? "RPC " + error.code : null].filter(Boolean).join(", ");
-    return Object.assign(new Error("OpenViking upstream rejected the request" + (codes ? " (" + codes + ")" : "") + "; remote error text omitted"), classification);
+    return Object.assign(new Error("Внешний сервер OpenViking отклонил запрос" + (codes ? " (" + codes + ")" : "") + "; текст внешней ошибки скрыт"), classification);
   }
   const values = [...Object.values(record(options, state).values), ...Object.values(pinnedHeaders)].filter(Boolean);
   const secrets = [...new Set(values.flatMap(value => /^Bearer /i.test(value) ? [value, value.slice(7)] : [value]).flatMap(value => {
     const escaped = JSON.stringify(value).slice(1, -1);
     return [value, escaped, JSON.stringify(escaped).slice(1, -1)];
   }).filter(Boolean))].sort((a, b) => b.length - a.length);
-  let message = String(error?.message || "OpenViking connection failed");
+  let message = String(error?.message || "Подключение OpenViking не удалось");
   for (const secret of secrets) message = message.split(secret).join("[redacted]");
-  return Object.assign(new Error(message.slice(0, 2000)), classification);
+  const failure = Object.assign(new Error(message.slice(0, 2000)), classification,
+    error?.outcomeUnknown === true ? { outcomeUnknown: true } : {});
+  if (failure.outcomeUnknown) failure.message = safe_error_message(failure);
+  return failure;
 }
 export const surface_fingerprint = tools => sha256(stable([...tools].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)));
 export const operation_fingerprint = tool => sha256(stable(tool));
 export function verify_search_surface(access, tools, initialization) {
   if (Object.keys(initialization?.capabilities || {}).some(key => key !== "tools"))
-    throw new Error("OpenViking advertises an unapproved MCP capability");
+    throw new Error("OpenViking объявляет неподтверждённую возможность MCP");
   if (tools.length !== 2 || !tools.some(tool => ["find", "search"].includes(tool.name)) || !tools.some(tool => tool.name === "read") ||
       surface_fingerprint(tools) !== access.tools_sha256)
-    throw new Error("OpenViking live surface differs from the externally approved search/read contract; hiding tools does not restrict server rights");
+    throw new Error("Действующий API OpenViking отличается от внешне подтверждённого контракта поиска и чтения; скрытие инструментов не ограничивает права сервера");
   for (const role of ["search", "read"]) {
     const tool = tools.find(tool => role === "search" ? ["find", "search"].includes(tool.name) : tool.name === "read");
     const approval = access.operations[role];
     if (approval.name !== tool.name || approval.descriptor_sha256 !== operation_fingerprint(tool))
-      throw new Error("OpenViking operation lacks external approval of its purpose and enforced read-only scope");
+      throw new Error("Для операции OpenViking нет внешнего подтверждения назначения и принудительной области только для чтения");
   }
 }
 function binding(values) {
   const key = values.bindingKey;
-  if (!key || Buffer.byteLength(key) < 32) throw new Error("OpenViking access binding key is missing or too short");
+  if (!key || Buffer.byteLength(key) < 32) throw new Error("Ключ привязки доступа OpenViking отсутствует или слишком короткий");
   return createHmac("sha256", key).update("1c-ai-core/openviking-credential/v2\0").update(stable(credentials(values))).digest("hex");
 }
 export function credential_binding(options, state) {
@@ -100,7 +103,7 @@ export function verify_search_access(options, collections, now = Date.now(), sta
     if (!Array.isArray(receipts) || receipts.length > 64) throw new Error();
     key = createPublicKey(values.accessPublicKey || "");
     if (key.asymmetricKeyType !== "ed25519") throw new Error();
-  } catch { throw new Error("OpenViking requires external signed search-access receipts and an operator trust key"); }
+  } catch { throw new Error("Для OpenViking нужны внешние подписанные подтверждения доступа к поиску и доверенный ключ оператора"); }
   const grants = [];
   let incompatible = false;
   for (const envelope of receipts) {
@@ -118,13 +121,13 @@ export function verify_search_access(options, collections, now = Date.now(), sta
       grants.push(payload);
     } catch { /* A malformed or unrelated receipt grants nothing. */ }
   }
-  if (incompatible) throw new Error("OpenViking search credentials lack a consistent current signed grant with read-only permissions");
+  if (incompatible) throw new Error("Для учётных данных поиска OpenViking нет согласованного действующего подписанного разрешения только на чтение");
   if (grants.length) {
     const contract = ({ verified_at, expires_at, ...payload }) => stable(payload);
     if (grants.some(grant => contract(grant) !== contract(grants[0])))
-      throw new Error("OpenViking has conflicting signed access confirmations for this connection identity");
+      throw new Error("У OpenViking конфликтуют подписанные подтверждения доступа для этой идентичности подключения");
     const selected = grants.sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at))[0];
     if ([...collections.values()].every(uri => selected.team_roots.some(root => uri === root || uri.startsWith(root + "/")))) return selected;
   }
-  throw new Error("OpenViking search credentials lack a current signed grant for this endpoint and team area");
+  throw new Error("Для учётных данных поиска OpenViking нет действующего подписанного разрешения на этот адрес и область команды");
 }

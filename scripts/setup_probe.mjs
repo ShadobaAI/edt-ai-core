@@ -57,7 +57,7 @@ export async function probe_connections(config, root, profile, state, component 
       try {
         const evidence = knowledge_evidence_revision(config, root, profile, state);
         Object.assign(result, await adapter.connect()); Object.assign(result, await adapter.verifyReadiness());
-        if (evidence !== knowledge_evidence_revision(config, root, profile, state)) throw new Error("Knowledge evidence changed during the setup probe; repeat readiness");
+        if (evidence !== knowledge_evidence_revision(config, root, profile, state)) throw new Error("Подтверждения знаний изменились во время проверки настройки; повторите проверку готовности");
         observations.set(result, { key: observationKey, evidence, status: structuredClone(result) });
       }
       catch (error) { Object.assign(result, adapter.status(), { ready: false, lifecycle: adapter.connected ? "connected" : "configured",
@@ -85,7 +85,7 @@ export async function probe_connections(config, root, profile, state, component 
           const args = format?.enum?.includes("json") ? { format: "json" } : {};
           if (!(list.inputSchema?.required || []).length || Object.hasOwn(args, "format")) {
             const response = await client.request("tools/call", { name: list.name, arguments: args });
-            if (response.isError) throw new Error(response.content?.find(item => item.type === "text")?.text || "EDT project query failed");
+            if (response.isError) throw new Error(response.content?.find(item => item.type === "text")?.text || "Не удалось запросить проекты EDT");
             let payload = response.structuredContent;
             if (!payload) try { payload = JSON.parse(response.content?.find(item => item.type === "text")?.text); } catch { /* no structured project evidence */ }
             const projects = Array.isArray(payload) ? payload : payload?.projects;

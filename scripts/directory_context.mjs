@@ -7,8 +7,8 @@ import { resolve, contained, is_file, is_dir, exists, project_directories } from
 const PREFS = ".metadata/.plugins/org.eclipse.core.runtime/.settings/com.ditrix.edt.mcp.server.prefs";
 function text_file(file, root) {
   if (!is_file(file)) return null;
-  if (!contained(root, resolve(file))) throw new Error("Metadata file leaves its directory: " + file);
-  if (fs.statSync(file).size > 1024 * 1024) throw new Error("Metadata file exceeds 1 MiB: " + file);
+  if (!contained(root, resolve(file))) throw new Error("Файл метаданных выходит за границы своего каталога: " + file);
+  if (fs.statSync(file).size > 1024 * 1024) throw new Error("Файл метаданных превышает 1 МиБ: " + file);
   return fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "");
 }
 export function edt_connection(selected) {
@@ -89,7 +89,7 @@ export function edt_project_count(selected) {
 export function repository_projects(root, repositories, descriptors) {
   return repositories.map(repository => {
     const directory = resolve(path.join(root, repository.path));
-    if (!contained(resolve(root), directory)) throw new Error("Repository directory leaves project root: " + repository.path);
+    if (!contained(resolve(root), directory)) throw new Error("Каталог репозитория выходит за корень проекта: " + repository.path);
     const found = descriptors ?? edt_project_descriptors(directory);
     if (!found) throw new Error("Не удалось проверить файлы .project: " + repository.path);
     const projects = found.filter(item => contained(directory, item.directory) && contained(directory, resolve(item.descriptor)) && (!repository.edt_project ||
@@ -122,7 +122,7 @@ export function edt_projects(selected) {
         const nameElement = /<projectDescription\s*>\s*<name\s*>[^<]*<\/name>/.test(descriptor.replace(/<!--[\s\S]*?-->/g, ""));
         if (!nameElement || /<!DOCTYPE|<!ENTITY/i.test(descriptor)) continue;
         const source = resolve(path.join(directory, "src"));
-        if (!contained(root, source)) throw new Error("EDT sources leave the selected directory: " + source);
+        if (!contained(root, source)) throw new Error("Исходники EDT выходят за выбранный каталог: " + source);
         const runtimeVersion = manifest.replace(/\r?\n /g, "").match(/^Runtime-Version:[\t ]*([^\r\n]*)\r?$/m)?.[1]?.trim() || null;
         projects.push({ directory, name: path.basename(directory), source, runtimeVersion,
           settingsDirectory: is_dir(path.join(directory, ".settings")) ? path.join(directory, ".settings") : null });

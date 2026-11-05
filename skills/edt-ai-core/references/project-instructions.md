@@ -21,7 +21,8 @@ live project facts, not to write Markdown.
    starter, not completed project onboarding. Do not call create
    again to regenerate instructions for an existing profile. Import/load do not
    create these files: create only the missing documentation under the user's request.
-3. Use the relevant part of [the user guide and template](../../../docs/PROJECT_AGENTS.md). Keep
+3. Use the relevant part of [the user guide and template](../../../docs/PROJECT_AGENTS.md).
+   Write agent instructions and architecture context in English; explain changes to the user in Russian. Keep
    AGENTS.md short: project scope, supplier/library/custom ownership, confirmed
    prefix mappings, supplier maintenance and marking, focused checks, allowed test
    environments and completion evidence. Link detailed rules instead of copying

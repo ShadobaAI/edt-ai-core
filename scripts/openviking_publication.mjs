@@ -37,7 +37,7 @@ export class PublicationConfirmation {
       if (!Array.isArray(envelopes) || !envelopes.length || envelopes.length > 64) throw new Error();
       key = createPublicKey(values.publicationPublicKey || "");
       if (key.asymmetricKeyType !== "ed25519") throw new Error();
-    } catch { throw new Error("Publication requires external signed receipts and an operator Ed25519 trust key"); }
+    } catch { throw new Error("Для публикации нужны внешние подписанные подтверждения и доверенный ключ оператора Ed25519"); }
     const matches = [], current = [];
     for (const envelope of envelopes) {
       try {
@@ -59,7 +59,7 @@ export class PublicationConfirmation {
         matches.push(payload);
       } catch { /* Malformed, untrusted and unrelated declarations prove nothing. */ }
     }
-    if (!matches.length) throw new Error("No current signed publication confirmation matches this manifest and server");
+    if (!matches.length) throw new Error("Нет действующего подписанного подтверждения публикации для этого манифеста и сервера");
     matches.sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at));
     const pin = matches[0];
     for (const other of current) {
@@ -68,18 +68,18 @@ export class PublicationConfirmation {
           other.collection_snapshots.some(item => {
             if (![...this.#expected.collections.values()].some(root => root === item.root || root.startsWith(item.root + "/") || item.root.startsWith(root + "/"))) return false;
             return !pin.collection_snapshots.some(selected => stable(item) === stable(selected));
-          })) throw new Error("Conflicting signed publication snapshots for overlapping collection areas");
+          })) throw new Error("Конфликтуют подписанные снимки публикации для пересекающихся областей коллекций");
     }
     this.#receipt = structuredClone(matches[0]);
     this.#revision = publication_revision({ url: expected.endpoint, connection_id: expected.connectionId }, expected.state);
-    if (this.#revision !== initialRevision) throw new Error("Publication confirmation or trust key changed; reconnect required");
+    if (this.#revision !== initialRevision) throw new Error("Подтверждение публикации или доверенный ключ изменились; переподключитесь");
   }
   check(now = Date.now()) {
     if (this.#revision !== publication_revision({ url: this.#expected.endpoint, connection_id: this.#expected.connectionId }, this.#expected.state))
-      throw new Error("Publication confirmation or trust key changed; reconnect required");
+      throw new Error("Подтверждение публикации или доверенный ключ изменились; переподключитесь");
     if (!Number.isFinite(now) || now < Date.parse(this.#receipt.verified_at) || now >= Date.parse(this.#receipt.expires_at))
-      throw new Error("Publication confirmation is no longer current; reconnect required");
-    if (now >= this.#nextActivation) throw new Error("Another signed publication confirmation became active; reconnect required");
+      throw new Error("Подтверждение публикации больше не действует; переподключитесь");
+    if (now >= this.#nextActivation) throw new Error("Вступило в силу другое подписанное подтверждение публикации; переподключитесь");
     return this.receipt;
   }
   get receipt() { return structuredClone(this.#receipt); }
@@ -99,17 +99,17 @@ export function match_publication_receipt(receipt, expected, now = Date.now()) {
   validate_publication_receipt(receipt);
   const start = Date.parse(receipt.verified_at), end = Date.parse(receipt.expires_at);
   if (!Number.isFinite(now) || start > now || end <= now || end - start > 86400000)
-    throw new Error("Publication confirmation is expired, future-dated or exceeds one day");
+    throw new Error("Подтверждение публикации просрочено, ещё не вступило в силу или действует дольше суток");
   if (receipt.server.endpoint !== expected.endpoint || receipt.server.scope !== expected.scope ||
       receipt.verification.deployment_id !== expected.deploymentId)
-    throw new Error("Publication confirmation belongs to another server, scope or deployment");
+    throw new Error("Подтверждение публикации относится к другому серверу, области или развёртыванию");
   if (receipt.manifest_sha256 !== expected.manifest.sha256)
-    throw new Error("Publication manifest bytes changed");
+    throw new Error("Содержимое манифеста публикации изменилось");
   const inventory = publication_inventory(expected.manifest.data, [...expected.collections.keys()])
     .map(item => ({ ...item, root: expected.collections.get(item.collection) }));
   const actual = [...receipt.collection_snapshots].sort((a, b) => a.collection < b.collection ? -1 : a.collection > b.collection ? 1 : 0);
   if (stable(actual) !== stable(inventory))
-    throw new Error("Publication index does not match the exact selected collection inventory");
+    throw new Error("Индекс публикации не соответствует точному составу выбранных коллекций");
   return receipt;
 }
 
@@ -119,21 +119,21 @@ export function publication_entry(receipt, manifest, uri, collection) {
   if (receipt.manifest_sha256 !== manifest.sha256 || inventory.some(item => {
     const declared = receipt.collection_snapshots.find(snapshot => snapshot.collection === item.collection);
     return declared.material_count !== item.material_count || declared.materials_sha256 !== item.materials_sha256;
-  })) throw new Error("Material manifest differs from the confirmed publication inventory");
+  })) throw new Error("Манифест материала отличается от подтверждённого состава публикации");
   const root = receipt.collection_snapshots.find(item => item.collection === collection)?.root;
   const entry = root && manifest.data.materials.find(item => item.collection === collection && root + "/" + item.id + ".md" === uri);
-  if (!entry) throw new Error("Material is absent from the active publication manifest (excluded, deleted or unselected)");
+  if (!entry) throw new Error("Материал отсутствует в действующем манифесте публикации: исключён, удалён или не выбран");
   return entry;
 }
 
 export function verify_publication_material(receipt, manifest, { uri, collection, text, partial = false }) {
   const entry = publication_entry(receipt, manifest, uri, collection);
   if (partial || typeof text !== "string" || sha256(Buffer.from(text, "utf8")) !== entry.sha256)
-    throw new Error("Material bytes do not match the publication snapshot; truncated or mixed content is rejected");
+    throw new Error("Содержимое материала не совпадает со снимком публикации; обрезанное или смешанное содержимое отклонено");
   let metadata;
   try { metadata = parse_material(text); }
-  catch { throw new Error("Invalid published material metadata; parser excerpt omitted"); }
+  catch { throw new Error("Некорректные метаданные опубликованного материала; фрагмент разбора скрыт"); }
   if (metadata.id !== entry.id || !knowledge_material_active(metadata))
-    throw new Error("Material identity or status does not match the active publication manifest");
+    throw new Error("Идентичность или статус материала не совпадают с действующим манифестом публикации");
   return entry;
 }

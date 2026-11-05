@@ -24,6 +24,7 @@ import {
   ensure_daemon,
   start_daemon,
   daemon_health,
+  fetch_json,
   stop_daemon,
   project_home,
 } from "../scripts/runtime.mjs";
@@ -35,6 +36,21 @@ import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { native_environment } from "../scripts/components.mjs";
+import { LOG_POLICY, read_diagnostic_logs } from "../scripts/diagnostics.mjs";
+
+test("release metadata is bounded and failed HTTP bodies are cancelled", async t => {
+  for (const status of [200, 503]) {
+    let cancelled = false;
+    const body = new ReadableStream({
+      start(controller) { if (status === 200) controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); },
+      cancel() { cancelled = true; },
+    });
+    t.mock.method(globalThis, "fetch", async () => new Response(body, { status }));
+    await assert.rejects(fetch_json("https://catalog.invalid/releases"), status === 200 ? /8 МиБ/ : /HTTP 503/);
+    assert.equal(cancelled, true);
+    t.mock.restoreAll();
+  }
+});
 
 test("BSL release selection prefers a supported stable release and falls back to the latest supported RC", async () => {
   let stable = { tag_name: "v1.0.7", prerelease: false };
@@ -50,7 +66,7 @@ test("BSL release selection prefers a supported stable release and falls back to
   stable = { tag_name: "v1.1.0", prerelease: false };
   assert.equal(await latest_version("bsl-ls", io), "v1.1.0");
   assert.equal(await latest_version("bsl-ls", io, { allowPrerelease: true }), "v1.1.0-rc.8");
-  const missingStable = { fetch_json: async url => { if (url.endsWith("/latest")) throw new Error("HTTP 404: " + url); return releases; } };
+  const missingStable = { fetch_json: async url => { if (url.endsWith("/latest")) throw Object.assign(new Error("fixture release unavailable"), { status: 404 }); return releases; } };
   assert.equal(await latest_version("bsl-ls", missingStable), "v1.1.0-rc.8");
 });
 
@@ -79,7 +95,7 @@ for (const [platform, arch] of [
   test(`unsupported ${platform}/${arch} has actionable error`, () =>
     assert.throws(
       () => platform_build(platform, arch),
-      /Unsupported code-index platform.*Available builds/,
+      /Неподдерживаемая платформа code-index.*Доступны сборки/,
     ));
 function ioFor(bytes, digest = sha256(bytes)) {
   return {
@@ -200,7 +216,7 @@ test("ZIP binary extraction accepts only one regular known executable", () => {
         "zip",
         "bsl-indexer.exe",
       ),
-    /exactly one/,
+    /Архив должен содержать ровно один файл /,
   );
   assert.throws(
     () =>
@@ -209,10 +225,10 @@ test("ZIP binary extraction accepts only one regular known executable", () => {
         "zip",
         "bsl-indexer.exe",
       ),
-    /Unsafe/,
+    /Небезопасная запись ZIP/,
   );
 });
-test("ZIP validation and decompression use the same end record and directory", () => {
+test("ZIP decoding uses the validated directory despite signatures in comments and rejects ZIP64", () => {
   const original = Buffer.from(zip({ "bsl-indexer.exe": Buffer.from("binary") }));
   const end = original.length - 22;
   const fakeEnd = Buffer.alloc(22);
@@ -220,7 +236,7 @@ test("ZIP validation and decompression use the same end record and directory", (
   fakeEnd.writeUInt16LE(1, 20);
   const commented = Buffer.concat([original, fakeEnd]);
   commented.writeUInt16LE(fakeEnd.length, end + 20);
-  assert.throws(() => unzip(commented), /Ambiguous ZIP/);
+  assert.equal(Buffer.from(unzip(commented)["bsl-indexer.exe"]).toString(), "binary");
 
   const directory = original.readUInt32LE(end + 16);
   const locator = Buffer.alloc(20);
@@ -228,11 +244,36 @@ test("ZIP validation and decompression use the same end record and directory", (
   const zip64 = Buffer.concat([original.subarray(0, end), locator, original.subarray(end)]);
   zip64.writeUInt16LE(locator.length, directory + 32);
   zip64.writeUInt32LE(original.readUInt32LE(end + 12) + locator.length, end + locator.length + 12);
-  assert.throws(() => unzip(zip64), /ZIP64 is unsupported/);
+  assert.throws(() => unzip(zip64), /ZIP64 не поддерживается/);
 
   const normalComment = Buffer.concat([original, Buffer.from("release")]);
   normalComment.writeUInt16LE(7, end + 20);
   assert.equal(Buffer.from(unzip(normalComment)["bsl-indexer.exe"]).toString(), "binary");
+});
+
+test("ZIP inflation enforces the declared output size while decompressing", () => {
+  for (const claimedSize of [0, 1]) {
+    const bytes = Buffer.from(zip({ "payload.txt": Buffer.alloc(64 * 1024, 65) }));
+    const directory = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    bytes.writeUInt32LE(claimedSize, directory + 24);
+    bytes.writeUInt32LE(claimedSize, 22);
+    assert.throws(() => unzip(bytes), error => error.code === "ARCHIVE_SIZE_LIMIT");
+  }
+  assert.equal(unzip(zip({ empty: Buffer.alloc(0) })).empty.length, 0);
+});
+
+test("ZIP entries cannot redirect the decoder through contradictory local headers", () => {
+  for (const change of [
+    (bytes, directory) => bytes.writeUInt32LE(directory, directory + 42),
+    bytes => bytes.writeUInt16LE(0, 8),
+    bytes => { bytes[30] ^= 1; },
+    (bytes, directory) => bytes.writeUInt32LE(bytes.length, directory + 20),
+  ]) {
+    const bytes = Buffer.from(zip({ "payload.txt": Buffer.from("bounded contents") }));
+    const directory = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    change(bytes, directory);
+    assert.throws(() => unzip(bytes), /ZIP/);
+  }
 });
 test("tar.gz binary extraction checks checksum and refuses links or duplicate executables", () => {
   const make = (type = "0") => {
@@ -261,13 +302,13 @@ test("tar.gz binary extraction checks checksum and refuses links or duplicate ex
   );
   assert.throws(
     () => extract_binary(gzipSync(make("2")), "tar.gz", "bsl-indexer"),
-    /regular/,
+    /Исполняемый файл компонента должен быть обычным файлом/,
   );
   const bad = make();
   bad[0]++;
   assert.throws(
     () => extract_binary(gzipSync(bad), "tar.gz", "bsl-indexer"),
-    /checksum/,
+    /контрольная сумма/,
   );
 });
 test("BSL capability gate accepts live analyzer names and requires native lifecycle and scoping", () => {
@@ -379,7 +420,7 @@ test("applying index mappings waits for readers and restarts without rebuilding"
   const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async()=>assert.fail("must not rebuild"),restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true})};
   const lease=await acquire_reader(f.state,f.root);
   await assert.rejects(restart_index(f.state,config,f.root,f.profile,io),/Завершите текущие запросы/);
-  assert.deepEqual(calls,[]);fs.rmSync(lease);
+  assert.deepEqual(calls,[]);await lease.close();
   assert.equal((await restart_index(f.state,config,f.root,f.profile,io)).state,"ready");
   assert.deepEqual(calls,["stop","restart"]);
 });
@@ -430,27 +471,53 @@ test("index rebuild targets exactly one repository and restores the owned servic
   assert.deepEqual(calls,["stop","restart"]);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
   await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>{throw new Error("unknown stop");}}),error=>error.outcomeUnknown===true);
   assert.equal(fs.existsSync(path.join(home,"maintenance.json")),true);
-  await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>assert.fail("must not retry an uncertain stop")}),/interrupted/);
+  await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>assert.fail("must not retry an uncertain stop")}),/прервано/);
 });
 
-test("daemon launch closes its first log handle if opening the second fails", async t => {
+test("daemon launch leaves logging to the component without duplicate output files", async t => {
   const f = fixture(t), home = path.join(f.base, "daemon");
   fs.mkdirSync(home);
-  const outFile = path.join(home, "stdout.log"), errFile = path.join(home, "stderr.log");
-  const open = fs.openSync, close = fs.closeSync;
-  let opened, closed = false;
-  t.mock.method(fs, "openSync", (file, ...args) => {
-    if (file === errFile) throw new Error("simulated stderr open failure");
-    const fd = open(file, ...args);
-    if (file === outFile) opened = fd;
-    return fd;
-  });
-  t.mock.method(fs, "closeSync", fd => { if (fd === opened) closed = true; return close(fd); });
-  try {
-    await assert.rejects(start_daemon(home, f.root, f.profile, process.execPath, { launch: () => assert.fail("must not launch") }), /simulated stderr open failure/);
-    assert.notEqual(opened, undefined);
-    assert.equal(closed, true);
-  } finally { if (opened !== undefined && !closed) close(opened); }
+  await assert.rejects(start_daemon(home, f.root, f.profile, process.execPath, { launch: (_exe, args, options) => {
+    assert.deepEqual(args, ["daemon", "run"]);
+    assert.equal(options.stdio, "ignore");
+    assert.equal(options.sessionOwned, false);
+    assert.equal(options.env.CODE_INDEX_HOME, home);
+    throw new Error("fixture launcher stopped");
+  } }), /fixture launcher stopped/);
+  for (const name of ["stdout.log", "stderr.log", "rebuild.log"])
+    assert.equal(fs.existsSync(path.join(home, name)), false);
+});
+
+test("a noisy failed rebuild uses bounded diagnostics and restores its service without a separate log", async t => {
+  const f = fixture(t), calls = [];
+  fs.writeFileSync(path.join(f.root, "index"), `const chunk=Buffer.alloc(65536,'x');
+    for(let i=0;i<128;i++) { process.stdout.write(chunk); process.stderr.write(chunk); }
+    process.exitCode=3;`);
+  await assert.rejects(rebuild_index(f.state, settings(), f.root, f.profile, "product", {
+    installed: async () => process.execPath, stop: async () => calls.push("stop"),
+    restart: async () => calls.push("restart"), smoke: async () => assert.fail("failed rebuild cannot pass smoke"),
+  }), /журнал поддержки.*код 3/);
+  assert.deepEqual(calls, ["stop", "restart"]);
+  const home = path.join(project_home(f.state, f.root), "code-index");
+  for (const name of ["rebuild.log", "stdout.log", "stderr.log", "maintenance.json"])
+    assert.equal(fs.existsSync(path.join(home, name)), false);
+  const files = fs.readdirSync(path.join(f.state, "diagnostics")).filter(name => name.endsWith(".jsonl"));
+  assert.ok(files.length > 0 && files.length <= LOG_POLICY.files);
+  for (const name of files) assert.ok(fs.statSync(path.join(f.state, "diagnostics", name)).size <= LOG_POLICY.fileBytes);
+  assert.ok(read_diagnostic_logs(f.state).events.some(event => event.component === "code-index" && event.event === "index_output"));
+});
+
+test("an unconfirmed index writer retains maintenance and cannot restart the daemon over that writer", async t => {
+  const f = fixture(t), calls = [];
+  await assert.rejects(rebuild_index(f.state, settings(), f.root, f.profile, "product", {
+    installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
+    run: async () => { calls.push("run"); throw Object.assign(new Error("writer termination unknown"), { outcomeUnknown: true }); },
+    restart: async () => assert.fail("must not start a competing writer"),
+  }), error => error.outcomeUnknown === true);
+  assert.deepEqual(calls, ["stop", "run"]);
+  const marker = path.join(project_home(f.state, f.root), "code-index/maintenance.json"), before = fs.readFileSync(marker);
+  await assert.rejects(acquire_reader(f.state, f.root), /прервано/);
+  assert.deepEqual(fs.readFileSync(marker), before);
 });
 
 test("parallel readers share exactly one owned daemon per profile and preserve unrelated processes", async (t) => {
@@ -495,16 +562,16 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
   changed.repositories.push({ id: "extra", path: "extra", alias: "extra", edt_project: "extra" });
   await assert.rejects(
     ensure_daemon(f.state, f.root, changed, process.execPath, io),
-    /mapping changed/,
+    /репозиториев изменился/,
   );
   const ownerFile = path.join(a, "owner.json"),
     owner = read_json(ownerFile);
   save_json(ownerFile, { ...owner, pid: owner.pid + 1 });
   await assert.rejects(
     ensure_daemon(f.state, f.root, f.profile, process.execPath, io),
-    /ownership/,
+    /Владелец демона(?: проекта)? не совпадает/,
   );
-  await assert.rejects(stop_daemon(f.state, f.root), /ownership/);
+  await assert.rejects(stop_daemon(f.state, f.root), /Владелец демона(?: проекта)? не совпадает/);
   assert.equal(alive(otherHealth.pid), true);
 });
 test("daemon stop waits for process exit after its HTTP listener closes", async t => {
@@ -514,7 +581,7 @@ test("daemon stop waits for process exit after its HTTP listener closes", async 
   server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>server.close());
   save_json(path.join(home,"daemon.json"),{pid:process.pid,http_port:server.address().port});
   save_json(path.join(home,"owner.json"),{pid:process.pid,project_root:f.root,executable:exe});
-  await assert.rejects(stop_daemon(f.state,f.root,{stop:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}}),/stop is not confirmed/);
+  await assert.rejects(stop_daemon(f.state,f.root,{stop:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}}),/Остановка демона не подтверждена/);
 });
 
 test("an unhealthy but live stale PID blocks competing daemon startup on every OS", async (t) => {
@@ -527,7 +594,7 @@ test("an unhealthy but live stale PID blocks competing daemon startup on every O
         throw new Error("must not launch");
       },
     }),
-    /alive but unhealthy/,
+    /работает, но не отвечает/,
   );
 });
 test("doctor separates configuration from live acceptance and does not make OpenViking a gate", async (t) => {

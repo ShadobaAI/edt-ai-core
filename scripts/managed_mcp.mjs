@@ -1,6 +1,5 @@
 import { argumentsOf, settings, state_path, entrypoint } from "./common.mjs";
 import { launch_command, project, acquire_reader } from "./runtime.mjs";
-import fs from "node:fs";
 import { require_preparation } from "./components.mjs";
 import { effective_settings } from "./project_context.mjs";
 import { launch, stop_child } from "./processes.mjs";
@@ -20,7 +19,7 @@ export async function serve(component, selected, state, config) {
       env: env || process.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    diagnostic.event("process_started", { projectRoot: root, childPid: child.pid, executable: command[0] });
+    diagnostic.event("process_started", { projectRoot: root, supervisorPid: child.pid, executable: command[0] });
     child.stderr.on("data", chunk => { diagnostic.event("runtime_stderr", { projectRoot: root, message: String(chunk) }, "warning"); process.stderr.write(chunk); });
     let stopping;
     const reportShutdown = error => diagnostic.event("process_shutdown_failed", { projectRoot: root, error }, "error");
@@ -51,7 +50,7 @@ export async function serve(component, selected, state, config) {
       process.removeListener("SIGINT", terminate);
     }
   } finally {
-    if (lease) fs.rmSync(lease, { force: true });
+    if (lease) await lease.close();
   }
 }
 export async function main() {

@@ -51,7 +51,7 @@ test("errors, retained operations, readiness cache and exports exclude credentia
   const outputs = [JSON.stringify(operations.status(job.id)), JSON.stringify(failing.status(failure.id)), cache,
     fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8"), bundle.text].join("\n");
   for (const value of [secret, encoded, arbitrary]) assert.equal(outputs.includes(value), false);
-  assert.match(failing.status(failure.id).error, /RPC -32000.*remote error text omitted/);
+  assert.match(failing.status(failure.id).error, /RPC -32000.*текст внешней ошибки скрыт/);
   const cli = node("scripts/settings_backend.mjs", [], { env: f.env, input: '{"secret":"unmarked-source-8812"' });
   assert.equal(cli.status, 1); assert.doesNotMatch(cli.stdout + cli.stderr, /unmarked-source-8812/);
 });
@@ -296,15 +296,15 @@ test("native logs contribute metadata without copying untrusted runtime contents
   process.env.CUSTOM_SUPPORT_HEADER = "custom-support-secret-184782";
   f.profile.connections = { edt: { url: "http://localhost:4000/mcp", headers_env: { "X-Custom": "CUSTOM_SUPPORT_HEADER" } } }; f.save();
   const home = path.join(project_directory(f.state, f.root), "code-index"); fs.mkdirSync(home, { recursive: true });
-  fs.writeFileSync(path.join(home, "stderr.log"), "old-error\n" + "x".repeat(100000) + "\nLatest error: " + process.env.CUSTOM_SUPPORT_HEADER);
+  fs.writeFileSync(path.join(home, "daemon.log"), "old-error\n" + "x".repeat(100000) + "\nLatest error: " + process.env.CUSTOM_SUPPORT_HEADER);
   const directory = path.join(f.state, "diagnostics"); fs.mkdirSync(directory);
   fs.writeFileSync(path.join(directory, "events.0.jsonl"), JSON.stringify({ time: new Date().toISOString(), detail: { message: process.env.CUSTOM_SUPPORT_HEADER } }) + "\n");
   const result = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root });
   assert.equal(result.text.includes(process.env.CUSTOM_SUPPORT_HEADER), false);
   const report = JSON.parse(result.text);
-  assert.ok(report.snapshot.codeIndex_stderr.bytes > 100000);
-  assert.equal(report.snapshot.codeIndex_stderr.omitted, "untrusted_runtime_log_content");
-  assert.equal(report.snapshot.codeIndex_stderr.tail, undefined);
+  assert.ok(report.snapshot["codeIndex_daemon.log"].bytes > 100000);
+  assert.equal(report.snapshot["codeIndex_daemon.log"].omitted, "untrusted_runtime_log_content");
+  assert.equal(report.snapshot["codeIndex_daemon.log"].tail, undefined);
   assert.equal(result.text.includes("old-error"), false);
 });
 

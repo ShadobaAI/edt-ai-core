@@ -24,14 +24,14 @@ export function search_requirements(profile) {
 export function validate_manifest(data, selectedCollections = []) {
   check_schema(data, "knowledge-manifest.schema.json");
   const collections = new Set(data.collections.map(item => item.id));
-  if (collections.size !== data.collections.length) throw new ConfigError("Manifest collection ids must be unique");
+  if (collections.size !== data.collections.length) throw new ConfigError("Идентификаторы коллекций манифеста должны быть уникальными");
   for (const id of selectedCollections)
-    if (!collections.has(id)) throw new ConfigError("Unknown selected manifest collection: " + id);
+    if (!collections.has(id)) throw new ConfigError("Неизвестная выбранная коллекция манифеста: " + id);
   const ids = new Set(), paths = new Set();
   for (const material of data.materials) {
     portable_path(material.path);
-    if (!collections.has(material.collection)) throw new ConfigError("Unknown material collection: " + material.collection);
-    if (ids.has(material.id) || paths.has(material.path)) throw new ConfigError("Manifest material ids and paths must be unique");
+    if (!collections.has(material.collection)) throw new ConfigError("Неизвестная коллекция материала: " + material.collection);
+    if (ids.has(material.id) || paths.has(material.path)) throw new ConfigError("Идентификаторы и пути материалов манифеста должны быть уникальными");
     ids.add(material.id); paths.add(material.path);
   }
   return data;
@@ -44,7 +44,7 @@ export function validate_material(data) {
     reference_path(data.verification_ref);
     const date = new Date(data.verified_at + "T00:00:00Z");
     if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== data.verified_at)
-      throw new ConfigError("Invalid material verified_at calendar date");
+      throw new ConfigError("Некорректная календарная дата verified_at материала");
   }
   return data;
 }
@@ -80,21 +80,21 @@ export function validate_publication_receipt(data) {
   reference_path(data.evidence_ref);
   const ids = data.collection_snapshots.map(item => item.collection);
   if (new Set(ids).size !== ids.length || stable([...ids].sort()) !== stable([...data.collections].sort()))
-    throw new ConfigError("Publication collection snapshots must match the exact selected collection set");
+    throw new ConfigError("Снимки коллекций публикации должны точно соответствовать выбранному набору коллекций");
   for (const { root } of data.collection_snapshots)
     if (root.slice("viking://resources/".length).split("/").some(part => !part || part === "." || part === ".."))
-      throw new ConfigError("Publication collection root must be canonical");
+      throw new ConfigError("Корень коллекции публикации должен быть каноническим");
   const roots = data.collection_snapshots.map(item => item.root);
   if (roots.some((root, index) => roots.some((other, second) => index !== second && (root === other || root.startsWith(other + "/")))))
-    throw new ConfigError("Publication collection roots must not overlap");
+    throw new ConfigError("Корни коллекций публикации не должны пересекаться");
   for (const field of ["verified_at", "expires_at"]) {
     const instant = new Date(data[field]);
     const canonical = data[field].includes(".") ? data[field] : data[field].replace(/Z$/, ".000Z");
     if (!Number.isFinite(instant.getTime()) || instant.toISOString() !== canonical)
-      throw new ConfigError("Invalid publication receipt calendar timestamp: " + field);
+      throw new ConfigError("Некорректная календарная метка подтверждения публикации: " + field);
   }
   if (Date.parse(data.expires_at) <= Date.parse(data.verified_at))
-    throw new ConfigError("Publication receipt expires_at must follow verified_at");
+    throw new ConfigError("В подтверждении публикации expires_at должен следовать после verified_at");
   return data;
 }
 
@@ -103,7 +103,7 @@ export function validate_publication_receipt(data) {
 export function publication_inventory(manifest, selectedCollections) {
   validate_manifest(manifest, selectedCollections);
   if (manifest.kind !== "catalog" || !selectedCollections.length || new Set(selectedCollections).size !== selectedCollections.length)
-    throw new ConfigError("Publication inventory requires a catalog and unique selected collections");
+    throw new ConfigError("Для состава публикации нужен каталог и уникальные выбранные коллекции");
   return [...selectedCollections].sort().map(collection => {
     const entries = manifest.materials.filter(item => item.collection === collection)
       .map(({ id, collection, path, sha256 }) => ({ id, collection, path, sha256 }))
@@ -118,7 +118,7 @@ function portable_path(value) {
   if (typeof value !== "string" || !value || /[\\:\u0000-\u001f\u007f<>|?*%#]/u.test(value) ||
       value.split("/").some(part => !part || [".", ".."].includes(part) || /[. ]$/.test(part) ||
         /^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)))
-    throw new ConfigError("Knowledge path must be a portable relative path without traversal or device names");
+    throw new ConfigError("Путь знаний должен быть переносимым относительным путём без выхода за границы и имён устройств");
   return value;
 }
 
@@ -126,31 +126,31 @@ function portable_path(value) {
 // source file while validating the catalog.
 function reference_path(value) {
   if (typeof value !== "string" || !value || /[\s\u0000-\u001f\u007f]/u.test(value))
-    throw new ConfigError("Invalid material reference");
+    throw new ConfigError("Некорректная ссылка материала");
   if (/^https?:\/\//.test(value)) {
     let uri;
-    try { uri = new URL(value); } catch { throw new ConfigError("Invalid material HTTP reference"); }
+    try { uri = new URL(value); } catch { throw new ConfigError("Некорректная HTTP-ссылка материала"); }
     if (!uri.hostname || uri.username || uri.password || uri.port === "0" || value.endsWith("#") || value.includes("\\"))
-      throw new ConfigError("Invalid material HTTP reference: credentials or malformed URL");
+      throw new ConfigError("Некорректная HTTP-ссылка материала: учётные данные или ошибочный URL");
     return null;
   }
   const [file, ...fragment] = value.split("#");
-  if (fragment.length > 1 || fragment.length && !fragment[0]) throw new ConfigError("Invalid material reference fragment");
+  if (fragment.length > 1 || fragment.length && !fragment[0]) throw new ConfigError("Некорректный фрагмент ссылки материала");
   if (file) portable_path(file);
-  else if (!fragment.length) throw new ConfigError("Empty material reference");
+  else if (!fragment.length) throw new ConfigError("Пустая ссылка материала");
   return file;
 }
 
 function regular_file(file) {
   let stat;
-  try { stat = fs.statSync(file, { bigint: true }); } catch { throw new ConfigError("Knowledge file is missing: " + file); }
-  if (!stat.isFile()) throw new ConfigError("Knowledge path must identify a regular file: " + file);
+  try { stat = fs.statSync(file, { bigint: true }); } catch { throw new ConfigError("Файл знаний отсутствует: " + file); }
+  if (!stat.isFile()) throw new ConfigError("Путь знаний должен указывать на обычный файл: " + file);
   return stat;
 }
 
 export function parse_material(text) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/.exec(text.replace(/^\uFEFF/, ""));
-  if (!match || !match[2].trim()) throw new ConfigError("Knowledge material needs YAML front matter and a nonempty Markdown body");
+  if (!match || !match[2].trim()) throw new ConfigError("Для материала знаний нужны заголовок YAML и непустой текст Markdown");
   return validate_material(parse(match[1]));
 }
 
@@ -162,7 +162,7 @@ export function load_manifest_catalog(root, relative, selectedCollections = []) 
   const file = inside(root, relative);
   regular_file(file);
   const bytes = fs.readFileSync(file), data = validate_manifest(parse(bytes.toString("utf8")), selectedCollections);
-  if (data.kind !== "catalog") throw new ConfigError("A recommendations manifest cannot be used as a published catalog");
+  if (data.kind !== "catalog") throw new ConfigError("Манифест рекомендаций нельзя использовать как опубликованный каталог");
   for (const entry of data.materials) inside(path.dirname(file), entry.path);
   return { data, sha256: sha256(bytes) };
 }
@@ -172,14 +172,14 @@ export function load_manifest(root, relative, selectedCollections = []) {
   const corpus = path.dirname(file), files = new Set(), materials = [];
   for (const entry of data.materials) {
     const target = inside(corpus, entry.path), stat = regular_file(target), identity = `${stat.dev}:${stat.ino}`;
-    if (files.has(identity)) throw new ConfigError("Manifest material paths resolve to the same file");
+    if (files.has(identity)) throw new ConfigError("Пути материалов манифеста указывают на один файл");
     files.add(identity);
     const content = fs.readFileSync(target);
-    if (sha256(content) !== entry.sha256) throw new ConfigError("Knowledge material SHA-256 mismatch: " + entry.id);
+    if (sha256(content) !== entry.sha256) throw new ConfigError("Не совпадает SHA-256 материала знаний: " + entry.id);
     const metadata = parse_material(content.toString("utf8"));
-    if (metadata.id !== entry.id) throw new ConfigError("Manifest and material id mismatch: " + entry.id);
+    if (metadata.id !== entry.id) throw new ConfigError("Не совпадают идентификаторы манифеста и материала: " + entry.id);
     if (metadata.kind === "document" ? metadata.status !== "published" : metadata.status === "obsolete")
-      throw new ConfigError("Inactive knowledge material in catalog: " + entry.id);
+      throw new ConfigError("Неактивный материал знаний в каталоге: " + entry.id);
     for (const ref of [metadata.provenance.source, ...(metadata.kind === "api_card" ? [metadata.verification_ref] : [])]) {
       const linked = reference_path(ref);
       if (linked !== null) regular_file(linked ? inside(corpus, linked) : target);
@@ -236,6 +236,6 @@ export function knowledge_gate(profile, config, action, confirmation = null) {
 
 export function require_workflow_knowledge(profile, config, action = "workflow", confirmation = null) {
   const gate = knowledge_gate(profile, config, action, confirmation);
-  if (!gate.allowed) throw new ConfigError("Knowledge workflow blocked: " + gate.reason);
+  if (!gate.allowed) throw new ConfigError("Рабочий процесс заблокирован настройкой знаний: " + gate.reason);
   return gate;
 }

@@ -33,7 +33,7 @@ export function setup_inspection(read, state) {
   else if (profile.status === "missing") next.push("create_profile");
   else if (profile.status !== "loaded") next.push("repair_profile");
   if (detected?.url && values.edtUrl && !same_endpoint(detected.url, values.edtUrl))
-    issues.push({ code: "edt_endpoint_mismatch", effective: values.edtUrl, detected: detected.url, source: connectionSources?.edt, resolution: "Verify the assigned EDT before changing an explicit URL; detection never overrides it automatically." });
+    issues.push({ code: "edt_endpoint_mismatch", effective: values.edtUrl, detected: detected.url, source: connectionSources?.edt, resolution: "Перед изменением явного URL проверьте назначенный EDT; обнаруженный адрес не заменяет его автоматически." });
   const projects = directoryContext?.edt?.projects || [];
   if (profile.status === "loaded") {
     if (!repositories.length) next.push("configure_repositories");

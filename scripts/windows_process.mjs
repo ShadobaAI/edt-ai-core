@@ -179,8 +179,8 @@ export function spawn_detached_windows(command, args, options) {
       return handle;
     };
     const input = open("NUL", 0x80000000, 3),
-      output = open(options.stdoutFile, 0x0004, 4),
-      error = open(options.stderrFile, 0x0004, 4),
+      output = open("NUL", 0x40000000, 3),
+      error = open("NUL", 0x40000000, 3),
       size = [0n];
     win.initAttributes(null, 1, 0, size);
     if (!Number(size[0]) || Number(size[0]) > 65536)

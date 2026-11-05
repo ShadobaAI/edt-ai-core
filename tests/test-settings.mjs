@@ -21,14 +21,14 @@ import { zipSync } from "../vendor/deps.mjs";
 test("project transfer archives accept only two bounded UTF-8 YAML files", () => {
   const documents={".ai/project.yaml":"schema_version: '0.2'\n",".ai/project.local.yaml":"{}\n"};
   assert.deepEqual(read_project_archive(write_project_archive(documents)),documents);
-  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),"../project.local.yaml":Buffer.from("x")})),/Unsafe/);
-  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),".ai/project.local.yaml":Buffer.from("x"),"other":Buffer.from("x")})),/exactly/);
-  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),".ai/PROJECT.yaml":Buffer.from("x")})),/Unsafe/);
+  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),"../project.local.yaml":Buffer.from("x")})),/Небезопасн/);
+  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),".ai/project.local.yaml":Buffer.from("x"),"other":Buffer.from("x")})),/ровно/);
+  assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from("x"),".ai/PROJECT.yaml":Buffer.from("x")})),/Небезопасн/);
   assert.throws(()=>read_project_archive(zip({".ai/project.yaml":Buffer.from([0xff]),".ai/project.local.yaml":Buffer.from("{}")})),/UTF-8/);
-  assert.throws(()=>write_project_archive({...documents,".ai/project.local.yaml":"x".repeat(2*1024*1024+1)}),/bounded/);
+  assert.throws(()=>write_project_archive({...documents,".ai/project.local.yaml":"x".repeat(2*1024*1024+1)}),/допустимого размера/);
   const corrupt=Buffer.from(zipSync(Object.fromEntries(Object.entries(documents).map(([name,text])=>[name,Buffer.from(text)])),{level:0}));
   const dataOffset=30+corrupt.readUInt16LE(26)+corrupt.readUInt16LE(28);corrupt[dataOffset]^=1;
-  assert.throws(()=>read_project_archive(corrupt),/mismatch/);
+  assert.throws(()=>read_project_archive(corrupt),/не совпадает/);
 });
 
 test("schema-driven field edits preserve surrounding YAML and distinguish scalar values", async () => {
@@ -95,7 +95,7 @@ test("schema dictionary keys remain editable without prototype pollution", () =>
   const collection=patch_yaml_draft("knowledge:\n  collection_uris: {}\n",{kind:"set",path:["knowledge","collection_uris","constructor"],value:"viking://resources/example"});
   check_schema(parse(collection.text),"project-local.schema.json");
   assert.throws(()=>patch_yaml_draft("{}\n",{kind:"set",path:["constructor"],value:{prototype:{polluted:true}}}),/путь/);
-  assert.throws(()=>deep_merge({},JSON.parse('{"constructor":{"prototype":{"polluted":true}}}')),/Unsafe/);
+  assert.throws(()=>deep_merge({},JSON.parse('{"constructor":{"prototype":{"polluted":true}}}')),/Небезопасн/);
   assert.equal(Object.prototype.polluted,undefined);
 });
 
@@ -206,7 +206,7 @@ test("the directory picker binds the canonical project without writes and discar
     started = path.join(f.base, "started"), released = path.join(f.base, "released"), other = path.join(f.base, "other");
   fs.mkdirSync(path.join(f.root, ".git")); fs.mkdirSync(other);
   for (const directory of ["mcp", "scripts", "assets"]) fs.mkdirSync(path.join(plugin, directory), { recursive: true });
-  for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "scripts/icons.mjs", "scripts/selection.mjs", "scripts/project_paths.mjs", "scripts/casefold.mjs", "scripts/compatibility.mjs", "scripts/diagnostics.mjs", "assets/icon.svg"])
+  for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "scripts/icons.mjs", "scripts/selection.mjs", "scripts/project_paths.mjs", "scripts/casefold.mjs", "scripts/compatibility.mjs", "scripts/diagnostics.mjs", "scripts/mcp_codec.mjs", "assets/icon.svg"])
     fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
   fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"),
     `import fs from 'node:fs'; export async function folder_action() { const value=JSON.parse(fs.readFileSync(${JSON.stringify(choice)},'utf8')); if(value.wait) { fs.writeFileSync(${JSON.stringify(started)},''); while(!fs.existsSync(${JSON.stringify(released)})) await new Promise(done=>setTimeout(done,5)); } return value.directory; }`);
@@ -332,7 +332,7 @@ test("chat profile tools discover the selected profile and preserve instructions
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.override.md"), "utf8"), "Override project rules\n");
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
   const profileFile = path.join(f.root, ".ai/project.yaml"), before = fs.readFileSync(profileFile);
-  await assert.rejects(client.call("settings.create", {}), /already exists/);
+  await assert.rejects(client.call("settings.create", {}), /уже существует/);
   assert.deepEqual(fs.readFileSync(profileFile), before);
   const token = path.join(f.state, "projects");
   assert.ok(fs.existsSync(token));
@@ -350,7 +350,7 @@ test("chat profile tools discover the selected profile and preserve instructions
 test("MCP creation rejects instruction directories without creating a profile or reconnect signal", async (t) => {
   const f = fixture(t), client = await session(t, "mcp/settings.mjs", [], f);
   fs.mkdirSync(path.join(f.root, "AGENTS.override.md"));
-  await assert.rejects(client.call("settings.create", {}), /must be a regular file/);
+  await assert.rejects(client.call("settings.create", {}), /обычный файл/);
   assert.ok(!fs.existsSync(path.join(f.root, ".ai")));
   assert.ok(!fs.existsSync(reconnect_file(f.state, f.root)));
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "missing");
@@ -672,7 +672,7 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
   fs.mkdirSync(path.join(plugin, "scripts"));
   fs.mkdirSync(path.join(plugin, "assets"));
   fs.copyFileSync(path.join(ROOT,"plugin.json"),path.join(plugin,"plugin.json"));
-  for (const name of ["icons.mjs", "selection.mjs", "project_paths.mjs", "casefold.mjs", "compatibility.mjs", "diagnostics.mjs", "support_bundle.mjs"])
+  for (const name of ["icons.mjs", "selection.mjs", "project_paths.mjs", "casefold.mjs", "compatibility.mjs", "diagnostics.mjs", "support_bundle.mjs", "mcp_codec.mjs"])
     fs.copyFileSync(path.join(ROOT, "scripts", name), path.join(plugin, "scripts", name));
   fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `export async function folder_action() { return ${JSON.stringify(path.join(f.base, "report.json"))}; }`);
   for (const name of ["common", "profile", "settings_export"])

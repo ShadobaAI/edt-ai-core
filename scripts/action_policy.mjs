@@ -14,7 +14,7 @@ export function effective_policy(overlay = {}) {
     overlay.allow_shell_source_read !== false
   )
     throw new ConfigError(
-      "Project policy cannot permit shell access to protected source",
+      "Политика проекта не может разрешать доступ к защищённым исходникам через shell",
     );
   const required = defaults.require_explicit_confirmation;
   if (
@@ -24,7 +24,7 @@ export function effective_policy(overlay = {}) {
     )
   )
     throw new ConfigError(
-      "Project policy cannot remove shared agreement groups",
+      "Политика проекта не может удалять общие категории разрешений",
     );
   return {
     ...defaults,

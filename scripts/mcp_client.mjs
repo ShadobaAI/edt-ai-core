@@ -49,7 +49,7 @@ export class McpClient {
           this.pending.delete(message.id);
           done(message);
         } else if (message.method) this.options.onNotification?.(message);
-      }, (error) => { this.fail(error); void stop_child(this.process, 0); }, options.maxBytes || DEFAULT_MAX_BYTES);
+      }, (error) => { this.fail(error); void stop_child(this.process, 0).catch(() => process.stderr.write("1c-ai-core: owned MCP process cleanup failed\n")); }, options.maxBytes || DEFAULT_MAX_BYTES);
   }
   fail(error) {
     if (this.error) return;

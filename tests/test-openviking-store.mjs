@@ -212,7 +212,7 @@ test("independent project adapters share a credential but never share selected a
   await first.connect(); await second.connect();
   assert.notEqual(first.client, second.client);
   assert.deepEqual([...first.collections.keys()], ["one"]); assert.deepEqual([...second.collections.keys()], ["two"]);
-  assert.throws(() => first.validateRequest("tools/call", { name: "find", arguments: { query: "x", target_uri: "viking://resources/team/two", limit: 1 } }), /selected|collection|scope/i);
+  assert.throws(() => first.validateRequest("tools/call", { name: "find", arguments: { query: "x", target_uri: "viking://resources/team/two", limit: 1 } }), /Поиск OpenViking должен использовать выбранную коллекцию команды и ограниченные аргументы/);
   await save(f.state, url, "team", { ...data, publicationPublicKey: "changed" }, revision);
-  assert.throws(() => first.checkAccess(), /changed/); assert.throws(() => second.checkAccess(), /changed/);
+  assert.throws(() => first.checkAccess(), /изменил/); assert.throws(() => second.checkAccess(), /изменил/);
 });

@@ -89,7 +89,7 @@ test("invalid YAML reports its line without exposing document contents", async t
   const edit = (await client.call("settings.edit", { layerScope: "project_local", format: "yaml" }))._meta.data;
   await assert.rejects(client.call("settings.preview", { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision,
     text: "# synthetic-private-value\ncomponents:\n  broken: [\n" }), error => {
-    assert.match(error.message, /line 4/i);
+    assert.match(error.message, /в строке 4/);
     assert.doesNotMatch(error.message, /synthetic-private-value/);
     return true;
   });
@@ -153,12 +153,12 @@ test("masked override URLs are validated before preview or direct writes", async
     const edit = (await client.call("settings.edit", { layerScope, format:"yaml" }))._meta.data;
     for (const document of documents) await assert.rejects(client.call("settings.preview", {
       mode: "layer", layerScope, baseRevision: edit.baseRevision, text: JSON.stringify(document),
-    }), /credentials|query parameters/i);
+    }), /Некорректный URL MCP|Параметры запроса в URL OpenViking/);
     assert.equal(fs.existsSync(edit.path), false);
   }
   for (const scope of ["project_local", undefined]) {
     await assert.rejects(client.call("settings.update", { set: { openvikingUrl: "http://127.0.0.1:8203/mcp?credential=value" },
-      ...(scope ? { scope } : {}) }), /query parameters/i);
+      ...(scope ? { scope } : {}) }), /Параметры запроса/);
   }
   assert.equal(fs.existsSync(path.join(f.root, ".ai/project.local.yaml")), false);
 });
@@ -200,7 +200,7 @@ for (const layerScope of ["project_local"]) test(`MCP validates and saves the co
   assert.equal(current.values.bslLsJava, "custom-java"); assert.equal(current.managedValueSources.bslLsJava, layerScope);
   await assert.rejects(client.call("settings.apply", { ...args, revision: preview.revision }), /изменились/);
   const fresh = (await client.call("settings.edit", { layerScope, format:"yaml" }))._meta.data;
-  await assert.rejects(client.call("settings.preview", { ...args, baseRevision: fresh.baseRevision, text: '{"unsupported": true}' }), /additional properties/i);
+  await assert.rejects(client.call("settings.preview", { ...args, baseRevision: fresh.baseRevision, text: '{"unsupported": true}' }), /неизвестное поле/);
   assert.deepEqual(load(edit.path), document);
 });
 
@@ -222,7 +222,7 @@ test("MCP profile rename changes only project.id and rejects stale or invalid ed
   const f = fixture(t); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
   const initial = (await client.call("settings.read", {})).structuredContent;
-  await assert.rejects(client.call("settings.rename_profile", { projectId: "bad name", expectedRevision: initial.settingsRevision }), /pattern|шаблон/i);
+  await assert.rejects(client.call("settings.rename_profile", { projectId: "bad name", expectedRevision: initial.settingsRevision }), /требуемому формату/);
   const renamed = (await client.call("settings.rename_profile", { projectId: "renamed.project", expectedRevision: initial.settingsRevision })).structuredContent;
   const document = load(initial.writePaths.profile);
   assert.equal(document.project.id, "renamed.project");
@@ -368,9 +368,9 @@ for (const protectedTarget of [true, false]) test(`settings paths ${protectedTar
   const args = { scope: "project_local", set: { edtUrl: "http://127.0.0.1:8123/mcp" } };
   if (protectedTarget) {
     assert.equal((await client.call("settings.read", {})).structuredContent.configurationError, true);
-    await assert.rejects(client.call("settings.update", args), /redirects into protected project source/);
-    await assert.rejects(client.call("settings.edit", { layerScope: "project_local", format:"yaml" }), /redirects into protected project source/);
-    await assert.rejects(client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), /redirects into protected project source/);
+    await assert.rejects(client.call("settings.update", args), /Путь настроек перенаправляется в защищённые исходники проекта/);
+    await assert.rejects(client.call("settings.edit", { layerScope: "project_local", format:"yaml" }), /Путь настроек перенаправляется в защищённые исходники проекта/);
+    await assert.rejects(client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), /Путь настроек перенаправляется в защищённые исходники проекта/);
     assert.equal(fs.existsSync(path.join(target, "project.local.yaml")), false);
   } else {
     await client.call("settings.update", args);
@@ -386,7 +386,7 @@ test("shared settings cannot be redirected into protected sources, including leg
   f.env.EDT_AI_SETTINGS = path.join(alias, "settings.json");
   const client = await session(t, "mcp/settings.mjs", [], f);
   for (const scope of ["global", undefined])
-    await assert.rejects(client.call("settings.update", { set: { bslLsJava: "java" }, ...(scope ? { scope } : {}) }), /redirects into protected project source/);
+    await assert.rejects(client.call("settings.update", { set: { bslLsJava: "java" }, ...(scope ? { scope } : {}) }), /Путь настроек перенаправляется в защищённые исходники проекта/);
   assert.equal(fs.existsSync(path.join(target, "settings.json")), false);
 });
 
@@ -397,7 +397,7 @@ test("the state directory cannot redirect into protected sources", async t => {
   fs.symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir");
   f.env.EDT_AI_STATE_DIR = alias;
   const client = await session(t, "mcp/settings.mjs", [], f);
-  await assert.rejects(client.call("settings.update", { scope: "project_local", set: { edtUrl: "http://127.0.0.1:8123/mcp" } }), /redirects into protected project source/);
+  await assert.rejects(client.call("settings.update", { scope: "project_local", set: { edtUrl: "http://127.0.0.1:8123/mcp" } }), /Путь настроек перенаправляется в защищённые исходники проекта/);
   assert.equal(fs.existsSync(path.join(target, "projects")), false);
 });
 

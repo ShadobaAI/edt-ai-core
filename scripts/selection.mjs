@@ -9,7 +9,7 @@ export function launch_selection(cwd = process.cwd(), explicit = process.env.EDT
 export function roots_selection(message, cwd = process.cwd()) {
   if (message.error?.code === -32601) return launch_selection(cwd, "");
   if (message.error || !Array.isArray(message.result?.roots))
-    throw new ConfigError("Host could not supply the selected directory");
+    throw new ConfigError("Хост не передал выбранный каталог");
   if (!message.result.roots.length) return { directory: null, source: "roots" };
   const directory = select_root(message.result.roots, cwd);
   return { directory: directory === ROOT ? null : directory, source: "roots" };

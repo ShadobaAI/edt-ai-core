@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/vanessa-ui/profile-v1.schema.json",
-  "title": "Vanessa UI local profile",
+  "title": "Локальный профиль интерфейса Vanessa",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -132,7 +132,7 @@
         "url": {
           "type": "string",
           "format": "uri",
-          "description": "Loopback HTTP only; explicit port must match port field. No credentials, query or fragment."
+          "description": "Только локальный HTTP; явный порт должен совпадать с полем port. Учётные данные, параметры запроса и фрагмент запрещены."
         },
         "port": {
           "type": "integer",

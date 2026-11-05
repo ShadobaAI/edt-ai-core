@@ -29,23 +29,23 @@ export async function doctor(profile) {
 export async function main(argv) {
   const command = argv.shift();
   if (!command || command === "help" || command === "--help") return { usage: "node vanessa.mjs <configure|start|setup|connect|doctor|list|call|run> --profile <file> [--client <name>] [--tool <actual-name> --arguments-file <json>] [--feature <file> --scenario <exact-name> --editor-transition]", note: "configure prints an MCP TOML snippet; no credentials or upstream checkout are used" };
-  if (!["configure", "start", "setup", "connect", "doctor", "list", "call", "run"].includes(command)) fail("unknown command");
+  if (!["configure", "start", "setup", "connect", "doctor", "list", "call", "run"].includes(command)) fail("Неизвестная команда");
   const opts = {};
   while (argv.length) {
     const key = argv.shift();
     if (key === "--editor-transition") {
-      if (Object.hasOwn(opts, key)) fail("duplicate editor transition option");
+      if (Object.hasOwn(opts, key)) fail("Повторный параметр перехода в редактор");
       opts[key] = true; continue;
     }
     const value = argv.shift();
-    if (!["--profile", "--client", "--expected-profile-sha256", "--tool", "--arguments-file", "--expected-arguments-sha256", "--feature", "--scenario"].includes(key) || !value || Object.hasOwn(opts, key)) fail("invalid or duplicate CLI option");
+    if (!["--profile", "--client", "--expected-profile-sha256", "--tool", "--arguments-file", "--expected-arguments-sha256", "--feature", "--scenario"].includes(key) || !value || Object.hasOwn(opts, key)) fail("Некорректный или повторный параметр командной строки");
     opts[key] = value;
   }
-  if (!opts["--profile"]) fail("--profile is required");
-  if (command !== "call" && (opts["--tool"] || opts["--arguments-file"] || opts["--expected-arguments-sha256"])) fail("tool options require call");
-  if (opts["--expected-arguments-sha256"] && !opts["--arguments-file"]) fail("arguments hash requires --arguments-file");
-  if (command !== "run" && (opts["--feature"] || opts["--scenario"])) fail("feature/scenario options require run");
-  if (command !== "run" && opts["--editor-transition"]) fail("editor transition requires run");
+  if (!opts["--profile"]) fail("Требуется --profile");
+  if (command !== "call" && (opts["--tool"] || opts["--arguments-file"] || opts["--expected-arguments-sha256"])) fail("Параметры инструмента требуют команды call");
+  if (opts["--expected-arguments-sha256"] && !opts["--arguments-file"]) fail("Для хеша аргументов требуется --arguments-file");
+  if (command !== "run" && (opts["--feature"] || opts["--scenario"])) fail("Параметры feature/scenario требуют команды run");
+  if (command !== "run" && opts["--editor-transition"]) fail("Переход в редактор требует команды run");
   const profile = loadProfile(opts["--profile"], opts["--expected-profile-sha256"], opts["--client"]);
   if (command === "configure") return { status: "configuration_only", serverName: profile.mcp.serverName, snippet: configSnippet(profile), interactiveParameters: interactiveParameters(profile), readiness: "unverified" };
   if (command === "start") return start(profile);
@@ -63,23 +63,23 @@ export async function main(argv) {
         if (command === "run") return runFeature(profile, client, tools, { feature: opts["--feature"], scenario: opts["--scenario"],
           onProgress: progress => { workflowProgress = progress; },
           ...(opts["--editor-transition"] ? { beforeOpen: () => awaitEditorTransition({ managerPid: manager?.pid, timeoutMs: Math.min(60000, deadline - Date.now() - 1000) }) } : {}) });
-        if (!opts["--tool"]) fail("--tool is required");
+        if (!opts["--tool"]) fail("Требуется --tool");
         const name = opts["--tool"], args = opts["--arguments-file"] ? readJson(opts["--arguments-file"], 1024 * 1024, opts["--expected-arguments-sha256"]) : {};
-        if (name === "run_scenario" && !Object.hasOwn(args, "mode")) fail("run_scenario requires an explicit mode; all is never the CLI default");
+        if (name === "run_scenario" && !Object.hasOwn(args, "mode")) fail("Для run_scenario нужен явный mode; all не используется в командной строке по умолчанию");
         discovery = isDiscovery(name, args);
         if (!discovery) {
           if (manager?.pid && manager.created && managerAlive(profile, manager)) managerToken = digest(JSON.stringify([manager.pid, manager.created, manager.fingerprint]));
           let ownership = ownRecording(profile, managerToken);
           const readiness = await inspectSession(profile, client, tools, undefined, { ownRecording: Boolean(ownership) });
-          if (readiness.status !== "ready") fail(`UI readiness is ${readiness.status}: ${readiness.reason}; dependent call blocked`);
+          if (readiness.status !== "ready") fail(`Готовность интерфейса: ${readiness.status}: ${readiness.reason}; зависимый вызов заблокирован`);
           readyVersion = readiness.runtimeVersion;
           if (ownership && readiness.recording === false) { invalidateObservedIdle(profile, readyVersion); ownership = null; }
-          if (ownership && ownership.runtimeVersion !== readyVersion) fail("recording runtime changed; ownership is unverified");
+          if (ownership && ownership.runtimeVersion !== readyVersion) fail("Среда записи изменилась; владение не подтверждено");
           if (name === "user_actions_recording") {
             recordingAction = args.action ?? "start";
-            if (!managerToken) fail("recording ownership requires a verified manager process session launched by this profile");
-            if (recordingAction === "start" && readiness.recording) fail("recording is already active; duplicate start blocked");
-            if (recordingAction === "stop" && (!ownership || !readiness.recording)) fail("no verified recording owned by this profile to stop");
+            if (!managerToken) fail("Для владения записью нужна подтверждённая сессия процесса менеджера, запущенного этим профилем");
+            if (recordingAction === "start" && readiness.recording) fail("Запись уже активна; повторный запуск заблокирован");
+            if (recordingAction === "stop" && (!ownership || !readiness.recording)) fail("Нет подтверждённой записи этого профиля для остановки");
           }
         }
         const result = await callTool(client, tools, name, args, { onDispatch: () => {
@@ -97,8 +97,8 @@ export async function main(argv) {
         const responded = error.code === "tool_error";
         const indeterminate = !responded && workflowProgress.pending && workflowProgress.mutation;
         const failure = responded ? error : new Error(indeterminate
-          ? "UI mutation outcome is indeterminate; inspect authoritative state before retrying"
-          : "UI run verification is unavailable; inspect state before another run");
+          ? "Исход изменения интерфейса неизвестен; перед повтором проверьте фактическое состояние"
+          : "Проверка выполнения через интерфейс недоступна; перед новым запуском проверьте состояние");
         failure.code ??= indeterminate ? "mutation_indeterminate" : "verification_unavailable";
         const result = { ...workflowProgress, pending: responded ? false : workflowProgress.pending,
           status: "unverified", finishedAt: new Date().toISOString(),
@@ -106,13 +106,13 @@ export async function main(argv) {
         failure.detail = { ...error.detail,
           ...(!responded ? { classification: "transport_or_protocol", outcome: indeterminate ? "indeterminate" : "unverified" } : {}),
           tool: workflowProgress.tool, reports: workflowProgress.reports, receipt: saveRunReceipt(profile, result),
-          nextAction: responded ? "Inspect the runtime error and authoritative state before another run" : failure.message };
+          nextAction: responded ? "Перед новым запуском проверьте ошибку среды выполнения и фактическое состояние" : failure.message };
         throw failure;
       }
       if (error.code === "tool_error") throw error;
       if (callStarted && !discovery) {
         if (recordingAction) recordOwnership(profile, "indeterminate", readyVersion, managerToken);
-        const uncertain = new Error("UI operation outcome is indeterminate; verify authoritative state before retrying (no automatic retry)");
+        const uncertain = new Error("Исход операции интерфейса неизвестен; перед повтором проверьте фактическое состояние; автоматического повтора нет");
         uncertain.code = "mutation_indeterminate";
         uncertain.detail = { classification: "transport_or_protocol", outcome: "indeterminate", tool: opts["--tool"], nextAction: uncertain.message };
         throw uncertain;
@@ -134,7 +134,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   } catch (error) {
     diagnostic.event("command_failed", { action: process.argv[2], code: error.code, message: error.message }, "error");
     // Filesystem failures contain paths; raw process/server responses never become diagnostics.
-    const message = error.detail ? error.message : error.code ? `local operation failed (${error.code})` : error.message;
+    const message = error.detail ? error.message : error.code ? `Локальная операция не удалась (${error.code})` : error.message;
     process.stderr.write(JSON.stringify(redact({ status: "error", message, ...(error.detail ?? {}) })) + "\n"); process.exitCode = 1;
   }
 }

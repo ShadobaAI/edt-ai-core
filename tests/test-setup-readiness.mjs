@@ -6,7 +6,6 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { fileURLToPath } from "node:url";
 import { edt_fixture as fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { setup_assets, save_readiness, read_readiness, save_component_checks, read_component_checks } from "../scripts/setup_readiness.mjs";
@@ -85,7 +84,7 @@ test("managed probe errors omit arbitrary upstream credential encodings before r
   fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(config));
   await backend.main({ action: "update", set: { codeIndexEnabled: true } });
   const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
-  assert.match(result.managed.find(item => item.name === "code-index").detail, /RPC -32000.*remote error text omitted/);
+  assert.match(result.managed.find(item => item.name === "code-index").detail, /RPC -32000.*текст внешней ошибки скрыт/);
   const cache = fs.readFileSync(path.join(instance_directory(f.state, f.root), "first.readiness.json"), "utf8");
   assert.equal((JSON.stringify(result) + cache).includes(encoded), false);
 });
@@ -230,10 +229,10 @@ test("first BSL preparation accepts its own installation, reuses unchanged API e
     if(String(url).startsWith("https://github.com/1c-syntax/bsl-language-server/releases/download/"))return Promise.resolve(new Response(bytes));
     return fetch(url,options);
   });
-  const originalSpawn=childProcess.spawn,proxy=fileURLToPath(new URL("../mcp/bsl-ls-proxy.mjs",import.meta.url)),preload=new URL("./fixtures/bsl-spawn.mjs",import.meta.url).href;
+  const originalSpawn=childProcess.spawn,preload=new URL("./fixtures/bsl-smoke-spawn.mjs",import.meta.url).href;
   let launches=0,mutate=false;const pidFiles=[];
   t.mock.method(childProcess,"spawn",(command,args,options)=>{
-    if(args[0]!==proxy)return originalSpawn(command,args,options);
+    if(path.basename(args[0])!=="process_supervisor.mjs" || options.cwd!==f.root)return originalSpawn(command,args,options);
     const pidFile=path.join(f.base,"bsl-"+(++launches)+".pid");pidFiles.push(pidFile);
     return originalSpawn(command,["--import",preload,...args],{...options,env:{...options.env,BSL_TEST_PID_FILE:pidFile}});
   });
@@ -259,7 +258,7 @@ test("first BSL preparation accepts its own installation, reuses unchanged API e
   fs.writeFileSync(configuration,'{"changed":"before-lock-contention"}');
   const write=fs.writeFileSync;let lockWrites=0;
   t.mock.method(fs,"writeFileSync",(file,...args)=>{
-    if(file===path.join(f.state,"operation.lock")&&++lockWrites===2)throw new Error("Another runtime operation holds fixture lock");
+    if(file===path.join(f.state,"operation.lock")&&++lockWrites===2)throw Object.assign(new Error("fixture lock is held"), { code: "RUNTIME_BUSY" });
     return write(file,...args);
   });
   const busy=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});

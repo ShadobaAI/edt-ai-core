@@ -183,12 +183,13 @@ for(const mode of ["ready","invalid_tools","initialize_timeout","tools_timeout"]
   const sibling=new McpClient([process.execPath,"--import",preload,proxy,"--project-root",f.root,"--jar",jar],f.root,process.env,5);
   f.clients.push(sibling);const siblingInfo=await sibling.initialize();assert.equal(alive(siblingInfo.pid),true);
   const originalSpawn=childProcess.spawn,pidFile=path.join(f.base,"smoke-child.pid");
-  t.mock.method(childProcess,"spawn",(command,args,options)=>originalSpawn(command,args[0]===proxy?["--import",preload,...args]:args,
-    args[0]===proxy?{...options,env:{...options.env,BSL_TEST_MODE:mode,BSL_TEST_HANG:"1",BSL_TEST_PID_FILE:pidFile}}:options));
+  t.mock.method(childProcess,"spawn",(command,args,options)=>originalSpawn(command,
+    ["--import",new URL("./fixtures/bsl-smoke-spawn.mjs",import.meta.url).href,...args],
+    {...options,env:{...options.env,BSL_TEST_MODE:mode,BSL_TEST_HANG:"1",BSL_TEST_PID_FILE:pidFile}}));
   t.mock.method(childProcess,"execFile",(_command,_args,_options,callback)=>queueMicrotask(()=>callback(null,"",'java version "21"')));
   syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
   if(mode==="ready")assert.equal((await smoke(f.state,config,f.root,f.profile,"bsl-ls",5,false,null,false)).status,"mcp_ready");
-  else await assert.rejects(smoke(f.state,config,f.root,f.profile,"bsl-ls",5,false,null,false),mode==="invalid_tools"?/exposes no MCP tools/:/timed out/);
+  else await assert.rejects(smoke(f.state,config,f.root,f.profile,"bsl-ls",5,false,null,false),mode==="invalid_tools"?/ не предоставляет инструментов MCP/:/timed out/);
   const pid=Number(fs.readFileSync(pidFile,"utf8"));assert.equal(alive(pid),false,"temporary child must have exited before smoke settles");
   assert.equal(alive(siblingInfo.pid),true,"an independent session must remain alive");
 });

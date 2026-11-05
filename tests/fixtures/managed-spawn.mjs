@@ -4,6 +4,9 @@ import { fileURLToPath } from "node:url";
 import { syncBuiltinESMExports } from "node:module";
 const original = cp.spawn;
 cp.spawn = (command, args, options) => {
+  if (path.basename(args?.[0] || "") === "process_supervisor.mjs")
+    return original(command, ["--import", import.meta.url, ...args], { ...options, env: { ...options.env,
+      ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith("FIXTURE_"))) } });
   const managed = args?.[0] && path.basename(args[0]) === "managed_mcp.mjs";
   // Test-only switches control the replacement fixture, never real runtimes.
   const fixtureOptions = managed ? { ...options, env: { ...options.env,

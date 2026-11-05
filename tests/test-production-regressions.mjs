@@ -32,7 +32,7 @@ test("unselected connections never borrow active_project; roots fallback is shar
   assert.equal(launch_selection(ROOT, "").directory, null);
   assert.equal(roots_selection({error:{code:-32601}}, f.root).directory, f.root);
   assert.equal(roots_selection({result:{roots:[]}}, f.root).directory, null);
-  assert.throws(() => roots_selection({result:{roots:[{uri:pathToFileURL(f.root).href},{uri:pathToFileURL(f.state).href}]}}, ROOT), /ambiguous/);
+  assert.throws(() => roots_selection({result:{roots:[{uri:pathToFileURL(f.root).href},{uri:pathToFileURL(f.state).href}]}}, ROOT), /неоднознач/);
 });
 test("distinct Unicode filesystem directories cannot share instances or daemon homes", t => {
   const f = fixture(t), roots = ["Straße", "STRASSE"].map(name => path.join(f.base,name));
@@ -54,7 +54,7 @@ test("previous project state blocks a new namespace without changing old files",
   const old=path.join(f.state,"projects",sha256(casefold(f.root)).slice(0,16),"instances/first.yaml");
   dump({connections:{edt:{url:"http://localhost:17889/mcp"}}},old);
   const before=fs.readFileSync(old),backend=new SettingsBackend(f.state,f.env.EDT_AI_SETTINGS);
-  await assert.rejects(backend.main({action:"read"}), /Unsupported previous project state/);
+  await assert.rejects(backend.main({action:"read"}), /Обнаружено неподдерживаемое прежнее состояние проекта/);
   assert.deepEqual(fs.readFileSync(old),before);
 });
 test("native instructions survive and unrelated settings preserve the reader session", async t => {
@@ -141,7 +141,7 @@ test("managed relay bounds shutdown of a child that ignores host EOF", async t =
   const hanging = "process.stdout.write(String(process.pid)+'\\n'); process.stdin.resume(); setInterval(()=>{},1000);";
   fs.writeFileSync(preloadFile, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
     const spawn=cp.spawn, sync=cp.spawnSync, execFile=cp.execFile;
-    cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(process.execPath,['-e',${JSON.stringify(hanging)}],options) : spawn(command,args,options);
+    cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs' ? spawn(command,['--import',import.meta.url,...args],options) : path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(process.execPath,['-e',${JSON.stringify(hanging)}],options) : spawn(command,args,options);
     cp.spawnSync=(command,args,options)=>args?.[0]==='-version' ? {status:0,stderr:'java version "21"',stdout:''} : sync(command,args,options);
     cp.execFile=(command,args,options,callback)=>args?.[0]==='-version' ? queueMicrotask(()=>callback(null,'','java version "21"')) : execFile(command,args,options,callback);
     syncBuiltinESMExports();`);
@@ -175,7 +175,7 @@ test("direct managed BSL launch excludes credentials from the Java probe and nat
   fs.writeFileSync(preloadFile, `import cp from 'node:child_process'; import fs from 'node:fs'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
     const spawn=cp.spawn, execFile=cp.execFile;
     cp.execFile=(command,args,options,callback)=>args?.[0]==='-version' ? (fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify(Object.keys(options.env))),queueMicrotask(()=>callback(null,'','java version "21"'))) : execFile(command,args,options,callback);
-    cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(process.execPath,['-e',${JSON.stringify(`console.log(JSON.stringify(${inspectEnv}))`)}],options) : spawn(command,args,options);
+    cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs' ? spawn(command,['--import',import.meta.url,...args],options) : path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(process.execPath,['-e',${JSON.stringify(`console.log(JSON.stringify(${inspectEnv}))`)}],options) : spawn(command,args,options);
     syncBuiltinESMExports();`);
   const child = launch(process.execPath, [path.join(ROOT, "scripts/managed_mcp.mjs"), "--component", "bsl-ls"], {
     cwd: f.root, env: { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preloadFile).href,
@@ -194,7 +194,7 @@ test("direct managed BSL launch excludes credentials from the Java probe and nat
 });
 for (const failure of ["crash","malformed"]) test("status reconnects a failed prepared child without discovery: "+failure, async t=>{
   const f=fixture(t), c=await managed(t,f), pid=(await c.call("inspect",{})).structuredContent.pid;
-  await assert.rejects(c.request("tools/call",{name:failure}),/exited|envelope/);
+  await assert.rejects(c.request("tools/call",{name:failure}),/Исход операции неизвестен/);
   assert.equal((await c.call("core_runtime_status",{})).structuredContent.ready,true);
   assert.notEqual((await c.call("inspect",{})).structuredContent.pid,pid);
 });
@@ -214,10 +214,10 @@ test("disabled components neither require preparation nor launch a child",async 
   assert.deepEqual((await c.request("tools/list")).tools.map(x=>x.name),["core_runtime_status","core_runtime_tools","core_runtime_call"]);
 });
 test("profile compatibility is checked against core semantics independently of format",t=>{
-  const f=fixture(t);f.profile.compatibility.core=">=99.0.0";assert.throws(()=>validate(f.profile),/running/);
+  const f=fixture(t);f.profile.compatibility.core=">=99.0.0";assert.throws(()=>validate(f.profile),/Профилю требуется ядро .*/);
   for(const range of [">=0.1.0", "^0.2.0", "~0.2.0", ">=0.2.0 <0.3.0 || >=1.0.0"])assert.equal(satisfies_core(range,"0.2.1"),true);
   assert.equal(satisfies_core("<0.2.0","0.2.1"),false);
-  assert.throws(()=>satisfies_core(">=0.1.0 bad"),/comparator/);
+  assert.throws(()=>satisfies_core(">=0.1.0 bad"),/сравнение версии/);
 });
 function download(bytes,tag){return {fetch_json:async()=>({tag_name:tag,assets:[{name:`bsl-language-server-${tag}-exec.jar`,size:bytes.length,digest:"sha256:"+sha256(bytes),browser_download_url:`https://github.com/1c-syntax/bsl-language-server/releases/download/${tag}/server.jar`}]}),fetch:async()=>new Response(bytes)};}
 test("old BSL releases cannot start or be restored, but the RC fallback can be installed", async t => {
@@ -238,10 +238,10 @@ test("download, failed validation, apply and rollback preserve the active artifa
   const f=fixture(t),config=settings();config.mcp.managed["bsl-ls"].enabled=true;
   const first=await ensure_installed(f.state,config,"bsl-ls",false,download(zip({"old.txt":Buffer.from("old")}),"v1.1.0"));
   const changed=structuredClone(config);changed.mcp.managed["bsl-ls"].version="9.0.0";
-  await assert.rejects(installed_runtime(f.state,changed,"bsl-ls"),/apply the requested candidate/);
+  await assert.rejects(installed_runtime(f.state,changed,"bsl-ls"),/Проверенный компонент уже активен/);
   await update_component(f.state,config,f.root,f.profile,"bsl-ls","download",download(zip({"new.txt":Buffer.from("new")}),"v2.0.0"));
   const candidate=artifact(f.state,"bsl-ls","candidate");assert.notEqual(candidate,first);assert.equal(artifact(f.state,"bsl-ls"),first);
-  await assert.rejects(update_component(f.state,config,f.root,f.profile,"bsl-ls","apply",{smoke:async()=>{throw new Error("bad native contract");}}),/active artifact retained/);
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"bsl-ls","apply",{smoke:async()=>{throw new Error("bad native contract");}}),/прежний артефакт сохранён/);
   assert.equal(artifact(f.state,"bsl-ls"),first);
   await update_component(f.state,config,f.root,f.profile,"bsl-ls","apply",{smoke:async(...args)=>{assert.equal(args.at(-1),candidate);return {status:"mcp_ready"};}});
   assert.equal(artifact(f.state,"bsl-ls"),candidate);assert.equal(artifact(f.state,"bsl-ls","previous"),first);
@@ -265,7 +265,7 @@ test("stop validates the running daemon's old immutable executable after active 
 test("maintenance blocks new reader leases before a runtime switch",async t=>{
   const f=fixture(t),home=path.join(project_home(f.state,f.root),"code-index");
   save_json(path.join(home,"maintenance.json"),{pid:99999999,root:f.root});
-  await assert.rejects(acquire_reader(f.state,f.root),/update is in progress/);
+  await assert.rejects(acquire_reader(f.state,f.root),/Обновление компонента выполняется или было прервано/);
   assert.equal(fs.existsSync(path.join(home,"readers")),false);
 });
 test("rejected code-index candidate restores the previous daemon; uncertain cleanup retains maintenance",async t=>{
@@ -276,15 +276,15 @@ test("rejected code-index candidate restores the previous daemon; uncertain clea
   });
   save_json(path.join(f.state,"runtime-lock.json"),{"code-index":{...entries[0],candidate:entries[1]}});
   let stops=0,restarted=null;
-  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>{stops++;await assert.rejects(acquire_reader(f.state,f.root),/interrupted/);},smoke:async()=>{throw new Error("native contract missing");},restart:async(...args)=>{restarted=args.at(-1);}}),/active artifact retained/);
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>{stops++;await assert.rejects(acquire_reader(f.state,f.root),/прервано/);},smoke:async()=>{throw new Error("native contract missing");},restart:async(...args)=>{restarted=args.at(-1);}}),/Новая версия не прошла проверку/);
   assert.equal(stops,2);assert.equal(restarted,artifact(f.state,"code-index"));
   const maintenance=path.join(project_home(f.state,f.root),"code-index/maintenance.json");assert.equal(fs.existsSync(maintenance),false);
   await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>{throw new Error("timeout");}}),error=>error.outcomeUnknown===true);
   assert.equal(fs.existsSync(maintenance),true);assert.equal(read_json(path.join(f.state,"runtime-lock.json"))["code-index"].release,"v1.0.0");
-  await assert.rejects(acquire_reader(f.state,f.root),/interrupted/);
-  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>assert.fail("must not retry an uncertain stop")}),/interrupted/);
+  await assert.rejects(acquire_reader(f.state,f.root),/прервано/);
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>assert.fail("must not retry an uncertain stop")}),/прервано/);
   save_json(maintenance,{pid:99999999,root:f.root,ownerId:"previous-process"});
-  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>assert.fail("must not replace interrupted maintenance")}),/interrupted/);
+  await assert.rejects(update_component(f.state,config,f.root,f.profile,"code-index","apply",{stop:async()=>assert.fail("must not replace interrupted maintenance")}),/прервано/);
   fs.writeFileSync(maintenance,"invalid JSON");
-  await assert.rejects(acquire_reader(f.state,f.root),/interrupted/);
+  await assert.rejects(acquire_reader(f.state,f.root),/прервано/);
 });

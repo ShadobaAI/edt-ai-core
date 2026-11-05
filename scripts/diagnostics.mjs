@@ -154,12 +154,14 @@ function clean_text(value) {
 export function safe_error_message(error) {
   if (error?.remote === true) {
     const evidence = connection_failure(error);
-    return "External MCP rejected the request" + (evidence.httpStatus ? " (HTTP " + evidence.httpStatus + ")" : "") +
-      (evidence.rpcCode !== undefined ? " (RPC " + evidence.rpcCode + ")" : "") + "; remote error text omitted";
+    return "Внешний сервер MCP отклонил запрос" + (evidence.httpStatus ? " (HTTP " + evidence.httpStatus + ")" : "") +
+      (evidence.rpcCode !== undefined ? " (RPC " + evidence.rpcCode + ")" : "") + "; текст внешней ошибки скрыт";
   }
-  if (error?.code === "INVALID_DOCUMENT" || error instanceof SyntaxError) return "Invalid document" +
-    (Number.isSafeInteger(error?.documentLine) && error.documentLine > 0 && error.documentLine <= 2097152 ? ` at line ${error.documentLine}` : "") + "; input excerpt omitted";
-  return clean_text(error?.message || "Operation failed").slice(0, 4000);
+  if (error?.code === "INVALID_DOCUMENT" || error instanceof SyntaxError) return "Некорректный документ" +
+    (Number.isSafeInteger(error?.documentLine) && error.documentLine > 0 && error.documentLine <= 2097152 ? ` в строке ${error.documentLine}` : "") + "; фрагмент исходного текста скрыт";
+  if (error?.outcomeUnknown === true && !/[А-Яа-яЁё]/.test(error.message || ""))
+    return "Исход операции неизвестен; проверьте фактическое состояние перед повтором.";
+  return clean_text(error?.message || "Не удалось выполнить операцию").slice(0, 4000);
 }
 // Setup results are operational data. Clean diagnostic prose without rewriting
 // keys, state enums, flags, fingerprints or other fields used by the workflow.

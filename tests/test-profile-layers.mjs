@@ -187,7 +187,7 @@ test("profile layers merge every field, replace arrays and protect shared bounda
   assert.equal(p.components["bsl-ls"].allow_prerelease, true);
   assert.equal(resolved_settings(settings(f.env.EDT_AI_SETTINGS), f.root, p)[0].mcp.managed["bsl-ls"].configuration, "local.json");
   dump({ roots: { protected: [] } }, file);
-  assert.throws(() => project_profile(f.root), /cannot weaken/);
+  assert.throws(() => project_profile(f.root), /не могут ослаблять/);
   dump({ roots: { protected: ["."] } }, file);
   assert.deepEqual(project_profile(f.root).roots.protected, ["."]);
   dump({ project: { purpose: "local" } }, file);
@@ -230,7 +230,7 @@ test("CLI merge checks shared profile identity even when a local identity masks 
   dump({ profile_id: "different-profile" }, input);
   const rejected = node("scripts/profile.mjs", ["import", f.root, "--input", input, "--merge"], { env: f.env });
   assert.notEqual(rejected.status, 0);
-  assert.match(JSON.parse(rejected.stdout).error, /Cannot merge different profile types/);
+  assert.match(JSON.parse(rejected.stdout).error, /Нельзя объединять разные типы профилей/);
   assert.deepEqual(fs.readFileSync(shared), before);
   assert.deepEqual(fs.readdirSync(path.dirname(shared)).sort(), ["project.local.yaml", "project.yaml"]);
 
@@ -255,7 +255,7 @@ test("each active layer validates hidden URLs and old instance files are ignored
   const f = fixture(t); environment(t, f.env);
   f.profile.connections = { edt: { url: "http://user:secret@example.org/mcp" } }; f.save();
   dump({ connections: { edt: { url: "http://localhost:8080/mcp" } } }, path.join(f.root, ".ai/project.local.yaml"));
-  assert.throws(() => project_profile(f.root), /credentials/i);
+  assert.throws(() => project_profile(f.root), /учётные данные/i);
   delete f.profile.connections; f.save();
   const config = settings(f.env.EDT_AI_SETTINGS);
   dump({ connections: { edt: { url: "http://localhost:9999/mcp" } } }, path.join(f.root, ".ai", "instances", "first.local.yaml"));

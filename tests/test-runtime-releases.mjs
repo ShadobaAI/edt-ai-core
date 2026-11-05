@@ -72,7 +72,7 @@ for (const component of ["code-index", "bsl-ls"]) {
     options.version=r.preview.tag_name;
     await assert.rejects(update_component(f.state,config,f.root,f.profile,component,"install",{
       ...r.io,stop:async()=>{},restart:async(...args)=>{assert.equal(args.at(-1),first);},smoke:async()=>{throw new Error("bad native API");}
-    }),/Candidate rejected; active artifact retained: bad native API/);
+    }),/Новая версия не прошла проверку; прежний артефакт сохранён: bad native API/);
     assert.equal(artifact(f.state,component),first);
     let launched=false;
     await assert.rejects(update_component(f.state,config,f.root,f.profile,component,"install",{
@@ -96,7 +96,7 @@ for (const component of ["code-index", "bsl-ls"]) {
   test(`${component}: a failed later catalog page is reported instead of returning a partial list`, async () => {
     let pages=0;
     await assert.rejects(list_versions(component,{fetch_json:async()=>{if(++pages===1)return Array.from({length:100},(_,i)=>({tag_name:`v1.0.${i}`}));throw new Error("rate limited");}}),/rate limited/);
-    await assert.rejects(list_versions(component,{fetch_json:async()=>({tag_name:"v1.0.0"})}),/Invalid runtime release list/);
+    await assert.rejects(list_versions(component,{fetch_json:async()=>({tag_name:"v1.0.0"})}),/Некорректный список выпусков компонента/);
   });
 
   test(`${component}: an empty first page retries without HTTP cache and never succeeds with an empty catalog`, async () => {
@@ -107,7 +107,7 @@ for (const component of ["code-index", "bsl-ls"]) {
     assert.equal(new URL(calls[1].url).searchParams.get("page"),"1");assert.equal(calls[1].options.fresh,true);
     assert.match(calls[1].url,/\?page=1&per_page=100$/);
     await assert.rejects(list_versions(component,{fetch_json:async()=>[]}),/пустую страницу/);
-    await assert.rejects(list_versions(component,{fetch_json:async()=>[{draft:true,tag_name:"v1.0.0"}]}),/no published version tags/);
+    await assert.rejects(list_versions(component,{fetch_json:async()=>[{draft:true,tag_name:"v1.0.0"}]}),/опубликованных тегов версий/);
     let fresh;
     await list_versions(component,{fetch_json:async(url,timeout,options)=>{fresh=options.fresh;return [{tag_name:"v1.2.0"}];}},{refresh:true});
     assert.equal(fresh,true);
@@ -132,7 +132,7 @@ for (const component of ["code-index", "bsl-ls"]) {
       calls.push(url);assert.equal(options.fresh,true);assert.equal(timeout,30000);return {tag_name:"v1.2.7",draft:false,prerelease:false};
     }},{refresh:true});
     assert.equal(release,"v1.2.7");assert.deepEqual(calls,[`https://api.github.com/repos/${SPECS[component]}/releases/latest`]);
-    await assert.rejects(latest_version(component,{fetch_json:async()=>({tag_name:"v2.0.0-rc.1",prerelease:true})}),/No eligible/);
+    await assert.rejects(latest_version(component,{fetch_json:async()=>({tag_name:"v2.0.0-rc.1",prerelease:true})}),/Нет подходящего выпуска/);
   });
 
   test(`${component}: an advertised next page cannot truncate the catalog with a transient empty response`, async () => {
@@ -226,9 +226,9 @@ for (const component of ["code-index", "bsl-ls"]) {
     let launched = false;
     const io = { ...r.io, smoke: async () => { launched = true; return { status: "mcp_ready" }; } };
     options.allow_prerelease = false;
-    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), /current release settings/);
+    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), /текущим настройкам версии/);
     options.version = "v9.0.0";
-    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), /current release settings/);
+    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), /текущим настройкам версии/);
     assert.equal(launched, false);
     assert.equal(artifact(f.state, component), active);
   });
@@ -253,7 +253,7 @@ test("runtime lock rejects the obsolete artifact layout", t => {
   for (const entry of [{ release: "v1.2.0", sha256: digest },
     { release: "v1.2.0", sha256: digest, path: "runtime/bsl-ls/v1.2.0/bsl-language-server-exec.jar" }]) {
     save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": entry });
-    assert.throws(() => artifact(f.state, "bsl-ls"), /Invalid runtime-lock artifact path/);
+    assert.throws(() => artifact(f.state, "bsl-ls"), /Некорректный путь артефакта в runtime-lock/);
   }
 });
 

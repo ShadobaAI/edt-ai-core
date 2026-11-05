@@ -80,7 +80,6 @@ schema, descriptions and targeted errors outweigh old skill numbers.
 Not all limits are declared in JSON Schema: no maximum does not mean unlimited
 output. If complete text cannot be obtained, retain unverified status.
 
-<a id="повторное-использование-evidence"></a>
 ## Evidence reuse
 
 Within the task retain a compact record: endpoint and available corpus identity,

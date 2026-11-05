@@ -95,7 +95,7 @@ export async function dialog_session(t, f, { extra = {}, roots } = {}) {
   for (const dir of ["mcp", "scripts", "assets", "settings"]) fs.mkdirSync(path.join(plugin, dir), { recursive: true });
   for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "assets/icon.svg", "settings/defaults.json"])
     fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
-  for (const name of ["selection", "compatibility", "icons", "diagnostics", "project_paths", "common", "profile", "settings_export", "support_bundle"])
+  for (const name of ["selection", "compatibility", "icons", "diagnostics", "project_paths", "common", "profile", "settings_export", "support_bundle", "mcp_codec"])
     fs.writeFileSync(path.join(plugin, "scripts", name + ".mjs"), `export * from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts", name + ".mjs")).href)};`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `import fs from 'node:fs'; export async function folder_action() { return JSON.parse(fs.readFileSync(${JSON.stringify(choice)}, 'utf8')).path; }`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_backend.mjs"),

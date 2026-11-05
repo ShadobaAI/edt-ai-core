@@ -480,7 +480,7 @@ export class SettingsBackend {
     this.CONFIG = config;
     if (!state || !config)
       throw new ConfigError(
-        "Settings backend requires state and settings paths",
+        "Сервису настроек нужны пути состояния и настроек",
       );
   }
   current(allowAmbiguous = false) {
@@ -1074,7 +1074,7 @@ export class SettingsBackend {
               await runtime.smoke(this.STATE, config, root, profile, component, 30, false, jar, false);
               check = { id: component, state: "ready", inputRevision };
             } catch (error) {
-              const busy = error.remote !== true && error.message.includes("Another runtime operation");
+              const busy = error.remote !== true && error.code === "RUNTIME_BUSY";
               check = { id: component, state: error.inputsChanged ? "check_stale" : busy ? "preparing" : "error", ...(error.inputsChanged ? { validity: "inputs" } : {}), inputRevision,
                 detail: busy ? "Подготовка окружения выполняется…" : safe_error_message(error) };
             }
@@ -1451,7 +1451,7 @@ export class SettingsBackend {
             version: item.server?.version,
           };
         } catch (error) {
-          const busy = error.remote !== true && error.message.includes("Another runtime operation");
+          const busy = error.remote !== true && error.code === "RUNTIME_BUSY";
           return {
             name: component,
             ready: false,
@@ -1514,7 +1514,7 @@ if (entrypoint(import.meta.url)) {
       // Two 2 MiB YAML documents can expand in JSON escaping; ZIP bytes
       // expand to base64. Individual operations enforce their own byte limits.
       if (Buffer.byteLength(input) > 26 * 1024 * 1024)
-        throw new Error("Request too large");
+        throw new Error("Запрос превышает допустимый размер");
     }
     const result = await new SettingsBackend().main(JSON.parse(input));
     console.log(JSON.stringify({ ok: true, result }));

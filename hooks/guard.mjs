@@ -19,7 +19,7 @@ try {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
         permissionDecisionReason:
-          "1C routing guard could not parse or validate this request",
+          "Защита маршрутизации 1С не смогла разобрать или проверить запрос",
       },
     }),
   );

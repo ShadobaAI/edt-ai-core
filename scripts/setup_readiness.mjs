@@ -107,7 +107,7 @@ export function save_readiness(state, config, profile, managed, external) {
     ...assets.checks];
   const result = { state: checks.every(item => passed(item, profile)) ? "ready" : "blocked", checkedAt: new Date().toISOString(), checks, scope: "setup", knowledge,
     verificationLimits: verification_limits(knowledge.ready),
-    workflowReadiness: { state: "not_checked", scope: "workflow", detail: "Setup acceptance does not authorize a task or another session's knowledge dependency." } };
+    workflowReadiness: { state: "not_checked", scope: "workflow", detail: "Проверка настройки не разрешает действия задачи и не подтверждает знания другой сессии." } };
   result.expiresAt = new Date(Math.min(Date.parse(result.checkedAt) + 15 * 60 * 1000,
     knowledge.ready ? Date.parse(knowledge.readiness.expiresAt) : Infinity)).toISOString();
   const safe = sanitize_setup_result(result);

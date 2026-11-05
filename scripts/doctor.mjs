@@ -49,17 +49,17 @@ export async function inspect(
     },
   };
   if (!data.repositories.length)
-    report.errors.push("No repository mappings configured");
+    report.errors.push("Не заданы сопоставления репозиториев");
   for (const [name, entry] of Object.entries(config.mcp.required)) {
     const configured = !!entry.url;
     report.external[name] = { configured, mode: "user", live: "not_verified" };
     if (!configured)
       (managed_only ? report.warnings : report.errors).push(
-        "Set user-started MCP URL: " + name,
+        "Укажите URL запущенного пользователем MCP: " + name,
       );
   }
   report.warnings.push(
-    "EDT/v8std live acceptance requires the user's running servers",
+    "Для проверки EDT/v8std нужны запущенные пользователем серверы",
   );
   if (live && !managed_only) {
     const probe = await probe_connections(config, root, data, state);
@@ -68,7 +68,7 @@ export async function inspect(
     report.verificationLimits = probe.verificationLimits;
     report.setup_scope = probe.scope;
     for (const [name, result] of Object.entries(probe.external))
-      if (!result.ready) report.errors.push(name + ": " + (result.detail || "External readiness not verified"));
+      if (!result.ready) report.errors.push(name + ": " + (result.detail || "Готовность внешнего сервера не подтверждена"));
   }
   if (report.knowledge.state === "invalid" || report.knowledge.mode === "kora" && !report.knowledge.ready)
     report.errors.push("knowledge: " + report.knowledge.detail);
@@ -87,7 +87,7 @@ export async function inspect(
         report.managed.push(probe);
         if (component === "code-index" && probe.index_ready !== true)
           report.errors.push(
-            "code-index: repository index readiness was not confirmed; check index health and repository coverage",
+            "code-index: готовность индекса репозитория не подтверждена; проверьте состояние индекса и покрытие репозиториев",
           );
       } catch (error) {
         report.errors.push(component + ": " + safe_error_message(error));

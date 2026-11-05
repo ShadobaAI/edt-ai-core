@@ -325,14 +325,14 @@ test("initial relay catalogue is available while host roots are pending or fail"
     assert.deepEqual(first.result.tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
     const pendingResources = request(3, "resources/list");
     send({ id: rootCall.id, error: { code: -32000, message: "host roots failed" } });
-    assert.match((await pendingResources).error.message, /Host could not supply/);
+    assert.match((await pendingResources).error.message, /Хост не передал выбранный каталог/);
     assert.deepEqual((await request(4, "tools/list")).result.tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
     assert.ok(notifications.includes("notifications/resources/list_changed"));
     assert.ok(notifications.includes("notifications/prompts/list_changed"));
     assert.ok((await request(5, "tools/call", { name: "core_runtime_status", arguments: { projectRoot: f.root } })).error);
-    assert.match((await request(6, "resources/list")).error.message, /Host could not supply/);
-    assert.match((await request(7, "resources/templates/list")).error.message, /Host could not supply/);
-    assert.match((await request(8, "prompts/list")).error.message, /Host could not supply/);
+    assert.match((await request(6, "resources/list")).error.message, /Хост не передал выбранный каталог/);
+    assert.match((await request(7, "resources/templates/list")).error.message, /Хост не передал выбранный каталог/);
+    assert.match((await request(8, "prompts/list")).error.message, /Хост не передал выбранный каталог/);
     child.stdin.end(); await once(child, "exit");
   }
 });

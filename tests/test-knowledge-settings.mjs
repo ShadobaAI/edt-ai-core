@@ -197,7 +197,7 @@ test("OpenViking setup probe refuses credentials without external access confirm
   });
   let result = await probe_connections(config, f.root, f.profile);
   assert.equal(calls.length, 0);
-  assert.match(result.external.openviking.detail, /access|credential/);
+  assert.match(result.external.openviking.detail, /Учётные данные поиска OpenViking отсутствуют или некорректны/);
   process.env.OV_AUTHORIZATION = "Bearer fixture-secret";
   result = await probe_connections(config, f.root, f.profile);
   assert.equal(calls.length, 0);

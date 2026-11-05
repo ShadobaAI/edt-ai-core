@@ -98,7 +98,7 @@ async function connectVerified(profile, client, tools, contract, before) {
     await callTool(client, tools, "manage_test_client", { action: "connect", profileName: profile.client.name }, { onDispatch: () => { dispatched = true; } });
   } catch (failure) {
     if (failure.code === "tool_error" || !dispatched) throw failure;
-    const uncertain = new Error("TestClient connection outcome is indeterminate; inspect state before retrying");
+    const uncertain = new Error("Исход подключения TestClient неизвестен; перед повтором проверьте состояние");
     uncertain.code = "mutation_indeterminate";
     uncertain.detail = { classification: "transport_or_protocol", outcome: "indeterminate", tool: "manage_test_client", nextAction: uncertain.message };
     throw uncertain;
@@ -114,7 +114,7 @@ export async function setupSession(profile, client, tools, contract = runtimeCon
       await callTool(client, tools, "manage_test_client_profiles", { action: "add", name: profile.client.name, infobase_path: connectionString(profile.client.infobase), additional_parameters: clientAdditionalParameters(profile), computer_name: profile.client.computerName }, { onDispatch: () => { dispatched = true; } });
     } catch (failure) {
       if (failure.code === "tool_error" || !dispatched) throw failure;
-      const uncertain = new Error("TestClient profile creation outcome is indeterminate; inspect profiles before retrying");
+      const uncertain = new Error("Исход создания профиля TestClient неизвестен; перед повтором проверьте профили");
       uncertain.code = "mutation_indeterminate";
       uncertain.detail = { classification: "transport_or_protocol", outcome: "indeterminate", tool: "manage_test_client_profiles", nextAction: uncertain.message };
       throw uncertain;
@@ -127,7 +127,7 @@ export async function setupSession(profile, client, tools, contract = runtimeCon
       await callTool(client, tools, "manage_test_client_profiles", { action: "edit", name: profile.client.name, computer_name: profile.client.computerName }, { onDispatch: () => { dispatched = true; } });
     } catch (failure) {
       if (failure.code === "tool_error" || !dispatched) throw failure;
-      const uncertain = new Error("TestClient profile edit outcome is indeterminate; inspect profile before retrying");
+      const uncertain = new Error("Исход изменения профиля TestClient неизвестен; перед повтором проверьте профиль");
       uncertain.code = "mutation_indeterminate"; uncertain.detail = { classification: "transport_or_protocol", outcome: "indeterminate", tool: "manage_test_client_profiles", nextAction: uncertain.message }; throw uncertain;
     }
     return connectSession(profile, client, tools, contract);

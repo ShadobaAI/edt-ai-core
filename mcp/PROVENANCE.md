@@ -16,7 +16,7 @@ provides configuration paths, BSL LS owns workspace registration, and each stdio
 connection owns its JVM. The proxy confines paths to the selected directory,
 serializes calls across workspace changes, separates bidirectional request IDs
 and bounds shutdown. Configuration is optional and reaches the global and
-workspace loaders. See [architecture](../docs/ARCHITECTURE.md#managed-runtime)
+workspace loaders. See [architecture](../docs/ARCHITECTURE.md#управляемые-компоненты)
 and [local verification limits](../docs/ACCEPTANCE.md).
 
 ## Normative and action policy
@@ -49,8 +49,10 @@ applicability to an installed EDT must be verified.
 
 ## Runtime dependencies
 
-Process ownership uses Job Objects on Windows and process groups on POSIX;
-shared index daemons have separate ownership. The Windows daemon uses explicit
+Session-owned targets run under a Node supervisor with a private owner IPC
+lifeline. Its Windows Job exists before target creation; POSIX cleanup survives
+owner death and terminates the target group. Shared index daemons have separate
+ownership and use their native rotating logs. The Windows daemon uses explicit
 breakaway and an inherited-handle allowlist. An ancestor Job that forbids
 breakaway causes an error. The bundle includes YAML, Ajv, fflate and Koffi with
 their notices. Supported code-index assets and runtime requirements are specified

@@ -4,7 +4,7 @@ profile_version: 0.2.0
 project:
   id: generic-1c
   adapter: generic-1c
-  purpose: generic-1c project (configure repository mappings before use)
+  purpose: Универсальный проект 1С; перед использованием настройте сопоставления репозиториев
 repositories: []
 roots:
   source: []

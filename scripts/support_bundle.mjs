@@ -11,7 +11,7 @@ function export_directory(state) {
   for (const part of ["diagnostics", "exports"]) {
     directory = path.join(directory, part);
     const stat = fs.lstatSync(directory);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Diagnostic export directory is not a regular directory");
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Каталог экспорта диагностики должен быть обычным каталогом");
   }
   return directory;
 }
@@ -42,7 +42,7 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
     if (file instanceof URL) file = fileURLToPath(file);
     let stat;
     try { stat = fs.lstatSync(file); } catch (error) { if (error.code === "ENOENT") return { path: file, exists: false }; throw error; }
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Unsupported diagnostic file");
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Неподдерживаемый файл диагностики");
     const metadata = { path: file, exists: true, bytes: stat.size, modified: stat.mtime.toISOString() };
     if (stat.size > FILE_LIMIT) { issues.push({ section: file, reason: "file_size_limit" }); return { ...metadata, omitted: "file_size_limit" }; }
     try {
@@ -89,13 +89,13 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
     });
     // Native logs are untrusted text and can echo credentials in arbitrary
     // encodings. Collect file metadata only, never their contents.
-    for (const name of ["stdout", "stderr"]) await capture("codeIndex_" + name, async () => {
+    for (const name of ["daemon.log", "daemon.log.1", "daemon.log.2", "daemon.log.3"]) await capture("codeIndex_" + name, async () => {
       const home = snapshot.project?.home;
       if (!home) return { unavailable: true };
-      const file = path.join(home, "code-index", name + ".log");
+      const file = path.join(home, "code-index", name);
       let stat;
       try { stat = fs.lstatSync(file); } catch (error) { if (error.code === "ENOENT") return { exists: false }; throw error; }
-      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Unsupported diagnostic file");
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Неподдерживаемый файл диагностики");
       if (stat.mtimeMs < Date.now() - LOG_POLICY.days * 86400000) return { omitted: "expired" };
       return { bytes: stat.size, modified: stat.mtime.toISOString(), omitted: "untrusted_runtime_log_content" };
     });
@@ -112,9 +112,9 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
   const createdAt = new Date().toISOString();
   const report = { format: "1c-ai-core-diagnostics", version: 1, createdAt,
     collection: { policy: LOG_POLICY, readOnly: true, networkRequests: false,
-      includes: ["Operational events across recent plugin sessions", "Current selected project configuration and local runtime records"],
-      excludes: ["Chat history", "Source files", "Environment values", "MCP arguments and results", "External service log contents"],
-      redaction: "Known credentials, secret fields, URL credentials/query/fragment and command/environment payloads are removed. Project paths and endpoint hosts remain for diagnosis.",
+      includes: ["Операционные события недавних сессий плагина", "Текущие настройки выбранного проекта и локальное состояние компонентов"],
+      excludes: ["История чата", "Исходные файлы", "Значения переменных окружения", "Аргументы и результаты MCP", "Содержимое журналов внешних сервисов"],
+      redaction: "Известные учётные данные, секретные поля, учётные данные/параметры/фрагмент URL и данные команд/окружения удалены. Пути проектов и адреса серверов сохранены для диагностики.",
       issues: sanitize_diagnostics([...issues, ...logs.issues]) },
     snapshot: safe, events: logs.events };
   return { filename: "1c-ai-core-diagnostics-" + createdAt.replace(/[:.]/g, "-") + ".json", mimeType: "application/json", text: JSON.stringify(report, null, 2) + "\n" };

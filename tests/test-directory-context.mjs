@@ -44,16 +44,16 @@ test("a unique nested canonical profile keeps its own relative paths and rejects
   assert.deepEqual(project_profile(f.root), f.profile);
   const other = path.join(f.root, "another");
   dump(f.profile, path.join(other, ".ai/project.yaml"));
-  assert.throws(() => locate_project(f.root), /Multiple.*select a specific project/);
+  assert.throws(() => locate_project(f.root), /В выбранном каталоге несколько профилей \.ai\/project\.yaml/);
   const refused = node("scripts/profile.mjs", ["init", f.root]);
   assert.notEqual(refused.status, 0);
-  assert.match(refused.stdout, /Multiple/);
+  assert.match(refused.stdout, /несколько профилей/);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
   const client = await session(t, "mcp/settings.mjs", [], f), view = (await client.call("settings.profile", {})).structuredContent;
   assert.equal(view.profile.status, "ambiguous");
   assert.equal(view.profile.candidates.length, 2);
   assert.equal(view.directoryContext.directory, f.root);
-  await assert.rejects(client.call("settings.create", {}), /Multiple/);
+  await assert.rejects(client.call("settings.create", {}), /несколько профилей/);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
 });
 
@@ -107,7 +107,7 @@ test("profile discovery ignores profiles inside EDT sources while finding nested
   assert.equal(locate_project(f.root), child);
   assert.deepEqual(project_profile(f.root), f.profile);
   const other = path.join(f.root, "another");dump(f.profile, path.join(other, ".ai/project.yaml"));
-  assert.throws(() => locate_project(f.root), /Multiple.*select a specific project/);
+  assert.throws(() => locate_project(f.root), /В выбранном каталоге несколько профилей \.ai\/project\.yaml/);
 });
 
 test("discovery does not follow a junction to another project's profile or EDT metadata", t => {
@@ -115,7 +115,7 @@ test("discovery does not follow a junction to another project's profile or EDT m
   configuration(outside);
   dump(f.profile, path.join(outside, ".ai/project.yaml"));
   fs.symlinkSync(outside, path.join(f.root, "linked"), "junction");
-  assert.throws(() => locate_project(f.root), /No .ai/);
+  assert.throws(() => locate_project(f.root), /Профиль \.ai\/project\.yaml не найден в выбранном репозитории или его подкаталогах/);
   assert.deepEqual(directory_context(f.root).edt.projects, []);
 });
 

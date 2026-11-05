@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import readline from "node:readline";
+import { read_frames } from "../scripts/mcp_codec.mjs";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -273,11 +273,11 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
     let output = "", errors = "";
     // Only the support collector sets a deadline, and only for a read.
     const timer = readDeadline && action === "read" ? setTimeout(() => {
-      child.kill(); reject(Object.assign(new Error("Support state read timed out"), { code: "READ_TIMEOUT" }));
+      child.kill(); reject(Object.assign(new Error("Истекло время чтения состояния для диагностики"), { code: "READ_TIMEOUT" }));
     }, readDeadline) : null;
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { output += chunk; });
-    child.stderr.on("data", () => { errors = "Backend stderr omitted."; });
+    child.stderr.on("data", () => { errors = "Содержимое stderr сервиса скрыто."; });
     child.once("error", error => { clearTimeout(timer); reject(error); });
     child.stdin.on("error", () => {}); // close/output below owns the operation outcome
     child.once("close", code => {
@@ -781,8 +781,12 @@ async function dispatch(message) {
     write({ id: message.id, result: data });
   } catch (error) { write({ id: message.id, error: { code: -32000, message: safe_error_message(error) } }); }
 }
-readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", line => {
-  try { const msg = JSON.parse(line); void dispatch(msg); }
+read_frames(process.stdin, line => {
+  try { const msg = JSON.parse(line); void dispatch(msg).catch(error => diagnostic.event("dispatch_failed", { error }, "error")); }
   catch { write({ id: null, error: { code: -32700, message: "Parse error" } }); }
+}, () => {
+  write({ id: null, error: { code: -32600, message: "Сообщение MCP повреждено или превышает допустимый размер." } });
+  process.exitCode = 1;
+  process.stdin.destroy();
 });
 

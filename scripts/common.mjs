@@ -32,7 +32,7 @@ export function parse_yaml_document(text) {
     const position = [...doc.errors, ...doc.warnings][0]?.pos?.[0];
     const documentLine = Number.isInteger(position) && position >= 0 ? source.slice(0, position).split(/\r\n|\r|\n/).length : undefined;
     throw Object.assign(new ConfigError(
-      "Invalid YAML document (" + [...doc.errors, ...doc.warnings].map(error => error.code || "YAML_ERROR").join(", ") + "); source excerpt omitted",
+      "Некорректный документ YAML (" + [...doc.errors, ...doc.warnings].map(error => error.code || "YAML_ERROR").join(", ") + "); фрагмент исходного текста скрыт",
     ), { code: "INVALID_DOCUMENT", documentLine });
   }
   return doc;
@@ -41,8 +41,8 @@ export function parse(text) {
   const doc = parse_yaml_document(text);
   let value;
   try { value = doc.toJS({ maxAliasCount: 100 }); }
-  catch { throw Object.assign(new ConfigError("Invalid YAML document; source excerpt omitted"), { code: "INVALID_DOCUMENT" }); }
-  if (!object(value)) throw new ConfigError("Expected an object");
+  catch { throw Object.assign(new ConfigError("Некорректный документ YAML; фрагмент исходного текста скрыт"), { code: "INVALID_DOCUMENT" }); }
+  if (!object(value)) throw new ConfigError("Ожидался объект");
   return value;
 }
 export const load = (file) => parse(fs.readFileSync(file, "utf8"));
@@ -64,13 +64,33 @@ export function check_schema(data, name) {
   if (versionField && (versionRequired || object(data) && Object.hasOwn(data, versionField)) && data?.[versionField] !== version) {
     const received = data?.[versionField];
     throw Object.assign(new ConfigError(
-      `Unsupported contract version for ${name}: ${versionField}=${typeof received === "string" ? /^\d+\.\d+(?:\.\d+)?$/.test(received) ? JSON.stringify(received) : "invalid" : received === undefined ? "missing" : typeof received}; expected ${JSON.stringify(version)}. Review the document contract before explicitly updating it; automatic migration is not performed.`,
+      `Неподдерживаемая версия контракта ${name}: ${versionField}=${typeof received === "string" ? /^\d+\.\d+(?:\.\d+)?$/.test(received) ? JSON.stringify(received) : "некорректно" : received === undefined ? "не задано" : typeof received}; ожидается ${JSON.stringify(version)}. Проверьте контракт документа перед явным обновлением; автоматический перенос не выполняется.`,
     ), { code: "UNSUPPORTED_CONTRACT_VERSION", contract: name, expectedVersion: version });
   }
   if (!validate(data))
     throw new ConfigError(
       validate.errors
-        .map((error) => `${error.instancePath || "$"}: ${error.message}`)
+        .map((error) => {
+          const detail = {
+            required: `не заполнено обязательное поле ${error.params.missingProperty}`,
+            additionalProperties: `неизвестное поле ${error.params.additionalProperty}`,
+            type: `ожидался тип ${error.params.type}`,
+            const: "значение не соответствует контракту",
+            enum: "значение отсутствует в списке допустимых",
+            pattern: "значение не соответствует требуемому формату",
+            uniqueItems: "элементы должны быть уникальными",
+            minItems: `требуется не менее ${error.params.limit} элементов`,
+            maxItems: `допускается не более ${error.params.limit} элементов`,
+            minLength: `требуется не менее ${error.params.limit} символов`,
+            maxLength: `допускается не более ${error.params.limit} символов`,
+            minimum: `значение должно быть не менее ${error.params.limit}`,
+            maximum: `значение должно быть не более ${error.params.limit}`,
+            anyOf: "значение не соответствует ни одному допустимому варианту",
+            oneOf: "значение должно соответствовать ровно одному допустимому варианту",
+            not: "значение запрещено контрактом",
+          }[error.keyword] || `нарушено ограничение схемы ${error.keyword}`;
+          return `${error.instancePath || "$"}: ${detail}`;
+        })
         .join("; "),
     );
 }
@@ -104,11 +124,11 @@ export function inside(root, relative) {
     path.isAbsolute(relative) ||
     path.win32.isAbsolute(relative)
   )
-    throw new ConfigError(`Path must be relative to the project: ${relative}`);
+    throw new ConfigError(`Путь должен быть относительным к проекту: ${relative}`);
   root = resolve(root);
   const target = resolve(path.join(root, relative));
   if (!contained(root, target))
-    throw new ConfigError(`Path escapes project: ${relative}`);
+    throw new ConfigError(`Путь выходит за границы проекта: ${relative}`);
   return target;
 }
 // Only these schema-defined dictionaries may use names that are also special
@@ -126,7 +146,7 @@ export function deep_merge(base, overlay, parts = []) {
     const path = [...parts, key];
     if (["__proto__", "constructor", "prototype"].includes(key) &&
         !(safe_profile_dictionary_path(path, { runtime: true }) && typeof value === "string"))
-      throw new ConfigError("Unsafe object key: " + key);
+      throw new ConfigError("Небезопасный ключ объекта: " + key);
     const previous = Object.hasOwn(result, key) ? result[key] : undefined;
     Object.defineProperty(result, key, { value: object(value) && object(previous)
       ? deep_merge(previous, value, path) : structuredClone(value),
@@ -165,7 +185,7 @@ export function validate_url(value, name = "MCP") {
       throw new Error();
   } catch {
     throw new ConfigError(
-      `Invalid ${name} MCP URL: credentials, invalid port or scheme`,
+      `Некорректный URL MCP ${name}: учётные данные, недопустимый порт или схема`,
     );
   }
   return value;
@@ -173,7 +193,7 @@ export function validate_url(value, name = "MCP") {
 export function validate_openviking_url(value) {
   validate_url(value, "OpenViking");
   if (new URL(value).search)
-    throw new ConfigError("OpenViking endpoint query parameters are not supported; configure authorization in the settings form.");
+    throw new ConfigError("Параметры запроса в URL OpenViking не поддерживаются; настройте авторизацию в форме настроек.");
   return value;
 }
 export function state_path(config, override) {
@@ -185,7 +205,7 @@ export function state_path(config, override) {
       process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
     );
   if (value.includes("${"))
-    throw new ConfigError("Unresolved variable in state_dir");
+    throw new ConfigError("Неопределённая переменная в state_dir");
   if (value === "~" || value.startsWith("~/") || value.startsWith("~\\"))
     value = os.homedir() + value.slice(1);
   return resolve(value);
@@ -202,9 +222,9 @@ export async function operation_lock(state, action, timeout = 0) {
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       if (Date.now() >= deadline)
-        throw new ConfigError(
-          `Another runtime operation holds ${lock}. Verify its PID before removing a stale lock.`,
-        );
+        throw Object.assign(new ConfigError(
+          `Другая операция удерживает ${lock}. Перед удалением устаревшей блокировки проверьте её PID.`,
+        ), { code: "RUNTIME_BUSY" });
       await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
     }
   }
@@ -256,16 +276,16 @@ export function argumentsOf(
       raw = equal < 0 ? argv[i].slice(2) : argv[i].slice(2, equal),
       key = raw.replaceAll("-", "_");
     if (options && ![...flags, ...options].includes(key))
-      throw new ConfigError("Unknown option: --" + raw);
+      throw new ConfigError("Неизвестный параметр: --" + raw);
     if (Object.hasOwn(result, key))
-      throw new ConfigError("Duplicate option: " + argv[i]);
+      throw new ConfigError("Повторный параметр: " + argv[i]);
     if (flags.includes(key)) {
-      if (equal >= 0) throw new ConfigError("Flag takes no value: --" + raw);
+      if (equal >= 0) throw new ConfigError("Флаг не принимает значение: --" + raw);
       result[key] = true;
     } else if (equal >= 0) result[key] = argv[i].slice(equal + 1);
     else {
       if (!argv[i + 1] || argv[i + 1].startsWith("--"))
-        throw new ConfigError("Missing value: " + argv[i]);
+        throw new ConfigError("Не задано значение: " + argv[i]);
       result[key] = argv[++i];
     }
   }

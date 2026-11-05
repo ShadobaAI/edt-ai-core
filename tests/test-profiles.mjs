@@ -39,12 +39,14 @@ test("new profile reports starter instructions without claiming content acceptan
   });
   const agents = fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8");
   assert.match(agents, /\$1c-routing/);
-  assert.match(agents, /Правила проекта требуют заполнения/);
-  assert.match(agents, /Неизвестные правила не придумывай/);
+  assert.match(agents, /Project rules need completion/);
+  assert.match(agents, /Do not invent unknown rules/);
+  assert.doesNotMatch(agents, /[А-Яа-яЁё]/);
+  assert.doesNotMatch(fs.readFileSync(path.join(f.root, ".ai/PROJECT.md"), "utf8"), /[А-Яа-яЁё]/);
   assert.deepEqual(project_profile(f.root).repositories, []);
   assert.deepEqual(fs.readdirSync(f.state), []);
   assert.deepEqual(fs.readdirSync(f.root).sort(), [".ai", "AGENTS.md", "src"]);
-  assert.throws(() => create_profile(f.root), /already exists/);
+  assert.throws(() => create_profile(f.root), /уже существует/);
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), agents);
 });
 
@@ -86,7 +88,7 @@ for (const name of ["AGENTS.md", ".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.ove
     const f = fixture(t), file = path.join(f.root, name);
     fs.mkdirSync(file, { recursive: true });
     const before = fs.readdirSync(f.root);
-    assert.throws(() => create_profile(f.root), /must be a regular file/);
+    assert.throws(() => create_profile(f.root), /обычный файл/);
     assert.deepEqual(fs.readdirSync(f.root), before);
     assert.ok(fs.statSync(file).isDirectory());
     assert.deepEqual(fs.readdirSync(file), []);
@@ -101,7 +103,7 @@ for (const name of ["AGENTS.md", ".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.ove
     fs.mkdirSync(outside);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.symlinkSync(outside, file, process.platform === "win32" ? "junction" : "dir");
-    assert.throws(() => create_profile(f.root), /escapes project/);
+    assert.throws(() => create_profile(f.root), /выходит за границы проекта/);
     assert.deepEqual(fs.readdirSync(outside), []);
     assert.ok(!fs.existsSync(path.join(f.root, ".ai/project.yaml")));
   });
@@ -375,7 +377,7 @@ test("connection precedence and runtime instance identifiers perform no implicit
   process.env.EDT_AI_CONNECTIONS_FILE = path.join(f.base, "missing");
   assert.throws(
     () => effective_settings(config, f.root, f.profile),
-    /existing override/,
+    /существующий файл переопределений/,
   );
 });
 test("shared EDT URL is ignored; custom env and host roots remain local", (t) => {
@@ -414,7 +416,7 @@ test("shared EDT URL is ignored; custom env and host roots remain local", (t) =>
         ],
         f.base,
       ),
-    /ambiguous/,
+    /неоднознач/,
   );
   assert.throws(() => select_root([{ uri: "https://localhost/" }], f.root));
 });
@@ -423,7 +425,7 @@ test("operation lock excludes concurrent writers without deleting their lock", a
   await operation_lock(f.state, async () => {
     await assert.rejects(
       operation_lock(f.state, () => {}),
-      /Another runtime operation/,
+      /Другая операция удерживает/,
     );
     assert.ok(fs.existsSync(path.join(f.state, "operation.lock")));
   });

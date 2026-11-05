@@ -426,7 +426,7 @@
         "core": {
           "type": "string",
           "minLength": 1,
-          "description": "Whitespace-separated numeric SemVer comparators (>=, >, <=, <, =, ^, ~); alternatives separated by ||. Checked against the running core."
+          "description": "Числовые сравнения SemVer (>=, >, <=, <, =, ^, ~), разделённые пробелами; альтернативы разделяются ||. Проверяется версия работающего ядра."
         }
       },
       "additionalProperties": false

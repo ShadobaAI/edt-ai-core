@@ -516,7 +516,7 @@ test("Windows releases descendants holding pipes after their parent exits", { sk
     setTimeout(() => { const child=spawn(process.execPath,['-e','process.send("ready"); setInterval(()=>{},1000)'],{stdio:['ignore','inherit','inherit','ipc'],windowsHide:true});
       child.once('message',()=>process.stdout.write(String(child.pid)+'\\n',()=>setTimeout(()=>process.exit(0),500))); }, 100);`);
   const parent = launch(process.execPath, [file], { stdio: ["pipe", "pipe", "pipe"] });
-  f.clients.push({ close: async () => { parent.ownedJob?.close(); await stop_child(parent, 0); } });
+  f.clients.push({ close: () => stop_child(parent, 0) });
   const exited = once(parent, "close");
   const [data] = await Promise.race([once(parent.stdout, "data"), exited.then(() => { throw new Error("fixture exited before reporting its descendant"); })]);
   const descendant = Number(String(data).trim());
@@ -531,14 +531,13 @@ test("Windows releases descendants holding pipes after their parent exits", { sk
   assert.equal(alive(process.pid), true);
 });
 test(
-  "Windows shared daemon survives its reader job and preserves arguments, Unicode environment and append logs",
+  "Windows shared daemon survives its reader job and preserves arguments, Unicode environment and component logs",
   { skip: process.platform !== "win32" },
   async (t) => {
     const f = fixture(t),
       file = path.join(f.base, "reader.mjs"),
       pidFile = path.join(f.base, "daemon.pid"),
-      stdoutFile = path.join(f.base, "stdout Юникод.log"),
-      stderrFile = path.join(f.base, "stderr Юникод.log"),
+      logFile = path.join(f.base, "daemon Юникод.log"),
       args = [
         "Юникод с пробелом",
         'quoted"argument',
@@ -546,13 +545,13 @@ test(
         "",
         'slashes\\\\"end\\',
       ],
-      childCode = `process.stdout.write(JSON.stringify({args:process.argv.slice(1),cwd:process.cwd(),env:process.env.DAEMON_TEST})); process.stderr.write('stderr retained'); setTimeout(()=>{},2500);`;
-    fs.writeFileSync(stdoutFile, "previous\n");
+      childCode = `require('node:fs').appendFileSync(${JSON.stringify(logFile)},JSON.stringify({args:process.argv.slice(1),cwd:process.cwd(),env:process.env.DAEMON_TEST})); process.stdout.write('duplicate output'); process.stderr.write('duplicate stderr'); setTimeout(()=>{},2500);`;
+    fs.writeFileSync(logFile, "previous\n");
     fs.writeFileSync(
       file,
       `import {spawn_detached_windows} from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/windows_process.mjs")).href)};
 import fs from 'node:fs';
-const child=spawn_detached_windows(process.execPath,${JSON.stringify(["-e", childCode, ...args])},{cwd:${JSON.stringify(f.root)},env:{...process.env,DAEMON_TEST:'Юникод значение'},stdoutFile:${JSON.stringify(stdoutFile)},stderrFile:${JSON.stringify(stderrFile)}});
+const child=spawn_detached_windows(process.execPath,${JSON.stringify(["-e", childCode, ...args])},{cwd:${JSON.stringify(f.root)},env:{...process.env,DAEMON_TEST:'Юникод значение'}});
 child.release(); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); setInterval(()=>{},1000);`,
     );
     const parent = launch(process.execPath, [file], {
@@ -577,7 +576,7 @@ child.release(); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));
     childPid = Number(fs.readFileSync(pidFile, "utf8"));
     for (
       let i = 0;
-      i < 200 && !fs.readFileSync(stdoutFile, "utf8").includes("args");
+      i < 200 && !fs.readFileSync(logFile, "utf8").includes("args");
       i++
     )
       await sleep(15);
@@ -587,14 +586,13 @@ child.release(); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));
       true,
       "closing the reader Job must preserve the shared daemon",
     );
-    const output = fs.readFileSync(stdoutFile, "utf8");
+    const output = fs.readFileSync(logFile, "utf8");
     assert.ok(output.startsWith("previous\n"));
     assert.deepEqual(JSON.parse(output.slice("previous\n".length)), {
       args,
       cwd: f.root,
       env: "Юникод значение",
     });
-    assert.equal(fs.readFileSync(stderrFile, "utf8"), "stderr retained");
   },
 );
 test(

@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { inside, ConfigError, entrypoint, settings } from "./common.mjs";
+import { inside, entrypoint, settings } from "./common.mjs";
 import { project_profile } from "./profile.mjs";
-import { locate_project, resolve, contained, state_root } from "./project_paths.mjs";
+import { locate_project, resolve, contained, state_root, ProfileNotFound } from "./project_paths.mjs";
 import { casefold } from "./casefold.mjs";
 import { effective_settings } from "./project_context.mjs";
 import { knowledge_gate } from "./knowledge.mjs";
@@ -39,11 +39,11 @@ export function reason(event, delegatedKnowledge = false) {
   if (/(?:^|__|\.)core_runtime_call$/.test(String(event.tool_name || ""))) {
     const args = event.tool_input;
     if (!args || !Array.isArray(args.calls) || !args.calls.length || args.calls.length > 16)
-      return "Invalid native runtime call envelope";
+      return "Некорректное сообщение вызова инструментов компонента";
     const ownedRelay = /^mcp__(?:edt|v8std|code[_-]index|bsl[_-]ls)__core_runtime_call$/.test(String(event.tool_name));
     for (const call of args.calls) {
       if (!call || typeof call.name !== "string" || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments) || call.name === "core_runtime_call")
-        return "Invalid native runtime call envelope";
+        return "Некорректное сообщение вызова инструментов компонента";
       // The owned relay checks its own knowledge connection before each call.
       const denied = reason({ ...event, tool_name: String(event.tool_name).replace(/core_runtime_call$/, call.name), tool_input: call.arguments }, ownedRelay);
       if (denied) return denied;
@@ -57,11 +57,7 @@ export function reason(event, delegatedKnowledge = false) {
   try {
     root = locate_project(cwd);
   } catch (error) {
-    if (
-      error instanceof ConfigError &&
-      error.message.includes("No .ai/project.yaml")
-    )
-      return null;
+    if (error instanceof ProfileNotFound) return null;
     throw error;
   }
   const name = String(event.tool_name || "");
@@ -71,7 +67,7 @@ export function reason(event, delegatedKnowledge = false) {
   const data = project_profile(root);
   const config = effective_settings(settings(process.env.EDT_AI_SETTINGS || path.join(state_root(), "settings.json")), root, data);
   const gate = knowledge_gate(data, config, "workflow");
-  if (!gate.allowed && !delegatedKnowledge) return "Knowledge workflow blocked: " + gate.reason + ". Use the project-bound core_runtime_call for authority work; it verifies knowledge readiness before dispatch.";
+  if (!gate.allowed && !delegatedKnowledge) return "Рабочий процесс заблокирован настройкой знаний: " + gate.reason + ". Используйте core_runtime_call, привязанный к проекту; перед вызовом он проверяет готовность знаний.";
   let args = event.tool_input || {};
   if (typeof args !== "object" || Array.isArray(args))
     args = { command: String(args) };
@@ -98,7 +94,7 @@ export function reason(event, delegatedKnowledge = false) {
     generic = filesystem.has(bare) || /filesystem.*__/i.test(name);
   if (!generic && !indexed) return null;
   if (indexed && !data.repositories.some((repo) => repo.alias === args.repo))
-    return "code-index alias is outside the selected project profile";
+    return "Псевдоним code-index отсутствует в выбранном профиле проекта";
   if (!generic) return null;
   const protectedPaths = [
     ...new Set([...data.roots.protected, ...data.roots.source]),
@@ -126,7 +122,7 @@ export function reason(event, delegatedKnowledge = false) {
     payload = casefold(inspected.replaceAll("\\", "/"));
   for (const source of protectedPaths) {
     if (payload.includes(casefold(source.replaceAll("\\", "/"))))
-      return "Protected 1C source requires the assigned EDT/code-index authority";
+      return "Для защищённых исходников 1С требуется назначенный EDT или code-index";
     const relative = casefold(
       path.relative(root, source).replaceAll("\\", "/"),
     );
@@ -138,7 +134,7 @@ export function reason(event, delegatedKnowledge = false) {
         "u",
       ).test(payload)
     )
-      return "Protected source path is not available to filesystem tools";
+      return "Путь защищённых исходников недоступен инструментам файловой системы";
   }
   const workdir = args.workdir || args.cwd,
     base = workdir ? resolve(path.resolve(cwd, workdir)) : cwd;
@@ -157,28 +153,28 @@ export function reason(event, delegatedKnowledge = false) {
         broad,
       )
     )
-      return "Filesystem path resolves into protected source";
+      return "Путь файловой системы указывает на защищённые исходники";
   if (
     broad &&
     !paths.length &&
     touches(base, true)
   )
-    return "Discovery needs an explicit directory outside protected source";
+    return "Для поиска нужен явный каталог вне защищённых исходников";
   const command = String(args.cmd || args.command || "");
   if (
     bare === "exec" &&
     /exec_command|apply_patch|view_image|read_file|write_file/.test(payload)
   )
-    return "Use an explicit scoped filesystem call; nested code cannot establish a safe source boundary";
+    return "Используйте явный вызов файловой системы с заданной областью; вложенный код не подтверждает безопасную границу исходников";
   if (shell) {
     if (!workdir || touches(base, true))
-      return "Shell requires an explicit directory outside protected source and its ancestors";
+      return "Для shell нужен явный каталог вне защищённых исходников и их родительских каталогов";
     if (
       /\b(cd|chdir|set-location|push-location|invoke-expression|iex)\b|(?:^|\s)(?:-enc(?:odedcommand)?|--cwd|-C)\b/i.test(
         command,
       )
     )
-      return "Shell directory changes or opaque evaluation cannot establish the protected-source boundary";
+      return "Смена каталога или непрозрачное выполнение shell не подтверждают границу защищённых исходников";
   }
   return null;
 }
@@ -188,7 +184,7 @@ export function guard(event) {
     denied = reason(event);
   } catch {
     denied =
-      "1C routing guard could not validate the request/profile; repair the profile or Node.js setup";
+      "Защита маршрутизации 1С не смогла проверить запрос или профиль; исправьте профиль или настройку Node.js";
   }
   return denied
     ? {
@@ -210,7 +206,7 @@ if (entrypoint(import.meta.url)) {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
           permissionDecisionReason:
-            "1C routing guard could not parse this request",
+            "Защита маршрутизации 1С не смогла разобрать запрос",
         },
       }),
     );

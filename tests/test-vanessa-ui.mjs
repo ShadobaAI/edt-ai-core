@@ -64,12 +64,12 @@ try {
   fs.writeFileSync(authorizedArgsFile, '{"changed":true}');
   const callsBeforeMismatch = calls.filter(call => call.method === "tools/call").length;
   await assert.rejects(main(["call", "--profile", profileFile, "--tool", "get_test_results", "--arguments-file", authorizedArgsFile,
-    "--expected-arguments-sha256", authorizedArgsHash]), /arguments changed after authorization/);
+    "--expected-arguments-sha256", authorizedArgsHash]), /Аргументы инструмента изменились после разрешения/);
   assert.equal(calls.filter(call => call.method === "tools/call").length, callsBeforeMismatch);
   const authorizedHash = digest(fs.readFileSync(profileFile));
   assert.equal(loadProfile(profileFile, authorizedHash).id, raw.id);
   write({ ...raw, client: { ...raw.client, name: "changed-after-consent" } });
-  await assert.rejects(main(["configure", "--profile", profileFile, "--expected-profile-sha256", authorizedHash]), /changed after authorization/);
+  await assert.rejects(main(["configure", "--profile", profileFile, "--expected-profile-sha256", authorizedHash]), /изменился после разрешения/);
   write(raw);
   assert.equal(profile.projectRoot, root); assert.equal(profile.mcp.serverName, "vanessa"); checkFiles(profile);
   assert.equal(startArguments(profile).includes("/TESTMANAGER"), true);
@@ -78,7 +78,7 @@ try {
   for (const host of ["localhost", "127.0.0.1", "::1", os.hostname()]) assert.equal(isLocalComputer(host), true);
   assert.equal(isLocalComputer("remote-test-host.invalid"), false);
   assert.equal(clientAdditionalParameters({ ...profile, client: { ...profile.client, userEnv: "UI_FIXTURE_USER" } }, { UI_FIXTURE_USER: "FixtureUser" }), '/iTaxi /N"FixtureUser"');
-  assert.throws(() => clientAdditionalParameters({ ...profile, client: { ...profile.client, userEnv: "UI_FIXTURE_USER" } }, {}), /environment value/);
+  assert.throws(() => clientAdditionalParameters({ ...profile, client: { ...profile.client, userEnv: "UI_FIXTURE_USER" } }, {}), /значение переменной окружения/);
   const multiple = { ...raw, manager: { ...raw.manager, user: "АдминистраторТакси" }, client: { ...raw.client, user: "АдминистраторKafka" },
     clients: [{ ...raw.client, name: "RestrictedClient", user: "ПользовательKafka" }] };
   write(multiple);
@@ -88,14 +88,24 @@ try {
   assert.equal(clientAdditionalParameters(restricted, {}), '/iTaxi /N"ПользовательKafka"');
   assert.equal(clientAdditionalParameters({ ...admin, client: { ...admin.client, user: 'A "quoted" user' } }, {}), '/iTaxi /N"A ""quoted"" user"');
   assert.equal((await main(["configure", "--profile", profileFile, "--client", "RestrictedClient"])).status, "configuration_only");
-  await assert.rejects(main(["configure", "--profile", profileFile, "--client", "unknown"]), /unknown client/);
+  await assert.rejects(main(["configure", "--profile", profileFile, "--client", "unknown"]), /Неизвестное имя клиента/);
   assert.equal(clientControlKey(admin), clientControlKey(restricted));
-  assert.throws(() => loadProfile(profileFile, undefined, "unknown"), /unknown client/);
+  assert.throws(() => loadProfile(profileFile, undefined, "unknown"), /Неизвестное имя клиента/);
   const ownerPath = path.join(registryDir(), `endpoint-${port}.owner.json`);
   fs.mkdirSync(registryDir(), { recursive: true });
   const ownerFingerprint = digest(JSON.stringify([admin.platform, admin.runtime, admin.manager, admin.client, admin.stateDir, interactiveParameters(admin)]));
-  fs.writeFileSync(ownerPath, JSON.stringify({ profile: admin.identity, pid: process.pid, status: "running", fingerprint: ownerFingerprint }));
+  fs.writeFileSync(ownerPath, JSON.stringify({ profile: admin.identity, pid: process.pid, status: "running", fingerprint: ownerFingerprint, clientKeyVersion: 3 }));
   try { assert.equal(checkOwner(restricted).fingerprint, ownerFingerprint); } finally { fs.unlinkSync(ownerPath); }
+  const oldClient = { ...admin.client }; delete oldClient.computerName;
+  const oldFingerprint = digest(JSON.stringify([admin.platform, admin.runtime, admin.manager, oldClient, admin.stateDir, interactiveParameters(admin)]));
+  fs.writeFileSync(ownerPath, JSON.stringify({ profile: admin.identity, pid: process.pid, status: "running", fingerprint: oldFingerprint, clientKeyVersion: 3 }));
+  try { assert.throws(() => checkOwner(restricted), /Настройки запуска профиля изменились/); } finally { fs.unlinkSync(ownerPath); }
+  const obsoleteOwner = JSON.stringify({ profile: admin.identity, pid: process.pid, status: "running", fingerprint: ownerFingerprint });
+  fs.writeFileSync(ownerPath, obsoleteOwner);
+  try {
+    assert.throws(() => checkOwner(admin), /Неподдерживаемая запись владельца активного менеджера/);
+    assert.equal(fs.readFileSync(ownerPath, "utf8"), obsoleteOwner);
+  } finally { fs.unlinkSync(ownerPath); }
   for (const broken of [
     { ...multiple, manager: { ...multiple.manager, userEnv: "UI_USER" } },
     { ...multiple, client: { ...multiple.client, userEnv: "UI_USER" } },
@@ -140,7 +150,7 @@ try {
   assert.equal(startArguments(embedded, { VANESSA_UI_FIXTURE_USER: "fixture-user" }).includes("/URL"), true);
   assert.equal(startArguments(embedded, { VANESSA_UI_FIXTURE_USER: "fixture-user" }).includes("/Execute"), false);
   assert.equal(startArguments(embedded, { VANESSA_UI_FIXTURE_USER: "fixture-user" }).includes("fixture-user"), true);
-  assert.throws(() => startArguments(embedded, {}), /environment value/);
+  assert.throws(() => startArguments(embedded, {}), /значение переменной окружения/);
   assert.ok(!JSON.stringify(embedded).includes("fixture-user"));
   if (process.platform === "win32") {
     const reserved = createServer();
@@ -151,7 +161,7 @@ try {
     delete process.env[missingEnv];
     const invalidStart = { ...embedded, manager: { ...embedded.manager, userEnv: missingEnv }, mcp: { ...embedded.mcp, port: freePort, url: `http://127.0.0.1:${freePort}/mcp` } };
     try {
-      await assert.rejects(start(invalidStart), /environment value/);
+      await assert.rejects(start(invalidStart), /значение переменной окружения/);
       assert.equal(fs.existsSync(path.join(registryDir(), `endpoint-${freePort}.owner.json`)), false);
       assert.equal(fs.existsSync(invalidStart.stateDir), false);
     } finally { if (prior !== undefined) process.env[missingEnv] = prior; }
@@ -160,22 +170,22 @@ try {
   const paramsFile = path.join(root, "config", "params.json");
   fs.writeFileSync(paramsFile, JSON.stringify({ "ВыполнитьСценарии": true }));
   write({ ...raw, runtime: { ...raw.runtime, paramsFile: "params.json" } });
-  assert.throws(() => checkFiles(loadProfile(profileFile)), /interactive/);
+  assert.throws(() => checkFiles(loadProfile(profileFile)), /интерактивных параметрах/);
   fs.writeFileSync(paramsFile, JSON.stringify({ "ВыполнитьСценарии": false, "ЗавершитьРаботуСистемы": false, "ИспользоватьКомпонентуVanessaExt": true }));
   checkFiles(loadProfile(profileFile));
   fs.writeFileSync(paramsFile, JSON.stringify({ password: "must-not-persist" }));
-  assert.throws(() => interactiveParameters(loadProfile(profileFile)), /credentials/);
+  assert.throws(() => interactiveParameters(loadProfile(profileFile)), /Учётные данные/);
   fs.writeFileSync(paramsFile, JSON.stringify({ StartFeaturePlayer: true }));
-  assert.throws(() => interactiveParameters(loadProfile(profileFile)), /forbidden execution/);
+  assert.throws(() => interactiveParameters(loadProfile(profileFile)), /запрещённый режим выполнения/);
   const manifestFile = path.join(root, "manifest.json");
   const manifest = { version: 1, product: "fixture", release: "1", source: { url: "https://example.invalid/runtime.zip", sha256: "a".repeat(64) }, files: [{ path: "runtime.epf", sha256: digest("fixture") }] };
   fs.writeFileSync(manifestFile, JSON.stringify(manifest));
   write({ ...raw, runtime: { ...raw.runtime, manifest: "../manifest.json" } });
   checkFiles(loadProfile(profileFile));
   fs.writeFileSync(manifestFile, JSON.stringify({ ...manifest, files: [{ path: "runtime.epf", sha256: "a".repeat(64) }] }));
-  assert.throws(() => checkFiles(loadProfile(profileFile)), /integrity/);
+  assert.throws(() => checkFiles(loadProfile(profileFile)), /целостность/);
   fs.writeFileSync(manifestFile, JSON.stringify({ ...manifest, files: [{ path: "../runtime.epf", sha256: "a".repeat(64) }] }));
-  assert.throws(() => checkFiles(loadProfile(profileFile)), /escapes/);
+  assert.throws(() => checkFiles(loadProfile(profileFile)), /выходит за границы/);
   write(raw);
 
   {
@@ -198,32 +208,32 @@ try {
   await withProfileLock(profile, async () => {
     const aliasedProfile = { ...profile, identity: "different-profile-identity", client: { ...profile.client, name: "OtherAlias" }, mcp: { ...profile.mcp, port: port + 1 } };
     assert.equal(clientControlKey(aliasedProfile), clientControlKey(profile));
-    await assert.rejects(withProfileLock(aliasedProfile, async () => assert.fail("client aliases must share base control lock")), /another UI control/);
+    await assert.rejects(withProfileLock(aliasedProfile, async () => assert.fail("client aliases must share base control lock")), /Другая сессия управления интерфейсом/);
     const changedSettings = { ...profile, client: { ...profile.client, name: "different-client" }, mcp: { ...profile.mcp, port: port + 1 } };
-    await assert.rejects(withProfileLock(changedSettings, async () => assert.fail("same profile path must serialize changed settings")), /another UI control/);
-    await assert.rejects(withProfileLock(loadProfile(secondFile), async () => assert.fail("lock must isolate endpoint")), /another UI control/);
+    await assert.rejects(withProfileLock(changedSettings, async () => assert.fail("same profile path must serialize changed settings")), /Другая сессия управления интерфейсом/);
+    await assert.rejects(withProfileLock(loadProfile(secondFile), async () => assert.fail("lock must isolate endpoint")), /Другая сессия управления интерфейсом/);
     const thirdFile = path.join(root, "config", "third.json");
     fs.writeFileSync(thirdFile, JSON.stringify({ ...raw, mcp: { url: `http://127.0.0.1:${port + 1}/mcp`, port: port + 1 } }));
-    await assert.rejects(withProfileLock(loadProfile(thirdFile), async () => assert.fail("lock must isolate TestClient")), /another UI control/);
+    await assert.rejects(withProfileLock(loadProfile(thirdFile), async () => assert.fail("lock must isolate TestClient")), /Другая сессия управления интерфейсом/);
   });
   assert.equal(checkOwner(profile), null);
   const foreignOwnerFile = path.join(registryDir(), `endpoint-${port}.owner.json`);
-  fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: "other-profile", pid: process.pid, status: "running", client: clientControlKey(profile), clientKeyVersion: 2 }));
-  try { assert.throws(() => checkClaims(profile), /TestClient belongs/); } finally { fs.unlinkSync(foreignOwnerFile); }
+  fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: "other-profile", pid: process.pid, status: "running", client: clientControlKey(profile), clientKeyVersion: 3 }));
+  try { assert.throws(() => checkClaims(profile), /TestClient принадлежит/); } finally { fs.unlinkSync(foreignOwnerFile); }
   fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: "other" }));
-  try { assert.throws(() => checkOwner(profile), /another profile/); } finally { fs.unlinkSync(foreignOwnerFile); }
-  fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: process.pid, status: "running" }));
+  try { assert.throws(() => checkOwner(profile), /другому профилю/); } finally { fs.unlinkSync(foreignOwnerFile); }
+  fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: process.pid, status: "running", clientKeyVersion: 3 }));
   try {
     const changedPort = { ...profile, mcp: { ...profile.mcp, port: port + 1 } };
-    assert.throws(() => checkClaims(changedPort), /another endpoint/);
+    assert.throws(() => checkClaims(changedPort), /другому адресу/);
   } finally { fs.unlinkSync(foreignOwnerFile); }
   const exitedChild = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
   assert.equal(exitedChild.status, 0);
-  fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: exitedChild.pid, status: "running", fingerprint: "previous-settings" }));
+  fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: exitedChild.pid, status: "running", fingerprint: "previous-settings", clientKeyVersion: 3 }));
   try {
     assert.equal(checkOwner(profile).pid, exitedChild.pid, "dead own process permits new launch settings");
-    fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: exitedChild.pid, status: "starting", fingerprint: "previous-settings" }));
-    assert.throws(() => checkOwner(profile), /indeterminate/);
+    fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: exitedChild.pid, status: "starting", fingerprint: "previous-settings", clientKeyVersion: 3 }));
+    assert.throws(() => checkOwner(profile), /неизвестным исходом/);
   } finally { fs.unlinkSync(foreignOwnerFile); }
 
   const listed = await main(["list", "--profile", profileFile]); assert.equal(listed.tools.length, requiredTools.length + 1);
@@ -232,7 +242,7 @@ try {
   assert.equal((await doctor(profile)).status, "unverified");
   const result = await main(["call", "--profile", profileFile, "--tool", "get_environment_data"]);
   assert.equal(result.status, "completed");
-  await assert.rejects(main(["call", "--profile", profileFile, "--tool", "mutate"]), /readiness is unverified/);
+  await assert.rejects(main(["call", "--profile", profileFile, "--tool", "mutate"]), /Готовность интерфейса: unverified/);
   assert.equal(calls.some(call => call.method === "tools/call" && call.params.name === "mutate"), false);
   mode = "tool-error";
   await assert.rejects(main(["call", "--profile", profileFile, "--tool", "get_environment_data"]), error => {
@@ -241,14 +251,14 @@ try {
     return !JSON.stringify(error.detail).includes("fixture-secret");
   });
   mode = "timeout"; calls = [];
-  await assert.rejects(main(["call", "--profile", profileFile, "--tool", "get_environment_data"]), /timed out/);
+  await assert.rejects(main(["call", "--profile", profileFile, "--tool", "get_environment_data"]), /Истекло время/);
   assert.equal(calls.filter(call => call.method === "tools/call").length, 1);
-  await assert.rejects(main(["list", "--profile", profileFile, "--bad", "x"]), /option/);
-  await assert.rejects(listTools({ request: async () => ({ tools: [], nextCursor: "same" }) }), /cursor/);
-  await assert.rejects(listTools({ request: async () => ({ tools: [{ name: "broken" }] }) }), /schema/);
-  assert.throws(() => checkArguments({ required: ["selected"] }, {}), /missing/);
-  assert.throws(() => checkArguments({ properties: { flag: { type: "boolean" } } }, { flag: "true" }), /type/);
-  assert.throws(() => checkArguments({ additionalProperties: false }, { guessed: 1 }), /unknown/);
+  await assert.rejects(main(["list", "--profile", profileFile, "--bad", "x"]), /параметр/);
+  await assert.rejects(listTools({ request: async () => ({ tools: [], nextCursor: "same" }) }), /курсор/);
+  await assert.rejects(listTools({ request: async () => ({ tools: [{ name: "broken" }] }) }), /схема/);
+  assert.throws(() => checkArguments({ required: ["selected"] }, {}), /Отсутствует/);
+  assert.throws(() => checkArguments({ properties: { flag: { type: "boolean" } } }, { flag: "true" }), /тип/);
+  assert.throws(() => checkArguments({ additionalProperties: false }, { guessed: 1 }), /Неизвестный/);
   assert.deepEqual(redact({ password: "private", nested: ["Pwd=private; Token=private"] }), { password: "[redacted]", nested: ["Pwd=[redacted]; Token=[redacted]"] });
   assert.equal(redact('/iTaxi /N"FixtureUser"'), "/iTaxi /N[redacted]");
   assert.deepEqual(redact({ inputSchema: { type: "object", properties: { password: { type: "string", default: "private" }, selected: { type: "string", enum: ["one", "two"] } } } }),
@@ -317,7 +327,7 @@ try {
       process.env[envKey] = "DifferentUser";
       assert.equal((await inspectSession(legacy, fixtureClient, fixtureTools, legacyContract)).reason, "client_authentication_profile_mismatch");
       delete process.env[envKey];
-      await assert.rejects(inspectSession(legacy, fixtureClient, fixtureTools, legacyContract), /environment value/);
+      await assert.rejects(inspectSession(legacy, fixtureClient, fixtureTools, legacyContract), /значение переменной окружения/);
     } finally { if (old === undefined) delete process.env[envKey]; else process.env[envKey] = old; connected = false; }
   }
   const remoteProfile = { ...profile, client: { ...profile.client, computerName: "remote-test-host.invalid" } };
@@ -378,14 +388,14 @@ try {
   assert.equal(edits, 1, "computer-name repair neither reconnects nor repeats the edit");
   recordOwnership(profile, "active", "fixture-version", "manager-session-1");
   assert.equal(ownRecording(profile, "manager-session-1").status, "active");
-  assert.throws(() => ownRecording(profile, "manager-session-2"), /manager session changed/);
+  assert.throws(() => ownRecording(profile, "manager-session-2"), /Сессия менеджера записи изменилась/);
   const ownRecordContract = { ...semanticContract, state: () => ({ ...semanticContract.state(), recording: true }) };
   assert.equal((await inspectSession(profile, fixtureClient, fixtureTools, ownRecordContract)).reason, "session_busy_with_scenario_or_recording");
   assert.equal((await inspectSession(profile, fixtureClient, fixtureTools, ownRecordContract, { ownRecording: true })).status, "ready");
   invalidateObservedIdle(profile, "fixture-version");
   assert.equal(ownRecording(profile, "manager-session-1"), null, "observed idle invalidates the prior recording token");
   recordOwnership(profile, "indeterminate", "fixture-version", "manager-session-1");
-  assert.throws(() => ownRecording(profile, "manager-session-1"), /indeterminate/);
+  assert.throws(() => ownRecording(profile, "manager-session-1"), /Исход записи неизвестен/);
   recordOwnership(profile, "idle", "fixture-version", "manager-session-1");
   assert.equal(ownRecording(profile, "manager-session-1"), null);
   assert.deepEqual(parseEnvironment(wire.environment), { runtimeVersion: "1.2.043.45", mcpVersion: "1.31", platformVersion: "8.5.1.1423", vanessaExt: true, managerInfobase: { type: "server", server: "localhost", database: "ui-demo" } });
@@ -475,7 +485,7 @@ try {
   const acceptedFeature = path.join(copyDir, "repair.feature"); fs.copyFileSync(feature, acceptedFeature);
   workflowMode = "valid"; workflowCalls = []; opened = false;
   assert.equal((await runFeature(profile, workflowClient, workflowTools, { feature: acceptedFeature, scenario }, workflowContract)).status, "completed", "explicit ignored copy inside projectRoot is supported");
-  await assert.rejects(runFeature({ ...profile, projectRoot: profile.features }, workflowClient, workflowTools, { feature: acceptedFeature, scenario }, workflowContract), /inside projectRoot or configured features/, "arbitrary parent-directory feature is rejected");
+  await assert.rejects(runFeature({ ...profile, projectRoot: profile.features }, workflowClient, workflowTools, { feature: acceptedFeature, scenario }, workflowContract), /внутри projectRoot или заданного каталога сценариев/, "arbitrary parent-directory feature is rejected");
   let notifyAwaiting;
   const waiting = new Promise(resolve => { notifyAwaiting = resolve; });
   const handoffInput = new PassThrough(); let progress;
@@ -491,11 +501,11 @@ try {
   for (const bad of ['{"action":"stop"}\n', '{"action":"continue","command":"anything"}\n', '{"action":"continue"}\n{"action":"continue"}\n']) {
     const input = new PassThrough();
     const rejected = awaitEditorTransition({ input, output: { write: () => {} }, timeoutMs: 1000 });
-    input.write(bad); await assert.rejects(rejected, /transition/);
+    input.write(bad); await assert.rejects(rejected, /[Пп]ереход/);
   }
-  await assert.rejects(awaitEditorTransition({ input: new PassThrough(), output: { write: () => {} }, timeoutMs: 5 }), /timed out/);
+  await assert.rejects(awaitEditorTransition({ input: new PassThrough(), output: { write: () => {} }, timeoutMs: 5 }), /истекло/);
   const endedInput = new PassThrough(), ended = awaitEditorTransition({ input: endedInput, output: { write: () => {} }, timeoutMs: 1000 });
-  endedInput.end(); await assert.rejects(ended, /closed/);
+  endedInput.end(); await assert.rejects(ended, /закрыт/);
 
   // Exercise the real HTTP session deadline around the entire workflow. A
   // rejected mock request alone cannot reproduce the outer Promise.race.
