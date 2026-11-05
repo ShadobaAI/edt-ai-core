@@ -33,6 +33,13 @@ test("readiness preparation states its side effects before the user starts it", 
   assert.match(panel, /пассивного обновления состояния/);
 });
 
+test("the components tab starts with compact counters and filters without a repeated heading",()=>{
+  const panel=html.slice(html.indexOf('<section id="checkPanel"'),html.indexOf('<div id="managedControlsHolder"'));
+  assert.doesNotMatch(panel,/<h2>Компоненты<\/h2>|Подключения, управляемые сервисы и возможности выбранного проекта/);
+  assert.match(panel,/class="catalog-toolbar"/);
+  for(const id of ["countAll","countReady","countIssues","countDisabled","countChecking","countStale","componentsAll","componentsIssues"])assert.match(panel,new RegExp('id="'+id+'"'));
+});
+
 function screen(handler, options = {}) {
   const elements = new Map(), timers = new Map(), calls = [], downloads = [], blobs = [], closeEvents = [];
   let nextTimer = 0, message, observedResize;const lifecycle = {}, documentEvents = {};
@@ -167,6 +174,29 @@ test("header component badges follow addressed results, in-progress checks and e
   f.ui.context.renderComponentCatalog(f.current);assert.equal(badge("code-index").attributes["data-state"],"checking");assert.equal(badge("v8std").textContent,v8);
   vm.runInContext('activeOperation.status="completed";componentObservations.get("v8std").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
   f.ui.context.renderComponentCatalog(f.current);assert.equal(badge("v8std").textContent,"v8std: Проверка устарела");
+});
+
+test("compact counters explain their composition and expose only relevant refresh and stale counts",async()=>{
+  const f=liveStatusScreen();await f.ui.flush();
+  assert.equal(f.ui.elements.get("countAll").textContent,"7");assert.match(f.ui.elements.get("countAll").title,/EDT, v8std, OpenViking/);
+  assert.equal(f.ui.elements.get("countCheckingGroup").hidden,true);assert.equal(f.ui.elements.get("countStaleGroup").hidden,true);
+  vm.runInContext('activeOperation={action:"refresh_readiness",component:"edt",status:"running",projectRoot:currentData.values.projectRoot,instance:currentData.instance};componentObservations.get("v8std").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
+  f.ui.context.renderComponentCatalog(f.current);
+  assert.equal(f.ui.elements.get("countChecking").textContent,"1");assert.equal(f.ui.elements.get("countChecking").title,"EDT");assert.equal(f.ui.elements.get("countCheckingGroup").hidden,false);
+  assert.equal(f.ui.elements.get("countStale").textContent,"1");assert.equal(f.ui.elements.get("countStale").title,"v8std");assert.equal(f.ui.elements.get("countStaleGroup").hidden,false);
+  f.ui.elements.get("componentsIssues").onclick();assert.equal(f.ui.elements.get("countAll").textContent,"7");
+  vm.runInContext('activeOperation.status="completed";componentObservations.get("v8std").check.expiresAt=new Date(Date.now()+60000).toISOString()',f.ui.context);
+  f.ui.context.renderComponentCatalog(f.current);assert.equal(f.ui.elements.get("countCheckingGroup").hidden,true);assert.equal(f.ui.elements.get("countStaleGroup").hidden,true);
+});
+
+test("compact component cards retain the full diagnostic in their tooltip and dialog",async()=>{
+  const detail="Ошибка сервера компонента. ".repeat(30).trim(),current={...read,values:{...read.values,bslLsEnabled:true},
+    summary:{components:[{id:"bsl-ls",status:"external",mode:"external"}]},componentChecks:[{id:"bsl-ls",state:"error",detail,checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60000).toISOString()}]};
+  const ui=screen(async name=>name==="settings.versions"?{versions:[]}:current);await ui.flush();
+  const card=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children).find(card=>card.children[0].children[0].textContent==="BSL LS");
+  const reason=card.children[1].children[0];assert.equal(reason.title,detail);assert.equal(reason.children[0].textContent,detail);
+  ui.context.openManagedDialog(ui.context.catalogItems(current).find(item=>item.id==="bsl-ls"),null);await ui.flush();
+  assert.ok(ui.elements.get("managedDialogStatus").textContent.endsWith(detail));
 });
 
 test("header profile summary clears unavailable profile data and respects read-only and disabled states",async()=>{
