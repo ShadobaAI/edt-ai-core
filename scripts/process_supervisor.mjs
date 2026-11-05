@@ -16,7 +16,12 @@ function stop() {
   if (process.platform === "win32") return finish();
   if (!child?.pid) return finish();
   if (!signal_group("SIGTERM")) return finish();
-  escalation = setTimeout(() => { signal_group("SIGKILL"); finish(); }, 2000);
+  escalation = setTimeout(() => {
+    signal_group("SIGKILL");
+    // Sending SIGKILL does not reap the target or record its exit status.
+    if (child.exitCode !== null || child.signalCode !== null) finish();
+    else child.once("exit", finish);
+  }, 2000);
 }
 process.once("disconnect", stop);
 process.on("SIGTERM", stop);

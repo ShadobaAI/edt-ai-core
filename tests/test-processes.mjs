@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
+import { constants } from "node:os";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
@@ -120,13 +121,15 @@ test("an independently owned daemon survives a hard owner exit", { timeout: 1000
   assert.equal(alive(pid), false, "the independent fixture exits on its own schedule");
 });
 
-test("repeated POSIX shutdown signals cannot interrupt descendant escalation", { skip: process.platform === "win32", timeout: 10000 }, async t => {
-  const f = fixture(t), child = launch(process.execPath, ["-e", `process.on('SIGTERM',()=>{}); console.log(process.pid); setInterval(()=>{},1000);`], { stdio: ["ignore", "pipe", "ignore"] });
-  f.clients.push({ close: () => stop_child(child, 0) });
-  const closed = new Promise(resolve => child.once("close", resolve));
-  const [ready] = await once(child.stdout, "data"), target = Number(String(ready).trim());
-  child.kill("SIGTERM"); await new Promise(resolve => setTimeout(resolve, 30)); child.kill("SIGTERM");
-  await closed;
-  assert.equal(alive(target), false);
-  assert.equal(alive(child.pid), false);
-});
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  test(`repeated POSIX ${signal} signals cannot interrupt descendant escalation`, { skip: process.platform === "win32", timeout: 10000 }, async t => {
+    const f = fixture(t), child = launch(process.execPath, ["-e", `process.on('SIGTERM',()=>{}); console.log(process.pid); setInterval(()=>{},1000);`], { stdio: ["ignore", "pipe", "ignore"] });
+    f.clients.push({ close: () => stop_child(child, 0) });
+    const closed = once(child, "close");
+    const [ready] = await once(child.stdout, "data"), target = Number(String(ready).trim());
+    child.kill(signal); await new Promise(resolve => setTimeout(resolve, 30)); child.kill(signal);
+    assert.deepEqual(await closed, [128 + constants.signals.SIGKILL, null]);
+    assert.equal(alive(target), false);
+    assert.equal(alive(child.pid), false);
+  });
+}
