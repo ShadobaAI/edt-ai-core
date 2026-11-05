@@ -384,7 +384,9 @@ test("YaXUnit and Vanessa save from their dialogs through the real YAML preview/
     const inputs = controls(); assert.equal(inputs.some(input => input.attributes?.["aria-label"] === `testing.${id === "yaxunit" ? "vanessa" : "yaxunit"}`), false);
     ui.elements.get("settingsText").value += "# unrelated draft comment\n";
     ui.elements.get("settingsText").events.input();
-    await ui.context.patchField({ kind: "set", path: ["testing", id], value: true });
+    const toggle=controls().find(input=>input.attributes?.["aria-label"]===`testing.${id}`);
+    assert.equal(toggle.type,"checkbox");assert.equal(toggle.attributes.role,"switch");
+    toggle.checked=true;await toggle.onchange();
     await ui.elements.get("reviewEditButton").onclick(); assert.equal(ui.elements.get("preview").hidden, false);
     ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
     await ui.elements.get("applyButton").onclick();
@@ -426,7 +428,7 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
   assert.equal(ui.elements.get(prefix+"State").attributes["data-state"],item.kind==="testing"?"configured":"ready");
   assert.equal(ui.elements.get(prefix+"State").attributes["data-tone"],item.kind==="testing"?"warning":"good");
   const refresh=ui.elements.get(item.kind==="external"?"probeButton":item.kind==="managed"?"managedProbeButton":"testingProbeButton");
-  assert.equal(refresh.attributes["aria-label"],"Обновить состояние "+item.name);assert.equal(refresh.attributes["aria-busy"],"false");
+  assert.equal(refresh.attributes["aria-label"],"Проверить "+item.name);assert.equal(refresh.attributes["aria-busy"],"false");
   assert.match(ui.elements.get(item.kind === "external" ? "probeResult" : item.kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent, /Проверен выбранный компонент/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   assert.equal(ui.calls.filter(call => ["settings.update", "settings.run_check"].includes(call.params?.name)).length, 0);
@@ -849,7 +851,7 @@ test("editor search filters collapsed fields without changing YAML and restores 
     throw new Error(name);
   });await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();await ui.flush();
   assert.equal(vm.runInContext("fieldDetails.every(([,details])=>!details.open)",ui.context),true);
-  const sections=ui.elements.get("jsonTree").children,main=sections.find(section=>section.children[0].textContent==="Основное"),tools=sections.find(section=>section.children[0].textContent==="Инструменты и подключения");main.open=true;
+  const sections=ui.elements.get("jsonTree").children,main=sections.find(section=>section.children[0].textContent==="Идентификация"),tools=sections.find(section=>section.children[0].textContent==="Подключения MCP");main.open=true;
   const search=ui.elements.get("editorSearch");search.focus();const requests=ui.calls.length;
   search.value="connections.edt.url";search.events.input();
   assert.equal(main.hidden,true);assert.equal(tools.hidden,false);assert.equal(tools.open,true);
@@ -951,7 +953,7 @@ test("field sections resolve local schema composition and attach object errors",
   });
   await ui.flush();await ui.elements.get("editSettingsButton").onclick();await ui.flush();await ui.flush();
   assert.equal(ui.elements.get("editorMode").value,"tree");
-  assert.deepEqual(ui.elements.get("jsonTree").children.map(section=>section.children[0].textContent),["Основное","Дополнительно"]);
+  assert.deepEqual(ui.elements.get("jsonTree").children.map(section=>section.children[0].textContent),["Идентификация","Дополнительно"]);
   assert.ok(treeInputs(ui).some(input=>input.attributes?.["aria-label"]==="new_field"));
   vm.runInContext('markFieldErrors("/project: missing id")',ui.context);
   assert.equal(vm.runInContext('jsonRows.get(JSON.stringify(["project"])).error.textContent',ui.context),"missing id");
@@ -1556,6 +1558,8 @@ test("EDT diagnostics show each project once and follow the current component ev
   const output = () => ui.elements.get("componentDialogDiagnostic").textContent + "\n" + ui.elements.get("probeResult").textContent;
   assert.equal(ui.elements.get("probeResult").textContent, detail);
   assert.equal(ui.elements.get("probeResult").hidden, false);
+  assert.match(ui.elements.get("componentDialogCheckedAt").textContent,/Последняя проверка/);
+  assert.deepEqual(ui.elements.get("externalProjectStates").children.map(row=>row.textContent),["crm-production: Готов","crm-yaxunit: Не открыт"]);
   assert.equal(output().match(/crm-production:/g).length, 1);
   assert.equal(output().match(/crm-yaxunit:/g).length, 1);
   assert.doesNotMatch(output(), /подключение проверено|crm-yaxunit: не готов/i);
@@ -1570,6 +1574,7 @@ test("EDT diagnostics show each project once and follow the current component ev
   vm.runInContext('componentObservations.get("edt").check.expiresAt=new Date(Date.now()-1).toISOString()', ui.context);
   ui.context.renderDialogStates();
   assert.equal(ui.elements.get("componentDialogDiagnostic").textContent, "Проверка устарела");
+  assert.ok(ui.elements.get("externalProjectStates").children.every(row=>row.textContent.endsWith("Проверка устарела")));
   vm.runInContext('componentObservations.get("edt").check.checkedAt=new Date(Date.now()-1000).toISOString()', ui.context);
   current.componentChecks = [{ id: "edt", state: "ready", detail: "crm-production: готов\ncrm-yaxunit: готов",
     checkedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() }];
@@ -1797,6 +1802,9 @@ for (const delayed of [false, true]) test(`picking another project replaces the 
   }, { narrow: true });
   await ui.flush();ui.elements.get("profileToggleButton").onclick();
   await ui.elements.get("addProfileButton").onclick();
+  assert.equal(ui.elements.get("directoryChooser").open,true);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.pick_directory").length,0);
+  await ui.elements.get("pickDirectoryButton").onclick();
   if (delayed) {
     assert.equal(ui.elements.get("pickDirectoryButton").disabled, true);
     await ui.tick();
@@ -2087,9 +2095,10 @@ test("index UI excludes feature-only repositories and applies mappings without r
   assert.match(ui.elements.get("status").textContent,/Состав проектов индекса применён/);
 });
 
-test("service details keep index actions with code-index across status updates", async () => {
+test("index maintenance stays separate from diagnostic disclosures across status updates", async () => {
   let stale = false;
   const ui = screen(async name => {
+    if(name==="settings.versions")return {versions:[]};
     assert.ok(["settings.read", "settings.status"].includes(name));
     return { ...read, profile: { ...read.profile, repositories: [{ id: "main", path: "src" }, { id: "ext", path: "ext" }] },
       values: { ...read.values, edtUrl: "http://localhost/mcp" },
@@ -2097,11 +2106,12 @@ test("service details keep index actions with code-index across status updates",
       summary: { components: [{ id: "code-index", status: stale ? "stale" : "ready" }, { id: "bsl-ls", status: "ready" }] } };
   });
   await ui.flush();
+  ui.context.openManagedDialog(ui.context.catalogItems(vm.runInContext("currentData",ui.context)).find(item=>item.id==="code-index"),null);
   const box = ui.elements.get("connections"), index = box.children.find(item => item.serviceName === "code-index"),
     bsl = box.children.find(item => item.serviceName === "bsl-ls"), edt = box.children.find(item => item.serviceName === "edt");
   assert.equal(index.tag, "details"); assert.equal(edt.tag, "details");
   assert.equal(index.open, false); assert.equal(edt.open, false);
-  assert.ok(index.contains(ui.elements.get("indexActions")));
+  assert.equal(index.contains(ui.elements.get("indexActions")),false);assert.ok(ui.elements.get("managedControls").contains(ui.elements.get("indexActions")));
   assert.equal(bsl.contains(ui.elements.get("indexActions")), false);
   assert.match(edt.textNode.textContent, /Подключение проверено/);
   assert.doesNotMatch(edt.textNode.textContent, /после проверки/);
@@ -2112,7 +2122,7 @@ test("service details keep index actions with code-index across status updates",
   assert.equal(updatedIndex, index);
   assert.equal(updatedIndex.open, true);
   assert.equal(box.children.find(item => item.serviceName === "edt").open, true);
-  assert.ok(updatedIndex.contains(ui.elements.get("indexActions")));
+  assert.equal(updatedIndex.contains(ui.elements.get("indexActions")),false);assert.ok(ui.elements.get("managedControls").contains(ui.elements.get("indexActions")));
   assert.equal(select.value, "ext"); assert.equal(select.children[0], option); assert.equal(ui.document.activeElement, select);
   edt.children[0].focus(); stale = false; await ui.tick(60000);
   assert.equal(box.children.find(item => item.serviceName === "edt"), edt);
@@ -3152,11 +3162,12 @@ test("manual scope choices and drafts survive refresh while another project gets
   assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.equal(ui.elements.get("javaScope").value,"global");
 });
 
-test("scope controls use accessible segments beside the save action", () => {
+test("scoped panels keep accessible segments and a single save action", () => {
   assert.doesNotMatch(html, /Изменять в/);
-  for (const [scope, save] of [["connectionScope", "saveButton"], ["componentScope", "saveComponentsButton"], ["javaScope", "saveJavaButton"]]) {
-    const toolbar = html.split('<div class="scope-toolbar">').slice(1).map(part => part.slice(0, part.indexOf('</div><p'))).find(part => part.includes(`id="${scope}"`));
-    assert.ok(toolbar?.includes(`id="${save}"`), `${scope} and its save action should share a toolbar`);
+  for (const [scope, save, start, end] of [["connectionScope", "saveButton", '<section id="connectionTransportPanel"', "</section>"], ["componentScope", "saveComponentsButton", '<section id="managedOptionsPanel"', "</section>"], ["javaScope", "saveJavaButton", '<div id="javaSettingsPanel"', '<section id="versionSettingsPanel"']]) {
+    const from=html.indexOf(start),toolbar=html.slice(from,html.indexOf(end,from));
+    assert.ok(toolbar.includes(`id="${save}"`), `${scope} and its save action should share a panel`);
+    assert.equal(toolbar.split(`id="${save}"`).length-1,1);
     assert.match(toolbar, /role="group" aria-label="[^"]+" aria-describedby="[^"]+"/);
     assert.match(toolbar, />Общий · Git<\/button>/);
     assert.match(toolbar, />Локальный<\/button>/);
@@ -3236,6 +3247,58 @@ test("component card input, save, clear and scope events restore inheritance thr
   edit("bslLsJava","");await ui.elements.get("saveJavaButton").onclick();assert.equal(java.value,"java");
   assert.equal(load(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].java,undefined);assert.equal(ui.elements.get("saveJavaButton").disabled,true);
   ui.lifecycle.pagehide();
+});
+
+test("component reset stages only its local overrides and restores booleans through the real MCP", async t => {
+  const f=fixture(t);f.profile.components={"code-index":{enabled:true},"bsl-ls":{enabled:true}};
+  f.profile.connections={openviking:{enabled:false,url:"http://localhost:18393/mcp"}};f.save();
+  const sharedFile=path.join(f.root,".ai/project.yaml"),original=fs.readFileSync(sharedFile),localFile=path.join(f.root,".ai/project.local.yaml");
+  const client=await session(t,"mcp/settings.mjs",[],f);
+  await client.call("settings.update",{scope:"project_local",set:{codeIndexEnabled:false,bslLsEnabled:false,openvikingEnabled:true,openvikingTimeout:45}});
+  const ui=screen((name,args,meta)=>name==="settings.versions"?{structuredContent:{versions:[]}}:client.request("tools/call",{name,arguments:args,_meta:meta}),{navigation:"project",rawResults:true});ui.document.hidden=true;
+  const deadline=Date.now()+10000;while(!vm.runInContext("currentData&&!initializing",ui.context)){assert.ok(Date.now()<deadline,ui.elements.get("status").textContent);await new Promise(resolve=>setTimeout(resolve,20));}
+  const item=id=>ui.context.catalogItems(vm.runInContext("currentData",ui.context)).find(item=>item.id===id);
+  ui.context.openManagedDialog(item("code-index"),null);await ui.flush();
+  assert.equal(ui.elements.get("componentScope").value,"project_local");assert.equal(ui.elements.get("resetComponentsButton").hidden,false);
+  ui.elements.get("resetComponentsButton").onclick();
+  assert.equal(load(localFile).components["code-index"].enabled,false,"reset must remain a draft until save");
+  assert.equal(ui.elements.get("codeIndexEnabled").indeterminate,true);assert.match(ui.elements.get("codeIndexEnabledSource").textContent,/после сохранения/);
+  await ui.elements.get("saveComponentsButton").onclick();
+  const update=ui.calls.filter(call=>call.params?.name==="settings.update").at(-1).params.arguments;
+  assert.deepEqual(Array.from(update.unset),["codeIndexEnabled"]);assert.equal(Object.keys(update.set).length,0);
+  assert.equal(load(localFile).components?.["code-index"]?.enabled,undefined);assert.equal(load(localFile).components["bsl-ls"].enabled,false);
+  assert.equal(ui.elements.get("codeIndexEnabled").checked,true);assert.equal(ui.elements.get("codeIndexEnabled").indeterminate,false);assert.equal(ui.elements.get("saveComponentsButton").disabled,true);
+  ui.elements.get("managedDialog").close();ui.context.openConnectionDialog(item("openviking"),null);
+  ui.elements.get("resetConnectionButton").onclick();assert.equal(ui.elements.get("probeButton").disabled,true,"unresolved inheritance must be saved before probing a draft");
+  await ui.elements.get("saveButton").onclick();
+  assert.equal(load(localFile).connections?.openviking?.enabled,undefined);assert.equal(load(localFile).connections?.openviking?.timeout_seconds,undefined);
+  assert.equal(load(localFile).components["bsl-ls"].enabled,false);assert.equal(ui.elements.get("openvikingEnabled").checked,false);assert.deepEqual(fs.readFileSync(sharedFile),original);
+  ui.lifecycle.pagehide();
+});
+
+test("managed cancellation clears a staged reset while preserving connection and YAML drafts",async()=>{
+  const current={...read,values:{...read.values,codeIndexEnabled:false,v8stdUrl:"http://saved/mcp"},managedValueSources:{codeIndexEnabled:"project_local"},layerValues:{profile:{codeIndexEnabled:true},project_local:{codeIndexEnabled:false}}};
+  const ui=screen(async name=>name==="settings.versions"?{versions:[]}:current);await ui.flush();
+  ui.context.openManagedDialog(ui.context.catalogItems(current).find(item=>item.id==="code-index"),null);
+  assert.equal(ui.elements.get("componentScope").value,"project_local");
+  const connection=ui.elements.get("v8stdUrl");connection.value="http://draft/mcp";connection.events.input();
+  ui.elements.get("settingsText").value="# unrelated YAML draft\n";ui.elements.get("settingsText").events.input();
+  ui.elements.get("resetComponentsButton").onclick();assert.equal(ui.elements.get("codeIndexEnabled").indeterminate,true);
+  ui.elements.get("managedDiscardButton").onclick();
+  assert.equal(ui.elements.get("codeIndexEnabled").checked,false);assert.equal(ui.elements.get("codeIndexEnabled").indeterminate,false);assert.equal(ui.elements.get("saveComponentsButton").disabled,true);
+  assert.equal(connection.value,"http://draft/mcp");assert.equal(ui.elements.get("settingsText").value,"# unrelated YAML draft\n");
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
+});
+
+test("catalog grids follow the three plus two plus two grouping and readiness reuses passive refresh",async()=>{
+  const f=liveStatusScreen();await f.ui.flush();
+  const groups=f.ui.elements.get("componentCatalog").children;
+  assert.deepEqual(groups.map(group=>group.children[1].children.length),[3,2,2]);
+  assert.deepEqual(groups.map(group=>group.children[1].className),["catalog-grid","catalog-grid two","catalog-grid two"]);
+  assert.equal(f.ui.elements.get("headerProjectName").textContent,f.current.profile.projectId);assert.equal(f.ui.elements.get("headerProjectPath").textContent,f.current.values.projectRoot);
+  const requests=f.requests.length;await f.ui.elements.get("refreshReadinessButton").onclick();
+  assert.equal(f.requests.length,requests+1);assert.equal(f.requests.at(-1).name,"settings.refresh_readiness");assert.equal(f.requests.at(-1).component,undefined);
+  assert.equal(f.ui.calls.filter(call=>["settings.run_check","settings.updates","settings.update"].includes(call.params?.name)).length,0);
 });
 
 test("environment URLs remain read-only and explain the higher-priority source", async () => {
