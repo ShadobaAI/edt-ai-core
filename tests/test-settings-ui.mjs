@@ -139,6 +139,47 @@ function liveStatusScreen({hold=false,running=false}={}) {
   return {ui,current,requests,release:()=>release(),fail:message=>{failure=message;},holdNext:()=>{gate=new Promise(done=>{release=done;});},failPoll:value=>{pollFailure=value;},holdPoll:()=>{pollGate=new Promise(done=>{releasePoll=done;});},releasePoll:()=>releasePoll()};
 }
 
+test("the header beside the project shows profile facts and all seven canonical component states on every tab",async()=>{
+  const f=liveStatusScreen();f.current.profile.repositories=[{id:"shared"}];
+  f.current.profileDirectoryContext={edt:{projectCount:4},git:{status:"detected",branch:"feature/header"}};
+  await f.ui.flush();
+  assert.equal(f.ui.elements.get("headerProfileFacts").textContent,"Профиль: generic-1c · Экземпляр: default · EDT-проектов: 4 · Репозиториев: 1 · Ветка: feature/header");
+  assert.equal(f.ui.elements.get("headerProfileSummary").title,f.current.values.projectRoot);
+  const badges=f.ui.elements.get("headerComponentStatuses");assert.equal(badges.hidden,false);assert.equal(badges.children.length,7);
+  for(const item of f.ui.context.catalogItems(f.current)){
+    const badge=badges.children.find(badge=>badge.attributes["data-component"]===item.id);
+    assert.equal(badge.attributes["data-state"],item.state);assert.ok(badge.textContent.startsWith(item.name+": "));
+    if(item.kind==="testing")assert.match(badge.textContent,/Настроен · не проверен/);
+  }
+  const requests=f.requests.length;
+  for(const tab of ["check","editor","support"]){f.ui.context.show(tab);assert.equal(f.ui.elements.get("headerProfileSummary").hidden,false);assert.equal(badges.children.length,7);}
+  assert.equal(f.requests.length,requests,"rendering the summary must not initiate additional component checks");
+});
+
+test("header component badges follow addressed results, in-progress checks and evidence expiry",async()=>{
+  const f=liveStatusScreen();await f.ui.flush();
+  const badge=id=>f.ui.elements.get("headerComponentStatuses").children.find(item=>item.attributes["data-component"]===id);
+  const v8=badge("v8std").textContent;
+  f.ui.context.observeComponentResult({componentChecks:[{id:"edt",state:"error",detail:"Проверка EDT завершилась ошибкой"}]},
+    {action:"probe",component:"edt",projectRoot:f.current.values.projectRoot,instance:f.current.instance});
+  assert.equal(badge("edt").textContent,"EDT: Ошибка");assert.match(badge("edt").title,/Проверка EDT завершилась ошибкой/);assert.equal(badge("v8std").textContent,v8);
+  vm.runInContext('activeOperation={action:"refresh_readiness",component:"code-index",status:"running",projectRoot:currentData.values.projectRoot,instance:currentData.instance}',f.ui.context);
+  f.ui.context.renderComponentCatalog(f.current);assert.equal(badge("code-index").attributes["data-state"],"checking");assert.equal(badge("v8std").textContent,v8);
+  vm.runInContext('activeOperation.status="completed";componentObservations.get("v8std").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
+  f.ui.context.renderComponentCatalog(f.current);assert.equal(badge("v8std").textContent,"v8std: Проверка устарела");
+});
+
+test("header profile summary clears unavailable profile data and respects read-only and disabled states",async()=>{
+  const f=liveStatusScreen();await f.ui.flush();
+  f.current.values.openvikingEnabled=false;f.current.viewOnly=true;f.ui.context.renderCurrent(f.current);
+  assert.match(f.ui.elements.get("headerProfileFacts").textContent,/Только чтение/);
+  assert.equal(f.ui.elements.get("headerComponentStatuses").children.find(item=>item.attributes["data-component"]==="openviking").textContent,"OpenViking: Отключён");
+  for(const [status,label]of [["invalid","Профиль содержит ошибку"],["missing","Профиль не найден"],["unselected","Профиль не выбран"]]){
+    f.current.profile={status};f.ui.context.renderCurrent(f.current);
+    assert.equal(f.ui.elements.get("headerProfileFacts").textContent,label);assert.equal(f.ui.elements.get("headerComponentStatuses").hidden,true);assert.equal(f.ui.elements.get("headerComponentStatuses").children.length,0);
+  }
+});
+
 test("profile loading, each minute and the refresh header perform fresh checks of all components",async()=>{
   const f=liveStatusScreen();await f.ui.flush();
   assert.equal(f.requests.length,1);assert.equal(f.requests[0].component,undefined);
