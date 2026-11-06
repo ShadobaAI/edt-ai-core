@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { edt_fixture as fixture, ROOT, environment } from "./helpers.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { parse } from "../scripts/common.mjs";
+import { core_version } from "../scripts/compatibility.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
 
 test("background readiness and foreground saves retain independent operation results", async () => {
@@ -57,7 +58,7 @@ test("chat setup binds only its settings session, reports repairs and needs no r
   assert.equal(invalid.profile.compatibility.core, ">=0.1.0 <0.2.0");
   assert.deepEqual(invalid.nextSteps, ["repair_profile"]);
   const edit = (await a.call("settings.edit", { layerScope: "profile", format: "yaml" })).structuredContent;
-  const data = parse(edit.text); data.compatibility.core = ">=0.4.0 <0.5.0";
+  const data = parse(edit.text); data.compatibility.core = `=${core_version}`;
   const request = { text: JSON.stringify(data), mode: "layer", layerScope: "profile", baseRevision: edit.baseRevision };
   const preview = (await a.call("settings.preview", request)).structuredContent;
   await a.call("settings.apply", { ...request, revision: preview.revision, replace: true });
