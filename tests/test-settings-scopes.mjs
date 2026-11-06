@@ -4,12 +4,13 @@ import path from "node:path";
 import test from "node:test";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { fixture, session, dialog_session } from "./helpers.mjs";
+import { fixture, environment, session, dialog_session } from "./helpers.mjs";
 import { dump, load, parse } from "../scripts/common.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { java_info, java_in_directory } from "../scripts/runtime.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
+import { project_directory } from "../scripts/project_paths.mjs";
 import { which } from "../scripts/processes.mjs";
 import { save_export_to_path } from "../scripts/settings_export.mjs";
 import { stringify } from "yaml";
@@ -218,21 +219,115 @@ test("a malformed local override can be repaired through the layer editor", asyn
   assert.equal(load(file).components["bsl-ls"].node, "node");
 });
 
-test("MCP profile rename changes only project.id and rejects stale or invalid edits", async t => {
+test("MCP profile rename creates a minimal local ID and leaves project.yaml byte-for-byte unchanged", async t => {
   const f = fixture(t); f.save();
+  const shared = path.join(f.root, ".ai/project.yaml"), local = path.join(f.root, ".ai/project.local.yaml");
+  fs.writeFileSync(shared, "\uFEFF# shared profile\r\n" + fs.readFileSync(shared, "utf8").replace(/\r?\n/g, "\r\n"));
+  const sharedBefore = fs.readFileSync(shared);
   const client = await session(t, "mcp/settings.mjs", [], f);
+  const contract = (await client.request("tools/list")).tools.find(tool => tool.name === "settings.rename_profile");
+  assert.match(contract.description, /project\.local\.yaml/);
+  assert.equal(contract.inputSchema.additionalProperties, false);
+  assert.equal(contract.inputSchema.properties.scope, undefined);
   const initial = (await client.call("settings.read", {})).structuredContent;
-  await assert.rejects(client.call("settings.rename_profile", { projectId: "bad name", expectedRevision: initial.settingsRevision }), /требуемому формату/);
-  const renamed = (await client.call("settings.rename_profile", { projectId: "renamed.project", expectedRevision: initial.settingsRevision })).structuredContent;
-  const document = load(initial.writePaths.profile);
-  assert.equal(document.project.id, "renamed.project");
-  assert.equal(document.profile_id, f.profile.profile_id);
-  assert.deepEqual(document.repositories, f.profile.repositories);
-  assert.equal(load(renamed.backup).project.id, f.profile.project.id);
+  const renamed = (await client.call("settings.rename_profile", { projectId: "  renamed.project  ", expectedRevision: initial.settingsRevision })).structuredContent;
+  assert.equal(renamed.status, "renamed");
+  assert.deepEqual(load(local), { project: { id: "renamed.project" } });
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore, "rename must not write project.yaml, including comments, BOM and CRLF");
+  assert.equal(renamed.backup, null);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
   assert.match(renamed.detail, /Vanessa/);
-  await assert.rejects(client.call("settings.rename_profile", { projectId: "stale", expectedRevision: initial.settingsRevision }), /изменил/);
   const updated = (await client.call("settings.read", {})).structuredContent;
   assert.equal(updated.profile.projectId, "renamed.project");
+  assert.equal(updated.configurationValues.project.id, "renamed.project");
+  assert.equal(updated.configurationSources[JSON.stringify(["project", "id"])], "project_local");
+  assert.equal(updated.profileHistory.find(item => item.projectRoot === f.root).projectId, "renamed.project");
+
+  const localBefore = fs.readFileSync(local);
+  const repeated = (await client.call("settings.rename_profile", { projectId: "renamed.again", expectedRevision: updated.settingsRevision })).structuredContent;
+  assert.equal(repeated.profile.projectId, "renamed.again");
+  assert.deepEqual(load(local), { project: { id: "renamed.again" } });
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore, "repeated rename must not write project.yaml");
+  assert.deepEqual(fs.readFileSync(repeated.backup), localBefore);
+  assert.equal(path.dirname(repeated.backup), path.join(f.state, "backups"));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(project_directory(f.state, f.root), "profile-history.json"))).projectId, "renamed.again");
+  await assert.rejects(client.call("settings.rename_profile", { projectId: "stale", expectedRevision: initial.settingsRevision }), /изменил/);
+  assert.equal((await client.call("settings.read", {})).structuredContent.profile.projectId, "renamed.again");
+});
+
+for (const existing of [false, true]) test(`rename makes no persistent writes for unchanged, invalid or stale IDs (${existing ? "existing" : "absent"} local file)`, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml");
+  if (existing) dump({ project: { id: "local-name", purpose: "retained" } }, local);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), profile = profile_state(f.root);
+  remember_profile(f.state, f.root, profile);
+  const expectedRevision = backend.edit_revision(), sharedBefore = fs.readFileSync(shared), localBefore = existing ? fs.readFileSync(local) : null;
+  const writes = [], write = fs.writeFileSync;
+  t.mock.method(fs, "writeFileSync", (file, ...args) => {
+    if (file !== path.join(f.state, "operation.lock")) writes.push(file);
+    return write(file, ...args);
+  });
+  const unchanged = await backend.main({ action: "rename_profile", projectId: `  ${profile.projectId}  `, expectedRevision });
+  assert.equal(unchanged.status, "unchanged");
+  for (const projectId of ["", "  ", null, 42, "bad name", "-leading", "кириллица", "x".repeat(65)])
+    await assert.rejects(backend.main({ action: "rename_profile", projectId, expectedRevision }), /идентификатор|требуемому формату/i);
+  for (const revision of [undefined, "stale"])
+    await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision: revision }), /изменился/);
+  assert.deepEqual(writes, [], "only the transient operation lock may be written");
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+  assert.deepEqual(existing ? fs.readFileSync(local) : null, localBefore);
+  assert.equal(fs.existsSync(path.join(f.root, ".ai/.gitignore")), false);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+  assert.equal(fs.existsSync(path.join(f.state, "operation.lock")), false);
+});
+
+test("repeated renames preserve unrelated local settings, comments, field order, BOM and mixed line endings", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
+  const original = '\uFEFF# local comment\r\ncomponents:\r\n  bsl-ls: {java: "custom-java"} # retained\nproject:\r\n  purpose: local purpose\r\n  id: "old-name" # project label\r\n# trailing comment\n';
+  fs.writeFileSync(local, original);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  let before = original;
+  for (const projectId of ["new-name", "next-name"]) {
+    const result = await backend.main({ action: "rename_profile", projectId, expectedRevision: backend.edit_revision() });
+    assert.equal(fs.readFileSync(result.backup, "utf8"), before);
+    const after = before.replace(/"(?:old|new)-name"/, `"${projectId}"`);
+    assert.equal(fs.readFileSync(local, "utf8"), after);
+    const read = await backend.main({ action: "read" });
+    assert.equal(read.profile.projectId, projectId);
+    assert.equal(read.values.bslLsJava, "custom-java");
+    assert.equal(read.configurationValues.project.purpose, "local purpose");
+    assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+    before = after;
+  }
+});
+
+for (const original of ["project: [broken\n", "project: old-name\n", "unexpected: true\n", Buffer.from([0xff])])
+  test(`rename safely rejects a damaged local document (${Buffer.isBuffer(original) ? "UTF-8" : original.trim()})`, async t => {
+    const f = fixture(t); environment(t, f.env); f.save();
+    const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), expectedRevision = backend.edit_revision();
+    const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
+    fs.writeFileSync(local, original);
+    await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision }));
+    // Even a revision obtained from the repair editor must not permit rename to replace a broken document.
+    await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision: backend.edit_revision() }), /YAML|ожидался тип|неизвестное поле|UTF-8/i);
+    assert.deepEqual(fs.readFileSync(local), Buffer.from(original));
+    assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+    assert.equal(fs.existsSync(path.join(f.root, ".ai/.gitignore")), false);
+    assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+  });
+
+test("rename checks the merged profile before any local write", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  const shared = path.join(f.root, ".ai/project.yaml"), local = path.join(f.root, ".ai/project.local.yaml");
+  // Each layer passes its partial schema, but the active profile has an unknown repository reference.
+  dump({ testing: { commands: [{ id: "test", repository_id: "missing", argv: ["runner"], effects: [] }] } }, local);
+  const before = fs.readFileSync(local), sharedBefore = fs.readFileSync(shared);
+  await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision: backend.edit_revision() }), /Неизвестные идентификаторы репозиториев/);
+  assert.deepEqual(fs.readFileSync(local), before);
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
 });
 
 
@@ -369,6 +464,7 @@ for (const protectedTarget of [true, false]) test(`settings paths ${protectedTar
   if (protectedTarget) {
     assert.equal((await client.call("settings.read", {})).structuredContent.configurationError, true);
     await assert.rejects(client.call("settings.update", args), /Путь настроек перенаправляется в защищённые исходники проекта/);
+    await assert.rejects(client.call("settings.rename_profile", { projectId: "changed", expectedRevision: "unavailable" }), /Путь настроек перенаправляется в защищённые исходники проекта/);
     await assert.rejects(client.call("settings.edit", { layerScope: "project_local", format:"yaml" }), /Путь настроек перенаправляется в защищённые исходники проекта/);
     await assert.rejects(client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), /Путь настроек перенаправляется в защищённые исходники проекта/);
     assert.equal(fs.existsSync(path.join(target, "project.local.yaml")), false);

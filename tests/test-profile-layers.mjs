@@ -75,12 +75,13 @@ test("project import works before a profile exists", async t => {
   assert.equal(project_profile(f.root).profile_id,f.profile.profile_id);
 });
 
-for (const method of ["transfer", "editor", "update"]) test(`first local write through ${method} preserves existing Git rules and ignores the local layer`, async t => {
+for (const method of ["transfer", "editor", "update", "rename"]) test(`first local write through ${method} preserves existing Git rules and ignores the local layer`, async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   assert.equal(spawnSync("git", ["init", "-q", f.root]).status, 0);
   const ignore = path.join(f.root, ".ai/.gitignore"); fs.writeFileSync(ignore, "# retained\n!project.local.yaml\n");
   const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), local = "connections:\n  edt:\n    url: http://localhost:8123/mcp\n";
-  if (method === "update") await backend.main({ action: "update", scope: "project_local", set: { edtUrl: "http://localhost:8123/mcp" } });
+  if (method === "rename") await backend.main({ action: "rename_profile", projectId: "local-name", expectedRevision: backend.edit_revision() });
+  else if (method === "update") await backend.main({ action: "update", scope: "project_local", set: { edtUrl: "http://localhost:8123/mcp" } });
   else if (method === "editor") {
     const edit = await backend.main({ action: "edit", format: "yaml", layerScope: "project_local" });
     const args = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: local };
@@ -96,14 +97,167 @@ for (const method of ["transfer", "editor", "update"]) test(`first local write t
   assert.equal(spawnSync("git", ["-C", f.root, "check-ignore", "-q", ".ai/project.local.yaml"]).status, 0);
 });
 
-test("local settings writes reject a file already tracked by Git", async t => {
+for (const method of ["update", "rename"]) test(`local settings ${method} rejects a file already tracked by Git`, async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   assert.equal(spawnSync("git", ["init", "-q", f.root]).status, 0);
   const target = path.join(f.root, ".ai/project.local.yaml"); fs.writeFileSync(target, "{}\n");
   assert.equal(spawnSync("git", ["-C", f.root, "add", "--", ".ai/project.local.yaml"]).status, 0);
   const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
-  await assert.rejects(backend.main({ action: "update", scope: "project_local", set: { edtUrl: "http://localhost:8123/mcp" } }), /уже отслеживается Git/);
+  const request = method === "rename" ? { action: "rename_profile", projectId: "local-name", expectedRevision: backend.edit_revision() }
+    : { action: "update", scope: "project_local", set: { edtUrl: "http://localhost:8123/mcp" } };
+  await assert.rejects(backend.main(request), /уже отслеживается Git/);
   assert.equal(fs.readFileSync(target, "utf8"), "{}\n");
+  assert.equal(fs.existsSync(path.join(f.root, ".ai/.gitignore")), false);
+});
+
+for (const existing of [false, true]) for (const failure of ["write", "verification"])
+  test(`rename rolls back the local file and gitignore after ${failure} failure (${existing ? "existing" : "absent"} files)`, async t => {
+    const f = fixture(t); environment(t, f.env); f.save();
+    const target = path.join(f.root, ".ai/project.local.yaml"), ignore = path.join(f.root, ".ai/.gitignore"), shared = path.join(f.root, ".ai/project.yaml");
+    const original = "# private settings\r\nproject: {id: old-name, purpose: retained}\r\n", ignoreBefore = "# retained\n!project.local.yaml\n", sharedBefore = fs.readFileSync(shared);
+    if (existing) { fs.writeFileSync(target, original); fs.writeFileSync(ignore, ignoreBefore); }
+    const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), expectedRevision = backend.edit_revision();
+    const method = existing ? "renameSync" : "linkSync", mutate = fs[method], read = fs.readFileSync;
+    let saved = false, injected = false;
+    t.mock.method(fs, method, (...args) => {
+      if (args[1] === target && failure === "write" && !injected) { injected = true; throw new Error("fixture rename write failure"); }
+      const result = mutate(...args);
+      if (args[1] === target) saved = true;
+      return result;
+    });
+    t.mock.method(fs, "readFileSync", (file, ...args) => {
+      if (file === target && saved && failure === "verification" && !injected) { injected = true; throw new Error("fixture rename verification failure"); }
+      return read(file, ...args);
+    });
+    await assert.rejects(backend.main({ action: "rename_profile", projectId: "new-name", expectedRevision }), /fixture rename (write|verification) failure/);
+    assert.equal(injected, true);
+    assert.equal(fs.existsSync(target), existing);
+    assert.equal(fs.existsSync(ignore), existing);
+    if (existing) {
+      assert.equal(fs.readFileSync(target, "utf8"), original);
+      assert.equal(fs.readFileSync(ignore, "utf8"), ignoreBefore);
+      const backups = fs.readdirSync(path.join(f.state, "backups"));
+      assert.equal(backups.length, 1);
+      assert.equal(fs.readFileSync(path.join(f.state, "backups", backups[0]), "utf8"), original);
+    } else assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+    assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+    assert.equal(fs.readdirSync(path.dirname(target)).some(file => file.startsWith(".core-")), false);
+  });
+
+for (const changed of ["local", "gitignore"]) test(`rename rollback preserves concurrent ${changed} edits`, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const target = path.join(f.root, ".ai/project.local.yaml"), ignore = path.join(f.root, ".ai/.gitignore");
+  const original = "project:\n  id: old-name\n", ignoreBefore = "# original rules\n", external = "# changed elsewhere\nproject: {id: external-name}\n";
+  fs.writeFileSync(target, original); fs.writeFileSync(ignore, ignoreBefore);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), expectedRevision = backend.edit_revision(), rename = fs.renameSync, read = fs.readFileSync;
+  let saved = false, injected = false;
+  t.mock.method(fs, "renameSync", (...args) => {
+    const result = rename(...args);
+    if (args[1] === target && !saved) { saved = true; fs.writeFileSync(changed === "local" ? target : ignore, external); }
+    return result;
+  });
+  t.mock.method(fs, "readFileSync", (file, ...args) => {
+    if (file === target && saved && !injected) { injected = true; throw new Error("fixture verification failure"); }
+    return read(file, ...args);
+  });
+  await assert.rejects(backend.main({ action: "rename_profile", projectId: "new-name", expectedRevision }), /Не удалось восстановить файлы:.*Резервная копия:/);
+  assert.equal(fs.readFileSync(target, "utf8"), changed === "local" ? external : original);
+  assert.equal(fs.readFileSync(ignore, "utf8"), changed === "gitignore" ? external : ignoreBefore);
+  const backups = fs.readdirSync(path.join(f.state, "backups"));
+  assert.equal(fs.readFileSync(path.join(f.state, "backups", backups[0]), "utf8"), original);
+});
+
+test("rename rolls back when the persisted merged profile fails validation and preserves the external shared edit", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const target = path.join(f.root, ".ai/project.local.yaml"), ignore = path.join(f.root, ".ai/.gitignore"), shared = path.join(f.root, ".ai/project.yaml");
+  const original = "project: {id: old-name}\n", ignoreBefore = "# original rules\n";
+  fs.writeFileSync(target, original); fs.writeFileSync(ignore, ignoreBefore);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), expectedRevision = backend.edit_revision(), rename = fs.renameSync;
+  const external = JSON.stringify({ ...f.profile, testing: { ...f.profile.testing, commands: [{ id: "test", repository_id: "unknown", argv: ["runner"], effects: [] }] } });
+  let injected = false;
+  t.mock.method(fs, "renameSync", (...args) => {
+    const result = rename(...args);
+    if (args[1] === target && !injected) { injected = true; fs.writeFileSync(shared, external); }
+    return result;
+  });
+  await assert.rejects(backend.main({ action: "rename_profile", projectId: "new-name", expectedRevision }), /Неизвестные идентификаторы репозиториев/);
+  assert.equal(injected, true);
+  assert.equal(fs.readFileSync(target, "utf8"), original);
+  assert.equal(fs.readFileSync(ignore, "utf8"), ignoreBefore);
+  assert.equal(fs.readFileSync(shared, "utf8"), external);
+  const backups = fs.readdirSync(path.join(f.state, "backups"));
+  assert.equal(fs.readFileSync(path.join(f.state, "backups", backups[0]), "utf8"), original);
+});
+
+test("rename refuses a local alias to project.yaml without changing either profile", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
+  let linked = false;
+  try { fs.symlinkSync(shared, local, "file"); linked = true; }
+  catch (error) {
+    if (process.platform !== "win32" || error.code !== "EPERM") throw error;
+    // Windows may require extra privileges for file symlinks. Substitute only
+    // OS path resolution so the same backend guard is exercised on that host.
+    fs.copyFileSync(shared, local);
+    const realpath = fs.realpathSync.native;
+    t.mock.method(fs.realpathSync, "native", (file, ...args) => path.resolve(file) === local ? shared : realpath(file, ...args));
+  }
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  await assert.rejects(backend.main({ action: "rename_profile", projectId: "new-name", expectedRevision: backend.edit_revision() }), /Локальный файл не должен перенаправляться в общий профиль/);
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+  assert.deepEqual(fs.readFileSync(local), sharedBefore);
+  assert.equal(fs.lstatSync(local).isSymbolicLink(), linked);
+  assert.equal(fs.existsSync(path.join(f.root, ".ai/.gitignore")), false);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+});
+
+test("rename checks protected path redirects before reading local bytes", async t => {
+  const f = fixture(t); environment(t, f.env);
+  const directory = path.join(f.root, "src/settings-data"); fs.mkdirSync(directory);
+  fs.symlinkSync(directory, path.join(f.root, ".ai"), process.platform === "win32" ? "junction" : "dir"); f.save();
+  const local = path.join(directory, "project.local.yaml"), original = "project: {id: local-name}\n"; fs.writeFileSync(local, original);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), read = fs.readFileSync;
+  let localReads = 0;
+  t.mock.method(fs, "readFileSync", (file, ...args) => {
+    if (typeof file === "string" && path.resolve(file) === local) localReads++;
+    return read(file, ...args);
+  });
+  await assert.rejects(backend.main({ action: "rename_profile", projectId: "new-name", expectedRevision: "unavailable" }), /Путь настроек перенаправляется в защищённые исходники проекта/);
+  assert.equal(localReads, 0);
+  assert.equal(read(local, "utf8"), original);
+  assert.equal(fs.existsSync(path.join(directory, ".gitignore")), false);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+});
+
+for (const location of ["project", "git"]) test(`rename rejects a local backup destination inside ${location}`, async t => {
+  const f = fixture(t); f.save();
+  const state = location === "project" ? path.join(f.root, "state") : f.state;
+  fs.mkdirSync(state, { recursive: true });
+  if (location === "git") fs.mkdirSync(path.join(state, ".git"));
+  const env = { ...f.env, EDT_AI_STATE_DIR: state, EDT_AI_SETTINGS: path.join(state, "settings.json") }; environment(t, env);
+  const target = path.join(f.root, ".ai/project.local.yaml"), original = "project: {id: local-name}\n"; fs.writeFileSync(target, original);
+  const backend = new SettingsBackend(state, env.EDT_AI_SETTINGS);
+  await assert.rejects(backend.main({ action: "rename_profile", projectId: "new-name", expectedRevision: backend.edit_revision() }), /вне проекта и Git-репозитория/);
+  assert.equal(fs.readFileSync(target, "utf8"), original);
+  assert.equal(fs.existsSync(path.join(f.root, ".ai/.gitignore")), false);
+  assert.equal(fs.existsSync(path.join(state, "backups")), false);
+});
+
+test("the shared configuration editor changes project.id explicitly while the local rename retains priority", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), shared = path.join(f.root, ".ai/project.yaml"), local = path.join(f.root, ".ai/project.local.yaml");
+  await backend.main({ action: "rename_profile", projectId: "local-name", expectedRevision: backend.edit_revision() });
+  const localBefore = fs.readFileSync(local), edit = await backend.main({ action: "edit", layerScope: "profile", format: "yaml" });
+  assert.equal(parse(edit.text).project.id, f.profile.project.id);
+  const document = parse(edit.text); document.project.id = "shared-name";
+  const args = { mode: "layer", layerScope: "profile", baseRevision: edit.baseRevision, text: JSON.stringify(document) };
+  const preview = await backend.main({ action: "preview", ...args });
+  await backend.main({ action: "apply", ...args, revision: preview.revision, replace: true });
+  assert.equal(load(shared).project.id, "shared-name");
+  assert.deepEqual(fs.readFileSync(local), localBefore);
+  assert.equal((await backend.main({ action: "read" })).profile.projectId, "local-name");
+  fs.rmSync(local);
+  assert.equal(project_profile(f.root).project.id, "shared-name");
 });
 
 test("failed local transfer rolls back the reviewed gitignore change", async t => {

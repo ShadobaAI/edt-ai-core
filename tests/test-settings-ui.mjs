@@ -474,6 +474,7 @@ test("EDT building evidence has an actionable state instead of an unconfirmed co
 
 test("settings UI saves, previews a local document, and renames through the real MCP server", async t => {
   const f = fixture(t); f.save();
+  const shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
   const client = await session(t, "mcp/settings.mjs", [], f);
   // The DOM and host transport are simulated, but every settings request is
   // handled by the real MCP entrypoint and backend in an isolated profile.
@@ -524,13 +525,61 @@ test("settings UI saves, previews a local document, and renames through the real
   assert.equal(load(local).components["bsl-ls"].java, "fixture-java");
   assert.equal(fs.readFileSync(local, "utf8"), updated.replace(/\n/g, "\r\n"));
 
-  ui.elements.get("renameButton").onclick();
-  ui.elements.get("projectIdInput").value = "renamed-in-ui";
-  ui.elements.get("projectIdInput").events.input();
-  await ui.elements.get("renameSaveButton").onclick();
-  assert.equal(load(path.join(f.root, ".ai", "project.yaml")).project.id, "renamed-in-ui");
-  assert.equal(ui.elements.get("profileTitle").textContent, "renamed-in-ui");
+  ui.elements.get("connectionSharedButton").onclick();
+  ui.elements.get("componentSharedButton").onclick();
+  ui.elements.get("javaGlobalButton").onclick();
+  ui.elements.get("editorSharedButton").onclick();
+  await until(() => {
+    try { return parse(ui.elements.get("settingsText").value).project?.id === f.profile.project.id && !ui.elements.get("editSettingsButton").disabled; }
+    catch { return false; }
+  }, "shared editor");
+  assert.equal(ui.elements.get("connectionScope").value, "profile");
+  assert.equal(ui.elements.get("componentScope").value, "profile");
+  assert.equal(ui.elements.get("javaScope").value, "global");
+  for (const projectId of ["renamed-in-ui", "renamed-again-in-ui"]) {
+    ui.elements.get("renameButton").onclick();
+    assert.equal(ui.elements.get("projectIdInput").value, load(local).project?.id || f.profile.project.id);
+    ui.elements.get("projectIdInput").value = projectId;
+    ui.elements.get("projectIdInput").events.input();
+    await ui.elements.get("renameSaveButton").onclick();
+    assert.equal(load(local).project.id, projectId);
+    assert.deepEqual(fs.readFileSync(shared), sharedBefore, "renaming through the form must not alter project.yaml");
+    assert.equal(ui.elements.get("profileTitle").textContent, projectId);
+    assert.equal(ui.elements.get("headerProjectName").textContent, projectId);
+    assert.equal(ui.elements.get("selectedProjectLabel").textContent, projectId);
+    assert.equal(ui.elements.get("profileHistory").children[0].children[0].children[0].textContent, projectId);
+    const saved = parse(updated); saved.project = { id: projectId };
+    assert.deepEqual(load(local), saved);
+    assert.match(fs.readFileSync(local, "utf8"), /# keep this comment\r\n/);
+    const snapshot = (await client.call("settings.read", {})).structuredContent;
+    assert.equal(snapshot.profileHistory.find(item => item.projectRoot === f.root).projectId, projectId);
+    await ui.context.refresh();
+    assert.equal(ui.elements.get("headerProjectName").textContent, projectId);
+  }
+  // The deliberate shared edit is performed through Configuration → Общий · Git.
+  await ui.elements.get("editSettingsButton").onclick();
+  const sharedDocument = parse(ui.elements.get("settingsText").value);
+  assert.equal(sharedDocument.project.id, f.profile.project.id);
+  sharedDocument.project.id = "explicit-shared-name";
+  ui.elements.get("settingsText").value = JSON.stringify(sharedDocument, null, 2);
+  ui.elements.get("settingsText").events.input();
+  await ui.elements.get("reviewEditButton").onclick();
+  ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
+  const localBefore = fs.readFileSync(local);
+  await ui.elements.get("applyButton").onclick();
+  assert.equal(load(shared).project.id, "explicit-shared-name");
+  assert.deepEqual(fs.readFileSync(local), localBefore);
+  assert.equal(ui.elements.get("headerProjectName").textContent, "renamed-again-in-ui");
+  assert.equal(ui.elements.get("profileHistory").children[0].children[0].children[0].textContent, "renamed-again-in-ui");
   ui.lifecycle.pagehide();
+});
+
+test("the rename form states its fixed local destination and the explicit shared editing route", () => {
+  const hint = html.match(/id="renameHint"[^>]*>([^<]*)<\/span>/)[1];
+  assert.match(hint, /project\.id.*\.ai\/project\.local\.yaml/);
+  assert.match(hint, /Выбор области в других панелях не влияет/);
+  assert.match(hint, /Конфигурация → Общий · Git/);
+  assert.match(hint, /Vanessa/);
 });
 
 test("YAML editor preserves mixed line endings around an edited or added line", async () => {
@@ -3406,7 +3455,9 @@ test("rename guards other profile selection and refreshes the displayed project 
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, 0);
   await ui.elements.get("renameSaveButton").onclick();
   assert.equal(changed.projectId, "New.Name"); assert.equal(changed.expectedRevision, "rename-revision");
+  assert.deepEqual(Object.keys(changed).sort(), ["expectedRevision", "projectId"]);
   assert.equal(ui.elements.get("profileTitle").textContent, "New.Name");
+  assert.equal(ui.elements.get("headerProjectName").textContent, "New.Name");
   assert.match(ui.elements.get("status").textContent, /Vanessa/);
 });
 

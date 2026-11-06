@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixture, node, success } from "./helpers.mjs";
+import { fixture, environment, node, success } from "./helpers.mjs";
 import { runtime_profile } from "../scripts/vanessa.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
 import { createServer } from "node:http";
@@ -12,6 +12,7 @@ import { ROOT } from "./helpers.mjs";
 import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 import { check_schema } from "../scripts/common.mjs";
 import { loadProfile } from "../vanessa/profile.mjs";
+import { SettingsBackend } from "../scripts/settings_backend.mjs";
 function binding(t) {
   const f = fixture(t),
     file = path.join(f.root, ".ai/vanessa.local.json");
@@ -179,6 +180,24 @@ test("Vanessa start requires actual agreement and changed targets invalidate old
   const result = f.invoke("start", ["--authorization-file", approval]);
   assert.notEqual(result.status, 0);
   assert.match(result.stdout, /Область или эффекты разрешения отличаются/);
+});
+
+test("local profile rename changes Vanessa authorization scope without transferring old permissions", async t => {
+  const f = binding(t); environment(t, f.env);
+  const shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
+  const request = success(f.invoke("describe", ["--for-action", "start"]));
+  request.authorizations = [{ scope: request.scope, effects: request.effects, evidence: "synthetic actual user instruction" }];
+  const approval = path.join(f.base, "approval.json"); fs.writeFileSync(approval, JSON.stringify(request));
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  await backend.main({ action: "rename_profile", projectId: "local-name", expectedRevision: backend.edit_revision() });
+  const changed = success(f.invoke("describe", ["--for-action", "start"])), scope = JSON.parse(changed.scope);
+  assert.equal(scope.project, "local-name");
+  assert.deepEqual({ ...scope, project: f.profile.project.id }, JSON.parse(request.scope));
+  const result = f.invoke("start", ["--authorization-file", approval]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Область или эффекты разрешения отличаются/);
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+  assert.deepEqual(JSON.parse(fs.readFileSync(approval)), request);
 });
 test("Vanessa outside paths, non-feature suffix and missing exact scenario are rejected before policy", (t) => {
   const f = binding(t);

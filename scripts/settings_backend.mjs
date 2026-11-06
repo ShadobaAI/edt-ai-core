@@ -992,26 +992,33 @@ export class SettingsBackend {
       return operation_lock(this.STATE, () => {
         const config = this.current(), root = config.active_project;
         if (!root) throw new ConfigError("Выберите папку проекта.");
-        const target = profile_target(root), previous = bytes(target), original = previous?.toString("utf8");
-        if (previous === null || !Buffer.from(original, "utf8").equals(previous)) throw new ConfigError("Файл профиля должен быть в корректной кодировке UTF-8.");
-        const profile = parse(original);
-        if (request.expectedRevision !== this.revision(config, target)) throw new ConfigError("Профиль изменился. Обновите сведения перед переименованием.");
+        const sharedTarget = profile_target(root), target = inside(root, ".ai/project.local.yaml");
+        if (path_identity(target) === path_identity(sharedTarget)) throw new ConfigError("Локальный файл не должен перенаправляться в общий профиль проекта.");
+        if (request.expectedRevision !== this.revision(config, sharedTarget)) throw new ConfigError("Профиль изменился. Обновите сведения перед переименованием.");
+        const previous = bytes(target), original = previous?.toString("utf8") ?? null;
+        if (previous !== null && !Buffer.from(original, "utf8").equals(previous)) throw new ConfigError("Файл настроек должен быть в корректной кодировке UTF-8.");
         if (typeof request.projectId !== "string" || !request.projectId.trim()) throw new ConfigError("Укажите идентификатор проекта.");
         const previousId = project_profile(root).project.id;
-        profile.project = { ...profile.project, id: request.projectId.trim() };
-        const candidate = merged_profile(root, profile, exists(inside(root, ".ai/project.local.yaml")) ? load(inside(root, ".ai/project.local.yaml")) : {});
-        if (candidate.project.id !== profile.project.id) throw new ConfigError("Идентификатор переопределён локальным профилем; измените его там.");
-        if (previousId === profile.project.id) return { status: "unchanged", profile: profile_state(root) };
-        const nextText = patch_yaml_document(original, profile), savedBackup = backup(target);
+        if (previousId === request.projectId.trim()) return { status: "unchanged", profile: profile_state(root) };
+        const document = original === null ? {} : parse(original);
+        document.project = { ...document.project, id: request.projectId.trim() };
+        check_schema(document, "project-local.schema.json");
+        merged_profile(root, load(sharedTarget), document);
+        const nextText = patch_yaml_document(original, document), ignorePlan = local_ignore_plan(root);
+        const savedBackup = backup_local_settings(this.STATE, root, previous);
         const current = bytes(target);
-        if (current === null || !current.equals(previous)) throw new ConfigError("Профиль изменился во время переименования.");
+        if ((previous === null ? current !== null : current === null || !current.equals(previous)) || request.expectedRevision !== this.revision(config, sharedTarget))
+          throw new ConfigError("Профиль изменился во время переименования.");
+        let wrote = false, savedIgnore;
         try {
-          atomic_write(target, nextText);
-          if (stable(load(target)) !== stable(profile)) throw new ConfigError("Не удалось подтвердить переименование профиля.");
+          savedIgnore = protect_local_layer(root, ignorePlan);
+          atomic_write(target, nextText, previous !== null);
+          wrote = true;
+          if (stable(load(target)) !== stable(document)) throw new ConfigError("Не удалось подтвердить переименование профиля.");
           project_profile(root);
-        } catch (error) { restore(target, previous); throw error; }
+        } catch (error) { rollback_layer(target, previous, nextText, wrote, savedIgnore, error, savedBackup); }
         remember_profile(this.STATE, root, profile_state(root));
-        return { status: "renamed", profile: profile_state(root), backup: savedBackup,
+        return { status: "renamed", profile: profile_state(root), backup: savedBackup, gitWarning: savedIgnore.gitWarning,
           detail: "Разрешения Vanessa, привязанные к прежнему идентификатору проекта, потребуется получить заново." };
       });
     }
