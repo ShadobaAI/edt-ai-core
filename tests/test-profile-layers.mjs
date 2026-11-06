@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fixture, environment, node, success, ROOT } from "./helpers.mjs";
+import { fixture, environment, node, success, session, ROOT } from "./helpers.mjs";
 import { dump, load, parse, settings } from "../scripts/common.mjs";
 import { project_profile, profile_state } from "../scripts/profile.mjs";
 import { resolved_settings } from "../scripts/project_context.mjs";
@@ -33,6 +33,42 @@ test("configuration presentation reuses resolved values and reports each saved s
   assert.equal(source(["components","code-index","version"]),"settings");
   assert.ok(!JSON.stringify(snapshot).includes("not-a-display-value"));
   assert.deepEqual([shared,local,external].map(file=>fs.readFileSync(file,"utf8")),before);
+});
+
+test("EDT required flags survive scoped updates, rename, YAML save and import/export of both profile layers", async t => {
+  const f = fixture(t); environment(t, f.env);
+  f.profile.repositories[0].edt_required = false;
+  f.profile.repositories.push({ id: "tests", path: ".", alias: "tests", edt_project: "Tests", edt_required: true }, { id: "features", path: ".", alias: "features" }); f.save();
+  const localRepositories = f.profile.repositories.map(item => Object.hasOwn(item, "edt_required") ? { ...item, edt_required: !item.edt_required } : item);
+  const shared = path.join(f.root, ".ai/project.yaml"), local = path.join(f.root, ".ai/project.local.yaml"); dump({ repositories: localRepositories }, local);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  const assertFlags = () => {
+    assert.deepEqual(load(shared).repositories, f.profile.repositories);
+    assert.deepEqual(load(local).repositories, localRepositories);
+    assert.deepEqual(profile_state(f.root).repositories.map(item => item.edt_required), [true, false, true]);
+  };
+  await backend.main({ action: "update", scope: "profile", set: { edtUrl: "http://localhost:8123/mcp" } });
+  await backend.main({ action: "update", scope: "project_local", set: { bslLsJava: "local-java" } });
+  await backend.main({ action: "rename_profile", projectId: "renamed", expectedRevision: backend.edit_revision() }); assertFlags();
+  for (const layerScope of ["profile", "project_local"]) {
+    const edit = await backend.main({ action: "edit", layerScope, format: "yaml" });
+    const args = { text: edit.text + "\n# retained flags\n", mode: "layer", layerScope, baseRevision: edit.baseRevision };
+    const preview = await backend.main({ action: "preview", ...args });
+    await backend.main({ action: "apply", ...args, revision: preview.revision, replace: true }); assertFlags();
+  }
+  for (const includeCommandsAndComments of [false, true]) {
+    const exported = await backend.main({ action: "transfer_export", scope: "both", includeCommandsAndComments });
+    const { documents } = await backend.main({ action: "transfer_decode", base64: exported.base64 });
+    assert.deepEqual(parse(documents.profile).repositories, f.profile.repositories);
+    assert.deepEqual(parse(documents.project_local).repositories, localRepositories);
+    const context = await backend.main({ action: "transfer_context" }), args = { ...context, documents };
+    const preview = await backend.main({ action: "transfer_preview", ...args });
+    await backend.main({ action: "transfer_apply", ...args, revision: preview.revision, replace: true }); assertFlags();
+  }
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const compact = (await client.call("settings.inspect", {})).structuredContent;
+  assert.deepEqual(compact.repositories.map(item => item.edt_required), [true, false, true]);
+  assert.deepEqual(compact.profile.repositories.map(item => item.edt_required), [true, false, true]);
 });
 
 test("configuration sources follow replaced arrays and local header dictionaries", async t => {

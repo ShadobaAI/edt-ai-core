@@ -240,7 +240,7 @@ export function profile_state(selected) {
     const data = project_profile(root);
     return { status: "loaded", path: target, profileId: data.profile_id,
       projectId: data.project.id, testing: { yaxunit: data.testing.yaxunit, vanessa: data.testing.vanessa }, authorities: data.authorities,
-      repositories: data.repositories.map(({ id, path, alias, edt_project }) => ({ id, path, alias, edt_project })) };
+      repositories: data.repositories.map(({ id, path, alias, edt_project, edt_required }) => ({ id, path, alias, edt_project, edt_required: edt_required !== false })) };
   } catch (error) {
     if (error instanceof ProfileAmbiguous)
       return { status: "ambiguous", path: null, candidates: error.candidates.map(root => profile_target(root)), detail: error.message };

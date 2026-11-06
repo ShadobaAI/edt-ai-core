@@ -15,6 +15,8 @@ import { grant_preparation } from "../scripts/components.mjs";
 import { zip } from "../scripts/archives.mjs";
 import { alive } from "../scripts/processes.mjs";
 import { index_config } from "../scripts/runtime.mjs";
+import { dump } from "../scripts/common.mjs";
+import { project_profile } from "../scripts/profile.mjs";
 
 async function ready_fixture(t) {
   const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready";const paths=[];
@@ -39,6 +41,33 @@ async function ready_fixture(t) {
   await backend.main({action:"update",set:{codeIndexEnabled:false,bslLsEnabled:false,edtUrl:url+"/edt",v8stdUrl:url+"/v8std"}});
   return {f,backend,url,paths,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;},setProjectState:state=>{projectState=state;}};
 }
+
+for (const layer of ["profile", "project_local"]) test(`changing edt_required in ${layer} invalidates dependent readiness within the directory and instance`, async t => {
+  const { f, backend } = await ready_fixture(t), config = backend.effective(backend.current());
+  const target = path.join(f.root, layer === "profile" ? ".ai/project.yaml" : ".ai/project.local.yaml");
+  const profile = project_profile(f.root), managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
+  save_readiness(f.state, config, profile, managed, { edt: { ready: true }, v8std: { ready: true } });
+  save_component_checks(f.state, config, profile, [{ id: "edt", state: "ready" }, { id: "yaxunit", state: "ready", target: { projectName: "Product" } }]);
+  assert.equal((await read_readiness(f.state, config, profile)).state, "ready");
+  const receipt = path.join(instance_directory(f.state, f.root), "first.readiness.json"), before = fs.readFileSync(receipt);
+  const repositories = profile.repositories.map(item => ({ ...item, edt_required: false }));
+  dump(layer === "profile" ? { ...f.profile, repositories } : { repositories }, target);
+  const updated = project_profile(f.root), saved = await read_readiness(f.state, config, updated);
+  assert.equal(saved.state, "stale"); assert.equal(saved.mainReadiness.state, "stale");
+  const checks = read_component_checks(f.state, config, updated);
+  assert.ok(checks.filter(item => ["edt", "yaxunit"].includes(item.id)).every(item => item.state === "check_stale"));
+  assert.equal(checks.find(item => item.id === "bsl-ls").state, "ready", "independent durable BSL evidence retains its existing validity contract");
+  assert.equal(checks.find(item => item.id === "yaxunit").target, undefined);
+  assert.deepEqual(fs.readFileSync(receipt), before, "invalidation must not rewrite or renew previous observations");
+  process.env.EDT_AI_INSTANCE = "other";
+  assert.equal((await read_readiness(f.state, config, updated)).state, "not_checked");
+  assert.deepEqual(read_component_checks(f.state, config, updated), []);
+  process.env.EDT_AI_INSTANCE = "first";
+  const other = path.join(f.base, "Other"); fs.mkdirSync(other);
+  const otherConfig = { ...config, active_project: other };
+  assert.equal((await read_readiness(f.state, otherConfig, updated)).state, "not_checked");
+  assert.deepEqual(read_component_checks(f.state, otherConfig, updated), []);
+});
 
 test("background component refreshes use the same addressed probes and preserve all other receipts",async t=>{
   const {f,backend,url,paths}=await ready_fixture(t),config=backend.current();

@@ -20,7 +20,8 @@ export function setup_inspection(read, state) {
   const { values, profile, directoryContext, instance, connectionSources, preparationScope, operation, projectSelection } = read;
   let document;
   try { if (profile.path) document = load(profile.path); } catch { /* profile.detail contains validation failure */ }
-  const repositories = (Array.isArray(document?.repositories) ? document.repositories : []).filter(item => item && typeof item === "object").map(({ id, path: directory, alias, edt_project }) => ({ id, path: directory, alias, edt_project }));
+  const configured = profile.status === "loaded" ? profile.repositories : document?.repositories;
+  const repositories = (Array.isArray(configured) ? configured : []).filter(item => item && typeof item === "object").map(({ id, path: directory, alias, edt_project, edt_required }) => ({ id, path: directory, alias, edt_project, edt_required: edt_required !== false }));
   const detected = directoryContext?.edt?.connection;
   const issues = [];
   const next = [];

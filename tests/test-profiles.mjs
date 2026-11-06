@@ -13,7 +13,7 @@ import {
   operation_lock,
   validate_settings,
 } from "../scripts/common.mjs";
-import { validate, validate_at, project_profile, create_profile } from "../scripts/profile.mjs";
+import { validate, validate_at, project_profile, create_profile, profile_state } from "../scripts/profile.mjs";
 import {
   locate_project,
   configuration_root,
@@ -29,6 +29,42 @@ import { casefold } from "../scripts/casefold.mjs";
 
 test("Unicode state-key case folding preserves the former Python contract", () => {
   assert.equal(casefold("Straße ẞ Σς ﬃ İ"), "strasse ss σσ ffi i\u0307");
+});
+
+test("EDT required flags are optional booleans in shared and local YAML, with multiple required assignments", t => {
+  const f = fixture(t);
+  f.profile.repositories.push({ id: "second", path: ".", alias: "second", edt_project: "Second", edt_required: true });
+  f.save();
+  assert.equal(Object.hasOwn(project_profile(f.root).repositories[0], "edt_required"), false, "loading must not rewrite the authored YAML");
+  assert.deepEqual(profile_state(f.root).repositories.map(item => item.edt_required), [true, true]);
+  for (const value of [false, true]) {
+    fs.rmSync(path.join(f.root, ".ai/project.local.yaml"), { force: true });
+    f.profile.repositories[0].edt_required = value; f.save();
+    assert.equal(project_profile(f.root).repositories[0].edt_required, value);
+    assert.equal(profile_state(f.root).repositories[0].edt_required, value);
+    dump({ repositories: f.profile.repositories.map(item => ({ ...item, edt_required: value })) }, path.join(f.root, ".ai/project.local.yaml"));
+    assert.deepEqual(project_profile(f.root).repositories.map(item => item.edt_required), [value, value]);
+  }
+  for (const value of ["false", "true", 0, 1, null, [], {}]) {
+    const bad = structuredClone(f.profile); bad.repositories[0].edt_required = value;
+    assert.throws(() => validate(bad), /boolean/, JSON.stringify(value));
+    dump({ repositories: bad.repositories }, path.join(f.root, ".ai/project.local.yaml"));
+    assert.throws(() => project_profile(f.root), /boolean/, JSON.stringify(value));
+  }
+});
+
+test("CLI import, merge and export preserve explicit and absent EDT required flags", t => {
+  const f = fixture(t), incoming = path.join(f.base, "incoming.yaml"), exported = path.join(f.base, "export.yaml");
+  f.profile.repositories.push({ id: "tests", path: ".", alias: "tests", edt_project: "Tests", edt_required: false });
+  dump(f.profile, incoming);
+  success(node("scripts/profile.mjs", ["import", f.root, "--input", incoming], { env: f.env }));
+  const repositories = load(path.join(f.root, ".ai/project.yaml")).repositories;
+  dump({ project: { purpose: "Updated purpose" } }, incoming);
+  success(node("scripts/profile.mjs", ["import", f.root, "--input", incoming, "--merge"], { env: f.env }));
+  success(node("scripts/profile.mjs", ["export", f.root, "--output", exported], { env: f.env }));
+  assert.deepEqual(load(exported).repositories, repositories);
+  assert.equal(Object.hasOwn(repositories[0], "edt_required"), false);
+  assert.equal(repositories[1].edt_required, false);
 });
 
 test("new profile reports starter instructions without claiming content acceptance", (t) => {

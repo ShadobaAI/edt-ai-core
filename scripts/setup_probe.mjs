@@ -8,6 +8,7 @@ import { knowledge_evidence_revision } from "./components.mjs";
 import { connection_failure, verification_limits, safe_error_message, register_diagnostic_secrets, sanitize_diagnostics } from "./diagnostics.mjs";
 import { repository_projects } from "./directory_context.mjs";
 import { probe_yaxunit, yaxunit_result, yaxunit_unchecked } from "./yaxunit_readiness.mjs";
+import { normalize_projects, match_edt_projects } from "./edt_launch_adapter.mjs";
 
 const observations = new WeakMap();
 export const edt_project_building = item => item.connected === true && item.repositories?.some(repo => repo.matched === true && repo.open === true && repo.ready !== true && repo.state === "building");
@@ -15,6 +16,7 @@ function edt_project_detail(repositories) {
   const lines = repositories.map(item => {
     let status = "готов";
     if (!item.matched) status = "имя и путь не сопоставлены с проектом EDT";
+    else if (!item.required && item.open === false) status = "необязательный проект закрыт; недоступен для операций, требования EDT выполнены";
     else if (item.open !== true) status = "проект не открыт или его состояние открытия не подтверждено";
     else if (item.state === "building") status = "EDT сообщает о сборке проекта";
     else if (!item.ready) status = "готовность проекта EDT не подтверждена";
@@ -22,17 +24,16 @@ function edt_project_detail(repositories) {
   });
   if (repositories.some(item => item.matched && item.open === true && item.state === "building"))
     lines.push("Дождитесь завершения сборки в EDT и повторите проверку готовности. Если сборка не завершается, проверьте операции и ошибки в EDT.");
+  if (repositories.length && !repositories.some(item => item.required))
+    lines.push("Для готовности EDT нужен хотя бы один обязательный открытый и готовый проект; задайте edt_required: true в YAML.");
   return lines.join("\n");
 }
 function apply_edt_projects(result, root, profile, projects) {
   const unbound = new Set(profile.policy.unbound_edt_repositories || []);
   const candidates = repository_projects(root, profile.repositories.filter(repository => !unbound.has(repository.id)));
   const configured = candidates.filter(({ repository, projects }) => projects.length || repository.edt_project || (profile.policy.edt_repository_ids || []).includes(repository.id));
-  result.repositories = configured.map(({ repository, projects: localProjects }) => {
-    const project = localProjects.length === 1 && projects.find(item => item.name === repository.edt_project && typeof item.path === "string" && resolve(item.path) === resolve(localProjects[0].directory));
-    return { id: repository.id, matched: Boolean(project), ready: Boolean(project?.open === true && project?.state === "ready" && project?.edtProject === true), ...(project ? { state: project.state, open: project.open } : {}) };
-  });
-  result.projectReadiness = result.repositories.length && result.repositories.every(item => item.ready) ? "verified" : "not_ready";
+  result.repositories = match_edt_projects(configured, projects);
+  result.projectReadiness = result.repositories.some(item => item.required && item.ready) && result.repositories.every(item => item.requirementsMet) ? "verified" : "not_ready";
   result.detail = edt_project_detail(result.repositories) || "Не найдены настроенные проекты для проверки готовности EDT.";
 }
 // Setup evidence is a bounded observation of a closed probe, never a workflow
@@ -103,18 +104,18 @@ export async function probe_connections(config, root, profile, state, component 
             const response = await client.request("tools/call", { name: list.name, arguments: args });
             projectResponse = response;
             if (response.isError) throw new Error(response.content?.find(item => item.type === "text")?.text || "Не удалось запросить проекты EDT");
-            let payload = response.structuredContent;
-            if (!payload) try { payload = JSON.parse(response.content?.find(item => item.type === "text")?.text); } catch { /* no structured project evidence */ }
-            const projects = Array.isArray(payload) ? payload : payload?.projects;
-            if (Array.isArray(projects)) {
-              apply_edt_projects(result, root, profile, projects);
+            try { apply_edt_projects(result, root, profile, normalize_projects(response)); }
+            catch (error) {
+              if (error.code !== "unsupported_response") throw error;
+              result.failure = { category: "server_contract" };
+              result.detail = "EDT вернул неподдерживаемый или неполный список проектов; готовность не подтверждена.";
             }
           }
         }
         if (includeYaxunit) testingChecks.push(await probe_yaxunit(config, root, profile, { client, tools, projectResponse }));
       }
       result.ready = name === "edt" ? result.projectReadiness === "verified" : true;
-      if (!result.ready && (!result.repositories || result.repositories.some(item => !item.matched))) result.failure = { category: "access_scope" };
+      if (!result.ready && !result.failure && (!result.repositories || result.repositories.some(item => !item.matched))) result.failure = { category: "access_scope" };
     } catch (error) {
       result.detail = safe_error_message(error); result.failure = connection_failure(error, phase);
       if (name === "edt" && includeYaxunit && profile.testing.yaxunit === true && !testingChecks.length) testingChecks.push(yaxunit_result(timedOut ? "timeout" : error.code === -32601 ? "api_unsupported" : result.connected ? "request_failed" : "edt_unavailable", { diagnostic: { failure: result.failure, detail: result.detail } }));

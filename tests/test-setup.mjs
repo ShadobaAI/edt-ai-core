@@ -25,7 +25,8 @@ test("background readiness and foreground saves retain independent operation res
 import { dump, sleep } from "../scripts/common.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";
-import { probe_connections } from "../scripts/setup_probe.mjs";
+import { probe_connections, edt_project_building } from "../scripts/setup_probe.mjs";
+import { index_repositories } from "../scripts/directory_context.mjs";
 import { settings } from "../scripts/common.mjs";
 import { instance_directory } from "../scripts/project_paths.mjs";
 
@@ -203,7 +204,6 @@ test("EDT probe provides one canonical diagnostic per project for ready and unco
   config.mcp.required.edt.url = upstream.url;
   for (const [patch, expected] of [
     [{ open: false }, "проект не открыт или его состояние открытия не подтверждено"],
-    [{ open: undefined }, "проект не открыт или его состояние открытия не подтверждено"],
     [{ open: true, state: "building" }, "EDT сообщает о сборке проекта"],
     [{ state: "error" }, "готовность проекта EDT не подтверждена"],
     [{ state: "ready", edtProject: false }, "готовность проекта EDT не подтверждена"],
@@ -217,6 +217,106 @@ test("EDT probe provides one canonical diagnostic per project for ready and unco
     assert.equal(lines.length, testProject.state === "building" ? 3 : 2);
     assert.equal(result.ready, expected === "готов");
     assert.equal(result.projectReadiness, result.ready ? "verified" : "not_ready");
+  }
+});
+
+test("EDT optionality changes setup requirements without changing actual project readiness or index selection", async t => {
+  const f = fixture(t), directory = path.join(f.root, "Tests");
+  fs.mkdirSync(directory); fs.writeFileSync(path.join(directory, ".project"), "<projectDescription><name>Tests</name></projectDescription>");
+  f.profile.repositories.push({ id: "tests", path: "Tests", alias: "tests", edt_project: "Tests", edt_required: false });
+  const product = { name: "Product", path: f.root, open: true, state: "ready", edtProject: true };
+  let dependent = { name: "Tests", path: directory, open: false, state: "closed" };
+  let projects = () => [product, dependent, { name: "Unassigned", path: f.base, open: true, state: "building" }];
+  const upstream = await endpoint(t, f.root, () => projects()), config = settings(); config.mcp.required.edt.url = upstream.url;
+  const probe = async () => (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+  for (const state of ["closed", "ready", "building", "error", "unknown", "not_available"]) for (const nature of [undefined, false, true]) {
+    dependent = { name: "Tests", path: directory, open: false, state, ...(nature === undefined ? {} : { edtProject: nature }) };
+    const result = await probe(), repo = result.repositories[1];
+    assert.equal(result.ready, true, JSON.stringify(dependent));
+    assert.equal(result.projectReadiness, "verified");
+    assert.deepEqual([repo.matched, repo.required, repo.ready, repo.requirementsMet], [true, false, false, true]);
+    assert.equal(edt_project_building(result), false);
+    assert.match(result.detail, /tests: необязательный проект закрыт; недоступен для операций/);
+    assert.equal(result.failure, undefined);
+  }
+  assert.deepEqual(index_repositories(f.root, f.profile).map(item => item.id), ["product", "tests"]);
+  dependent = { name: "Tests", path: directory, open: true, state: "ready", edtProject: true };
+  assert.equal((await probe()).ready, true);
+  for (const state of ["building", "error", "unknown", "not_available", "closed"]) {
+    dependent.state = state;
+    const result = await probe();
+    assert.equal(result.ready, false, state); assert.equal(result.repositories[1].requirementsMet, false);
+    assert.equal(edt_project_building(result), state === "building");
+    assert.equal(result.failure, undefined, "project readiness is distinct from connection or mapping failures");
+  }
+  dependent.state = "ready";
+  for (const nature of [false, undefined]) {
+    dependent.edtProject = nature;
+    assert.equal((await probe()).ready, false, "open projects still require a confirmed EDT nature");
+  }
+  for (const required of [undefined, true]) {
+    if (required === undefined) delete f.profile.repositories[1].edt_required;
+    else f.profile.repositories[1].edt_required = required;
+    Object.assign(dependent, { open: false, state: "closed" });
+    const result = await probe();
+    assert.equal(result.ready, false); assert.equal(result.repositories[1].required, true);
+    assert.equal(result.repositories[1].requirementsMet, false);
+  }
+  f.profile.repositories[1].edt_required = false;
+  for (const wrong of [{ ...dependent, name: "Other" }, { ...dependent, path: f.base }, null]) {
+    projects = () => [product, ...(wrong ? [wrong] : [])];
+    const result = await probe();
+    assert.equal(result.ready, false); assert.equal(result.repositories[1].matched, false);
+    assert.equal(result.failure.category, "access_scope");
+  }
+  projects = () => [product, dependent];
+  fs.rmSync(path.join(directory, ".project"));
+  assert.equal((await probe()).repositories[1].matched, false, "optional projects still require a local descriptor");
+  for (const nested of ["one/Tests", "two/Tests"]) {
+    const nestedDirectory = path.join(directory, nested); fs.mkdirSync(nestedDirectory, { recursive: true });
+    fs.writeFileSync(path.join(nestedDirectory, ".project"), "<projectDescription><name>Tests</name></projectDescription>");
+  }
+  assert.equal((await probe()).repositories[1].matched, false, "ambiguous optional descriptors cannot be accepted as closed");
+});
+
+test("EDT requires every required assignment and at least one ready required assignment", async t => {
+  const f = fixture(t), projects = [{ name: "Product", path: f.root, open: true, state: "ready", edtProject: true }];
+  for (const name of ["Second", "Tests"]) {
+    const directory = path.join(f.root, name); fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, ".project"), `<projectDescription><name>${name}</name></projectDescription>`);
+    f.profile.repositories.push({ id: name.toLowerCase(), path: name, alias: name.toLowerCase(), edt_project: name, edt_required: name !== "Tests" });
+    projects.push({ name, path: directory, open: name !== "Tests", state: name === "Tests" ? "closed" : "ready", edtProject: true });
+  }
+  const upstream = await endpoint(t, f.root, () => projects), config = settings(); config.mcp.required.edt.url = upstream.url;
+  const probe = async () => (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+  assert.equal((await probe()).ready, true);
+  projects[1].open = false; assert.equal((await probe()).ready, false);
+  projects[1].open = true;
+  f.profile.repositories.forEach(item => { item.edt_required = false; });
+  for (const open of [false, true]) {
+    projects.forEach(item => { item.open = open; item.state = open ? "ready" : "closed"; });
+    const result = await probe(); assert.equal(result.ready, false); assert.match(result.detail, /хотя бы один обязательный/);
+    assert.ok(result.repositories.every(item => item.requirementsMet));
+  }
+  f.profile.repositories[0].edt_required = true; projects[0].open = false;
+  assert.equal((await probe()).ready, false, "ready optional assignments cannot replace an unready required assignment");
+});
+
+test("EDT setup rejects unconfirmed open, duplicate names and incomplete or malformed inventories", async t => {
+  const f = fixture(t); f.profile.repositories[0].edt_required = false;
+  const valid = { name: "Product", path: f.root, open: false, state: "closed" };
+  let projects = [valid];
+  const upstream = await endpoint(t, f.root, () => projects), config = settings(); config.mcp.required.edt.url = upstream.url;
+  for (const open of [undefined, null, "false", 0]) {
+    projects = [{ ...valid, open }];
+    const result = (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+    assert.equal(result.ready, false); assert.equal(result.connected, true); assert.equal(result.failure.category, "server_contract");
+    assert.match(result.detail, /неподдерживаемый или неполный список/);
+  }
+  for (const rows of [[valid, valid], [{ ...valid, edtProject: null }], [{ ...valid, state: 1 }], [null]]) {
+    projects = rows;
+    const result = (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+    assert.equal(result.ready, false); assert.equal(result.failure.category, "server_contract");
   }
 });
 

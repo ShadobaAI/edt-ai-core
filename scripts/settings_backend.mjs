@@ -1153,8 +1153,8 @@ export class SettingsBackend {
       const componentChecks = read_component_checks(this.STATE, effective, profile).map(item =>
         item.id === "code-index" && item.state === "ready" && summary.components.some(observed => observed.id === item.id && observed.status === "not_checked" && observed.detail)
           ? { ...item, state: "not_checked", detail: "Не удалось подтвердить доступность процесса индекса. Повторите проверку компонента." } : item);
-      if (readiness.state === "ready" && summary.components.some(item => item.id === "code-index" && item.status === "not_checked" && item.detail)) {
-        readiness = { ...readiness, state: "blocked", reason: "Не удалось подтвердить доступность процесса индекса.",
+      if ((readiness.state === "ready" || readiness.mainReadiness?.state === "ready") && summary.components.some(item => item.id === "code-index" && item.status === "not_checked" && item.detail)) {
+        readiness = { ...readiness, state: "blocked", mainReadiness: { scope: "setup_main", state: "blocked" }, reason: "Не удалось подтвердить доступность процесса индекса.",
           checks: readiness.checks.map(item => item.id === "code-index" ? { ...item, state: "not_checked", detail: "Не удалось подтвердить доступность процесса индекса. Повторите проверку готовности." } : item) };
       }
       return {

@@ -99,6 +99,10 @@ function passed(item, profile) {
   const authority = { "code-index": "code_index", "bsl-ls": "bsl_ls" }[item.id];
   return !authority || profile.authorities?.[authority] !== item.id;
 }
+function setup_states(checks, profile) {
+  return { state: checks.every(item => passed(item, profile)) ? "ready" : "blocked",
+    mainReadiness: { scope: "setup_main", state: checks.filter(item => !["yaxunit", "vanessa"].includes(item.id)).every(item => passed(item, profile)) ? "ready" : "blocked" } };
+}
 
 // Verify the installed workflow files, not whether a host/model has invoked a
 // skill or trusted a hook. Those are separate from setup acceptance.
@@ -150,10 +154,10 @@ export function save_readiness(state, config, profile, managed, external, testin
     { id: "knowledge", label: "Режим знаний", state: knowledge.state === "disabled" ? "disabled" : knowledge.state === "ready" ? "ready" : knowledge.state === "invalid" ? "error" : "not_verified", detail: knowledge.detail },
     ...managed.map(item => ({ id: item.name, label: ({ "code-index": "Индекс кода", "bsl-ls": "BSL LS", policy: "Политика" })[item.name] || item.name, state: item.state === "disabled" ? "disabled" : item.ready ? "ready" : item.state || "error", detail: item.detail,
       ...(item.repositories ? { repositories: item.repositories } : {}) })),
-    ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : id === "edt" && edt_project_building(item) ? "building" : item.connected ? "not_verified" : "error", ...(item.failure ? { failure: item.failure } : {}), detail: item.detail || (!item.configured ? "Укажите адрес сервера в настройках подключений." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
+    ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : id === "edt" && edt_project_building(item) ? "building" : item.connected ? "not_verified" : "error", ...(item.failure ? { failure: item.failure } : {}), ...(item.repositories ? { repositories: item.repositories } : {}), detail: item.detail || (!item.configured ? "Укажите адрес сервера в настройках подключений." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
     { ...(testing.find(item => item.id === "yaxunit") || yaxunit_unchecked(profile)), label: "YaXUnit" },
     ...assets.checks];
-  const result = { state: checks.every(item => passed(item, profile)) ? "ready" : "blocked", checkedAt: new Date().toISOString(), checks, scope: "setup", knowledge,
+  const result = { ...setup_states(checks, profile), checkedAt: new Date().toISOString(), checks, scope: "setup", knowledge,
     verificationLimits: verification_limits(knowledge.ready),
     workflowReadiness: { state: "not_checked", scope: "workflow", detail: "Проверка настройки не разрешает действия задачи и не подтверждает знания другой сессии." } };
   result.expiresAt = new Date(Math.min(Date.parse(result.checkedAt) + 15 * 60 * 1000,
@@ -219,7 +223,7 @@ export function read_component_checks(state, config, profile) {
 }
 
 export async function read_readiness(state, config, profile) {
-  const empty = { state: "not_checked", checks: [], scope: "setup", verificationLimits: verification_limits() };
+  const empty = { state: "not_checked", mainReadiness: { scope: "setup_main", state: "not_checked" }, checks: [], scope: "setup", verificationLimits: verification_limits() };
   if (!config.active_project || profile.status && profile.status !== "loaded") return empty;
   const file = receipt_file(state, config.active_project);
   if (!exists(file)) return empty;
@@ -232,17 +236,20 @@ export async function read_readiness(state, config, profile) {
     if (!Number.isFinite(age) || age < 0 || typeof receipt.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(receipt.fingerprint))
       return { ...empty, reason: "Не удалось подтвердить сохранённую проверку готовности. Повторите проверку." };
     if (age > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt) || receipt.fingerprint !== readiness_fingerprint(state, config, data))
-      return { ...result, state: "stale", checks: result.checks.map(item => item.id === "yaxunit" ? { ...yaxunit_result("check_stale"), label: item.label, lastState: item.state, checkedAt: result.checkedAt, expiresAt: result.expiresAt } : item),
+      return { ...result, state: "stale", mainReadiness: { scope: "setup_main", state: "stale" }, checks: result.checks.map(item => item.id === "yaxunit" ? { ...yaxunit_result("check_stale"), label: item.label, lastState: item.state, checkedAt: result.checkedAt, expiresAt: result.expiresAt } : item),
         verificationLimits: verification_limits(), reason: "Настройки или файлы изменились либо проверка устарела. Повторите проверку готовности." };
     if ((result.state === "ready") !== result.checks.every(item => passed(item, data)))
       return { ...empty, reason: "Сохранённый результат не соответствует обязательным компонентам. Повторите проверку готовности." };
-    // An addressed YaXUnit check can resolve (or introduce) its setup blocker.
+    // Addressed EDT and YaXUnit checks can resolve (or introduce) their blockers.
     // Keep the original receipt's age and expiry: partial checks never renew it.
-    const saved = read_component_checks(state, config, data).find(item => item.id === "yaxunit");
+    const observations = read_component_checks(state, config, data);
+    const saved = observations.find(item => item.id === "yaxunit");
     const previous = result.checks.find(item => item.id === "yaxunit");
     const yaxunit = data.testing?.yaxunit !== true ? yaxunit_unchecked(data) : saved && (!previous || Date.parse(saved.checkedAt) >= Date.parse(result.checkedAt)) ? saved : previous || yaxunit_unchecked(data);
     const replacement = { ...yaxunit, label: "YaXUnit" };
-    const checks = previous ? result.checks.map(item => item.id === "yaxunit" ? replacement : item) : [...result.checks, replacement];
-    return { ...result, checks, state: checks.every(item => passed(item, data)) ? "ready" : "blocked", verificationLimits: verification_limits(result.knowledge?.ready === true) };
+    const edt = observations.find(item => item.id === "edt" && Date.parse(item.checkedAt) >= Date.parse(result.checkedAt));
+    const current = result.checks.map(item => item.id === "edt" && edt ? { ...edt, label: item.label } : item);
+    const checks = previous ? current.map(item => item.id === "yaxunit" ? replacement : item) : [...current, replacement];
+    return { ...result, checks, ...setup_states(checks, data), verificationLimits: verification_limits(result.knowledge?.ready === true) };
   } catch { return empty; }
 }

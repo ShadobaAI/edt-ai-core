@@ -462,7 +462,7 @@ async function editHistoryProfile(projectRoot){
 }
 function componentStateLabel(name,state,ready=state==="ready"){
   if(state==="disabled")return "Отключён";
-  if(ready)return name==="yaxunit"?"Готово":name==="code-index"?"Индекс актуален":name==="bsl-ls"?"API доступен":"Протокол проверен";
+  if(ready)return name==="edt"?"Готов":name==="yaxunit"?"Готово":name==="code-index"?"Индекс актуален":name==="bsl-ls"?"API доступен":"Протокол проверен";
   return ({configured:"Настроен, работоспособность не проверена",draft_verified:"Проверен в черновике",not_verified:"Работоспособность не подтверждена",checking:"Проверяется…",building:"Идёт сборка EDT-проекта",missing_config:"Не настроен",external:"Внешний сервер",not_checked:"Не проверен",running:"Процесс работает",stopped:name==="code-index"?"Сервис недоступен":"Не запущен",check_stale:"Проверка устарела",error:name==="code-index"?"Ошибка индекса":"Ошибка проверки",indexing:"Индексируется…",preparing:"Подготовка…",missing:"Индекс не найден",missing_project:"Не найден проект EDT",stale:"Индекс устарел",mismatch:"Не совпадают проекты"})[state]||"Требует внимания";
 }
 const catalogStateLabels={configured:"Настроен · не проверен",draft_verified:"Проверен в черновике",ready:"Готов",building:"Идёт сборка",disabled:"Отключён",missing_config:"Не настроен",not_checked:"Не проверен",check_stale:"Проверка устарела",checking:"Проверяется…",running:"Процесс работает",external:"Не проверен",stopped:"Сервис недоступен",indexing:"Индексируется",preparing:"Подготовка",missing:"Требует подготовки",missing_project:"Требует настройки",stale:"Индекс устарел",mismatch:"Требует настройки",not_verified:"Не подтверждён",error:"Ошибка"};
@@ -549,7 +549,7 @@ function renderDialogStates(){
   $("externalStateDescription").textContent=external?componentStateLabel(external.id,external.state):"Проверка ещё не выполнена";
   const repositories=dialogComponent==="edt"&&Array.isArray(external?.repositories)?external.repositories:[];
   $("externalProjectStates").replaceChildren(...repositories.map(repo=>{
-    const row=document.createElement("li"),label=external.state==="check_stale"?"Проверка устарела":external.state==="checking"?"Проверяется…":repo.matched===false?"Не найден":repo.open===false?"Не открыт":repo.ready===false&&repo.state==="ready"?"Не подтверждён":catalogStateLabels[repo.state]||"Не проверен";
+    const row=document.createElement("li"),label=external.state==="check_stale"?"Проверка устарела":external.state==="checking"?"Проверяется…":repo.matched===false?"Не найден":repo.required===false&&repo.open===false?"Необязательный · закрыт · недоступен для операций":repo.open===false?"Не открыт":repo.ready===false&&repo.state==="ready"?"Не подтверждён":catalogStateLabels[repo.state]||"Не проверен";
     row.textContent=(repo.edtProject||repo.project||repo.id||"EDT-проект")+": "+label;return row;
   }));
   $("externalProjectStates").hidden=!repositories.length;
@@ -642,6 +642,7 @@ $("componentDiscard").onclick=()=>{
 };
 function renderReadiness(){
   const current=currentData,result=current?.readiness,draft=Boolean(dirtyFields.size||hasProfileDraft()),checking=activeOperation?.status==="running"&&["check","refresh_readiness"].includes(activeOperation.action),loaded=current?.profile?.status==="loaded",requiredIssues=loaded?catalogItems(current).filter(item=>item.required&&item.issue):[],knownIssues=requiredIssues.filter(item=>item.id==="yaxunit"&&!["checking","check_stale"].includes(item.state)||["disabled","missing_config","error","missing","missing_project","mismatch","stopped","building"].includes(item.state)),fresh=loaded&&["ready","blocked"].includes(result?.state)&&Number.isFinite(Date.parse(result?.checkedAt))&&(!result.expiresAt||Date.now()<Date.parse(result.expiresAt)),otherIssues=fresh?(result.checks||[]).filter(item=>!["ready","disabled"].includes(item.state)&&!catalogDefinitions.some(component=>component.id===item.id)):[],state=draft?"draft":result?.state==="ready"&&!fresh?"not_checked":knownIssues.length||otherIssues.length?"blocked":checking?"checking":result?.state==="ready"&&requiredIssues.length?"blocked":result?.state||"not_checked";
+  const mainReady=fresh&&result?.mainReadiness?.state==="ready"&&!requiredIssues.some(item=>item.kind!=="testing")&&!otherIssues.length;
   $("readinessPanel").hidden=current?.profile?.status!=="loaded";
   $("readinessTitle").textContent=({ready:"Окружение готово — можно начинать работу",checking:"Обновляем готовность…",blocked:"Для работы требуется внимание",stale:"Нужно повторить проверку готовности",draft:"Есть несохранённые настройки",not_checked:"Готовность ещё не проверена"})[state]||"Готовность ещё не проверена";
   $("readinessTitle").className=state==="ready"?"good":state==="not_checked"?"":"warning";
@@ -650,6 +651,11 @@ function renderReadiness(){
   $("headerStatusContainer").setAttribute("data-state",state);$("headerStatusTitle").textContent=({ready:"Готово",checking:"Проверяется",blocked:"Требует внимания",stale:"Проверка устарела",draft:"Есть изменения",not_checked:"Не проверено"})[state]||"Не проверено";
   const causes=[...(knownIssues.length?knownIssues:requiredIssues).map(item=>item.name),...otherIssues.map(item=>item.label||item.id)];
   $("headerStatusReason").textContent=causes.length?causes.slice(0,2).join(" · "):result?.reason?userMessage(result.reason):result?.checkedAt?time.trim():current?.profile?.status==="loaded"?"Нет актуальной проверки":"Выберите проект";
+  if(mainReady&&state==="blocked"){
+    $("readinessTitle").textContent="Основное окружение готово; тесты требуют внимания";
+    $("readinessDetail").textContent="Основное окружение готово для независимой работы. Тесты требуют внимания: "+requiredIssues.filter(item=>item.kind==="testing").map(item=>item.name).join(", ")+". Полная проверка окружения не пройдена.";
+    $("headerStatusReason").textContent="Основное окружение готово · "+causes.slice(0,2).join(" · ");
+  }
   $("readinessChecks").hidden=!result?.checks?.length;
   $("readinessItems").replaceChildren(...(result?.checks||[]).map(item=>{const row=document.createElement("li");row.textContent=item.label+": "+({ready:"готово",building:"идёт сборка проекта",disabled:"отключено",indexing:"индексируется",stale:"индекс устарел",missing:"индекс не найден",missing_project:"не найден проект EDT",not_checked:"не проверено",not_verified:"не подтверждено",mismatch:"не совпадают проекты",preparing:"подготовка",error:"ошибка"}[item.state]||"состояние не определено")+(item.detail?" — "+userMessage(item.detail):"");return row;}));
 }
@@ -1191,7 +1197,7 @@ async function renderYamlFields(){
           value.forEach((item,index)=>{const wrap=document.createElement("div");wrap.append(field(effective.items||{},item,[...path,index],String(index+1),true,depth+1));if(index>0)wrap.append(button("↑",()=>patchField({kind:"move",path:[...path,index],to:index-1})));if(index<value.length-1)wrap.append(button("↓",()=>patchField({kind:"move",path:[...path,index],to:index+1})));children.append(wrap);});
           children.append(button("+ Добавить элемент",()=>patchField({kind:"append",path:[...path,value.length],value:schemaDefault(formSchema(effective.items||{},data.schema,undefined))})));
         }else{
-          const properties=effective.properties||{},keys=[...Object.keys(properties),...Object.keys(value).filter(key=>!Object.hasOwn(properties,key))].filter(key=>!testingComponent||path.length!==1||path[0]!=="testing"||[testingComponent,testingComponent+"_config","commands"].includes(key));
+          const properties=effective.properties||{},keys=[...Object.keys(properties),...Object.keys(value).filter(key=>!Object.hasOwn(properties,key))].filter(key=>!(path.length===2&&path[0]==="repositories"&&key==="edt_required")).filter(key=>!testingComponent||path.length!==1||path[0]!=="testing"||[testingComponent,testingComponent+"_config","commands"].includes(key));
           for(const key of keys)children.append(field(Object.hasOwn(properties,key)?properties[key]:(typeof effective.additionalProperties==="object"?effective.additionalProperties:{}),value[key],[...path,key],key,Object.hasOwn(value,key),depth+1,(effective.required||[]).includes(key)));
           if(effective.additionalProperties&&typeof effective.additionalProperties==="object"){
             const key=document.createElement("input");key.placeholder="Новый ключ";key.setAttribute("aria-label","Новый ключ: "+label);inputs.push(key);children.append(key,button("+ Добавить ключ",()=>{const name=key.value.trim();if(!name||Object.hasOwn(value,name)){editorFeedback("Укажите новый неповторяющийся ключ.",true);return;}patchField({kind:"set",path:[...path,name],value:schemaDefault(formSchema(effective.additionalProperties,data.schema,undefined))});}));
@@ -1711,7 +1717,7 @@ function renderCheck(result,operation,{announce=true}={}){
   for(const [index,row] of rows.entries())if(box.children[index]!==row)box.insertBefore(row,box.children[index]||null);
   box.hidden=managedComponent==="code-index";if(!announce)return;
   const indexing=result.managed.some(x=>x.state==="indexing"||x.state==="preparing"),requiredDisabled=result.managed.some(item=>item.state==="disabled"&&componentRequired(item.name,currentData))||(result.readiness?.checks||[]).some(item=>item.state==="disabled"&&componentRequired(item.id,currentData)),ready=result.readiness?.state==="ready"&&!requiredDisabled;
-  notice(ready?"Окружение готово — можно начинать работу.":indexing?"Дождитесь завершения подготовки или индексации, затем проверьте готовность.":"Часть проверок требует внимания. Откройте сводные результаты готовности.",!indexing&&!ready);
+  notice(ready?"Окружение готово — можно начинать работу.":indexing?"Дождитесь завершения подготовки или индексации, затем проверьте готовность.":result.readiness?.mainReadiness?.state==="ready"?"Основное окружение готово для независимой работы. Тесты требуют внимания; полная проверка окружения не пройдена.":"Часть проверок требует внимания. Откройте сводные результаты готовности.",!indexing&&!ready);
 }
 async function performCheck(){
   if(dirtyFields.size||hasProfileDraft())throw new Error("Сохраните или отмените изменения перед проверкой готовности.");

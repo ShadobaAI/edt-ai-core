@@ -916,6 +916,42 @@ test("schema fields and YAML share one draft and keep a scalar comment", async (
   assert.equal(ui.elements.get("settingsText").hidden,false);
 });
 
+for (const layerScope of ["profile", "project_local"]) test(`edt_required is YAML-only in the ${layerScope} editor and survives edits through schema fields`, async () => {
+  const backend = new SettingsBackend("unused-state", "unused-settings");
+  const repositories = [
+    { id: "first", path: ".", alias: "first", edt_project: "First", edt_required: false },
+    { id: "second", path: ".", alias: "second", edt_project: "Second", edt_required: true },
+    { id: "third", path: ".", alias: "third" },
+  ];
+  const original = JSON.stringify({ repositories });
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text: original, format: "yaml", baseRevision: "base", layerScope };
+    if (name === "settings.document_fields") return backend.main({ action: "document_fields", ...args });
+    if (name === "settings.document_patch") return patch_yaml_draft(args.text, args.operation);
+    throw new Error(name);
+  });
+  await ui.flush();
+  if (layerScope === "profile") await ui.elements.get("editSettingsButton").onclick();
+  else { ui.elements.get("editorDocument").value = layerScope; ui.elements.get("editorDocument").events.change(); }
+  await ui.flush(); await ui.flush();
+  ui.elements.get("editorMode").value = "tree"; ui.elements.get("editorMode").events.change(); await ui.flush(); await ui.flush();
+  const noFlagControls = () => {
+    assert.equal(ui.document.querySelectorAll().some(input => input.attributes?.["aria-label"]?.includes("edt_required")), false);
+    assert.equal(vm.runInContext("[...jsonRows.keys()].some(key => JSON.parse(key).at(-1) === 'edt_required')", ui.context), false, "no value, toggle or add/remove field may be generated");
+  };
+  noFlagControls();
+  const alias = treeInputs(ui).find(input => input.attributes?.["aria-label"] === "repositories.0.alias");
+  assert.ok(alias); alias.value = "renamed"; await alias.onchange(); await ui.flush(); await ui.flush();
+  assert.deepEqual(parse(ui.elements.get("settingsText").value).repositories, repositories.map((item, index) => index ? item : { ...item, alias: "renamed" }));
+  noFlagControls();
+  ui.elements.get("editorMode").value = "text"; ui.elements.get("editorMode").events.change();
+  const next = parse(ui.elements.get("settingsText").value); next.repositories[0].edt_required = true;
+  ui.elements.get("settingsText").value = JSON.stringify(next); ui.elements.get("settingsText").events.input();
+  ui.elements.get("editorMode").value = "tree"; ui.elements.get("editorMode").events.change(); await ui.flush(); await ui.flush();
+  assert.equal(parse(ui.elements.get("settingsText").value).repositories[0].edt_required, true); noFlagControls();
+});
+
 test("editor search filters collapsed fields without changing YAML and restores disclosure state", async () => {
   const backend=new SettingsBackend("unused-state","unused-settings"),text="project:\n  id: Demo\nconnections:\n  edt:\n    url: http://localhost:9000/mcp\ntesting:\n  yaxunit: false\n";
   const ui=screen(async(name,args)=>{
@@ -3827,6 +3863,32 @@ for (const [code, tone] of [["launch_required", "warning"], ["ambiguous", "warni
   assert.equal(ui.elements.get("testingProbeButton").children.at(-1).textContent, "Проверить настройки запуска");
   ui.elements.get("testingProbeButton").focus(); ui.context.renderDialogStates(); assert.equal(ui.document.activeElement, ui.elements.get("testingProbeButton"));
   ui.elements.get("testingDialogClose").onclick(); assert.equal(ui.document.activeElement, trigger);
+});
+
+test("EDT stays ready beside unavailable tests and labels an optional closed project without claiming operational readiness", async () => {
+  const checkedAt = new Date().toISOString(), expiresAt = new Date(Date.now() + 60000).toISOString();
+  const repositories = [{ id: "product", required: true, matched: true, open: true, state: "ready", ready: true, requirementsMet: true },
+    { id: "tests", required: false, matched: true, open: false, state: "not_available", ready: false, requirementsMet: true }];
+  const checks = [{ id: "edt", label: "EDT", state: "ready", repositories }, { id: "v8std", label: "v8std", state: "ready" }, { ...yaxunit_result("project_not_ready"), label: "YaXUnit" }];
+  const current = { ...read, instance: "default", profile: { ...read.profile, testing: { yaxunit: true, vanessa: false } }, testing: { yaxunit_config: {} },
+    values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std", codeIndexEnabled: false, bslLsEnabled: false, openvikingEnabled: false },
+    readiness: { state: "blocked", mainReadiness: { scope: "setup_main", state: "ready" }, checkedAt, expiresAt, checks } };
+  const ui = screen(async name => { if (["settings.read", "settings.status"].includes(name)) return current; throw new Error(name); });
+  await ui.flush();
+  assert.equal(headerState(ui, "EDT"), "Готов"); assert.equal(headerState(ui, "YaXUnit"), "Проекты EDT не готовы");
+  assert.equal(ui.elements.get("headerStatusTitle").textContent, "Требует внимания");
+  assert.match(ui.elements.get("readinessTitle").textContent, /Основное окружение готово; тесты требуют внимания/);
+  assert.match(ui.elements.get("readinessDetail").textContent, /независимой работы.*YaXUnit.*Полная проверка окружения не пройдена/);
+  const cards = ui.elements.get("componentCatalog").children.flatMap(group => group.children[1].children);
+  const edt = cards.find(card => componentName(card) === "EDT"), yaxunit = cards.find(card => componentName(card) === "YaXUnit");
+  assert.equal(edt.children[0].children[1].textContent, "Готов"); assert.equal(edt.className.includes("error"), false);
+  assert.equal(yaxunit.children[0].children[1].textContent, "Проекты EDT не готовы");
+  componentButton(edt).onclick();
+  assert.equal(ui.elements.get("externalStateDescription").textContent, "Готов");
+  assert.equal(ui.elements.get("externalProjectStates").children[1].textContent, "tests: Необязательный · закрыт · недоступен для операций");
+  assert.equal(repositories[1].ready, false);
+  ui.context.renderCurrent({ ...current, readiness: { ...current.readiness, state: "stale", mainReadiness: { scope: "setup_main", state: "stale" } } });
+  assert.doesNotMatch(ui.elements.get("readinessTitle").textContent, /Основное окружение готово/);
 });
 
 test("YaXUnit offers EDT names in the existing optional field and changing it invalidates green evidence", async () => {

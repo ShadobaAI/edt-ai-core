@@ -1,7 +1,6 @@
 import { object } from "./common.mjs";
-import { resolve } from "./project_paths.mjs";
 import { repository_projects } from "./directory_context.mjs";
-import { read_edt_launch } from "./edt_launch_adapter.mjs";
+import { read_edt_launch, match_edt_projects } from "./edt_launch_adapter.mjs";
 import { connection_failure, safe_error_message, sanitize_diagnostics } from "./diagnostics.mjs";
 
 /**
@@ -96,11 +95,9 @@ export async function probe_yaxunit(config, root, profile, session = null) {
   try {
     const local = repository_projects(root, repositories), names = [...new Set(repositories.map(item => item.edt_project))];
     const evidence = await read_edt_launch(options, names, projects => {
-      for (const { repository, projects: descriptors } of local) {
-        const project = projects.find(item => item.name === repository.edt_project);
-        if (descriptors.length !== 1 || !project || resolve(project.path) !== resolve(descriptors[0].directory)) return "project_mismatch";
-        if (!project.open || !project.edtProject || project.state !== "ready") return "project_not_ready";
-      }
+      const matches = match_edt_projects(local, projects);
+      if (matches.some(item => !item.matched)) return "project_mismatch";
+      if (matches.some(item => !item.ready)) return "project_not_ready";
       return null;
     }, session);
     return evidence.projectIssue ? yaxunit_result(evidence.projectIssue) : evaluate_yaxunit_launch(settings, names, evidence);

@@ -43,6 +43,14 @@ another chat before correcting the actual connection problem.
 - Create a missing generic profile with settings.create under the user's setup
   request. Never replace an existing profile to repair it. A template still needs
   explicit repository mappings before development.
+- When completing mappings, preserve repositories[].edt_required: a YAML-only
+  boolean, defaulting to true when absent. Use confirmed work rules or user intent
+  to mark a project optional; its being closed or owning tests alone does not
+  establish that choice. Several required assignments are allowed; EDT readiness
+  needs at least one ready required assignment. Edit this flag through the YAML
+  edit/preview/apply flow below, respecting the selected shared/local layer and
+  array replacement. It has no settings.update field or form control. See the
+  [profile contract and examples](../../docs/PROFILES.md) for matching and defaults.
 - When creating a profile or asked to create/review project AGENTS.md, follow
   [project instructions](references/project-instructions.md). Creation returns
   projectInstructions.created/preserved with contentValidated=false; finish the
@@ -101,6 +109,21 @@ If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
   A connected server with unverified/mismatched projects is not ready for writes.
   OpenViking setup acceptance covers the selected collections and snapshot;
   each workflow must establish readiness in its own bound knowledge session.
+- Distinguish aggregate EDT requirements from a project's operational readiness:
+  a matched optional project with open=false has ready=false and
+  requirementsMet=true. An open optional project still needs state=ready and
+  edtProject=true. Verify the actual target before dependent operations; preserve
+  exact name/path/descriptor checks and code-index's independent selection.
+  Do not use unbound_edt_repositories to make an assigned project optional.
+- Report full setup readiness.state separately from readiness.mainReadiness
+  (scope=setup_main). Unavailable enabled YaXUnit blocks full setup while the main
+  environment can remain ready for independent work. YaXUnit needs all projects
+  referenced by repository_id, framework_repository_id and product_repository_ids
+  open and ready regardless of edt_required, plus its existing launch checks.
+  A feature-only Vanessa repository needs no EDT assignment. Preserve test
+  settings and closed optional projects; setup diagnosis alone authorizes neither
+  opening projects nor launching tests. Changed flags invalidate dependent saved
+  checks; repeat only the check needed by the selected route.
 - Preparation may download and launch managed services. Use settings.run_check
   only with the user's actual authorization and current preparationScope. Prior
   scoped permission persists; do not ask again. Profile inspection never launches

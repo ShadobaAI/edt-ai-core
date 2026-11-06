@@ -44,7 +44,7 @@ async function fixture(t) {
       return reply({ tools: data.tools });
     }
     const { name, arguments: args } = message.params;
-    if (req.url === "/index" && name === "health") return reply({ structuredContent: { mcp: { status: "ok" }, daemon: { status: "online" }, repos: [{ repo: "product", root_path: f.root, path_status: { status: "ready" }, data_version: { stale: false } }] } });
+    if (req.url === "/index" && name === "health") return reply({ structuredContent: { mcp: { status: "ok" }, daemon: { status: "online" }, repos: data.indexRepositories || [{ repo: "product", root_path: f.root, path_status: { status: "ready" }, data_version: { stale: false } }] } });
     assert.ok(["list_projects", "list_configurations", "get_applications"].includes(name), "a readiness check must never call a mutation or runner");
     if (hook) { const handled = await hook(name, args, reply, rpc); if (handled) return; }
     const result = name === "list_projects" ? { projects: data.projects } : name === "list_configurations" ? { configurations: data.configurations, count: data.configurations.length } : data.applications[args.projectName];
@@ -113,6 +113,79 @@ test("related test extensions need no independent infobase and inherited applica
     x.data.applications.Tests = { project: "Tests", applications: inherited ? [{ id: "test-app" }] : [], ...(inherited ? { inheritedFromProject: "Product" } : {}) };
     const check = (await x.probe()).componentChecks[0]; assert.equal(check.state, "ready"); assert.equal(check.target.projectName, "Product");
   }
+});
+
+test("YaXUnit requires every owner, framework and product EDT assignment even when optional for main work", async t => {
+  const x = await fixture(t), dependencies = ["Owner", "Framework", "Dependency"];
+  for (const name of dependencies) {
+    const directory = path.join(x.f.root, name); fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, ".project"), `<projectDescription><name>${name}</name></projectDescription>`);
+    x.f.profile.repositories.push({ id: name.toLowerCase(), path: name, alias: name.toLowerCase(), edt_project: name, edt_required: false });
+    x.data.projects.push({ name, path: directory, open: true, state: "ready", edtProject: true });
+    x.data.applications[name] = { project: name, applications: [] };
+  }
+  Object.assign(x.f.profile.testing.yaxunit_config, { repository_id: "owner", framework_repository_id: "framework", product_repository_ids: ["product", "dependency"] }); x.f.save();
+  const refresh = () => x.backend.main({ action: "refresh_readiness", scope: x.f.root + "#first" });
+  for (const name of dependencies) {
+    const project = x.data.projects.find(item => item.name === name);
+    Object.assign(project, { open: false, state: "not_available" }); delete project.edtProject;
+    const offset = x.calls.length, closed = await refresh(), edt = closed.componentChecks.find(item => item.id === "edt"), yaxunit = closed.componentChecks.find(item => item.id === "yaxunit");
+    assert.equal(edt.state, "ready", name); assert.equal(edt.repositories.find(item => item.id === name.toLowerCase()).ready, false);
+    assert.equal(yaxunit.state, "not_verified", name); assert.equal(yaxunit.reasonCode, "project_not_ready"); assert.equal(yaxunit.target, undefined);
+    assert.ok(x.calls.slice(offset).filter(item => item.method === "tools/call").every(item => item.params.name === "list_projects"), "launch discovery stops before using an unready dependency");
+    Object.assign(project, { open: true, state: "building", edtProject: true });
+    assert.equal((await x.probe()).componentChecks[0].reasonCode, "project_not_ready", name);
+    project.state = "ready";
+    assert.equal((await x.probe()).componentChecks[0].state, "ready", name);
+  }
+  x.data.configurations = []; x.data.applications.Product.applications = []; x.data.applications.Product.count = 0;
+  const result = await refresh();
+  assert.equal(result.componentChecks.find(item => item.id === "edt").state, "ready");
+  assert.equal(result.componentChecks.find(item => item.id === "yaxunit").reasonCode, "launch_required", "opening projects does not replace launch checks");
+});
+
+test("full setup preserves independent main, EDT and test readiness with an optional closed test project", async t => {
+  const x = await fixture(t), directory = path.join(x.f.root, "Tests"); fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory, ".project"), "<projectDescription><name>Tests</name></projectDescription>");
+  x.f.profile.repositories.push({ id: "tests", path: "Tests", alias: "tests", edt_project: "Tests", edt_required: false });
+  Object.assign(x.f.profile.testing.yaxunit_config, { repository_id: "tests", product_repository_ids: ["product"] }); x.f.save();
+  const project = { name: "Tests", path: directory, open: false, state: "not_available" }; x.data.projects.push(project);
+  x.data.applications.Tests = { project: "Tests", applications: [] };
+  x.data.indexRepositories = x.f.profile.repositories.map(repo => ({ repo: repo.alias, root_path: path.join(x.f.root, repo.path), path_status: { status: "ready" }, data_version: { stale: false } }));
+  const config = x.backend.current(), base = new URL(x.backend.effective(config).mcp.required.edt.url).origin;
+  for (const [id, endpoint] of [["code-index", "/index"], ["bsl-ls", "/bsl"]]) Object.assign(config.mcp.managed[id], { enabled: true, mode: "external", url: base + endpoint });
+  fs.writeFileSync(x.f.env.EDT_AI_SETTINGS, JSON.stringify(config));
+  await x.backend.main({ action: "update", set: { codeIndexEnabled: true, bslLsEnabled: true, v8stdUrl: base + "/v8std" } });
+  const check = () => x.backend.main({ action: "check", authorization: { scope: x.f.root + "#first", effects: ["launch"], evidence: "isolated setup fixture" } });
+  const closed = await check();
+  assert.equal(closed.fullReadiness, "not_ready"); assert.equal(closed.readiness.state, "blocked");
+  assert.deepEqual(closed.readiness.mainReadiness, { scope: "setup_main", state: "ready" });
+  assert.equal(closed.readiness.workflowReadiness.state, "not_checked");
+  assert.equal(closed.componentChecks.find(item => item.id === "edt").state, "ready");
+  assert.equal(closed.componentChecks.find(item => item.id === "code-index").state, "ready", "closed projects remain in the independent index check");
+  assert.equal(closed.componentChecks.find(item => item.id === "yaxunit").reasonCode, "project_not_ready");
+  const saved = (await x.backend.main({ action: "read" })).readiness;
+  assert.equal(saved.state, "blocked"); assert.equal(saved.mainReadiness.state, "ready");
+  assert.deepEqual(saved.checks.find(item => item.id === "edt").repositories, closed.external.edt.repositories);
+  Object.assign(project, { open: true, state: "building", edtProject: true });
+  await x.backend.main({ action: "refresh_readiness", component: "edt", scope: x.f.root + "#first" });
+  const observed = (await x.backend.main({ action: "read" })).readiness;
+  assert.equal(observed.state, "blocked"); assert.equal(observed.mainReadiness.state, "blocked");
+  assert.equal(observed.checks.find(item => item.id === "edt").state, "building");
+  assert.equal(observed.checkedAt, closed.readiness.checkedAt); assert.equal(observed.expiresAt, closed.readiness.expiresAt);
+  const building = await check();
+  assert.equal(building.componentChecks.find(item => item.id === "edt").state, "building");
+  assert.equal(building.readiness.mainReadiness.state, "blocked");
+  project.state = "ready";
+  await x.probe();
+  assert.equal((await x.backend.main({ action: "read" })).readiness.mainReadiness.state, "blocked", "test readiness must not replace an unready EDT check");
+  await x.backend.main({ action: "refresh_readiness", component: "edt", scope: x.f.root + "#first" });
+  const opened = (await x.backend.main({ action: "read" })).readiness;
+  assert.equal(opened.state, "ready"); assert.equal(opened.mainReadiness.state, "ready");
+  assert.equal(opened.expiresAt, building.readiness.expiresAt);
+  const ready = await check();
+  assert.equal(ready.fullReadiness, "verified"); assert.equal(ready.readiness.state, "ready"); assert.equal(ready.readiness.mainReadiness.state, "ready");
+  assert.equal(ready.componentChecks.find(item => item.id === "yaxunit").state, "ready");
 });
 
 for (const fault of ["missing_api", "schema", "unknown", "malformed_row", "incomplete", "request", "rpc", "empty_format"]) test(`EDT ${fault} is never reported as an empty application list`, async t => {
@@ -235,6 +308,8 @@ test("shared EDT inventory preserves incomplete response markers instead of conf
   x.hook((name, args, reply) => { if (name !== "list_projects") return false; reply({ structuredContent: { projects: x.data.projects, partial: true } }); return true; });
   const result = await x.backend.main({ action: "refresh_readiness", scope: x.f.root + "#first" });
   assert.equal(result.componentChecks.find(item => item.id === "yaxunit").reasonCode, "unsupported_response");
+  assert.equal(result.componentChecks.find(item => item.id === "edt").state, "not_verified");
+  assert.equal(result.external.edt.failure.category, "server_contract");
   assert.equal(x.calls.filter(item => item.method === "tools/call" && item.params.name === "list_projects").length, 1);
 });
 
@@ -298,12 +373,13 @@ test("concurrent checks of different components merge without discarding either 
   for (const id of ["v8std", "yaxunit"]) assert.equal(checks.find(item => item.id === id).state, "ready");
 });
 
-for (const change of ["profile", "connection", "project", "instance", "receipt"]) test(`a late ${change} probe cannot replace a newer context or receipt`, async t => {
+for (const change of ["profile", "edt_required", "connection", "project", "instance", "receipt"]) test(`a late ${change} probe cannot replace a newer context or receipt`, async t => {
   const x = await fixture(t); await x.probe(); const before = fs.readFileSync(x.receipt());
   let release, entered; const gate = new Promise(done => { release = done; }), waiting = new Promise(done => { entered = done; });
   x.hook(async name => { if (name === "get_applications") { entered(); await gate; } return false; });
   const pending = x.probe(); await waiting;
   if (change === "profile") { x.f.profile.testing.yaxunit_config.launch_configuration = "Changed"; x.f.save(); }
+  if (change === "edt_required") { x.f.profile.repositories[0].edt_required = false; x.f.save(); }
   if (change === "connection") await x.backend.main({ action: "update", set: { edtUrl: "http://127.0.0.1:2/mcp" } });
   if (change === "project") process.env.EDT_AI_PROJECT_ROOT = "";
   if (change === "instance") process.env.EDT_AI_INSTANCE = "another";

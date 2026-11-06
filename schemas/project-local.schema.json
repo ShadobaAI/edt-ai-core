@@ -54,6 +54,11 @@
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
           },
+          "edt_required": {
+            "type": "boolean",
+            "default": true,
+            "description": "Обязательность открытого и готового EDT-проекта для основного окружения. По умолчанию true. Изменяется только в YAML."
+          },
           "edt_project": {
             "anyOf": [
               {

@@ -2,6 +2,7 @@ import { Ajv2020 } from "../vendor/deps.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
 import { object } from "./common.mjs";
+import { resolve } from "./project_paths.mjs";
 
 // Response dialects supported by EDT-MCP. Arguments are always checked against
 // the live catalogue; this adapter never calls a launch or a mutation tool.
@@ -38,6 +39,19 @@ export function normalize_projects(response) {
   if (items.some(item => !text(item.name) || !text(item.path) || typeof item.open !== "boolean" ||
       (item.edtProject !== undefined && typeof item.edtProject !== "boolean") || !text(item.state)) || new Set(items.map(item => item.name)).size !== items.length) return unsupported(tool);
   return items.map(({ name, path, open, edtProject, state }) => ({ name, path, open, edtProject, state }));
+}
+
+// Both setup and test readiness use the same exact local/live identity checks.
+// Input projects must come from normalize_projects. A permitted closed project
+// satisfies setup requirements without becoming ready for operations or tests.
+export function match_edt_projects(local, projects) {
+  return local.map(({ repository, projects: descriptors }) => {
+    const project = descriptors.length === 1 && projects.find(item => item.name === repository.edt_project && resolve(item.path) === resolve(descriptors[0].directory));
+    const matched = Boolean(project), required = repository.edt_required !== false;
+    const ready = Boolean(project?.open === true && project.state === "ready" && project.edtProject === true);
+    return { id: repository.id, required, matched, ready, requirementsMet: ready || matched && !required && project.open === false,
+      ...(project ? { state: project.state, open: project.open } : {}) };
+  });
 }
 export function normalize_configurations(response) {
   const tool = "list_configurations", items = rows(payload(response, tool), "configurations", tool);
