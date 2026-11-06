@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { fixture, environment, ROOT } from "./helpers.mjs";
-import { package_plugin } from "../tools/package-plugin.mjs";
 import { verify } from "../tools/verify-package.mjs";
 import { check } from "../tools/check-plugin.mjs";
 import { source_files } from "../scripts/package_layout.mjs";
@@ -41,6 +41,21 @@ import {
 import { launch, stop_child, alive } from "../scripts/processes.mjs";
 import { sleep } from "../scripts/common.mjs";
 
+// The real builder replaces its repository's .build directory. Exercise it in
+// an isolated copy so the suite never replaces the developer's build or inputs.
+const packageRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "core package fixture ")));
+for (const name of [...source_files(ROOT), "packaging/marketplace.template.json", "tools/package-plugin.mjs", "tools/release_policy.mjs"]) {
+  const target = path.join(packageRoot, name);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(path.join(ROOT, name), target);
+}
+const initialized = spawnSync("git", ["init", packageRoot], { encoding: "utf8", windowsHide: true });
+if (initialized.status !== 0) throw initialized.error || new Error(initialized.stderr);
+const committed = spawnSync("git", ["-C", packageRoot, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "package fixture"], { encoding: "utf8", windowsHide: true });
+if (committed.status !== 0) throw committed.error || new Error(committed.stderr);
+const { package_plugin } = await import(pathToFileURL(path.join(packageRoot, "tools/package-plugin.mjs")));
+after(() => fs.rmSync(packageRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+
 test("CI entrypoint starts before dependencies and vendor are installed", t => {
   const f = fixture(t), script = path.join(f.base, "ci.mjs");
   fs.copyFileSync(path.join(ROOT, "tools/ci.mjs"), script);
@@ -66,7 +81,7 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
   );
   assert.deepEqual(fs.readFileSync(path.join(ROOT, "plugin.json")), manifest);
   const extracted = path.join(f.base, "extracted plugin"),
-    info = verify(path.join(ROOT, ".build"), extracted);
+    info = verify(path.join(packageRoot, ".build"), extracted);
   assert.equal(info.plugin, "1c-ai-core");
   const installed = path.join(extracted, "plugins/1c-ai-core");
   for (const file of source_files(ROOT)) {
@@ -93,7 +108,7 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
     "SHA256SUMS",
     ...first.archives.map((file) => path.basename(file)),
   ])
-    fs.copyFileSync(path.join(ROOT, ".build", name), path.join(download, name));
+    fs.copyFileSync(path.join(packageRoot, ".build", name), path.join(download, name));
   fs.appendFileSync(
     path.join(download, path.basename(first.archives[0])),
     "corrupt",
@@ -112,7 +127,7 @@ test("build validates all inputs before removing a previous build and refuses es
   );
   assert.equal(sha256(fs.readFileSync(previous.archives[0])), before);
   // Rename one required input only within this test and restore it even on failure.
-  const file = path.join(ROOT, "settings/local.example.yaml"),
+  const file = path.join(packageRoot, "settings/local.example.yaml"),
     saved = file + ".test-backup";
   fs.renameSync(file, saved);
   try {
@@ -192,20 +207,20 @@ test("preview package is checked and coexists with stable in the marketplace", a
   const exec = (args, options) => run(args[0] === "git" && args[1] === "clone" ? ["git", "clone", bare, args.at(-1)] : args, options);
   clone_marketplace(checkout, process.env, exec);
   const stable = package_plugin(), stableBuild = JSON.parse(fs.readFileSync(path.join(stable.plugin, "build-info.json")));
-  push_release(checkout, path.dirname(path.dirname(stable.plugin)), ROOT, stableBuild, process.env, exec);
+  push_release(checkout, path.dirname(path.dirname(stable.plugin)), packageRoot, stableBuild, process.env, exec);
   const result = package_plugin(undefined, `${base}-preview.1`, true);
-  const extracted = path.join(f.base, "preview"), build = verify(path.join(ROOT, ".build"), extracted);
+  const extracted = path.join(f.base, "preview"), build = verify(path.join(packageRoot, ".build"), extracted);
   assert.equal(build.plugin, "1c-ai-core-preview");
   assert.equal((await check(path.join(extracted, "plugins/1c-ai-core-preview"))).runtime, "node-only");
-  push_release(checkout, extracted, ROOT, build, process.env, exec);
+  push_release(checkout, extracted, packageRoot, build, process.env, exec);
   const entries = JSON.parse(fs.readFileSync(path.join(checkout, ".agents/plugins/marketplace.json"))).plugins;
   assert.deepEqual(entries.map(entry => entry.name), ["1c-ai-core", "1c-ai-core-preview"]);
   assert.ok(fs.existsSync(path.join(checkout, "plugins/1c-ai-core/plugin.json")));
-  assert.equal(stage_release(checkout, extracted, ROOT, build, exec), false);
+  assert.equal(stage_release(checkout, extracted, packageRoot, build, exec), false);
   const newer = package_plugin(undefined, `${base}-preview.2`, true);
   const newerBuild = JSON.parse(fs.readFileSync(path.join(newer.plugin, "build-info.json")));
-  push_release(checkout, path.dirname(path.dirname(newer.plugin)), ROOT, newerBuild, process.env, exec);
-  assert.throws(() => stage_release(checkout, extracted, ROOT, build, exec), /roll back/);
+  push_release(checkout, path.dirname(path.dirname(newer.plugin)), packageRoot, newerBuild, process.env, exec);
+  assert.throws(() => stage_release(checkout, extracted, packageRoot, build, exec), /roll back/);
   assert.throws(() => package_plugin(undefined, "9.9.9-preview.1", true), /source manifest/);
 });
 test("preview publication validates branch, build identity and source version", () => {
@@ -343,18 +358,18 @@ test("publication pushes only a dedicated local catalog clone and handles an ini
     build = JSON.parse(
       fs.readFileSync(path.join(packaged.plugin, "build-info.json")),
     );
-  push_release(checkout, payload, ROOT, build, process.env, exec);
+  push_release(checkout, payload, packageRoot, build, process.env, exec);
   assert.equal(
     run(["git", "rev-parse", "refs/heads/main"], { cwd: bare }),
     run(["git", "rev-parse", "HEAD"], { cwd: checkout }),
   );
-  assert.equal(stage_release(checkout, payload, ROOT, build, exec), false);
+  assert.equal(stage_release(checkout, payload, packageRoot, build, exec), false);
   assert.throws(
     () =>
       stage_release(
         checkout,
         payload,
-        ROOT,
+        packageRoot,
         { ...build, version: "0.0.1" },
         exec,
       ),
@@ -379,7 +394,7 @@ test("publication bounded conflict recovery preserves a concurrently published p
     build = JSON.parse(
       fs.readFileSync(path.join(packaged.plugin, "build-info.json")),
     );
-  push_release(checkout, payload, ROOT, build, process.env, exec);
+  push_release(checkout, payload, packageRoot, build, process.env, exec);
   const newer = { ...build, version: "9.9.9" },
     newerPayload = path.join(f.base, "newer");
   // Use JS traversal for Unicode paths on Node 22/Windows (nodejs/node#61950).
@@ -412,7 +427,7 @@ test("publication bounded conflict recovery preserves a concurrently published p
     }
     return exec(args, options);
   };
-  push_release(checkout, newerPayload, ROOT, newer, process.env, conflicting);
+  push_release(checkout, newerPayload, packageRoot, newer, process.env, conflicting);
   assert.equal(pushes, 2);
   const catalog = JSON.parse(
     fs.readFileSync(
@@ -422,17 +437,17 @@ test("publication bounded conflict recovery preserves a concurrently published p
   );
   assert.ok(catalog.plugins.some((plugin) => plugin.name === "other-plugin"));
 });
-test("prepared local marketplace preserves legacy YAML and runs with Node alone", async (t) => {
+test("prepared local marketplace uses current settings and runs with Node alone", async (t) => {
   const f = fixture(t);
   f.save();
   fs.writeFileSync(
-    path.join(f.state, "settings.yaml"),
-    "mcp:\n  required:\n    edt:\n      url: http://localhost:18201/mcp\n",
+    path.join(f.state, "settings.json"),
+    JSON.stringify({ mcp: { required: { v8std: { url: "http://localhost:18201/mcp" } } } }),
   );
   const result = prepare(path.join(f.base, "prepared"), f.state);
   assert.equal(result.node, fs.realpathSync.native(process.execPath));
   assert.equal(
-    JSON.parse(fs.readFileSync(result.settings, "utf8")).mcp.required.edt.url,
+    JSON.parse(fs.readFileSync(result.settings, "utf8")).mcp.required.v8std.url,
     "http://localhost:18201/mcp",
   );
   const client = new McpClient(
@@ -457,7 +472,7 @@ test("switching fresh plugin copies preserves external user settings, bindings a
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, "settings/defaults.json")));
   Object.assign(config, { state_dir: f.state, active_project: f.root });
   config.mcp.required.edt.url = "http://localhost:18201/mcp";
-  config.mcp.optional.openviking.headers_env = { Authorization: "USER_KNOWLEDGE_AUTH" };
+  config.mcp.optional.openviking.connection_id = "team";
   const settingsFile = path.join(f.state, "settings.json");
   fs.writeFileSync(settingsFile, JSON.stringify(config));
   const sentinels = [path.join(f.root, ".ai/project.local.yaml"),
@@ -501,7 +516,7 @@ test("Windows releases descendants holding pipes after their parent exits", { sk
     setTimeout(() => { const child=spawn(process.execPath,['-e','process.send("ready"); setInterval(()=>{},1000)'],{stdio:['ignore','inherit','inherit','ipc'],windowsHide:true});
       child.once('message',()=>process.stdout.write(String(child.pid)+'\\n',()=>setTimeout(()=>process.exit(0),500))); }, 100);`);
   const parent = launch(process.execPath, [file], { stdio: ["pipe", "pipe", "pipe"] });
-  f.clients.push({ close: async () => { parent.ownedJob?.close(); await stop_child(parent, 0); } });
+  f.clients.push({ close: () => stop_child(parent, 0) });
   const exited = once(parent, "close");
   const [data] = await Promise.race([once(parent.stdout, "data"), exited.then(() => { throw new Error("fixture exited before reporting its descendant"); })]);
   const descendant = Number(String(data).trim());
@@ -516,14 +531,13 @@ test("Windows releases descendants holding pipes after their parent exits", { sk
   assert.equal(alive(process.pid), true);
 });
 test(
-  "Windows shared daemon survives its reader job and preserves arguments, Unicode environment and append logs",
+  "Windows shared daemon survives its reader job and preserves arguments, Unicode environment and component logs",
   { skip: process.platform !== "win32" },
   async (t) => {
     const f = fixture(t),
       file = path.join(f.base, "reader.mjs"),
       pidFile = path.join(f.base, "daemon.pid"),
-      stdoutFile = path.join(f.base, "stdout Юникод.log"),
-      stderrFile = path.join(f.base, "stderr Юникод.log"),
+      logFile = path.join(f.base, "daemon Юникод.log"),
       args = [
         "Юникод с пробелом",
         'quoted"argument',
@@ -531,13 +545,13 @@ test(
         "",
         'slashes\\\\"end\\',
       ],
-      childCode = `process.stdout.write(JSON.stringify({args:process.argv.slice(1),cwd:process.cwd(),env:process.env.DAEMON_TEST})); process.stderr.write('stderr retained'); setTimeout(()=>{},2500);`;
-    fs.writeFileSync(stdoutFile, "previous\n");
+      childCode = `require('node:fs').appendFileSync(${JSON.stringify(logFile)},JSON.stringify({args:process.argv.slice(1),cwd:process.cwd(),env:process.env.DAEMON_TEST})); process.stdout.write('duplicate output'); process.stderr.write('duplicate stderr'); setTimeout(()=>{},2500);`;
+    fs.writeFileSync(logFile, "previous\n");
     fs.writeFileSync(
       file,
       `import {spawn_detached_windows} from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/windows_process.mjs")).href)};
 import fs from 'node:fs';
-const child=spawn_detached_windows(process.execPath,${JSON.stringify(["-e", childCode, ...args])},{cwd:${JSON.stringify(f.root)},env:{...process.env,DAEMON_TEST:'Юникод значение'},stdoutFile:${JSON.stringify(stdoutFile)},stderrFile:${JSON.stringify(stderrFile)}});
+const child=spawn_detached_windows(process.execPath,${JSON.stringify(["-e", childCode, ...args])},{cwd:${JSON.stringify(f.root)},env:{...process.env,DAEMON_TEST:'Юникод значение'}});
 child.release(); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); setInterval(()=>{},1000);`,
     );
     const parent = launch(process.execPath, [file], {
@@ -562,7 +576,7 @@ child.release(); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));
     childPid = Number(fs.readFileSync(pidFile, "utf8"));
     for (
       let i = 0;
-      i < 200 && !fs.readFileSync(stdoutFile, "utf8").includes("args");
+      i < 200 && !fs.readFileSync(logFile, "utf8").includes("args");
       i++
     )
       await sleep(15);
@@ -572,18 +586,17 @@ child.release(); fs.writeFileSync(${JSON.stringify(pidFile)},String(child.pid));
       true,
       "closing the reader Job must preserve the shared daemon",
     );
-    const output = fs.readFileSync(stdoutFile, "utf8");
+    const output = fs.readFileSync(logFile, "utf8");
     assert.ok(output.startsWith("previous\n"));
     assert.deepEqual(JSON.parse(output.slice("previous\n".length)), {
       args,
       cwd: f.root,
       env: "Юникод значение",
     });
-    assert.equal(fs.readFileSync(stderrFile, "utf8"), "stderr retained");
   },
 );
 test(
-  "Windows native process identity checks executable, exact creation and legacy CIM timestamps",
+  "Windows native process identity checks executable and exact creation timestamp",
   { skip: process.platform !== "win32" },
   () => {
     const state = windows_process_identity(process.pid);
@@ -592,7 +605,7 @@ test(
       process.execPath.toLowerCase(),
     );
     assert.equal(same_creation(state, state.created), true);
-    assert.equal(same_creation(state, "/Date(" + state.createdMs + ")/"), true);
+    assert.equal(same_creation(state, "/Date(0)/"), false);
     assert.equal(same_creation(state, "win32-filetime:1"), false);
     assert.equal(windows_process_identity(0xfffffffe), null);
   },

@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fixture, environment, session, node, success } from "./helpers.mjs";
-import { settings, validate_settings, dump, load } from "../scripts/common.mjs";
+import { settings, validate_settings, dump, load, parse } from "../scripts/common.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
-import { resolved_settings, instance_file } from "../scripts/project_context.mjs";
+import { resolved_settings } from "../scripts/project_context.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { knowledge_gate, WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 
@@ -14,54 +14,53 @@ function enable_knowledge(f) {
     collections: ["team"], required: true, dependent_actions: ["implementation"] };
 }
 
-test("OpenViking form/chat transport fields use validated instance overrides", async t => {
+test("OpenViking form/chat transport fields use validated project-local settings", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
   const set = { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp",
     openvikingTimeout: 2.5, openvikingMaxResponseBytes: 4096,
-    openvikingHeadersEnv: { Authorization: "OV_AUTHORIZATION" } };
+    openvikingConnectionId: "team" };
   const update = await client.call("settings.update", { set });
   assert.equal(update.isError, undefined);
   const backend = new SettingsBackend();
   const view = await backend.main({ action: "read" });
   for (const [key, value] of Object.entries(set)) assert.deepEqual(view.values[key], value);
   assert.equal(view.values.openvikingEnabled, true);
-  const file = instance_file(backend.current(), f.root), before = fs.readFileSync(file);
+  const file = path.join(f.root, ".ai/project.local.yaml"), before = fs.readFileSync(file);
   for (const change of [{ openvikingTimeout: 0 }, { openvikingMaxResponseBytes: 2048.5 },
-    { openvikingHeadersEnv: { Authorization: "Bearer secret" } }, { openvikingHeadersEnv: null }]) {
+    { openvikingConnectionId: "../bad" }, { openvikingConnectionId: null }]) {
     await assert.rejects(backend.main({ action: "update", set: change }));
     assert.deepEqual(fs.readFileSync(file), before);
   }
   process.env.EDT_AI_INSTANCE = "second";
-  assert.equal((await backend.main({ action: "read" })).values.openvikingTimeout, 20);
+  assert.equal((await backend.main({ action: "read" })).values.openvikingTimeout, 2.5);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
 });
 
-test("OpenViking credential maps replace and clear inherited and saved header identities", async t => {
+test("OpenViking connection identifiers override and clear inherited values", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
-  f.profile.connections = { openviking: { headers_env: { Authorization: "OLD_AUTH", "X-Key": "OLD_KEY" } } }; f.save();
+  f.profile.connections = { openviking: { connection_id: "profile" } }; f.save();
   const backend = new SettingsBackend();
-  for (const headers of [{ Authorization: "NEW_AUTH", "X-Key": "NEW_KEY" }, { Authorization: "NEW_AUTH" }, {}]) {
-    await backend.main({ action: "update", set: { openvikingHeadersEnv: headers } });
-    assert.deepEqual((await backend.main({ action: "read" })).values.openvikingHeadersEnv, headers);
-    assert.deepEqual(load(instance_file(backend.current(), f.root)).connections.openviking.headers_env, headers);
+  for (const id of ["named", ""]) {
+    await backend.main({ action: "update", set: { openvikingConnectionId: id } });
+    assert.equal((await backend.main({ action: "read" })).values.openvikingConnectionId, id);
+    assert.equal(load(path.join(f.root, ".ai/project.local.yaml")).connections.openviking.connection_id, id);
   }
   process.env.EDT_AI_INSTANCE = "second";
-  assert.deepEqual((await backend.main({ action: "read" })).values.openvikingHeadersEnv,
-    { Authorization: "OLD_AUTH", "X-Key": "OLD_KEY" });
+  assert.equal((await backend.main({ action: "read" })).values.openvikingConnectionId, "");
 });
 
 test("OpenViking exposes the effective source of each independently inherited field", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
-  f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp", headers_env: { Authorization: "PROFILE_AUTH" } } }; f.save();
+  f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp", connection_id: "profile" } }; f.save();
   dump({ connections: { openviking: { timeout_seconds: 3 } } }, path.join(f.root, ".ai/project.local.yaml"));
   const backend = new SettingsBackend();
   await backend.main({ action: "update", set: { openvikingMaxResponseBytes: 4096 } });
   const explicit = path.join(f.base, "connections.yaml");
-  dump({ connections: { openviking: { headers_env: {} } } }, explicit);
+  dump({ connections: { openviking: { connection_id: "explicit" } } }, explicit);
   process.env.EDT_AI_CONNECTIONS_FILE = explicit; process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
-  const expected = { openvikingEnabled: "profile", openvikingUrl: "environment:EDT_AI_OPENVIKING_URL",
-    openvikingTimeout: "project_local", openvikingMaxResponseBytes: "instance", openvikingHeadersEnv: "connections_file" };
+  const expected = { openvikingEnabled: "profile", openvikingUrl: "profile",
+    openvikingTimeout: "project_local", openvikingMaxResponseBytes: "project_local", openvikingConnectionId: "connections_file" };
   assert.deepEqual((await backend.main({ action: "read" })).valueSources, expected);
   const client = await session(t, "mcp/settings.mjs", [], f, {
     EDT_AI_CONNECTIONS_FILE: explicit, EDT_AI_OPENVIKING_URL: process.env.EDT_AI_OPENVIKING_URL });
@@ -69,56 +68,40 @@ test("OpenViking exposes the effective source of each independently inherited fi
     const view = (await client.call(name, {})).structuredContent;
     assert.deepEqual(view.valueSources, expected);
     if (view.schema) {
-      assert.equal(view.schema.properties.openvikingHeadersEnv.readOnly, true);
+      assert.equal(view.schema.properties.openvikingConnectionId.readOnly, true);
       assert.equal(view.schema.properties.openvikingTimeout.readOnly, undefined);
     }
   }
 });
 
-for (const source of ["profile", "local", "repository_instance", "instance", "explicit"])
+for (const source of ["profile", "local", "explicit"])
   test(`OpenViking disabled ${source} flag survives higher-priority URLs and its source stays independent`, async t => {
     const f = fixture(t); environment(t, f.env); enable_knowledge(f);
     f.profile.connections = { openviking: { enabled: source !== "profile", url: "https://profile.example/mcp" } }; f.save();
     const backend = new SettingsBackend();
-    const files = { local: path.join(f.root, ".ai/project.local.yaml"),
-      repository_instance: path.join(f.root, ".ai/instances/first.local.yaml"),
-      instance: instance_file(backend.current(), f.root), explicit: path.join(f.base, "connections.yaml") };
+    const files = { local: path.join(f.root, ".ai/project.local.yaml"), explicit: path.join(f.base, "connections.yaml") };
     if (files[source]) dump({ connections: { openviking: { enabled: false } } }, files[source]);
     if (source === "explicit") process.env.EDT_AI_CONNECTIONS_FILE = files.explicit;
     process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
     const view = await backend.main({ action: "read" });
     assert.equal(view.values.openvikingEnabled, false);
-    assert.equal(view.values.openvikingUrl, process.env.EDT_AI_OPENVIKING_URL);
+    assert.equal(view.values.openvikingUrl, "https://profile.example/mcp");
     assert.equal(view.valueSources.openvikingEnabled, source === "local" ? "project_local" : source === "explicit" ? "connections_file" : source);
-    assert.equal(view.valueSources.openvikingUrl, "environment:EDT_AI_OPENVIKING_URL");
+    assert.equal(view.valueSources.openvikingUrl, "profile");
     const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network"); });
     assert.equal((await backend.main({ action: "probe" })).external.openviking.connected, false);
     assert.equal(network.mock.callCount(), 0);
   });
 
-test("OpenViking URL edits do not enable the optional transport and portable defaults retain a saved disabled endpoint", async t => {
-  const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
-  const backend = new SettingsBackend();
-  await backend.main({ action: "update", set: { openvikingUrl: "https://saved.example/mcp" } });
-  let view = await backend.main({ action: "read" });
-  assert.equal(view.values.openvikingEnabled, false);
-  await backend.main({ action: "update", set: { openvikingEnabled: true } });
-  assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "https://saved.example/mcp");
-  await backend.main({ action: "update", set: { openvikingEnabled: false } });
-  const client = await session(t, "mcp/settings.mjs", [], f, { EDT_AI_OPENVIKING_URL: "https://environment.example/mcp" });
-  const live = (await client.call("settings.read", {})).structuredContent;
-  assert.equal(live.values.openvikingEnabled, false);
-  assert.equal(live.schema.properties.openvikingEnabled.readOnly, undefined);
-  assert.equal(live.schema.properties.openvikingUrl.readOnly, true);
-  dump({ mcp: { optional: { openviking: { enabled: false, url: "https://portable.example/mcp" } } } }, f.env.EDT_AI_SETTINGS);
-  const exported = await backend.main({ action: "export" });
-  assert.deepEqual(JSON.parse(exported.text).settings.mcp.optional.openviking.enabled, false);
-  process.env.EDT_AI_PROJECT_ROOT = path.join(f.base, "imported");
-  fs.mkdirSync(path.join(process.env.EDT_AI_PROJECT_ROOT, "src"), { recursive: true });
-  const preview = await backend.main({ action: "preview", text: exported.text });
-  const applied = await backend.main({ action: "apply", text: exported.text, revision: preview.revision });
-  assert.equal(applied.values.openvikingEnabled, false);
-  assert.equal(applied.values.openvikingUrl, "https://portable.example/mcp");
+test("OpenViking URL edits do not enable the optional transport", async t => {
+  const f=fixture(t); environment(t,f.env); enable_knowledge(f); f.save(); const backend=new SettingsBackend();
+  await backend.main({action:"update",set:{openvikingUrl:"https://saved.example/mcp"}});
+  assert.equal((await backend.main({action:"read"})).values.openvikingEnabled,false);
+  await backend.main({action:"update",set:{openvikingEnabled:true}});
+  assert.equal((await backend.main({action:"read"})).values.openvikingUrl,"https://saved.example/mcp");
+  await backend.main({action:"update",set:{openvikingEnabled:false}});
+  const exported=await backend.main({action:"transfer_export",scope:"profile"});
+  assert.equal(exported.text.includes("saved.example"),false);
 });
 
 test("both form entries, chat and CLI share OpenViking values, sources and instance scope", async t => {
@@ -161,7 +144,7 @@ test("unsaved knowledge probe transport is validated without persisting or chang
   const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
   const backend = new SettingsBackend(), before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
   const draft = { enabled: false, url: "https://draft.example/mcp", timeout_seconds: 1, max_response_bytes: 4096,
-    headers_env: { Authorization: "OV_AUTHORIZATION" } };
+    connection_id: "team" };
   const network = t.mock.method(globalThis, "fetch", () => { throw new Error("Unexpected network without access proof"); });
   const probe = await backend.main({ action: "probe", connections: { openviking: draft } });
   assert.equal(probe.external.openviking.configured, false);
@@ -175,7 +158,7 @@ test("unsaved knowledge probe transport is validated without persisting or chang
     { url: "https://draft.example/mcp?token=secret" }])
     await assert.rejects(backend.main({ action: "probe", connections: { openviking: { ...draft, ...change } } }));
   assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
-  assert.equal(fs.existsSync(instance_file(backend.current(), f.root)), false);
+  assert.equal(fs.existsSync(path.join(f.root, ".ai/project.local.yaml")), false);
 });
 
 test("OpenViking settings validate endpoint, environment credentials and bounded transport budgets", t => {
@@ -184,7 +167,7 @@ test("OpenViking settings validate endpoint, environment credentials and bounded
   assert.equal(config.mcp.optional.openviking.timeout_seconds, 20);
   assert.equal(config.mcp.optional.openviking.max_response_bytes, 2097152);
   const valid = { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 2.5,
-    max_response_bytes: 4096, headers_env: { Authorization: "OV_AUTHORIZATION" } };
+    max_response_bytes: 4096, connection_id: "team" };
   config.mcp.optional.openviking = valid; validate_settings(config);
   for (const [enabled, url, expected] of [[false, valid.url, false], [true, "", true]]) {
     config.mcp.optional.openviking = { ...valid, enabled, url };
@@ -205,7 +188,7 @@ test("OpenViking setup probe refuses credentials without external access confirm
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   const config = settings();
   config.mcp.optional.openviking = { enabled: true, url: "https://knowledge.example/mcp",
-    timeout_seconds: 0.0015, max_response_bytes: 1024, headers_env: { Authorization: "OV_AUTHORIZATION" } };
+    timeout_seconds: 0.0015, max_response_bytes: 1024, connection_id: "team" };
   const calls = [];
   f.profile.knowledge.collection_uris = { team: "viking://resources/team" };
   t.mock.method(globalThis, "fetch", async (_url, options) => {
@@ -214,7 +197,7 @@ test("OpenViking setup probe refuses credentials without external access confirm
   });
   let result = await probe_connections(config, f.root, f.profile);
   assert.equal(calls.length, 0);
-  assert.match(result.external.openviking.detail, /access|credential/);
+  assert.match(result.external.openviking.detail, /Учётные данные поиска OpenViking отсутствуют или некорректны/);
   process.env.OV_AUTHORIZATION = "Bearer fixture-secret";
   result = await probe_connections(config, f.root, f.profile);
   assert.equal(calls.length, 0);
@@ -224,10 +207,10 @@ test("OpenViking setup probe refuses credentials without external access confirm
   assert.equal(result.external.openviking.connected, false);
 });
 
-test("OpenViking resolves profile, local, repository instance, state instance, explicit file and environment per field", t => {
+test("OpenViking resolves profile, local and explicit file per field", t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp",
-    headers_env: { Authorization: "OV_AUTHORIZATION" } } }; f.save();
+    connection_id: "team" } }; f.save();
   const config = settings();
   config.mcp.optional.openviking.url = "https://settings.example/mcp";
   const read = () => {
@@ -242,107 +225,89 @@ test("OpenViking resolves profile, local, repository instance, state instance, e
   config.mcp.optional.openviking.url = "https://settings.example/mcp";
   f.profile.connections.openviking.url = "https://profile.example/mcp";
   assert.equal(read()[1], "profile");
-  dump({ connections: { openviking: { timeout_seconds: 3, headers_env: { Authorization: "OV_LOCAL_AUTH" } } } }, path.join(f.root, ".ai/project.local.yaml"));
+  dump({ connections: { openviking: { timeout_seconds: 3, connection_id: "local" } } }, path.join(f.root, ".ai/project.local.yaml"));
   assert.equal(read()[0].timeout_seconds, 3);
-  dump({ connections: { openviking: { url: "https://repository-instance.example/mcp" } } }, path.join(f.root, ".ai/instances/first.local.yaml"));
-  assert.equal(read()[1], "repository_instance");
-  const stateFile = instance_file(config, f.root);
-  dump({ connections: { openviking: { url: "https://instance.example/mcp", max_response_bytes: 8192 } } }, stateFile);
-  assert.equal(read()[1], "instance");
+  const stateFile = path.join(f.root, ".ai/project.local.yaml");
+  dump({ connections: { openviking: { url: "https://instance.example/mcp", timeout_seconds: 3, connection_id: "local", max_response_bytes: 8192 } } }, stateFile);
+  assert.equal(read()[1], "project_local");
   const explicit = path.join(f.base, "connections.yaml");
   dump({ connections: { openviking: { url: "https://explicit.example/mcp", timeout_seconds: 5 } } }, explicit);
   process.env.EDT_AI_CONNECTIONS_FILE = explicit;
   const [effective, source] = read();
   assert.equal(source, "connections_file");
   assert.deepEqual(effective, { enabled: true, url: "https://explicit.example/mcp", timeout_seconds: 5,
-    max_response_bytes: 8192, headers_env: { Authorization: "OV_LOCAL_AUTH" } });
+    max_response_bytes: 8192, connection_id: "local" });
   process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
-  assert.equal(read()[0].url, process.env.EDT_AI_OPENVIKING_URL);
-  assert.equal(read()[1], "environment:EDT_AI_OPENVIKING_URL");
+  assert.equal(read()[0].url, "https://explicit.example/mcp");
+  assert.equal(read()[1], "connections_file");
   dump({ connections: { openviking: { url_env: "CUSTOM_OV_URL" } } }, explicit);
-  process.env.CUSTOM_OV_URL = "https://custom.example/mcp";
-  assert.equal(read()[0].url, process.env.CUSTOM_OV_URL);
-  assert.equal(read()[1], "environment:CUSTOM_OV_URL");
+  assert.throws(() => read());
   delete process.env.EDT_AI_CONNECTIONS_FILE; delete process.env.EDT_AI_OPENVIKING_URL;
   process.env.EDT_AI_INSTANCE = "second";
-  assert.equal(read()[0].url, "https://profile.example/mcp");
-  assert.equal(read()[0].max_response_bytes, 2097152);
+  assert.equal(read()[0].url, "https://instance.example/mcp");
+  assert.equal(read()[0].max_response_bytes, 8192);
   const other = path.join(f.base, "other"); fs.mkdirSync(other);
   assert.equal(resolved_settings(config, other, null)[0].mcp.optional.openviking.url, "https://settings.example/mcp");
 });
 
-test("OpenViking settings updates belong to the selected instance and MCP exposes the effective source", async t => {
+test("OpenViking settings updates belong to the project and MCP exposes the effective source", async t => {
   const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
   const backend = new SettingsBackend();
   const updated = await backend.main({ action: "update", set: { openvikingUrl: "https://instance.example/mcp", openvikingEnabled: true } });
   assert.equal(updated.values.openvikingEnabled, true);
   assert.equal(updated.values.openvikingUrl, "https://instance.example/mcp");
-  assert.deepEqual(load(instance_file(backend.current(), f.root)).connections.openviking,
+  assert.deepEqual(load(path.join(f.root, ".ai/project.local.yaml")).connections.openviking,
     { enabled: true, url: "https://instance.example/mcp" });
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
   const client = await session(t, "mcp/settings.mjs", [], f);
   const view = (await client.call("settings.read", {})).structuredContent;
-  assert.equal(view.connectionSources.openviking, "instance");
+  assert.equal(view.connectionSources.openviking, "project_local");
   assert.equal(view.schema.properties.openvikingUrl.readOnly, undefined);
   const environmentClient = await session(t, "mcp/settings.mjs", [], f, { EDT_AI_OPENVIKING_URL: "https://environment.example/mcp" });
   for (const name of ["settings.read", "settings.status"]) {
     const inherited = (await environmentClient.call(name, {})).structuredContent;
-    assert.equal(inherited.schema.properties.openvikingUrl.readOnly, true);
+    assert.equal(inherited.schema.properties.openvikingUrl.readOnly, undefined);
     assert.equal(inherited.schema.properties.v8stdUrl.readOnly, undefined);
-    assert.equal(inherited.values.openvikingUrl, "https://environment.example/mcp");
+    assert.equal(inherited.values.openvikingUrl, "https://instance.example/mcp");
   }
   process.env.EDT_AI_INSTANCE = "second";
-  assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "");
+  assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "https://instance.example/mcp");
 });
 
-test("OpenViking portable export/import preserves public transport defaults without credentials or local overrides", async t => {
-  const f = fixture(t); environment(t, f.env); enable_knowledge(f);
-  f.profile.connections = { openviking: { enabled: true, url: "https://public.example/mcp", timeout_seconds: 4,
-    max_response_bytes: 4096, headers_env: { Authorization: "OV_AUTHORIZATION" } } }; f.save();
-  process.env.OV_AUTHORIZATION = "Bearer fixture-secret";
-  process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
-  dump({ connections: { openviking: { url: "https://private-local.example/mcp" } } }, path.join(f.root, ".ai/project.local.yaml"));
-  const backend = new SettingsBackend();
-  await backend.main({ action: "update", set: { openvikingUrl: "https://private-instance.example/mcp" } });
-  const exported = await backend.main({ action: "export" });
-  assert.deepEqual(JSON.parse(exported.text).profile, f.profile);
-  assert.equal(/fixture-secret|private-local|private-instance|environment\.example/.test(exported.text), false);
-  const other = path.join(f.base, "other"); fs.mkdirSync(path.join(other, "src"), { recursive: true });
-  process.env.EDT_AI_PROJECT_ROOT = other; delete process.env.EDT_AI_OPENVIKING_URL;
-  const request = { text: exported.text };
-  const preview = await backend.main({ action: "preview", ...request });
-  assert.equal(preview.openviking.url, "https://public.example/mcp");
-  assert.equal(preview.openviking.timeout_seconds, 4);
-  assert.equal(preview.openviking.max_response_bytes, 4096);
-  assert.deepEqual(preview.openviking.headers_env, { Authorization: "OV_AUTHORIZATION" });
-  assert.equal(JSON.stringify(preview).includes("fixture-secret"), false);
-  const applied = await backend.main({ action: "apply", ...request, revision: preview.revision });
-  assert.equal(applied.values.openvikingUrl, preview.openviking.url);
-  assert.deepEqual(backend.effective(backend.current()).mcp.optional.openviking, preview.openviking);
+test("OpenViking YAML transfer preserves public settings without credentials or local overrides", async t=>{
+  const f=fixture(t);environment(t,f.env);enable_knowledge(f);
+  f.profile.connections={openviking:{enabled:true,url:"https://public.example/mcp",timeout_seconds:4,max_response_bytes:4096,connection_id:"team"}}; f.save();
+  process.env.OV_AUTHORIZATION="Bearer fixture-secret";
+  dump({connections:{openviking:{url:"https://private-local.example/mcp"}}},path.join(f.root,".ai/project.local.yaml"));
+  const backend=new SettingsBackend(), exported=await backend.main({action:"transfer_export",scope:"profile",includeCommandsAndComments:true});
+  assert.deepEqual(parse(exported.text),f.profile);assert.equal(/fixture-secret|private-local/.test(exported.text),false);
+  const other=path.join(f.base,"other");fs.mkdirSync(path.join(other,"src"),{recursive:true});process.env.EDT_AI_PROJECT_ROOT=other;
+  const context=await backend.main({action:"transfer_context"}),args={baseRevision:context.baseRevision,documents:{profile:exported.text}};
+  const preview=await backend.main({action:"transfer_preview",...args});
+  await backend.main({action:"transfer_apply",...args,revision:preview.revision,replace:true});
+  assert.equal((await backend.main({action:"read"})).values.openvikingUrl,"https://public.example/mcp");
 });
 
 for (const mode of ["import", "edit"])
-  for (const changed of ["shared", "profile", "local", "repository_instance", "instance", "explicit"])
+  for (const changed of ["shared", "profile", "local", "explicit"])
     test(`OpenViking ${mode} rejects a stale ${changed} source even under an environment URL override`, async t => {
       const f = fixture(t); environment(t, f.env); enable_knowledge(f); f.save();
       process.env.EDT_AI_OPENVIKING_URL = "https://environment.example/mcp";
       const explicit = path.join(f.base, "connections.yaml"); dump({ connections: {} }, explicit);
       process.env.EDT_AI_CONNECTIONS_FILE = explicit;
       const backend = new SettingsBackend(), config = backend.current();
-      const document = await backend.main({ action: mode === "edit" ? "edit" : "export" });
-      // Importing only settings must still track the profile it resolves against.
-      if (mode === "import") { const data = JSON.parse(document.text); data.profile = null; document.text = JSON.stringify(data); }
-      const request = { text: document.text, ...(mode === "edit" ? { mode, baseRevision: document.baseRevision } : {}) };
-      const preview = await backend.main({ action: "preview", ...request });
+      const document = await backend.main({ action: "edit", layerScope: "profile", format: "yaml" });
+      const request = mode === "edit" ? { text: document.text, mode: "layer", layerScope: "profile", baseRevision: document.baseRevision }
+        : { documents: { profile: document.text }, baseRevision: document.baseRevision };
+      const preview = await backend.main({ action: mode === "edit" ? "preview" : "transfer_preview", ...request });
       const profileFile = path.join(f.root, ".ai/project.yaml");
-      const sources = { shared: f.env.EDT_AI_SETTINGS, local: path.join(f.root, ".ai/project.local.yaml"),
-        repository_instance: path.join(f.root, ".ai/instances/first.local.yaml"), instance: instance_file(config, f.root), explicit };
+      const sources = { shared: f.env.EDT_AI_SETTINGS, local: path.join(f.root, ".ai/project.local.yaml"), explicit };
       if (changed === "profile") { f.profile.project.purpose = "Changed after preview"; f.save(); }
       else if (changed === "shared") dump({ mcp: { optional: { openviking: { url: "https://changed.example/mcp" } } } }, sources.shared);
       else dump({ connections: { openviking: { url: "https://changed.example/mcp" } } }, sources[changed]);
       const profileBefore = fs.readFileSync(profileFile);
       const sourceBefore = changed === "profile" ? profileBefore : fs.readFileSync(sources[changed]);
-      await assert.rejects(backend.main({ action: "apply", ...request, revision: preview.revision, replace: true }), /после загрузки|предпросмотра/);
+      await assert.rejects(backend.main({ action: mode === "edit" ? "apply" : "transfer_apply", ...request, revision: preview.revision, replace: true }), /изменились/);
       assert.deepEqual(fs.readFileSync(profileFile), profileBefore);
       if (changed !== "profile") assert.deepEqual(fs.readFileSync(sources[changed]), sourceBefore);
       assert.equal(fs.readdirSync(path.dirname(profileFile)).some(name => name.endsWith(".bak.yaml")), false);
@@ -355,24 +320,21 @@ test("OpenViking import rejects inline credentials and credential-bearing URLs b
     { url: "https://user:password@knowledge.example/mcp" }, { headers: { Authorization: "Bearer secret" } },
     { headers_env: { Authorization: "Bearer secret" } }]) {
     const profile = { ...f.profile, connections: { openviking: connection } };
-    await assert.rejects(backend.main({ action: "preview", text: JSON.stringify(profile) }));
-    const exported = JSON.parse((await backend.main({ action: "export" })).text);
-    exported.settings.mcp.optional.openviking = connection;
-    await assert.rejects(backend.main({ action: "preview", text: JSON.stringify(exported) }));
+    const context = await backend.main({ action: "transfer_context" });
+    await assert.rejects(backend.main({ action: "transfer_preview", baseRevision: context.baseRevision, documents: { profile: JSON.stringify(profile) } }));
+    await assert.rejects(backend.main({ action: "transfer_preview", baseRevision: context.baseRevision, documents: { project_local: JSON.stringify({ connections: { openviking: connection } }) } }));
   }
   assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
 });
 
-for (const source of ["profile", "local", "repository_instance", "instance", "explicit", "environment"])
+for (const source of ["profile", "local", "explicit"])
   test(`OpenViking empty ${source} URL remains an explicit disconnect above saved defaults`, async t => {
     const f = fixture(t); environment(t, f.env); enable_knowledge(f);
     f.profile.connections = { openviking: { enabled: true, url: source === "profile" ? "" : "https://profile.example/mcp" } }; f.save();
     dump({ mcp: { optional: { openviking: { enabled: true, url: "https://defaults.example/mcp" } } } }, f.env.EDT_AI_SETTINGS);
     const backend = new SettingsBackend(), config = backend.current();
-    const files = { local: path.join(f.root, ".ai/project.local.yaml"),
-      repository_instance: path.join(f.root, ".ai/instances/first.local.yaml"),
-      instance: instance_file(config, f.root), explicit: path.join(f.base, "connections.yaml") };
+    const files = { local: path.join(f.root, ".ai/project.local.yaml"), explicit: path.join(f.base, "connections.yaml") };
     if (files[source]) dump({ connections: { openviking: { url: "" } } }, files[source]);
     if (source === "explicit") process.env.EDT_AI_CONNECTIONS_FILE = files.explicit;
     if (source === "environment") process.env.EDT_AI_OPENVIKING_URL = "";
@@ -382,9 +344,11 @@ for (const source of ["profile", "local", "repository_instance", "instance", "ex
     assert.equal(read.values.openvikingUrl, "");
     assert.equal(read.values.openvikingEnabled, true);
     assert.equal(read.connectionSources.openviking, source === "environment" ? "environment:EDT_AI_OPENVIKING_URL" : source === "local" ? "project_local" : source === "explicit" ? "connections_file" : source);
-    const preview = await backend.main({ action: "preview", text: JSON.stringify(f.profile) });
+    const edit = await backend.main({ action: "edit", layerScope: "profile", format: "yaml" });
+    const request = { text: edit.text, mode: "layer", layerScope: "profile", baseRevision: edit.baseRevision };
+    const preview = await backend.main({ action: "preview", ...request });
     assert.equal(preview.openviking.url, "");
-    await backend.main({ action: "apply", text: JSON.stringify(f.profile), revision: preview.revision, replace: true });
+    await backend.main({ action: "apply", ...request, revision: preview.revision, replace: true });
     assert.equal((await backend.main({ action: "read" })).values.openvikingUrl, "");
     const probe = await backend.main({ action: "probe" });
     assert.equal(probe.external.openviking.configured, false);
@@ -396,8 +360,8 @@ test("OpenViking reset preserves the disabled flag while restoring the inherited
   const f = fixture(t); environment(t, f.env); enable_knowledge(f);
   f.profile.connections = { openviking: { enabled: true, url: "https://profile.example/mcp" } }; f.save();
   const backend = new SettingsBackend();
-  const file = instance_file(backend.current(), f.root);
-  const retained = { enabled: false, timeout_seconds: 3, max_response_bytes: 4096, headers_env: { Authorization: "OV_AUTHORIZATION" } };
+  const file = path.join(f.root, ".ai/project.local.yaml");
+  const retained = { enabled: false, timeout_seconds: 3, max_response_bytes: 4096, connection_id: "team" };
   dump({ connections: { openviking: { ...retained, url: "" } } }, file);
   const client = await session(t, "mcp/settings.mjs", [], f);
   await client.call("settings.reset_connection", { connection: "openviking" });
@@ -409,7 +373,7 @@ test("OpenViking reset preserves the disabled flag while restoring the inherited
   assert.equal(network.mock.callCount(), 0);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
   process.env.EDT_AI_INSTANCE = "second";
-  assert.equal((await backend.main({ action: "read" })).values.openvikingEnabled, true);
+  assert.equal((await backend.main({ action: "read" })).values.openvikingEnabled, false);
 });
 
 for (const mode of ["transitional", "kora"])
@@ -438,10 +402,12 @@ for (const mode of ["transitional", "kora"])
       await backend.main({ action: "probe" });
       assert.deepEqual(load(path.join(f.root, ".ai/project.yaml")).knowledge, required);
     }
-    const exported = await backend.main({ action: "export" });
-    assert.deepEqual(JSON.parse(exported.text).profile.knowledge, required);
-    const preview = await backend.main({ action: "preview", text: exported.text });
-    await backend.main({ action: "apply", text: exported.text, revision: preview.revision, replace: true });
+    const exported = await backend.main({ action: "transfer_export", scope: "profile" });
+    assert.deepEqual(parse(exported.text).knowledge, required);
+    const context = await backend.main({ action: "transfer_context" });
+    const args = { baseRevision: context.baseRevision, documents: { profile: exported.text } };
+    const preview = await backend.main({ action: "transfer_preview", ...args });
+    await backend.main({ action: "transfer_apply", ...args, revision: preview.revision, replace: true });
     assert.deepEqual(load(path.join(f.root, ".ai/project.yaml")).knowledge, required);
     assert.equal(network.mock.callCount(), 0);
     const client = await session(t, "mcp/settings.mjs", [], f);

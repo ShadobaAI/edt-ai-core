@@ -8,12 +8,12 @@ import { saveRunReceipt } from "./receipt.mjs";
 
 const normalized = file => process.platform === "win32" ? path.resolve(file).toLowerCase() : path.resolve(file);
 export async function runFeature(profile, client, tools, { feature, scenario, beforeOpen, onProgress = () => {} }, contract = runtimeContract) {
-  if (typeof feature !== "string" || path.extname(feature).toLowerCase() !== ".feature" || typeof scenario !== "string" || !scenario.trim() || /[\x00-\x1f]/.test(scenario)) fail("run requires --feature and an exact --scenario name");
+  if (typeof feature !== "string" || path.extname(feature).toLowerCase() !== ".feature" || typeof scenario !== "string" || !scenario.trim() || /[\x00-\x1f]/.test(scenario)) fail("Для run требуются --feature и точное имя --scenario");
   const file = fs.realpathSync(path.resolve(profile.projectRoot, feature));
   const roots = [fs.realpathSync(profile.features), fs.realpathSync(profile.projectRoot)];
   const withinScope = roots.some(root => { const relative = path.relative(root, file); return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative); });
   const stat = fs.statSync(file);
-  if (path.extname(file).toLowerCase() !== ".feature" || !withinScope || !stat.isFile() || stat.size > 4 * 1024 * 1024) fail("run feature must be a bounded .feature file inside projectRoot or configured features");
+  if (path.extname(file).toLowerCase() !== ".feature" || !withinScope || !stat.isFile() || stat.size > 4 * 1024 * 1024) fail("Для run требуется файл .feature допустимого размера внутри projectRoot или заданного каталога сценариев");
   const sourceBytes = fs.readFileSync(file), sourceHash = digest(sourceBytes);
   const sourceText = normalizeFeatureText(sourceBytes.toString("utf8"));
   const required = [
@@ -24,7 +24,7 @@ export async function runFeature(profile, client, tools, { feature, scenario, be
   // Validate the whole plan before its first mutation against actual tools/list.
   for (const [name, args] of required) {
     const tool = tools.find(item => item.name === name);
-    if (!tool) fail(`required workflow tool is unavailable: ${name}`);
+    if (!tool) fail(`Обязательный инструмент рабочего процесса недоступен: ${name}`);
     checkArguments(tool.inputSchema, args);
   }
   const baseline = await inspectSession(profile, client, tools, contract);
@@ -46,7 +46,7 @@ export async function runFeature(profile, client, tools, { feature, scenario, be
     } catch (error) {
       if (error.code === "tool_error") { error.detail = { ...error.detail, stage: name, reports }; throw error; }
       if (mutation && dispatched) {
-        const uncertain = new Error("Selected workflow mutation outcome is indeterminate; inspect state before retrying");
+        const uncertain = new Error("Исход изменения в выбранном рабочем процессе неизвестен; перед повтором проверьте состояние");
         uncertain.code = "mutation_indeterminate";
         uncertain.detail = { classification: "transport_or_protocol", outcome: "indeterminate", tool: name, reports, nextAction: uncertain.message };
         throw uncertain;

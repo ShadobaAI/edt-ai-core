@@ -135,6 +135,7 @@ test("workspace port changes rebind only the selected EDT relay", async t => {
 
 test("external code-index preparation checks scoped health without installing a managed runtime", async t => {
   const f = fixture(t), config = settings();
+  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
   let unhealthy = false;
   const e = await endpoint(t, ({ res, message, reply, error }) => {
     if (message.method === "server/discover") return error(-32601);
@@ -153,7 +154,7 @@ test("external code-index preparation checks scoped health without installing a 
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   unhealthy = true;
   await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), error =>
-    error.remote === true && /health failed.*remote error text omitted/.test(error.message) && !error.message.includes("health unavailable"));
+    error.remote === true && /Проверка состояния code-index не удалась.*текст внешней ошибки скрыт/.test(error.message) && !error.message.includes("health unavailable"));
 });
 test("environment credential references apply to authenticated calls and session cleanup",async t=>{
   const previous=process.env.CORE_TEST_AUTH_HEADER;process.env.CORE_TEST_AUTH_HEADER="Bearer fixture";
@@ -572,6 +573,18 @@ for (const mode of [
       assert.equal(e.calls.length, 1);
     },
   );
+test("SSE accepts CR, LF and split CRLF line endings without waiting for stream closure", async t => {
+  for (const ending of ["\r", "\n", "\r\n"]) {
+    const e = await endpoint(t, async ({ res, message }) => {
+      res.writeHead(200, { "Content-Type": "Text/Event-Stream; charset=utf-8" });
+      const event = `data: ${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { ok: true } })}${ending}${ending}`;
+      for (const character of event) { res.write(character); if (character === "\r") await sleep(5); }
+    });
+    const client = new RemoteMcp(e.url, 2);
+    assert.deepEqual(await client.request("tools/list"), { ok: true });
+    await client.close();
+  }
+});
 test("SSE notifications invalidate tools without losing the complete tool result", async (t) => {
   const e = await endpoint(t, ({ res, message }) =>
     res

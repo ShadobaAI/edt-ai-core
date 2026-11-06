@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
   ROOT,
@@ -31,28 +31,46 @@ import {
 } from "./project_paths.mjs";
 import { project_profile } from "./profile.mjs";
 import { effective_settings } from "./project_context.mjs";
-import { safe_error_message } from "./diagnostics.mjs";
-import { launch, alive, which, run_sync } from "./processes.mjs";
+import { safe_error_message, create_diagnostic_logger } from "./diagnostics.mjs";
+import { launch, stop_child, alive, which, run_sync } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
-import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation } from "./components.mjs";
+import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, require_preparation, native_environment } from "./components.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows } from "./windows_process.mjs";
+import { index_repositories, index_selection } from "./directory_context.mjs";
+import { open_reader, reader_active } from "./reader_lease.mjs";
 
 export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPONENTS[id].repository]));
+// Workspace registration tools first appeared in 1.1.0-rc.4.
+function supported_bsl_version(tag) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*))?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/.exec(tag || "");
+  if (!match) return false;
+  const major = Number(match[1]), minor = Number(match[2]), patch = Number(match[3]);
+  if (major !== 1) return major > 1;
+  if (minor !== 1) return minor > 1;
+  if (patch !== 0) return patch > 0;
+  if (!match[4]) return true;
+  const rc = /^rc\.(\d+)$/.exec(match[4]);
+  return Boolean(rc && Number(rc[1]) >= 4);
+}
+function require_supported_version(component, tag) {
+  if (component === "bsl-ls" && !supported_bsl_version(tag))
+    throw new ConfigError("Для BSL LS требуется версия 1.1.0 или новее; также поддерживается 1.1.0-rc.4 и более новые RC. Установите подходящую версию в настройках.");
+}
 export async function list_versions(component, io = { fetch_json }, options = {}) {
-  if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
+  if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Неизвестный компонент окружения");
   const releases = [], deadline = Date.now() + 90000;
   const base = `https://api.github.com/repos/${SPECS[component]}/releases`;
   const readPage = async (query, fresh) => {
-    if (Date.now() >= deadline) throw new ConfigError("Version catalog timed out; retry loading the list");
+    if (Date.now() >= deadline) throw new ConfigError("Истекло время загрузки каталога версий; повторите загрузку списка");
     let hasNext = null;
     const items = await io.fetch_json(base + query, Math.min(30000, deadline - Date.now()), {
       fresh, on_response: response => { hasNext = /;\s*rel="next"/.test(response.headers.get("link") || ""); },
     });
-    if (!Array.isArray(items)) throw new ConfigError("Invalid runtime release list");
+    if (!Array.isArray(items)) throw new ConfigError("Некорректный список выпусков компонента");
     return { items, hasNext };
   };
   let pageSize = 100, nextExpected = false;
@@ -70,7 +88,7 @@ export async function list_versions(component, io = { fetch_json }, options = {}
     }
     const { items, hasNext } = result;
     for (const item of items) {
-      if (!item || item.draft || typeof item.tag_name !== "string" || item.tag_name === "latest" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(item.tag_name)) continue;
+      if (!item || item.draft || typeof item.tag_name !== "string" || item.tag_name === "latest" || !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(item.tag_name) || (component === "bsl-ls" && !supported_bsl_version(item.tag_name))) continue;
       const publishedAt = item.published_at || item.created_at || null;
       releases.push({ version: item.tag_name, prerelease: Boolean(item.prerelease), publishedAt });
     }
@@ -78,16 +96,16 @@ export async function list_versions(component, io = { fetch_json }, options = {}
       releases.sort((a, b) => (Date.parse(b.publishedAt) || 0) - (Date.parse(a.publishedAt) || 0));
       const seen = new Set();
       const versions = releases.filter(item => { if (seen.has(item.version)) return false;seen.add(item.version);return true; });
-      if (!versions.length) throw new ConfigError("GitHub returned no published version tags. Retry loading versions.");
+      if (!versions.length) throw new ConfigError("GitHub не вернул опубликованных тегов версий. Повторите загрузку списка.");
       return { component, versions };
     }
     nextExpected = hasNext === true;
   }
-  throw new ConfigError("Version catalog exceeds 10000 releases; the list was not truncated");
+  throw new ConfigError("В каталоге больше 10000 выпусков; неполный список не возвращён");
 }
 export async function latest_version(component, io = { fetch_json }, options = {}) {
-  if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Unknown runtime component");
-  const release = await runtime_release(component, { version: "latest", allow_prerelease: false }, {
+  if (!Object.hasOwn(SPECS, component)) throw new ConfigError("Неизвестный компонент окружения");
+  const release = await runtime_release(component, { version: "latest", allow_prerelease: options.allowPrerelease === true }, {
     fetch_json: url => io.fetch_json(url, 30000, { fresh: options.refresh === true }),
   });
   return release.tag_name;
@@ -95,17 +113,31 @@ export async function latest_version(component, io = { fetch_json }, options = {
 async function runtime_release(component, options, io) {
   const requested = options.version, automatic = requested === "latest";
   const tag = /^\d+\.\d+\.\d+/.test(requested) ? "v" + requested : requested;
+  if (!automatic) require_supported_version(component, tag);
   const releaseURL = automatic ? (options.allow_prerelease ? "?per_page=100" : "/latest") : "/tags/" + tag;
-  const response = await io.fetch_json(`https://api.github.com/repos/${SPECS[component]}/releases${releaseURL}`);
+  const base = `https://api.github.com/repos/${SPECS[component]}/releases`;
+  let response;
+  try { response = await io.fetch_json(base + releaseURL); }
+  catch (error) {
+    if (!(component === "bsl-ls" && automatic && !options.allow_prerelease && error.status === 404)) throw error;
+  }
+  if (component === "bsl-ls" && automatic && !options.allow_prerelease && (!response || !supported_bsl_version(response.tag_name))) {
+    const releases = await io.fetch_json(base + "?per_page=100");
+    response = Array.isArray(releases) ? releases.find(item => !item.draft && item.prerelease && /^v?1\.1\.0-rc\.\d+$/.test(item.tag_name || "") && supported_bsl_version(item.tag_name)) : null;
+    if (!response) throw new ConfigError("Не найден поддерживаемый стабильный выпуск BSL LS или кандидат выпуска 1.1.0");
+    require_supported_version(component, response.tag_name);
+    return response;
+  }
   // GitHub lists releases newest first. Drafts are never runnable candidates.
   const release = automatic && options.allow_prerelease
-    ? (Array.isArray(response) ? response.find(item => !item.draft) : null) : response;
+    ? (Array.isArray(response) ? response.find(item => !item.draft && (component !== "bsl-ls" || supported_bsl_version(item.tag_name))) : null) : response;
   if (!release || release.draft || (automatic && !options.allow_prerelease && release.prerelease))
-    throw new ConfigError("No eligible runtime release; use a stable release, allow_prerelease, or an explicit version");
+    throw new ConfigError("Нет подходящего выпуска компонента; выберите стабильный выпуск, allow_prerelease или явную версию");
   if (!automatic && release.tag_name !== tag)
-    throw new ConfigError("Runtime release response does not match the requested version");
+    throw new ConfigError("Ответ каталога выпусков не соответствует запрошенной версии");
   if (!/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(release.tag_name || ""))
-    throw new ConfigError("Unsupported release tag: " + release.tag_name);
+    throw new ConfigError("Неподдерживаемый тег выпуска: " + release.tag_name);
+  require_supported_version(component, release.tag_name);
   return release;
 }
 export function platform_build(
@@ -120,7 +152,7 @@ export function platform_build(
   const build = builds[platform + "-" + arch];
   if (!build)
     throw new ConfigError(
-      `Unsupported code-index platform: ${platform}/${arch}. Available builds: Windows x64, Linux x64, macOS arm64.`,
+      `Неподдерживаемая платформа code-index: ${platform}/${arch}. Доступны сборки Windows x64, Linux x64 и macOS arm64.`,
     );
   return { asset: build[0], executable: build[1], format: build[2] };
 }
@@ -136,9 +168,20 @@ export async function fetch_json(url, timeout = 30000, options = {}) {
     signal: AbortSignal.timeout(timeout),
     redirect: "error",
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
-  options.on_response?.(response);
-  return response.json();
+  try {
+    if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}: ${url}`), { status: response.status });
+    options.on_response?.(response);
+    const chunks = []; let bytes = 0;
+    for await (const chunk of response.body || []) {
+      bytes += chunk.length;
+      if (bytes > 8 * 1024 * 1024) throw new ConfigError("Ответ каталога выпусков превышает 8 МиБ.");
+      chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch (error) {
+    await response.body?.cancel().catch(() => {});
+    throw error;
+  }
 }
 export function artifact(state, component, slot = "active") {
   const active = read_json(path.join(state, "runtime-lock.json"), {})[component];
@@ -148,7 +191,7 @@ export function artifact(state, component, slot = "active") {
     !/^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/.test(entry.release || "") ||
     !/^[0-9a-f]{64}$/.test(entry.sha256 || "")
   )
-    throw new ConfigError("Invalid runtime-lock entry");
+    throw new ConfigError("Некорректная запись runtime-lock");
   const executable =
     component === "code-index"
       ? platform_build().executable
@@ -158,15 +201,11 @@ export function artifact(state, component, slot = "active") {
     entry.platform !== process.platform + "-" + process.arch
   )
     return null;
+  if (typeof entry.path !== "string") throw new ConfigError("Некорректный путь артефакта в runtime-lock");
   const home = path.join(state, "runtime", component, entry.release),
-    legacy = resolve(path.join(home, executable));
-  const target = entry.path ? inside(state, entry.path) : legacy;
-  if (
-    ![legacy, resolve(path.join(home, entry.sha256, executable))].includes(
-      resolve(target),
-    )
-  )
-    throw new ConfigError("Invalid runtime-lock artifact path");
+    target = inside(state, entry.path);
+  if (resolve(target) !== resolve(path.join(home, entry.sha256, executable)))
+    throw new ConfigError("Некорректный путь артефакта в runtime-lock");
   return is_file(target) && sha(target) === entry.sha256 ? target : null;
 }
 export function installed_versions(state, root = null) {
@@ -197,7 +236,7 @@ export async function ensure_installed(
   options = {},
 ) {
   if (!Object.hasOwn(SPECS, component))
-    throw new ConfigError("Unknown runtime component");
+    throw new ConfigError("Неизвестный компонент окружения");
   const build =
     component === "code-index"
       ? platform_build()
@@ -206,6 +245,8 @@ export async function ensure_installed(
     requested = config.mcp.managed[component].version,
     current =
       read_json(path.join(state, "runtime-lock.json"), {})[component] || {};
+  if (!refresh && existing && (requested === "latest" || requested.replace(/^v/, "") === current.release.replace(/^v/, "")))
+    require_supported_version(component, current.release);
   if (
     existing &&
     !refresh &&
@@ -223,27 +264,27 @@ export async function ensure_installed(
   );
   if (candidates.length !== 1)
     throw new ConfigError(
-      `Expected one artifact for ${component}, got ${candidates.length}. Required platform: ${process.platform}/${process.arch}.`,
+      `Ожидался один артефакт ${component}, получено ${candidates.length}. Требуемая платформа: ${process.platform}/${process.arch}.`,
     );
   const asset = candidates[0],
     digest = asset.digest || "";
   if (!/^sha256:[0-9a-f]{64}$/.test(digest))
     throw new ConfigError(
-      `Release ${version} does not publish an SHA-256 asset digest`,
+      `Для артефакта выпуска ${version} не опубликована контрольная сумма SHA-256`,
     );
   if (
     !Number.isSafeInteger(asset.size) ||
     asset.size <= 0 ||
     asset.size > 512 * 1024 * 1024
   )
-    throw new ConfigError("Invalid runtime asset size");
+    throw new ConfigError("Некорректный размер артефакта компонента");
   const url = new URL(asset.browser_download_url);
   if (
     url.protocol !== "https:" ||
     url.hostname !== "github.com" ||
     !url.pathname.startsWith("/" + SPECS[component] + "/releases/download/")
   )
-    throw new ConfigError("Invalid runtime download source");
+    throw new ConfigError("Недопустимый источник загрузки компонента");
   process.stderr.write(
     `Installing ${component} ${version}: ${asset.size} bytes\n`,
   );
@@ -251,18 +292,21 @@ export async function ensure_installed(
     headers: { "User-Agent": "1c-ai-core/" + core_version },
     signal: AbortSignal.timeout(60000),
   });
-  if (!response.ok) throw new Error("Runtime download HTTP " + response.status);
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error("Загрузка компонента: HTTP " + response.status);
+  }
   const chunks = [];
   let size = 0;
   for await (const chunk of response.body) {
     size += chunk.length;
     if (size > asset.size)
-      throw new ConfigError("Artifact size or SHA-256 mismatch: " + component);
+      throw new ConfigError("Не совпадает размер или SHA-256 артефакта: " + component);
     chunks.push(chunk);
   }
   const download = Buffer.concat(chunks);
   if (size !== asset.size || sha256(download) !== digest.slice(7))
-    throw new ConfigError("Artifact size or SHA-256 mismatch: " + component);
+    throw new ConfigError("Не совпадает размер или SHA-256 артефакта: " + component);
   let staged;
   if (component === "code-index")
     staged = extract_binary(download, build.format, build.executable);
@@ -308,18 +352,18 @@ export function project(selected, config, requireRepositories = true) {
   selected ||= process.env.EDT_AI_PROJECT_ROOT || config.active_project;
   if (!selected)
     throw new ConfigError(
-      "Set --project-root, EDT_AI_PROJECT_ROOT, or active_project in plugin settings",
+      "Укажите --project-root, EDT_AI_PROJECT_ROOT или active_project в настройках плагина",
     );
   const root = locate_project(selected),
     data = project_profile(root);
   if (requireRepositories && !data.repositories.length)
     throw new ConfigError(
-      "Configure explicit repositories (id, relative path, alias) in the project profile",
+      "Задайте репозитории в профиле проекта: id, относительный path и alias",
     );
   for (const repo of data.repositories)
     if (!is_dir(inside(root, repo.path)))
       throw new ConfigError(
-        "Repository directory does not exist: " + repo.path,
+        "Каталог репозитория не существует: " + repo.path,
       );
   return [root, data];
 }
@@ -332,16 +376,18 @@ export const installed_runtime = (state, config, component, refresh = false, all
     () => {
       const current = artifact(state, component), requested = component_settings(config, component).version;
       const release = read_json(path.join(state, "runtime-lock.json"), {})[component]?.release;
+      if (current && !refresh) require_supported_version(component, release);
       if (current && (refresh || (requested !== "latest" && requested.replace(/^v/, "") !== release?.replace(/^v/, ""))))
-        throw new ConfigError("A verified runtime is already active; use settings.updates to download, validate and apply the requested candidate.");
+        throw new ConfigError("Проверенный компонент уже активен; используйте settings.updates для загрузки, проверки и применения новой версии.");
       if (!current && !allow_install)
-        throw new ConfigError("Компонент не установлен или повреждён. Выполните «Проверить готовность» для подготовки runtime.");
+        throw new ConfigError("Компонент не установлен или повреждён. Нажмите «Подготовить и проверить» для подготовки runtime.");
       return ensure_installed(state, config, component, refresh);
     },
     120,
   );
 const active_entry = ({ candidate, previous, ...entry } = {}) => entry;
 const runtimeOwner = randomUUID();
+const activeMaintenance = new Set();
 const uncertain_update = message => Object.assign(new ConfigError(message), { outcomeUnknown: true });
 function owned_executable(state, owner) {
   if (!owner.executable || !is_file(owner.executable)) return false;
@@ -349,8 +395,7 @@ function owned_executable(state, owner) {
   if (!target.startsWith(base + path.sep)) return false;
   // The process's own immutable artifact is checked, not today's active release.
   const digest = path.basename(path.dirname(target));
-  if (/^[0-9a-f]{64}$/.test(digest)) return digest === sha(target);
-  return ["active", "previous", "candidate"].some(slot => artifact(state, "code-index", slot) === target);
+  return /^[0-9a-f]{64}$/.test(digest) && digest === sha(target);
 }
 export async function check_updates(state, config, component, io = { fetch_json }) {
   const options = component_settings(config, component);
@@ -373,58 +418,93 @@ export function signal_component(state, root, component, allInstances = false) {
     save_json(file, { ...record, [component]: Date.now() + ":" + Math.random() });
   }
 }
-export function active_readers(state, root) {
+export async function active_readers(state, root) {
   const directory = path.join(project_home(state, root), "code-index/readers");
-  return exists(directory) ? fs.readdirSync(directory).filter(file => file.endsWith(".json")).map(file => read_json(path.join(directory, file), {})).filter(reader => reader.root === resolve(root) && alive(reader.pid)) : [];
+  const active = [];
+  if (!exists(directory)) return active;
+  for (const name of fs.readdirSync(directory).filter(file => file.endsWith(".json"))) {
+    const file = path.join(directory, name);
+    let reader;
+    try { reader = read_json(file); } catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    if (!reader) continue;
+    if (reader.root !== resolve(root)) continue;
+    if (await reader_active(reader.id)) active.push(reader);
+    else fs.rmSync(file, { force: true });
+  }
+  return active;
 }
-function check_maintenance(home) {
-  const record = read_json(path.join(home, "maintenance.json"));
-  if (record && (record.pid !== process.pid || record.ownerId !== runtimeOwner)) throw new ConfigError("Component update is in progress or was interrupted; inspect settings.operation before connecting readers");
+function check_maintenance(home, allowOwned = false) {
+  const file = path.join(home, "maintenance.json");
+  if (!exists(file)) return;
+  let record;
+  if (allowOwned && activeMaintenance.has(home)) {
+    try { record = read_json(file); } catch { /* An unreadable marker remains a barrier. */ }
+  }
+  if (!allowOwned || !activeMaintenance.has(home) || record?.pid !== process.pid || record?.ownerId !== runtimeOwner)
+    throw new ConfigError("Обновление компонента выполняется или было прервано; проверьте settings.operation до подключения читателей");
+}
+function begin_maintenance(home, root) {
+  check_maintenance(home);
+  save_json(path.join(home, "maintenance.json"), { pid: process.pid, root: resolve(root), ownerId: runtimeOwner });
+  activeMaintenance.add(home);
 }
 export async function acquire_reader(state, root) {
   record_project_owner(state, root);
   const home = path.join(project_home(state, root), "code-index");
-  return operation_lock(home, () => {
+  return operation_lock(home, async () => {
     check_maintenance(home);
-    const file = path.join(home, "readers", process.pid + "-" + randomUUID() + ".json");
-    save_json(file, { pid: process.pid, root: resolve(root) });
-    return file;
+    const id = randomUUID(), file = path.join(home, "readers", id + ".json"), owner = await open_reader(id);
+    try { save_json(file, { id, pid: process.pid, root: resolve(root) }); }
+    catch (error) { await owner.close(); throw error; }
+    let closing;
+    return { file, close: () => closing ||= (async () => {
+      try { fs.rmSync(file, { force: true }); } finally { await owner.close(); }
+    })() };
   });
 }
 export async function update_component(state, config, root, data, component, action, io = {}) {
-  if (!managed_components.includes(component)) throw new ConfigError("Unknown managed component");
+  if (!managed_components.includes(component)) throw new ConfigError("Неизвестный управляемый компонент");
   const lockfile = path.join(state, "runtime-lock.json");
   return operation_lock(state, async () => {
     if (io.load_context) ({ config, root, data } = await io.load_context());
-    if (!component_enabled(config, component) || component_settings(config, component).mode === "external") throw new ConfigError("Enable managed mode before updating " + component);
+    if (!component_enabled(config, component) || component_settings(config, component).mode === "external") throw new ConfigError("Перед обновлением включите управляемый режим для " + component);
     if (["download", "install"].includes(action)) {
       const file = await ensure_installed(state, config, component, true, io.fetch_json ? io : { fetch_json, fetch }, { stage: true });
       if (action === "download") return { component, state: "candidate_downloaded", path: file };
     }
-    if (!["install", "apply", "rollback"].includes(action)) throw new ConfigError("Unknown update action");
+    if (!["install", "apply", "rollback"].includes(action)) throw new ConfigError("Неизвестное действие обновления");
     const before = read_json(lockfile, {}), entry = before[component] || {}, slot = action === "rollback" ? "previous" : "candidate";
     const candidate = artifact(state, component, slot);
-    if (!candidate) throw new ConfigError("No verified " + slot + " artifact; download a candidate first");
+    if (!candidate) throw new ConfigError("Нет проверенного артефакта " + slot + "; сначала загрузите кандидата");
+    require_supported_version(component, entry[slot].release);
     if (action !== "rollback") {
       const options = component_settings(config, component), selected = entry[slot];
+      // An RC is allowed by the default policy only while no supported stable
+      // release exists. A previously downloaded candidate may have gone stale.
+      if (action === "apply" && component === "bsl-ls" && options.version === "latest" &&
+          !options.allow_prerelease && selected.prerelease === true) {
+        const fetchRelease = io.fetch_json || fetch_json;
+        const current = await runtime_release(component, options, {
+          fetch_json: url => fetchRelease(url, 30000, { fresh: true }),
+        });
+        if (current.tag_name !== selected.release)
+          throw new ConfigError("Загруженный кандидат не соответствует текущим настройкам версии; перед применением загрузите нового кандидата");
+      }
       if ((options.version !== "latest" && options.version.replace(/^v/, "") !== selected.release.replace(/^v/, "")) ||
-          (options.version === "latest" && !options.allow_prerelease && selected.prerelease === true))
-        throw new ConfigError("Downloaded candidate does not match the current release settings; download a new candidate before applying");
+          (options.version === "latest" && !options.allow_prerelease && selected.prerelease === true &&
+            !(component === "bsl-ls" && /^v?1\.1\.0-rc\.\d+$/.test(selected.release))))
+        throw new ConfigError("Загруженный кандидат не соответствует текущим настройкам версии; перед применением загрузите нового кандидата");
     }
     const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
-    if (component === "code-index") await operation_lock(home, () => {
-      const old = read_json(maintenance);
-      if (old && old.pid !== process.pid && alive(old.pid)) throw new ConfigError("Another component update is still running");
-      save_json(maintenance, { pid: process.pid, root: resolve(root), ownerId: runtimeOwner });
-    });
+    if (component === "code-index") await operation_lock(home, () => begin_maintenance(home, root));
     let leaveMaintenance = false;
     try {
     signal_component(state, root, component, true);
     if (component === "code-index") {
-      for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
-      if (active_readers(state, root).length) throw new ConfigError("Code-index has active readers. Finish current operations or close their chats, then apply the downloaded candidate.");
+      for (let i = 0; i < 12 && (await active_readers(state, root)).length; i++) await sleep(250);
+      if ((await active_readers(state, root)).length) throw new ConfigError("Индекс кода используется. Завершите текущие операции или закройте их чаты, затем примените загруженного кандидата.");
       try { await (io.stop || stop_daemon)(state, root); }
-      catch (error) { leaveMaintenance = true; throw uncertain_update("Daemon stop not confirmed; inspect its actual state before retrying: " + safe_error_message(error)); }
+      catch (error) { leaveMaintenance = true; throw uncertain_update("Остановка демона не подтверждена; перед повтором проверьте его фактическое состояние: " + safe_error_message(error)); }
     }
     try {
       const checked = await (io.smoke || smoke)(state, config, root, data, component, 90, false, candidate);
@@ -434,7 +514,7 @@ export async function update_component(state, config, root, data, component, act
       try { save_json(lockfile, lock); }
       catch (error) {
         try { await restoreConfig?.(); }
-        catch (restoreError) { throw uncertain_update("Runtime activation failed; settings restoration needs attention: " + restoreError.message); }
+        catch (restoreError) { throw uncertain_update("Активация компонента не удалась; восстановление настроек требует проверки: " + restoreError.message); }
         throw error;
       }
       let reconnect = "requested";
@@ -444,22 +524,25 @@ export async function update_component(state, config, root, data, component, act
     } catch (error) {
       if (component === "code-index") {
         try { await (io.stop || stop_daemon)(state, root); }
-        catch (stopError) { leaveMaintenance = true; throw uncertain_update("Candidate failed: " + safe_error_message(error) + "; candidate stop unconfirmed: " + safe_error_message(stopError)); }
+        catch (stopError) { leaveMaintenance = true; throw uncertain_update("Проверка кандидата не удалась: " + safe_error_message(error) + "; остановка кандидата не подтверждена: " + safe_error_message(stopError)); }
         const old = artifact(state, component);
         if (old) try { await (io.restart || ensure_daemon)(state, root, data, old); }
-        catch (restartError) { leaveMaintenance = true; throw uncertain_update("Candidate failed; restoration needs attention: " + restartError.message); }
+        catch (restartError) { leaveMaintenance = true; throw uncertain_update("Проверка кандидата не удалась; восстановление требует проверки: " + restartError.message); }
       }
       if (error.outcomeUnknown) throw error;
-      throw new ConfigError("Candidate rejected; active artifact retained: " + safe_error_message(error));
+      throw new ConfigError("Новая версия не прошла проверку; прежний артефакт сохранён: " + safe_error_message(error));
     }
     } finally {
-      if (component === "code-index" && !leaveMaintenance && read_json(maintenance)?.pid === process.pid) fs.rmSync(maintenance, { force: true });
+      if (component === "code-index") {
+        activeMaintenance.delete(home);
+        if (!leaveMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
+      }
     }
   }, 180);
 }
 export function index_config(home, root, data, health = null) {
   let text = "[daemon]\nhttp_port = 0\nmax_concurrent_initial = 1\n";
-  for (const repo of data.repositories)
+  for (const repo of index_repositories(root, data))
     text +=
       "\n[[paths]]\nalias = " +
       JSON.stringify(repo.alias) +
@@ -470,7 +553,7 @@ export function index_config(home, root, data, health = null) {
   if (exists(file) && fs.readFileSync(file, "utf8") === text) return;
   if (exists(file) && health)
     throw new ConfigError(
-      "Repository mapping changed: stop this project's daemon before applying it",
+      "Состав репозиториев изменился: нажмите «Применить состав проектов» в настройках индекса.",
     );
   atomic_write(file, text);
 }
@@ -489,7 +572,7 @@ const pathsMatch = (health, root, data) =>
   stable(
     [
       ...new Set(
-        data.repositories.map((repo) => path_key(inside(root, repo.path))),
+        index_repositories(root, data).map((repo) => path_key(inside(root, repo.path))),
       ),
     ].sort(),
   ) ===
@@ -510,6 +593,7 @@ export async function start_daemon(
   io = {
     launch: process.platform === "win32" ? spawn_detached_windows : launch,
   },
+  environment = native_environment(),
 ) {
   const health = await daemon_health(home);
   index_config(home, root, data, health);
@@ -517,7 +601,7 @@ export async function start_daemon(
     const owner = read_json(path.join(home, "owner.json"), {});
     if (owner.executable !== exe)
       throw new ConfigError(
-        "The project daemon runs a different runtime; stop it before changing versions",
+        "Демон проекта использует другую версию компонента; остановите его до смены версии",
       );
     if (
       !owner.project_root ||
@@ -525,11 +609,11 @@ export async function start_daemon(
       owner.pid !== health.pid
     )
       throw new ConfigError(
-        "Project daemon ownership mismatch; refusing to reuse it",
+        "Владелец демона проекта не совпадает; повторное использование запрещено",
       );
     if (!pathsMatch(health, root, data))
       throw new ConfigError(
-        "Project daemon repository paths do not match the selected profile",
+        "Пути репозиториев демона проекта не совпадают с выбранным профилем",
       );
     return home;
   }
@@ -537,28 +621,21 @@ export async function start_daemon(
     owner = read_json(path.join(home, "owner.json"), {});
   if (alive(stale.pid) || alive(owner.pid))
     throw new ConfigError(
-      "Existing project daemon is alive but unhealthy; inspect its logs before restart",
+      "Демон проекта работает, но не отвечает проверке; перед перезапуском изучите его журналы",
     );
-  let proc, out, err;
-  try {
-    out = fs.openSync(path.join(home, "stdout.log"), "a");
-    err = fs.openSync(path.join(home, "stderr.log"), "a");
-    proc = io.launch(exe, ["daemon", "run"], {
-      cwd: home,
-      env: {
-        ...process.env,
-        CODE_INDEX_HOME: home,
-        CODE_INDEX_DAEMON_DETACHED: "1",
-      },
-      detached: true,
-      stdio: ["ignore", out, err],
-      stdoutFile: path.join(home, "stdout.log"),
-      stderrFile: path.join(home, "stderr.log"),
-    });
-  } finally {
-    try { if (out !== undefined) fs.closeSync(out); }
-    finally { if (err !== undefined) fs.closeSync(err); }
-  }
+  const proc = io.launch(exe, ["daemon", "run"], {
+    cwd: home,
+    env: {
+      ...environment,
+      CODE_INDEX_HOME: home,
+      CODE_INDEX_DAEMON_DETACHED: "1",
+    },
+    detached: true,
+    sessionOwned: false,
+    // The component owns daemon.log and its size-based rotation. Duplicating
+    // stderr into another file would bypass that bound after this chat exits.
+    stdio: "ignore",
+  });
   try {
     let launchError;
     proc.once("error", (error) => {
@@ -567,7 +644,7 @@ export async function start_daemon(
     proc.unref();
     if (!proc.pid) {
       await sleep(10);
-      throw launchError || new Error("code-index failed to launch");
+      throw launchError || new Error("Не удалось запустить code-index");
     }
     save_json(path.join(home, "owner.json"), {
       pid: proc.pid,
@@ -580,38 +657,42 @@ export async function start_daemon(
       if (ready?.pid === proc.pid && pathsMatch(ready, root, data)) return home;
       if (launchError || proc.exitCode !== null || proc.signalCode !== null)
         throw new ConfigError(
-          `code-index daemon exited (${proc.exitCode}); see ${path.join(home, "stderr.log")}`,
+          `Демон code-index завершился (${proc.exitCode}); см. ${path.join(home, "daemon.log")}. Если журнала нет, проверьте доступ к каталогу компонента.`,
         );
       await sleep(250);
     }
     throw new ConfigError(
-      `code-index startup timed out; inspect ${home} before retrying`,
+      `Истекло время запуска code-index; проверьте ${home} перед повтором`,
     );
   } finally {
     proc.release?.();
   }
 }
-export async function ensure_daemon(state, root, data, exe, io) {
+export async function ensure_daemon(state, root, data, exe, io, environment) {
   record_project_owner(state, root);
   const home = path.join(project_home(state, root), "code-index");
   return operation_lock(
     home,
-    () => { check_maintenance(home); return start_daemon(home, root, data, exe, io); },
+    () => { check_maintenance(home, true); return start_daemon(home, root, data, exe, io, environment); },
     45,
   );
 }
-export function java_info(command = "java") {
+export function java_info(command = "java", config = null, environment = native_environment(config)) {
   const java = which(command || "java");
   if (!java)
     throw new ConfigError(
-      "Java is required; set mcp.managed.bsl-ls.java in plugin settings",
+      "Требуется Java; укажите mcp.managed.bsl-ls.java в настройках плагина",
     );
   const version = spawnSync(java, ["-version"], {
     encoding: "utf8",
     windowsHide: true,
     shell: false,
     timeout: 20000,
+    env: environment,
   });
+  return parse_java_info(java, version);
+}
+function parse_java_info(java, version) {
   const output = (version.stderr || "") + (version.stdout || "");
   const match = /^(?:java|openjdk) version "([0-9][A-Za-z0-9._+-]{0,127})"/m.exec(output);
   if (version.error || version.status !== 0 || !match) {
@@ -619,21 +700,29 @@ export function java_info(command = "java") {
     // process output or an untrusted executable's error text into diagnostics.
     const code = typeof version.error?.code === "string" && /^[A-Z0-9_]{1,32}$/.test(version.error.code)
       ? ` (${version.error.code})` : Number.isInteger(version.status) ? ` (exit ${version.status})` : "";
-    throw new ConfigError(`Java could not start; configure mcp.managed.bsl-ls.java${code}.`);
+    throw new ConfigError(`Не удалось запустить Java; настройте mcp.managed.bsl-ls.java${code}.`);
   }
   return { path: java, version: match[1] };
 }
-export function java_in_directory(directory) {
+async function java_info_async(command = "java", config = null) {
+  const java = which(command || "java");
+  if (!java) throw new ConfigError("Требуется Java; укажите mcp.managed.bsl-ls.java в настройках плагина");
+  const version = await new Promise(resolve => execFile(java, ["-version"],
+    { encoding: "utf8", windowsHide: true, timeout: 20000, maxBuffer: 1024 * 1024, env: native_environment(config) },
+    (error, stdout, stderr) => resolve({ error, status: error ? (Number.isInteger(error.code) ? error.code : null) : 0, stdout, stderr })));
+  return parse_java_info(java, version);
+}
+export function java_in_directory(directory, config = null, environment = native_environment(config)) {
   if (!path.isAbsolute(directory) || !is_dir(directory)) throw new ConfigError("Выберите существующий каталог Java.");
   const executable = process.platform === "win32" ? "java.exe" : "java";
   const java = [path.join(directory, "bin", executable), path.join(directory, executable)].find(file => {
     try { return fs.statSync(file).isFile(); } catch { return false; }
   });
   if (!java) throw new ConfigError(`В выбранном каталоге не найден bin/${executable}.`);
-  return java_info(java);
+  return java_info(java, config, environment);
 }
 export function java_command(config) {
-  return java_info(config.mcp.managed["bsl-ls"].java || "java").path;
+  return java_info(config.mcp.managed["bsl-ls"].java || "java", config).path;
 }
 export async function launch_command(
   state,
@@ -645,24 +734,24 @@ export async function launch_command(
   selected_artifact = null,
   allow_install = true,
 ) {
-  if (!component_enabled(config, component)) throw new ConfigError("Component is disabled: " + component);
+  if (!component_enabled(config, component)) throw new ConfigError("Компонент отключён: " + component);
   if (component === "code-index") {
-    if (!data.repositories.length) throw new ConfigError("Configure explicit repositories (id, relative path, alias) in the project profile");
+    if (!index_repositories(root, data).length) throw new ConfigError("В репозиториях профиля не найдены проекты EDT с файлом .project.");
     let exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
     const oldHome = path.join(project_home(state, root), "code-index"), owner = read_json(path.join(oldHome, "owner.json"), {});
     if (!selected_artifact && await daemon_health(oldHome) && owned_executable(state, owner)) exe = owner.executable;
-    const home = await ensure_daemon(state, root, data, exe);
+    const home = await ensure_daemon(state, root, data, exe, undefined, native_environment(config));
     return [
       [exe, "serve", "--config", path.join(home, "daemon.toml")],
       home,
-      { ...process.env, CODE_INDEX_HOME: home },
+      { ...native_environment(config), CODE_INDEX_HOME: home },
     ];
   }
   const bsl = config.mcp.managed["bsl-ls"],
     node = which(bsl.node || process.execPath);
   if (!node)
     throw new ConfigError(
-      "Node.js 22+ is required for the scoped BSL LS MCP adapter",
+      "Для адаптера BSL LS MCP требуется Node.js 22+",
     );
   let configuration = bsl.configuration;
   if (configuration) {
@@ -670,9 +759,9 @@ export async function launch_command(
       ? configuration
       : inside(root, configuration);
     if (!is_file(configuration))
-      throw new ConfigError("Configured BSL LS configuration does not exist");
+      throw new ConfigError("Указанный файл конфигурации BSL LS не существует");
   }
-  const java = java_command(config),
+  const java = (await java_info_async(bsl.java || "java", config)).path,
     exe = selected_artifact || await installed_runtime(state, config, component, refresh, allow_install);
   return [
     [
@@ -687,7 +776,7 @@ export async function launch_command(
       ...(configuration ? ["--configuration", resolve(configuration)] : []),
     ],
     resolve(root),
-    null,
+    native_environment(config),
   ];
 }
 export function validate_bsl_tools(tools) {
@@ -707,25 +796,26 @@ export function validate_bsl_tools(tools) {
         tool.inputSchema?.required?.includes("workspaceFolder"),
     )
   )
-    missing.push("workspaceFolder-aware analyzer tool");
+    missing.push("инструмент анализа с параметром workspaceFolder");
   if (missing.length)
     throw new ConfigError(
-      "BSL LS lacks the native multi-workspace API: " +
+      "В BSL LS отсутствует собственный API нескольких рабочих областей: " +
         missing.join(", ") +
-        ". In component settings, select an explicit version with this API, then install the selected version. " +
-        "External servers must expose workspace registration and workspaceFolder parameters.",
+        ". В настройках компонента выберите и установите явную версию с этим API. " +
+        "Внешний сервер должен предоставлять регистрацию рабочих областей и параметры workspaceFolder.",
     );
 }
-export function index_readiness(body, root, data) {
+export function index_readiness(body, root, data, selection = index_selection(root, data)) {
+  const { repositories, missingProjects } = selection;
   if (
     !body?.mcp ||
     !body?.daemon ||
     !Array.isArray(body.repos) ||
-    body.repos.length !== data.repositories.length
+    !repositories.length || missingProjects.length || body.repos.length !== repositories.length
   )
     return false;
   const expected = new Map(
-      data.repositories.map((repo) => [
+      repositories.map((repo) => [
         repo.alias,
         path_key(inside(root, repo.path)),
       ]),
@@ -759,64 +849,160 @@ export function index_readiness(body, root, data) {
   );
 }
 export function index_status(body, root, data) {
-  const repositories = data.repositories.map(repo => {
+  const selection = index_selection(root, data), indexed = selection.repositories;
+  const repositories = indexed.map(repo => {
     const directory = inside(root, repo.path), item = body?.repos?.find(item => item.repo === repo.alias);
     const present = is_file(path.join(directory, ".code-index/index.db"));
     let state = "not_checked";
     if (!item || !item.root_path || path_key(item.root_path) !== path_key(directory)) state = "mismatch";
     else if (item.path_status?.error || item.path_status?.status === "error") state = "error";
     else if (item.data_version?.stale === true) state = "stale";
-    else if (["indexing", "initializing", "pending", "reindexing", "reindexing_extras"].includes(item.path_status?.status)) state = "indexing";
+    else if (["indexing", "initializing", "initial_indexing", "pending", "reindexing", "reindexing_batch", "reindexing_extras"].includes(item.path_status?.status)) state = "indexing";
     else if (item.path_status?.status === "ready" && item.data_version?.stale === false) state = "ready";
     else if (!present) state = "missing";
     return { id: repo.id, edtProject: repo.edt_project, alias: repo.alias, present, state };
   });
-  const ready = index_readiness(body, root, data);
-  const state = ready ? "ready" : ["mismatch", "error", "stale", "indexing", "missing"].find(state => repositories.some(repo => repo.state === state)) || "not_checked";
+  const ready = index_readiness(body, root, data, selection);
+  const missingProjects = selection.missingProjects;
+  const state = ready ? "ready" : missingProjects.length ? "missing_project" : ["mismatch", "error", "stale", "indexing", "missing"].find(state => repositories.some(repo => repo.state === state)) || "not_checked";
   const retryable = state === "not_checked" && body?.mcp?.status === "ok" && body?.daemon?.status === "online" &&
-    body?.repos?.length === data.repositories.length && repositories.length > 0 &&
+    body?.repos?.length === indexed.length && repositories.length > 0 &&
     repositories.every(repo => repo.present && ["ready", "not_checked"].includes(repo.state)) && repositories.some(repo => repo.state === "not_checked");
-  return { ready, state, repositories, ...(retryable ? { retryable: true } : {}) };
+  return { ready, state, repositories, ...(missingProjects.length ? { missingProjects } : {}), ...(retryable ? { retryable: true } : {}) };
 }
 
 // The native CLI is the writer. Stop only the owned project daemon and never
 // delete databases or use a shell command to rebuild a selected repository.
 export async function rebuild_index(state, config, root, data, repositoryId, io = {}) {
-  const repo = data.repositories.find(repo => repo.id === repositoryId);
+  const repo = index_repositories(root, data).find(repo => repo.id === repositoryId);
   if (!repo) throw new ConfigError("Выберите EDT-проект из профиля.");
+  return maintain_index(state, config, root, data, [repo], io);
+}
+export async function rebuild_all_indexes(state, config, root, data, io = {}) {
+  const repositories = index_repositories(root, data);
+  if (!repositories.length) throw new ConfigError("В репозиториях профиля не найдены проекты EDT с файлом .project.");
+  return { ...await maintain_index(state, config, root, data, repositories, io), all: true };
+}
+export async function restart_index(state, config, root, data, io = {}) {
+  if (!index_repositories(root, data).length) throw new ConfigError("В репозиториях профиля не найдены проекты EDT с файлом .project.");
+  return maintain_index(state, config, root, data, [], io);
+}
+async function maintain_index(state, config, root, data, repositories, io) {
   if (!component_enabled(config, "code-index") || component_settings(config, "code-index").mode === "external")
-    throw new ConfigError("Пересоздание доступно для управляемого индекса кода.");
-  const directory = inside(root, repo.path), home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
+    throw new ConfigError("Действие доступно для управляемого индекса кода.");
+  let completed = 0, current = null;
+  const progress = phase => {
+    // Losing an observer must never interrupt the index writer or its cleanup.
+    try { io.progress?.({ phase, total: repositories.length, completed, ...(current ? { repository: current.id, edtProject: current.edt_project } : {}) }); } catch {}
+  };
+  progress("preparing");
+  const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
   const exe = await (io.installed || installed_runtime)(state, config, "code-index");
+  progress("waiting_lock");
   return operation_lock(state, async () => {
     if (!io.installed && artifact(state, "code-index") !== exe) throw new ConfigError("Версия индексатора изменилась. Повторите действие после завершения обновления.");
-    await operation_lock(home, () => { check_maintenance(home); save_json(maintenance, { pid: process.pid, root: resolve(root), ownerId: runtimeOwner }); });
+    await operation_lock(home, () => begin_maintenance(home, root));
     let keepMaintenance = false, stopped = false;
     try {
       signal_component(state, root, "code-index", true);
-      for (let i = 0; i < 12 && active_readers(state, root).length; i++) await sleep(250);
-      if (active_readers(state, root).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите пересоздание.");
-      try { await (io.stop || stop_daemon)(state, root); stopped = true; }
+      progress("waiting_readers");
+      for (let i = 0; i < 12 && (await active_readers(state, root)).length; i++) await sleep(250);
+      if ((await active_readers(state, root)).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите действие.");
+      const environment = native_environment(config);
+      progress("stopping");
+      try { await (io.stop || stop_daemon)(state, root, undefined, environment); stopped = true; }
       catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + safe_error_message(error)); }
-      await (io.run || run_index)(exe, directory, home);
-      await (io.restart || ensure_daemon)(state, root, data, exe); stopped = false;
+      for (const repo of repositories) {
+        current = repo; progress("indexing");
+        try { await (io.run || run_index)(exe, inside(root, repo.path), home, environment, state); completed++; }
+        catch (error) { if (error.outcomeUnknown) keepMaintenance = true; throw error; }
+      }
+      current = null; progress("restarting");
+      await (io.restart || ensure_daemon)(state, root, data, exe, undefined, environment); stopped = false;
+      progress("checking");
       const checked = await (io.smoke || smoke)(state, config, root, data, "code-index", 90, false, exe);
-      return { projectRoot: root, repository: repo.id, edtProject: repo.edt_project, state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
+      return { projectRoot: root, ...(repositories.length === 1 ? { repository: repositories[0].id, edtProject: repositories[0].edt_project } : {}),
+        ...(repositories.length ? { rebuilt: repositories.map(repo => ({ repository: repo.id, edtProject: repo.edt_project })) } : {}),
+        state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
     } finally {
-      if (stopped) try { await (io.restart || ensure_daemon)(state, root, data, exe); }
-      catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }
-      if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
-      signal_component(state, root, "code-index", true);
+      try {
+        if (stopped && !keepMaintenance) try { progress("restoring"); await (io.restart || ensure_daemon)(state, root, data, exe, undefined, native_environment(config)); }
+        catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }
+        if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
+        signal_component(state, root, "code-index", true);
+      } finally { activeMaintenance.delete(home); }
     }
   }, 180);
 }
-async function run_index(exe, directory, home) {
-  const log = fs.openSync(path.join(home, "rebuild.log"), "a");
+async function run_index(exe, directory, home, environment, state) {
+  // Unlike daemon run, the one-shot CLI only logs to stderr. Persist it once
+  // through the existing bounded diagnostic journal, not a separate rebuild.log.
+  const diagnostic = create_diagnostic_logger("code-index", state);
+  let child;
   try {
-    const child = launch(exe, ["index", directory, "--force"], { cwd: directory, env: { ...process.env, CODE_INDEX_HOME: home }, stdio: ["ignore", log, log] });
-    await new Promise((done, reject) => { child.once("error", reject); child.once("close", code => code === 0 ? done() : reject(new ConfigError("Пересоздание индекса завершилось с ошибкой; см. rebuild.log (код " + code + ")."))); });
-  } finally { fs.closeSync(log); }
+    child = launch(exe, ["index", directory, "--force"], { cwd: directory, env: { ...environment, CODE_INDEX_HOME: home }, stdio: ["ignore", "pipe", "pipe"] });
+    for (const [stream, level] of [[child.stdout, "info"], [child.stderr, "warning"]])
+      stream.on("data", chunk => diagnostic.event("index_output", { projectRoot: directory, message: String(chunk) }, level));
+    await new Promise((done, reject) => { child.once("error", reject); child.once("close", code => code === 0 ? done() : reject(new ConfigError("Пересоздание индекса завершилось с ошибкой; см. журнал поддержки компонента code-index (код " + code + ")."))); });
+  } finally {
+    if (child) await stop_child(child, 0);
+  }
 }
+async function probe_client(client, component, root, data) {
+  const server = await client.initialize(),
+    tools = (await all_pages(client, "tools/list", "tools")).tools;
+  if (!tools.length)
+    throw new ConfigError(component + " не предоставляет инструментов MCP");
+  if (component === "bsl-ls") validate_bsl_tools(tools);
+  const result = {
+    component,
+    status: "mcp_ready",
+    server: server.serverInfo,
+    tools: tools.map((tool) => tool.name),
+  };
+  if (component === "code-index") {
+    const deadline = Date.now() + 4000;
+    do {
+      const health = await client.request("tools/call", { name: "health", arguments: {} });
+      if (health.isError) throw Object.assign(new ConfigError("Проверка состояния code-index не удалась; текст внешней ошибки скрыт"), { remote: true });
+      const body = health.structuredContent || JSON.parse(health.content.find(part => part.type === "text").text);
+      result.index = index_status(body, root, data);
+      if ((result.index.state !== "indexing" && !result.index.retryable) || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;
+      await sleep(250);
+    } while (true);
+    result.index_ready = result.index.ready;
+    result.index_state = result.index.state;
+    result.readiness_scope =
+      "Проверены пути репозиториев и актуальность данных; проверяйте покрытие конкретной операции в каждом ответе";
+  }
+  return result;
+}
+
+// Observe only the existing daemon through its immutable read-only client.
+// Do not use launch_command: it can prepare config and start a stopped daemon.
+export async function observe_index(state, config, root, data) {
+  require_preparation(state, root, "code-index");
+  const lease = await acquire_reader(state, root);
+  let client;
+  try {
+    const home = path.join(project_home(state, root), "code-index"), health = await daemon_health(home);
+    if (!health) return null;
+    const owner = read_json(path.join(home, "owner.json"), {});
+    if (!owner.project_root || path_key(owner.project_root) !== path_key(root) || owner.pid !== health.pid)
+      throw new ConfigError("Владелец демона проекта не совпадает; повторное использование запрещено");
+    if (!owned_executable(state, owner))
+      throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
+    if (!pathsMatch(health, root, data))
+      throw new ConfigError("Пути репозиториев демона проекта не совпадают с выбранным профилем");
+    const options = component_settings(config, "code-index");
+    client = new McpClient([owner.executable, "serve", "--config", path.join(home, "daemon.toml")], home,
+      { ...native_environment(config), CODE_INDEX_HOME: home }, options.timeout_seconds || 30, { maxBytes: options.max_response_bytes });
+    return await probe_client(client, "code-index", root, data);
+  } finally {
+    try { await client?.close(); } finally { await lease.close(); }
+  }
+}
+
 export async function smoke(
   state,
   config,
@@ -834,7 +1020,7 @@ export async function smoke(
   let client;
   try {
   if (options.mode === "external") {
-    if (!options.url) throw new ConfigError("Configure an external endpoint for " + component);
+    if (!options.url) throw new ConfigError("Укажите внешний адрес подключения для " + component);
     client = new RemoteMcp(options.url, options.timeout_seconds || timeout, { headers_env: options.headers_env, maxBytes: options.max_response_bytes });
   } else {
     const [command, cwd, env] = await launch_command(
@@ -850,41 +1036,15 @@ export async function smoke(
     client = new McpClient(command, cwd, env, options.timeout_seconds || timeout, { maxBytes: options.max_response_bytes });
   }
   try {
-    const server = await client.initialize(),
-      tools = (await all_pages(client, "tools/list", "tools")).tools;
-    if (!tools.length)
-      throw new ConfigError(component + " exposes no MCP tools");
-    if (component === "bsl-ls") validate_bsl_tools(tools);
-    const result = {
-      component,
-      status: "mcp_ready",
-      server: server.serverInfo,
-      tools: tools.map((tool) => tool.name),
-    };
-    if (component === "code-index") {
-      const deadline = Date.now() + 4000;
-      do {
-        const health = await client.request("tools/call", { name: "health", arguments: {} });
-        if (health.isError) throw Object.assign(new ConfigError("code-index health failed; remote error text omitted"), { remote: true });
-        const body = health.structuredContent || JSON.parse(health.content.find(part => part.type === "text").text);
-        result.index = index_status(body, root, data);
-        if ((result.index.state !== "indexing" && !result.index.retryable) || !result.index.repositories.every(repo => repo.present) || Date.now() >= deadline) break;
-        await sleep(250);
-      } while (true);
-      result.index_ready = result.index.ready;
-      result.index_state = result.index.state;
-      result.readiness_scope =
-        "Reported repository paths and data freshness; check operation-specific coverage in each response";
-    }
-    return result;
+    return await probe_client(client, component, root, data);
   } finally {
     await client.close();
   }
   } finally {
-    if (lease) fs.rmSync(lease, { force: true });
+    if (lease) await lease.close();
   }
 }
-export async function stop_daemon(state, root, io = { stop: run_sync }) {
+export async function stop_daemon(state, root, io = { stop: run_sync }, environment = native_environment()) {
   const home = path.join(project_home(state, root), "code-index");
   await operation_lock(
     home,
@@ -897,7 +1057,7 @@ export async function stop_daemon(state, root, io = { stop: run_sync }) {
           alive(read_json(path.join(home, "daemon.json"), {}).pid)
         )
           throw new ConfigError(
-            "Existing daemon is unhealthy; stop is not confirmed",
+            "Демон не отвечает проверке состояния; остановка не подтверждена",
           );
         return;
       }
@@ -907,17 +1067,17 @@ export async function stop_daemon(state, root, io = { stop: run_sync }) {
         path_key(owner.project_root) !== path_key(root) ||
         !owned_executable(state, owner)
       )
-        throw new ConfigError("Daemon ownership mismatch; refusing to stop it");
+        throw new ConfigError("Владелец демона не совпадает; остановка запрещена");
       await io.stop(owner.executable, ["daemon", "stop"], {
         cwd: home,
-        env: { ...process.env, CODE_INDEX_HOME: home },
+        env: { ...environment, CODE_INDEX_HOME: home },
         timeout: 20000,
       });
       for (let i = 0; i < 40; i++) {
         if (!(await daemon_health(home)) && !alive(owner.pid)) return;
         await sleep(250);
       }
-      throw new ConfigError("Daemon stop is not confirmed");
+      throw new ConfigError("Остановка демона не подтверждена");
     },
     45,
   );
@@ -938,7 +1098,7 @@ export async function main() {
     ) ||
     components.some((name) => !Object.hasOwn(SPECS, name))
   )
-    throw new ConfigError("Unknown runtime action/component");
+    throw new ConfigError("Неизвестное действие или компонент окружения");
   let result;
   if (action === "install")
     result = await operation_lock(state, async () => {
@@ -961,11 +1121,16 @@ export async function main() {
         path.join(project_home(state, a.project_root), "code-index"),
       );
   } else if (action === "stop") {
-    if (component === "bsl-ls") throw new ConfigError("BSL LS is owned by its stdio client and stops on disconnect");
+    if (component === "bsl-ls") throw new ConfigError("BSL LS принадлежит своему клиенту stdio и завершается при отключении");
     const selected = a.project_root || process.env.EDT_AI_PROJECT_ROOT || config.active_project;
-    if (!selected) throw new ConfigError("Select the project root whose daemon should stop");
+    if (!selected) throw new ConfigError("Выберите корень проекта, демон которого нужно остановить");
     const root = configuration_root(selected);
-    await stop_daemon(state, root);
+    // Stopping an owned daemon must still work after its profile is removed or
+    // damaged. With no reliable credential names, inherit no caller variables.
+    let environment = {};
+    try { environment = native_environment(effective_settings(config, root, project_profile(root), null, state)); }
+    catch { /* The stop operation checks daemon ownership independently. */ }
+    await stop_daemon(state, root, undefined, environment);
     result = { status: "stopped", project_root: root };
   } else {
     const [root, data] = project(a.project_root, config, false),
@@ -975,9 +1140,9 @@ export async function main() {
       for (const c of components)
         result.push(await smoke(state, effective, root, data, c));
     } else if (action === "start") {
-      if (component === "all") throw new ConfigError("Select a component");
-      if (!component_enabled(effective, component)) throw new ConfigError("Component is disabled: " + component);
-      if (component_settings(effective, component).mode === "external") throw new ConfigError("External components are user-started; use smoke to check their endpoint");
+      if (component === "all") throw new ConfigError("Выберите компонент");
+      if (!component_enabled(effective, component)) throw new ConfigError("Компонент отключён: " + component);
+      if (component_settings(effective, component).mode === "external") throw new ConfigError("Внешние компоненты запускает пользователь; используйте smoke для проверки подключения");
       grant_preparation(state, root, [component]);
       if (component === "bsl-ls")
         return (await import("./managed_mcp.mjs")).serve(
@@ -988,10 +1153,10 @@ export async function main() {
         );
       project(root, effective); // code-index startup requires explicit mappings.
       const exe = await installed_runtime(state, effective, component),
-        home = await ensure_daemon(state, root, data, exe);
+        home = await ensure_daemon(state, root, data, exe, undefined, native_environment(effective));
       result = { status: "running", daemon: await daemon_health(home) };
     } else {
-      if (!a.output) throw new ConfigError("config requires --output");
+      if (!a.output) throw new ConfigError("Для config требуется --output");
       const servers = {
         policy: (await import("./policy_runtime.mjs")).binding(effective),
       };
@@ -1009,7 +1174,6 @@ export async function main() {
             EDT_AI_SETTINGS: resolve(a.settings || process.env.EDT_AI_SETTINGS || path.join(ROOT, "settings/local.yaml")) },
         };
       save_json(a.output, {
-        $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
         mcpServers: servers,
       });
       result = { status: "written", path: resolve(a.output) };

@@ -1,12 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import path from "node:path";
+import fs from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { setTimeout } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { fixture } from "./helpers.mjs";
-import { folder_action, windows_folder_api } from "../scripts/settings_folder.mjs";
+import { folder_action, windows_folder_api, activate_folder_window } from "../scripts/settings_folder.mjs";
+
+test("Explorer activation waits for the exact folder window and restores it before focusing", async () => {
+  const calls=[];let found=0,current=0;
+  await activate_folder_window({find:()=>++found===1?0:42,minimized:window=>window===42,restore:window=>calls.push(["restore",window]),activate:window=>{calls.push(["activate",window]);},foreground:()=>current},
+    {attempts:3,pause:async()=>{if(found>1)current=42;}});
+  assert.deepEqual(calls,[["restore",42],["activate",42]]);
+});
+
+test("Explorer activation reports denied focus and never activates an unrelated window", async () => {
+  const calls=[];
+  await assert.rejects(activate_folder_window({find:()=>42,minimized:()=>false,restore:()=>assert.fail("must not restore"),activate:window=>calls.push(window),foreground:()=>17},
+    {attempts:1,pause:async()=>{}}),/не перевела Проводник на передний план/);
+  assert.deepEqual(calls,[42]);
+  await assert.rejects(activate_folder_window({find:()=>0,activate:()=>assert.fail("must not activate")},{attempts:2,pause:async()=>{}}),/не удалось найти/);
+});
+
+test("native Explorer lookup handles an unopened Unicode folder without creating a window", {skip:process.platform!=="win32"}, t => {
+  const f=fixture(t);assert.equal(windows_folder_api().findFolderWindow(f.root),0n);
+});
 
 test("native folder dialog initializes for Unicode paths without displaying a window", { skip: process.platform !== "win32" }, t => {
   const f = fixture(t);
@@ -30,6 +50,8 @@ test("opening a folder rejects files and missing directories before launching Ex
   const f = fixture(t);
   await assert.rejects(folder_action("open", fileURLToPath(import.meta.url)), /папк|directory|ENOENT/i);
   await assert.rejects(folder_action("open", path.join(f.root, "missing")), /папк|directory|ENOENT/i);
+  const file=path.join(f.base,"outside.json");fs.writeFileSync(file,"{}");
+  await assert.rejects(folder_action("open",f.root,{select:file}),/Файл должен находиться/);
 });
 
 // Opt in from an interactive Windows desktop; ordinary CI never opens UI.

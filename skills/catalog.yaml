@@ -44,10 +44,18 @@ migration_decisions:
       - "Each stdio session owns its process and registrations; other projects and sessions are not switched."
       - "Single-repository selection in settings, profiles and CLI was removed; backward compatibility is not required."
       - "Optional configuration is passed to native global and workspace loaders; no empty file replaces a missing one."
-      - "Native workspace API support is checked against the live contract, without version pins or roots fallback."
+      - "BSL LS 1.1.0-rc.4 or newer is required because it provides the workspace API; verify the installed native contract as well, without a roots fallback."
     review_contract:
       - "Distinguish support in supplied source from the actually installed JAR; artifact incompatibility limits live acceptance."
       - "Check session isolation, Unicode and URI, directory boundaries, ID routing, request queues and child-process termination."
+  bsl-minimum-version:
+    status: accepted
+    decided_on: '2026-11-04'
+    decided_by: user
+    scope: BSL LS release selection and native workspace API
+    consequences:
+      - "Require 1.1.0-rc.4 or newer because it contains the required workspace API. This minimum supersedes the previous no-version-pin condition."
+      - "Verify the installed native API contract in addition to the minimum version; a version alone does not establish runtime readiness."
   platform-documentation-edt-only:
     status: accepted
     decided_on: '2026-10-19'
@@ -127,8 +135,8 @@ migration_decisions:
     consequences:
       - "The profile loads from the selected repository; CRM/Kafka are not a fixed plugin connection registry."
       - "Kafka adapter, unit and conversion may have their own repo-local profiles and EDT URLs."
-      - "Multiple instances of one CRM directory may use different EDT-MCP URLs."
-      - "Repositories store defaults or templates; instance overrides may reside in Codex or beside the repository."
+      - "A project has shared and project-local settings; runtime instance identifiers do not select a configuration layer."
+      - "Repositories store project defaults and may use a project-local override."
       - "Process environment variables take precedence over saved overrides and profile defaults."
       - "Directory or instance-binding changes invalidate dependent facts without switching other sessions."
   edt-capability-driven-efficiency:

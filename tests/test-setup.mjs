@@ -6,12 +6,30 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { pathToFileURL } from "node:url";
-import { fixture, ROOT, environment } from "./helpers.mjs";
+import { edt_fixture as fixture, ROOT, environment } from "./helpers.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
+import { parse } from "../scripts/common.mjs";
+import { core_version } from "../scripts/compatibility.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
+
+test("background readiness and foreground saves retain independent operation results", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const operations = new SettingsOperations(async action => { if (action === "refresh_readiness") await gate; return { action }; });
+  const background = operations.start("refresh_readiness", {}, {});
+  await operations.execute("update", {}, {});
+  assert.equal(operations.status().id, background.id);
+  release(); await operations.wait(background.id, 10000);
+  assert.equal(operations.status().id, background.id);
+  assert.equal(operations.status().status, "completed");
+});
 import { dump, sleep } from "../scripts/common.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";
+import { probe_connections, edt_project_building } from "../scripts/setup_probe.mjs";
+import { index_repositories } from "../scripts/directory_context.mjs";
+import { settings } from "../scripts/common.mjs";
+import { instance_directory } from "../scripts/project_paths.mjs";
 
 async function unbound(t, f, file = "mcp/settings.mjs", args = []) {
   const client = new McpClient([process.execPath, path.join(ROOT, file), ...args], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
@@ -39,9 +57,9 @@ test("chat setup binds only its settings session, reports repairs and needs no r
   assert.equal(invalid.profile.status, "invalid");
   assert.equal(invalid.profile.compatibility.core, ">=0.1.0 <0.2.0");
   assert.deepEqual(invalid.nextSteps, ["repair_profile"]);
-  const edit = (await a.call("settings.edit", {})).structuredContent;
-  const data = JSON.parse(edit.text); data.profile.compatibility.core = ">=0.4.0 <0.5.0";
-  const request = { text: JSON.stringify(data), mode: "edit", baseRevision: edit.baseRevision };
+  const edit = (await a.call("settings.edit", { layerScope: "profile", format: "yaml" })).structuredContent;
+  const data = parse(edit.text); data.compatibility.core = `=${core_version}`;
+  const request = { text: JSON.stringify(data), mode: "layer", layerScope: "profile", baseRevision: edit.baseRevision };
   const preview = (await a.call("settings.preview", request)).structuredContent;
   await a.call("settings.apply", { ...request, revision: preview.revision, replace: true });
   assert.equal((await a.call("settings.inspect", {})).structuredContent.profile.status, "loaded");
@@ -77,7 +95,7 @@ test("readiness inspection and operation polling return data without settings UI
   await assert.rejects(client.call("settings.check", { projectRoot: other }), /закреплён/);
 });
 
-async function endpoint(t, root) {
+async function endpoint(t, root, getProjects = () => [{ name: "Product", path: root, open: true, state: "ready", edtProject: true }]) {
   const calls = [];
   const server = createServer(async (request, response) => {
     let body = ""; for await (const part of request) body += part;
@@ -88,7 +106,7 @@ async function endpoint(t, root) {
     if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", serverInfo: { name: "fixture", version: "1" }, capabilities: { tools: {} } });
     if (message.method.startsWith("notifications/")) { response.writeHead(202).end(); return; }
     if (message.method === "tools/list") return reply({ tools: [{ name: "list_projects", inputSchema: { type: "object", properties: { format: { type: "string", enum: ["json"] } } } }] });
-    if (message.method === "tools/call") return reply({ content: [], structuredContent: { projects: [{ name: "Product", path: root, open: true, state: "ready", edtProject: true }] } });
+    if (message.method === "tools/call") return reply({ content: [], structuredContent: { projects: getProjects() } });
     reply({});
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");
@@ -114,6 +132,7 @@ test("empty host roots can bind a relay without spawning substitutes or changing
 test("one bounded setup probe verifies external connections and refuses a wrong EDT path", async t => {
   const f = fixture(t), upstream = await endpoint(t, f.root);
   f.profile.connections = { edt: { url: upstream.url }, v8std: { url: upstream.url } }; f.save();
+  const profileBefore = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
   const client = await unbound(t, f); await client.call("settings.inspect", { projectRoot: f.root });
   const run = async () => {
     const operation = (await client.call("settings.probe_connections", {})).structuredContent;
@@ -127,11 +146,179 @@ test("one bounded setup probe verifies external connections and refuses a wrong 
   assert.equal(result.chatRelay, "not_verified");
   assert.match(result.detail, /каталог инструментов/i);
   assert.equal(upstream.calls.filter(name => name === "tools/call").length, 1);
-  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
+  assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), ["projects"]);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), profileBefore);
+  assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+  const receiptDirectory = instance_directory(f.state, f.root);
+  assert.deepEqual(fs.readdirSync(receiptDirectory).sort(), ["first.readiness-observations.json", "first.readiness.json"]);
+  const observationFile = path.join(receiptDirectory, "first.readiness-observations.json");
+  const observations = JSON.parse(fs.readFileSync(observationFile, "utf8"));
+  assert.deepEqual(Object.keys(observations).sort(), ["components", "version"]);
+  assert.equal(observations.version, 1);
+  assert.deepEqual(Object.keys(observations.components).sort(), ["edt", "openviking", "v8std"]);
+  assert.equal(new Set(Object.values(observations.components)).size, 1);
+  assert.match(observations.components.edt, /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  const receipt = JSON.parse(fs.readFileSync(path.join(receiptDirectory, "first.readiness.json"), "utf8"));
+  assert.deepEqual(Object.keys(receipt.components).sort(), ["edt", "v8std"]);
+  assert.equal(receipt.result, undefined, "external probes do not assert full setup readiness");
   f.profile.repositories[0].path = "src"; f.save();
   assert.equal((await run()).external.edt.repositories[0].matched, false);
+  const repeated = JSON.parse(fs.readFileSync(observationFile, "utf8"));
+  assert.deepEqual(Object.keys(repeated.components).sort(), Object.keys(observations.components).sort());
+  assert.notEqual(repeated.components.edt, observations.components.edt, "a new probe replaces bounded component tickets instead of accumulating sessions");
   await assert.rejects(client.call("settings.operation", { waitMs: 10001 }), /диапазона/);
   await assert.rejects(client.call("settings.operation", { waitMs: 0.5 }), /тип/);
+});
+
+test("EDT probe matches a nested .project and skips an explicitly unbound feature repository", async t => {
+  const f=fixture(t), nested=path.join(f.root,"framework/exts/Product");
+  fs.mkdirSync(nested,{recursive:true});fs.mkdirSync(path.join(f.root,"ui"));
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Different.Internal.Name</name></projectDescription>");
+  f.profile.repositories=[{id:"ui",path:"ui",alias:"ui"},{id:"framework",path:"framework",alias:"framework",edt_project:"Product"}];
+  f.profile.policy.unbound_edt_repositories=["ui"];
+  const upstream=await endpoint(t,nested),config=settings();
+  config.mcp.required.edt.url=upstream.url;config.mcp.required.v8std.url=upstream.url;
+  const first=await probe_connections(config,f.root,f.profile);
+  assert.equal(first.external.edt.projectReadiness,"verified",JSON.stringify(first.external.edt));
+  assert.deepEqual(first.external.edt.repositories.map(item=>item.id),["framework"]);
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name></name></projectDescription>");
+  assert.equal((await probe_connections(config,f.root,f.profile)).external.edt.projectReadiness,"verified");
+  const duplicate=path.join(f.root,"framework/other/Product");fs.mkdirSync(duplicate,{recursive:true});
+  fs.writeFileSync(path.join(duplicate,".project"),"<projectDescription><name>Another</name></projectDescription>");
+  assert.equal((await probe_connections(config,f.root,f.profile)).external.edt.projectReadiness,"not_ready");
+  fs.rmSync(path.join(duplicate,".project"));
+  fs.rmSync(path.join(nested,".project"));
+  const missing=await probe_connections(config,f.root,f.profile);
+  assert.equal(missing.external.edt.projectReadiness,"not_ready");
+  assert.equal(missing.external.edt.repositories[0].matched,false);
+});
+
+test("EDT probe provides one canonical diagnostic per project for ready and unconfirmed states", async t => {
+  const f = fixture(t), testRoot = path.join(f.root, "Tests");
+  fs.mkdirSync(testRoot); fs.writeFileSync(path.join(testRoot, ".project"), "<projectDescription><name>Tests</name></projectDescription>");
+  f.profile.repositories = [{ id: "crm-production", path: ".", alias: "crm-production", edt_project: "Product" },
+    { id: "crm-yaxunit", path: "Tests", alias: "crm-yaxunit", edt_project: "Tests" }];
+  const product = { name: "Product", path: f.root, open: true, state: "ready", edtProject: true };
+  let testProject = { name: "Tests", path: testRoot, open: false, state: "ready", edtProject: true };
+  const upstream = await endpoint(t, f.root, () => [product, testProject]), config = settings();
+  config.mcp.required.edt.url = upstream.url;
+  for (const [patch, expected] of [
+    [{ open: false }, "проект не открыт или его состояние открытия не подтверждено"],
+    [{ open: true, state: "building" }, "EDT сообщает о сборке проекта"],
+    [{ state: "error" }, "готовность проекта EDT не подтверждена"],
+    [{ state: "ready", edtProject: false }, "готовность проекта EDT не подтверждена"],
+    [{ edtProject: true, path: f.base }, "имя и путь не сопоставлены с проектом EDT"],
+    [{ path: testRoot }, "готов"],
+  ]) {
+    Object.assign(testProject, patch);
+    const result = (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+    const lines = result.detail.split("\n");
+    assert.deepEqual(lines.slice(0, 2), ["crm-production: готов", "crm-yaxunit: " + expected]);
+    assert.equal(lines.length, testProject.state === "building" ? 3 : 2);
+    assert.equal(result.ready, expected === "готов");
+    assert.equal(result.projectReadiness, result.ready ? "verified" : "not_ready");
+  }
+});
+
+test("EDT optionality changes setup requirements without changing actual project readiness or index selection", async t => {
+  const f = fixture(t), directory = path.join(f.root, "Tests");
+  fs.mkdirSync(directory); fs.writeFileSync(path.join(directory, ".project"), "<projectDescription><name>Tests</name></projectDescription>");
+  f.profile.repositories.push({ id: "tests", path: "Tests", alias: "tests", edt_project: "Tests", edt_required: false });
+  const product = { name: "Product", path: f.root, open: true, state: "ready", edtProject: true };
+  let dependent = { name: "Tests", path: directory, open: false, state: "closed" };
+  let projects = () => [product, dependent, { name: "Unassigned", path: f.base, open: true, state: "building" }];
+  const upstream = await endpoint(t, f.root, () => projects()), config = settings(); config.mcp.required.edt.url = upstream.url;
+  const probe = async () => (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+  for (const state of ["closed", "ready", "building", "error", "unknown", "not_available"]) for (const nature of [undefined, false, true]) {
+    dependent = { name: "Tests", path: directory, open: false, state, ...(nature === undefined ? {} : { edtProject: nature }) };
+    const result = await probe(), repo = result.repositories[1];
+    assert.equal(result.ready, true, JSON.stringify(dependent));
+    assert.equal(result.projectReadiness, "verified");
+    assert.deepEqual([repo.matched, repo.required, repo.ready, repo.requirementsMet], [true, false, false, true]);
+    assert.equal(edt_project_building(result), false);
+    assert.match(result.detail, /tests: необязательный проект закрыт; недоступен для операций/);
+    assert.equal(result.failure, undefined);
+  }
+  assert.deepEqual(index_repositories(f.root, f.profile).map(item => item.id), ["product", "tests"]);
+  dependent = { name: "Tests", path: directory, open: true, state: "ready", edtProject: true };
+  assert.equal((await probe()).ready, true);
+  for (const state of ["building", "error", "unknown", "not_available", "closed"]) {
+    dependent.state = state;
+    const result = await probe();
+    assert.equal(result.ready, false, state); assert.equal(result.repositories[1].requirementsMet, false);
+    assert.equal(edt_project_building(result), state === "building");
+    assert.equal(result.failure, undefined, "project readiness is distinct from connection or mapping failures");
+  }
+  dependent.state = "ready";
+  for (const nature of [false, undefined]) {
+    dependent.edtProject = nature;
+    assert.equal((await probe()).ready, false, "open projects still require a confirmed EDT nature");
+  }
+  for (const required of [undefined, true]) {
+    if (required === undefined) delete f.profile.repositories[1].edt_required;
+    else f.profile.repositories[1].edt_required = required;
+    Object.assign(dependent, { open: false, state: "closed" });
+    const result = await probe();
+    assert.equal(result.ready, false); assert.equal(result.repositories[1].required, true);
+    assert.equal(result.repositories[1].requirementsMet, false);
+  }
+  f.profile.repositories[1].edt_required = false;
+  for (const wrong of [{ ...dependent, name: "Other" }, { ...dependent, path: f.base }, null]) {
+    projects = () => [product, ...(wrong ? [wrong] : [])];
+    const result = await probe();
+    assert.equal(result.ready, false); assert.equal(result.repositories[1].matched, false);
+    assert.equal(result.failure.category, "access_scope");
+  }
+  projects = () => [product, dependent];
+  fs.rmSync(path.join(directory, ".project"));
+  assert.equal((await probe()).repositories[1].matched, false, "optional projects still require a local descriptor");
+  for (const nested of ["one/Tests", "two/Tests"]) {
+    const nestedDirectory = path.join(directory, nested); fs.mkdirSync(nestedDirectory, { recursive: true });
+    fs.writeFileSync(path.join(nestedDirectory, ".project"), "<projectDescription><name>Tests</name></projectDescription>");
+  }
+  assert.equal((await probe()).repositories[1].matched, false, "ambiguous optional descriptors cannot be accepted as closed");
+});
+
+test("EDT requires every required assignment and at least one ready required assignment", async t => {
+  const f = fixture(t), projects = [{ name: "Product", path: f.root, open: true, state: "ready", edtProject: true }];
+  for (const name of ["Second", "Tests"]) {
+    const directory = path.join(f.root, name); fs.mkdirSync(directory);
+    fs.writeFileSync(path.join(directory, ".project"), `<projectDescription><name>${name}</name></projectDescription>`);
+    f.profile.repositories.push({ id: name.toLowerCase(), path: name, alias: name.toLowerCase(), edt_project: name, edt_required: name !== "Tests" });
+    projects.push({ name, path: directory, open: name !== "Tests", state: name === "Tests" ? "closed" : "ready", edtProject: true });
+  }
+  const upstream = await endpoint(t, f.root, () => projects), config = settings(); config.mcp.required.edt.url = upstream.url;
+  const probe = async () => (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+  assert.equal((await probe()).ready, true);
+  projects[1].open = false; assert.equal((await probe()).ready, false);
+  projects[1].open = true;
+  f.profile.repositories.forEach(item => { item.edt_required = false; });
+  for (const open of [false, true]) {
+    projects.forEach(item => { item.open = open; item.state = open ? "ready" : "closed"; });
+    const result = await probe(); assert.equal(result.ready, false); assert.match(result.detail, /хотя бы один обязательный/);
+    assert.ok(result.repositories.every(item => item.requirementsMet));
+  }
+  f.profile.repositories[0].edt_required = true; projects[0].open = false;
+  assert.equal((await probe()).ready, false, "ready optional assignments cannot replace an unready required assignment");
+});
+
+test("EDT setup rejects unconfirmed open, duplicate names and incomplete or malformed inventories", async t => {
+  const f = fixture(t); f.profile.repositories[0].edt_required = false;
+  const valid = { name: "Product", path: f.root, open: false, state: "closed" };
+  let projects = [valid];
+  const upstream = await endpoint(t, f.root, () => projects), config = settings(); config.mcp.required.edt.url = upstream.url;
+  for (const open of [undefined, null, "false", 0]) {
+    projects = [{ ...valid, open }];
+    const result = (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+    assert.equal(result.ready, false); assert.equal(result.connected, true); assert.equal(result.failure.category, "server_contract");
+    assert.match(result.detail, /неподдерживаемый или неполный список/);
+  }
+  for (const rows of [[valid, valid], [{ ...valid, edtProject: null }], [{ ...valid, state: 1 }], [null]]) {
+    projects = rows;
+    const result = (await probe_connections(config, f.root, f.profile, f.state, "edt")).external.edt;
+    assert.equal(result.ready, false); assert.equal(result.failure.category, "server_contract");
+  }
 });
 
 test("v8std bootstrap survives empty roots and isolates projects on a shared server", async t => {
@@ -249,14 +436,14 @@ test("initial relay catalogue is available while host roots are pending or fail"
     assert.deepEqual(first.result.tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
     const pendingResources = request(3, "resources/list");
     send({ id: rootCall.id, error: { code: -32000, message: "host roots failed" } });
-    assert.match((await pendingResources).error.message, /Host could not supply/);
+    assert.match((await pendingResources).error.message, /Хост не передал выбранный каталог/);
     assert.deepEqual((await request(4, "tools/list")).result.tools.map(tool => tool.name), ["core_runtime_status", "core_runtime_tools", "core_runtime_call"]);
     assert.ok(notifications.includes("notifications/resources/list_changed"));
     assert.ok(notifications.includes("notifications/prompts/list_changed"));
     assert.ok((await request(5, "tools/call", { name: "core_runtime_status", arguments: { projectRoot: f.root } })).error);
-    assert.match((await request(6, "resources/list")).error.message, /Host could not supply/);
-    assert.match((await request(7, "resources/templates/list")).error.message, /Host could not supply/);
-    assert.match((await request(8, "prompts/list")).error.message, /Host could not supply/);
+    assert.match((await request(6, "resources/list")).error.message, /Хост не передал выбранный каталог/);
+    assert.match((await request(7, "resources/templates/list")).error.message, /Хост не передал выбранный каталог/);
+    assert.match((await request(8, "prompts/list")).error.message, /Хост не передал выбранный каталог/);
     child.stdin.end(); await once(child, "exit");
   }
 });

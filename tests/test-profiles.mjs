@@ -13,7 +13,7 @@ import {
   operation_lock,
   validate_settings,
 } from "../scripts/common.mjs";
-import { validate, validate_at, project_profile, create_profile } from "../scripts/profile.mjs";
+import { validate, validate_at, project_profile, create_profile, profile_state } from "../scripts/profile.mjs";
 import {
   locate_project,
   configuration_root,
@@ -23,13 +23,48 @@ import {
 import {
   effective_settings,
   resolved_settings,
-  instance_file,
 } from "../scripts/project_context.mjs";
 import { reason } from "../scripts/guard.mjs";
 import { casefold } from "../scripts/casefold.mjs";
 
 test("Unicode state-key case folding preserves the former Python contract", () => {
   assert.equal(casefold("Straße ẞ Σς ﬃ İ"), "strasse ss σσ ffi i\u0307");
+});
+
+test("EDT required flags are optional booleans in shared and local YAML, with multiple required assignments", t => {
+  const f = fixture(t);
+  f.profile.repositories.push({ id: "second", path: ".", alias: "second", edt_project: "Second", edt_required: true });
+  f.save();
+  assert.equal(Object.hasOwn(project_profile(f.root).repositories[0], "edt_required"), false, "loading must not rewrite the authored YAML");
+  assert.deepEqual(profile_state(f.root).repositories.map(item => item.edt_required), [true, true]);
+  for (const value of [false, true]) {
+    fs.rmSync(path.join(f.root, ".ai/project.local.yaml"), { force: true });
+    f.profile.repositories[0].edt_required = value; f.save();
+    assert.equal(project_profile(f.root).repositories[0].edt_required, value);
+    assert.equal(profile_state(f.root).repositories[0].edt_required, value);
+    dump({ repositories: f.profile.repositories.map(item => ({ ...item, edt_required: value })) }, path.join(f.root, ".ai/project.local.yaml"));
+    assert.deepEqual(project_profile(f.root).repositories.map(item => item.edt_required), [value, value]);
+  }
+  for (const value of ["false", "true", 0, 1, null, [], {}]) {
+    const bad = structuredClone(f.profile); bad.repositories[0].edt_required = value;
+    assert.throws(() => validate(bad), /boolean/, JSON.stringify(value));
+    dump({ repositories: bad.repositories }, path.join(f.root, ".ai/project.local.yaml"));
+    assert.throws(() => project_profile(f.root), /boolean/, JSON.stringify(value));
+  }
+});
+
+test("CLI import, merge and export preserve explicit and absent EDT required flags", t => {
+  const f = fixture(t), incoming = path.join(f.base, "incoming.yaml"), exported = path.join(f.base, "export.yaml");
+  f.profile.repositories.push({ id: "tests", path: ".", alias: "tests", edt_project: "Tests", edt_required: false });
+  dump(f.profile, incoming);
+  success(node("scripts/profile.mjs", ["import", f.root, "--input", incoming], { env: f.env }));
+  const repositories = load(path.join(f.root, ".ai/project.yaml")).repositories;
+  dump({ project: { purpose: "Updated purpose" } }, incoming);
+  success(node("scripts/profile.mjs", ["import", f.root, "--input", incoming, "--merge"], { env: f.env }));
+  success(node("scripts/profile.mjs", ["export", f.root, "--output", exported], { env: f.env }));
+  assert.deepEqual(load(exported).repositories, repositories);
+  assert.equal(Object.hasOwn(repositories[0], "edt_required"), false);
+  assert.equal(repositories[1].edt_required, false);
 });
 
 test("new profile reports starter instructions without claiming content acceptance", (t) => {
@@ -40,12 +75,14 @@ test("new profile reports starter instructions without claiming content acceptan
   });
   const agents = fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8");
   assert.match(agents, /\$1c-routing/);
-  assert.match(agents, /Правила проекта требуют заполнения/);
-  assert.match(agents, /Неизвестные правила не придумывай/);
+  assert.match(agents, /Project rules need completion/);
+  assert.match(agents, /Do not invent unknown rules/);
+  assert.doesNotMatch(agents, /[А-Яа-яЁё]/);
+  assert.doesNotMatch(fs.readFileSync(path.join(f.root, ".ai/PROJECT.md"), "utf8"), /[А-Яа-яЁё]/);
   assert.deepEqual(project_profile(f.root).repositories, []);
   assert.deepEqual(fs.readdirSync(f.state), []);
   assert.deepEqual(fs.readdirSync(f.root).sort(), [".ai", "AGENTS.md", "src"]);
-  assert.throws(() => create_profile(f.root), /already exists/);
+  assert.throws(() => create_profile(f.root), /уже существует/);
   assert.equal(fs.readFileSync(path.join(f.root, "AGENTS.md"), "utf8"), agents);
 });
 
@@ -87,7 +124,7 @@ for (const name of ["AGENTS.md", ".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.ove
     const f = fixture(t), file = path.join(f.root, name);
     fs.mkdirSync(file, { recursive: true });
     const before = fs.readdirSync(f.root);
-    assert.throws(() => create_profile(f.root), /must be a regular file/);
+    assert.throws(() => create_profile(f.root), /обычный файл/);
     assert.deepEqual(fs.readdirSync(f.root), before);
     assert.ok(fs.statSync(file).isDirectory());
     assert.deepEqual(fs.readdirSync(file), []);
@@ -102,7 +139,7 @@ for (const name of ["AGENTS.md", ".ai/PROJECT.md", ".ai/.gitignore", "AGENTS.ove
     fs.mkdirSync(outside);
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.symlinkSync(outside, file, process.platform === "win32" ? "junction" : "dir");
-    assert.throws(() => create_profile(f.root), /escapes project/);
+    assert.throws(() => create_profile(f.root), /выходит за границы проекта/);
     assert.deepEqual(fs.readdirSync(outside), []);
     assert.ok(!fs.existsSync(path.join(f.root, ".ai/project.yaml")));
   });
@@ -333,7 +370,7 @@ test("profile and paths respect symlinks and nested Git boundaries", (t) => {
   };
   assert.throws(() => validate_at(f.root, bad));
 });
-test("connection precedence and scoped instance keys perform no implicit writes", (t) => {
+test("connection precedence and runtime instance identifiers perform no implicit writes", (t) => {
   const f = fixture(t);
   environment(t, f.env);
   f.profile.connections = { edt: { url: "http://localhost:18001/mcp" } };
@@ -347,15 +384,9 @@ test("connection precedence and scoped instance keys perform no implicit writes"
     { connections: { edt: { url: "http://localhost:18002/mcp" } } },
     path.join(f.root, ".ai/project.local.yaml"),
   );
-  dump(
-    { connections: { edt: { url: "http://localhost:18003/mcp" } } },
-    path.join(f.root, ".ai/instances/first.local.yaml"),
-  );
-  const first = instance_file(config, f.root);
-  dump({ connections: { edt: { url: "http://localhost:18004/mcp" } } }, first);
   assert.equal(
     effective_settings(config, f.root, f.profile).mcp.required.edt.url,
-    "http://localhost:18004/mcp",
+    "http://localhost:18002/mcp",
   );
   const explicit = path.join(f.base, "connections.yaml");
   dump(
@@ -373,7 +404,7 @@ test("connection precedence and scoped instance keys perform no implicit writes"
     process.env.EDT_AI_EDT_URL,
   );
   process.env.EDT_AI_INSTANCE = "second";
-  assert.notEqual(instance_file(config, f.root), first);
+  assert.equal(effective_settings(config, f.root, f.profile).mcp.required.edt.url, process.env.EDT_AI_EDT_URL);
   assert.notEqual(
     reconnect_file(f.state, f.root),
     reconnect_file(f.state, f.base),
@@ -382,10 +413,10 @@ test("connection precedence and scoped instance keys perform no implicit writes"
   process.env.EDT_AI_CONNECTIONS_FILE = path.join(f.base, "missing");
   assert.throws(
     () => effective_settings(config, f.root, f.profile),
-    /existing override/,
+    /существующий файл переопределений/,
   );
 });
-test("legacy EDT URL never crosses project ownership; custom env and host roots remain local", (t) => {
+test("shared EDT URL is ignored; custom env and host roots remain local", (t) => {
   const f = fixture(t);
   environment(t, f.env);
   f.save();
@@ -396,6 +427,8 @@ test("legacy EDT URL never crosses project ownership; custom env and host roots 
   const effective = effective_settings(config, f.root, f.profile);
   assert.equal(effective.mcp.required.edt.url, "");
   config.active_project = null;
+  assert.equal(effective_settings(config, f.root, f.profile).mcp.required.edt.url, "");
+  config.active_project = f.root;
   assert.equal(effective_settings(config, f.root, f.profile).mcp.required.edt.url, "");
   assert.equal(effective.mcp.required.v8std.url, config.mcp.required.v8std.url);
   f.profile.connections = {
@@ -419,7 +452,7 @@ test("legacy EDT URL never crosses project ownership; custom env and host roots 
         ],
         f.base,
       ),
-    /ambiguous/,
+    /неоднознач/,
   );
   assert.throws(() => select_root([{ uri: "https://localhost/" }], f.root));
 });
@@ -428,7 +461,7 @@ test("operation lock excludes concurrent writers without deleting their lock", a
   await operation_lock(f.state, async () => {
     await assert.rejects(
       operation_lock(f.state, () => {}),
-      /Another runtime operation/,
+      /Другая операция удерживает/,
     );
     assert.ok(fs.existsSync(path.join(f.state, "operation.lock")));
   });
@@ -436,6 +469,7 @@ test("operation lock excludes concurrent writers without deleting their lock", a
 });
 test("guard rejects reads, writes, patches, traversal, broad discovery, shell and aliases", (t) => {
   const f = fixture(t);
+  environment(t, f.env);
   f.save();
   for (const [tool_name, tool_input] of [
     ["Read", { path: "src/Module.bsl" }],

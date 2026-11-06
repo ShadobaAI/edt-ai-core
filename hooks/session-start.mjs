@@ -4,7 +4,7 @@ import { profile_state } from "../scripts/profile.mjs";
 import { configure_hook_environment } from "../scripts/project_paths.mjs";
 import { launch_selection } from "../scripts/selection.mjs";
 import { directory_context } from "../scripts/directory_context.mjs";
-import { create_diagnostic_logger } from "../scripts/diagnostics.mjs";
+import { create_diagnostic_logger, safe_error_message } from "../scripts/diagnostics.mjs";
 let diagnostic;
 try {
   configure_hook_environment();
@@ -22,5 +22,5 @@ try {
 } catch (error) {
   diagnostic?.event("discovery_failed", { error }, "error");
   console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart",
-    additionalContext: "1C AI Core profile discovery failed: " + error.message + ". Use settings.inspect without opening a form before using project authorities. Open settings UI only on an explicit user request about a profile/settings." } }));
+    additionalContext: "1C AI Core profile discovery failed: " + safe_error_message(error) + ". Use settings.inspect without opening a form before using project authorities. Open settings UI only on an explicit user request about a profile/settings." } }));
 }

@@ -1,5 +1,5 @@
 import path from "node:path";
-import readline from "node:readline";
+import { read_frames } from "../scripts/mcp_codec.mjs";
 import { component_icons } from "../scripts/icons.mjs";
 import { fileURLToPath } from "node:url";
 import { loadRegistry, select, validateCompliance } from "./selector.mjs";
@@ -145,10 +145,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === modulePath) {
   diagnostic.event("session_started", { protocol: policyProtocolVersion, node: process.version });
   try {
     const registry = schemaRegistry, session = new PolicySession(registry);
-    const lines = readline.createInterface({ input: process.stdin });
-    lines.on("line", (line) => {
+    read_frames(process.stdin, line => {
       try { dispatch(JSON.parse(line), registry, session); }
-      catch (error) { process.stderr.write(`policy-mcp: ${error.message}\n`); }
+      catch { send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } }); }
+    }, () => {
+      send({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid or oversized MCP frame" } });
+      process.exitCode = 1;
+      process.stdin.destroy();
     });
   } catch (error) {
     process.stderr.write(`policy-mcp: ${error.message}\n`);

@@ -18,18 +18,18 @@ export function configure_hook_environment() {
     runtime = JSON.parse(fs.readFileSync(path.join(ROOT, "hooks/runtime.local.json"), "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return;
-    throw new ConfigError("Invalid local hook runtime configuration");
+    throw new ConfigError("Некорректные локальные настройки запуска hooks");
   }
   if (!runtime || typeof runtime !== "object" || Array.isArray(runtime) ||
       [runtime.state, runtime.settings].some(value => typeof value !== "string" || !path.isAbsolute(value)))
-    throw new ConfigError("Invalid local hook runtime configuration");
+    throw new ConfigError("Некорректные локальные настройки запуска hooks");
   process.env.EDT_AI_STATE_DIR ||= runtime.state;
   process.env.EDT_AI_SETTINGS ||= runtime.settings;
 }
 export class ProfileNotFound extends ConfigError {}
 export class ProfileAmbiguous extends ConfigError {
   constructor(candidates) {
-    super("Multiple .ai/project.yaml profiles below the selected directory; select a specific project: " + candidates.join(", "));
+    super("В выбранном каталоге несколько профилей .ai/project.yaml; выберите конкретный проект: " + candidates.join(", "));
     this.candidates = candidates;
   }
 }
@@ -52,7 +52,9 @@ export const is_dir = (file) => {
 export function resolve(file) {
   let current = path.resolve(file),
     suffix = [];
-  while (!exists(current)) {
+  // existsSync follows links and treats a dangling link as absent. Never append
+  // a missing suffix to such a link: it could later resolve outside the root.
+  while (!fs.lstatSync(current, { throwIfNoEntry: false })) {
     const parent = path.dirname(current);
     if (parent === current) break;
     suffix.unshift(path.basename(current));
@@ -73,25 +75,17 @@ export const sha256 = (value) =>
 // realpath preserves filesystem identity without linguistic transformations
 // (Straße and STRASSE are different directories even on Windows).
 export const path_identity = (file) => resolve(file).replace(/^\\\\\?\\UNC\\/, "\\\\").replace(/^\\\\\?\\/, "");
-export function legacy_project_state(state, root) {
-  const identity = path_identity(root), legacy = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
-  if (!exists(legacy)) return null;
-  let owner;
-  try { owner = JSON.parse(fs.readFileSync(path.join(legacy, "code-index/owner.json"), "utf8")); } catch {}
-  return { directory: legacy, status: !owner?.project_root ? "owner_unknown" : path_identity(owner.project_root) === identity ? "verified" : "other_project" };
-}
 export function project_directory(state, root) {
   const identity = path_identity(root),
-    home = path.join(state, "projects", sha256(identity).slice(0, 32)),
-    legacy = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
-  if (!exists(home) && exists(legacy)) {
-    // Keep a verified live daemon at its original home. Another project whose
-    // former folded key collided receives its new namespace, never this one.
-    if (legacy_project_state(state, root)?.status === "verified") return legacy;
-  }
+    home = path.join(state, "projects", sha256(identity).slice(0, 32));
+  // Do not start a second daemon while an older namespace may still own one.
+  // The old state is never read, reused, moved, or deleted automatically.
+  const previous = path.join(state, "projects", sha256(casefold(identity)).slice(0, 16));
+  if (exists(previous))
+    throw new ConfigError("Обнаружено неподдерживаемое прежнее состояние проекта: " + previous + ". Проверьте владельца, остановите его сервисы и перенесите состояние в архив до работы с проектом.");
   const ownerFile = path.join(home, "project-owner.json");
   if (is_file(ownerFile) && JSON.parse(fs.readFileSync(ownerFile, "utf8")).root !== identity)
-    throw new ConfigError("Project state ownership mismatch: " + home);
+    throw new ConfigError("Владелец состояния проекта не совпадает: " + home);
   return home;
 }
 export function record_project_owner(state, root) {
@@ -99,12 +93,12 @@ export function record_project_owner(state, root) {
   fs.mkdirSync(home, { recursive: true });
   try { fs.writeFileSync(file, JSON.stringify({ root: path_identity(root) }), { flag: "wx", mode: 0o600 }); }
   catch (error) { if (error.code !== "EEXIST") throw error; }
-  if (JSON.parse(fs.readFileSync(file, "utf8")).root !== path_identity(root)) throw new ConfigError("Project state ownership mismatch: " + home);
+  if (JSON.parse(fs.readFileSync(file, "utf8")).root !== path_identity(root)) throw new ConfigError("Владелец состояния проекта не совпадает: " + home);
 }
 export function instance_name() {
   const name = process.env.EDT_AI_INSTANCE || "default";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name))
-    throw new ConfigError("Invalid EDT_AI_INSTANCE identifier");
+    throw new ConfigError("Некорректный идентификатор EDT_AI_INSTANCE");
   return name;
 }
 export function instance_directory(state, root) {
@@ -127,7 +121,7 @@ export function* project_directories(root, prune = () => false) {
   let visited = 0;
   while (pending.length) {
     if (++visited > 20000)
-      throw new ConfigError("Project discovery exceeded 20000 directories; select a more specific project folder");
+      throw new ConfigError("Поиск проекта превысил 20000 каталогов; выберите более конкретную папку");
     const directory = pending.pop();
     yield directory;
     if (prune(directory)) continue;
@@ -148,13 +142,13 @@ function has_profile(directory) {
   const file = path.join(directory, ".ai/project.yaml");
   if (!is_file(file)) return false;
   if (!contained(directory, resolve(file)))
-    throw new ConfigError("Project profile must remain inside its repository");
+    throw new ConfigError("Профиль проекта должен оставаться внутри своего репозитория");
   return true;
 }
 export function locate_project(selected, { recursive = true } = {}) {
   const directory = resolve(selected);
   if (!is_dir(directory))
-    throw new ConfigError("Selected project directory does not exist");
+    throw new ConfigError("Выбранный каталог проекта не существует");
   for (let candidate = directory; ; candidate = path.dirname(candidate)) {
     if (has_profile(candidate)) return candidate;
     if (
@@ -171,7 +165,7 @@ export function locate_project(selected, { recursive = true } = {}) {
       throw new ProfileAmbiguous(matches);
   }
   if (matches.length) return matches[0];
-  throw new ProfileNotFound("No .ai/project.yaml in or below the selected repository");
+  throw new ProfileNotFound("Профиль .ai/project.yaml не найден в выбранном репозитории или его подкаталогах");
 }
 export function configuration_root(selected, options) {
   try {
@@ -194,7 +188,7 @@ export function select_root(roots, cwd) {
           uri.protocol !== "file:" ||
           !["", "localhost"].includes(uri.hostname)
         )
-          throw new ConfigError("Project roots must be local file URIs");
+          throw new ConfigError("Корни проекта должны быть локальными URI file");
         return resolve(fileURLToPath(uri));
       }),
     ),
@@ -205,7 +199,7 @@ export function select_root(roots, cwd) {
   );
   if (matches.length === 1) return matches[0];
   throw new ConfigError(
-    "Select exactly one project directory; multiple roots are ambiguous",
+    "Выберите ровно один каталог проекта; несколько корней создают неоднозначность",
   );
 }
 export function state_root() {

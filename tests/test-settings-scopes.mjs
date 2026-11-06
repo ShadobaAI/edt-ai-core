@@ -4,14 +4,97 @@ import path from "node:path";
 import test from "node:test";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { fixture, session, dialog_session } from "./helpers.mjs";
-import { dump, load } from "../scripts/common.mjs";
+import { fixture, environment, session, dialog_session } from "./helpers.mjs";
+import { dump, load, parse } from "../scripts/common.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { java_info, java_in_directory } from "../scripts/runtime.mjs";
+import { SettingsBackend } from "../scripts/settings_backend.mjs";
+import { project_directory } from "../scripts/project_paths.mjs";
 import { which } from "../scripts/processes.mjs";
 import { save_export_to_path } from "../scripts/settings_export.mjs";
 import { stringify } from "yaml";
+
+for (const layerScope of ["profile", "project_local"]) test(`YAML ${layerScope} editor preserves exact text, backs up and rejects stale previews`, async t => {
+  const f = fixture(t); f.save();
+  const target = path.join(f.root, ".ai", layerScope === "profile" ? "project.yaml" : "project.local.yaml");
+  if (layerScope === "project_local") fs.writeFileSync(target, "# local comment\ncomponents: {}\n");
+  else fs.writeFileSync(target, "# shared comment\n" + fs.readFileSync(target, "utf8"));
+  const before = fs.readFileSync(target, "utf8");
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const edit = (await client.call("settings.edit", { layerScope, format: "yaml" }))._meta.data;
+  assert.equal(edit.text, before);
+  const request = { mode: "layer", layerScope, baseRevision: edit.baseRevision, text: before + "\n# trailing comment\n" };
+  const preview = (await client.call("settings.preview", request)).structuredContent;
+  assert.equal(preview.textChanged, true);
+  await assert.rejects(client.call("settings.apply", { ...request, text: request.text + "# changed\n", revision: preview.revision, replace: true }), /предпросмотра/);
+  const applied = (await client.call("settings.apply", { ...request, revision: preview.revision, replace: true })).structuredContent;
+  assert.equal(fs.readFileSync(target, "utf8"), request.text);
+  assert.equal(fs.readFileSync(applied.backup, "utf8"), before);
+  if (layerScope === "project_local") assert.equal(path.relative(f.state, applied.backup).startsWith(".."), false);
+  await assert.rejects(client.call("settings.preview", request), /изменились/);
+});
+
+test("local backups cannot be written inside the project", async t => {
+  const f = fixture(t); f.save();
+  f.env.EDT_AI_STATE_DIR = path.join(f.root, "state");
+  f.env.EDT_AI_SETTINGS = path.join(f.env.EDT_AI_STATE_DIR, "settings.json");
+  const target = path.join(f.root, ".ai", "project.local.yaml");
+  fs.writeFileSync(target, "# private\n{}\n");
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const edit = (await client.call("settings.edit", { layerScope: "project_local", format: "yaml" }))._meta.data;
+  const request = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: "{}\n" };
+  const preview = (await client.call("settings.preview", request)).structuredContent;
+  await assert.rejects(client.call("settings.apply", { ...request, revision: preview.revision }), /вне проекта/);
+  assert.equal(fs.readFileSync(target, "utf8"), "# private\n{}\n");
+});
+
+test("local backups cannot be written inside another Git worktree", async t => {
+  const f = fixture(t); f.save();
+  fs.mkdirSync(path.join(f.state, ".git"));
+  const target = path.join(f.root, ".ai", "project.local.yaml");
+  fs.writeFileSync(target, "# private\n{}\n");
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const edit = (await client.call("settings.edit", { layerScope: "project_local", format: "yaml" }))._meta.data;
+  const request = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: "{}\n" };
+  const preview = (await client.call("settings.preview", request)).structuredContent;
+  await assert.rejects(client.call("settings.apply", { ...request, revision: preview.revision }), /Git-репозитория/);
+  assert.equal(fs.readFileSync(target, "utf8"), "# private\n{}\n");
+});
+
+test("YAML editor repairs a malformed shared profile without losing its backup", async t => {
+  const f = fixture(t); f.save();
+  const target = path.join(f.root, ".ai", "project.yaml"), valid = fs.readFileSync(target, "utf8");
+  fs.writeFileSync(target, "broken: [\n");
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const edit = (await client.call("settings.edit", { layerScope: "profile", format: "yaml" }))._meta.data;
+  assert.equal(edit.text, "broken: [\n");
+  const request = { mode: "layer", layerScope: "profile", baseRevision: edit.baseRevision, text: valid };
+  const preview = (await client.call("settings.preview", request)).structuredContent;
+  const result = (await client.call("settings.apply", { ...request, revision: preview.revision, replace: true })).structuredContent;
+  assert.equal(fs.readFileSync(target, "utf8"), valid);
+  assert.equal(fs.readFileSync(result.backup, "utf8"), edit.text);
+});
+
+test("creating an empty local file invalidates the editor revision", async t => {
+  const f = fixture(t); f.save();
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const edit = (await client.call("settings.edit", { layerScope: "project_local", format: "yaml" }))._meta.data;
+  fs.writeFileSync(edit.path, "");
+  await assert.rejects(client.call("settings.preview", { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: "{}\n" }), /изменились/);
+});
+
+test("invalid YAML reports its line without exposing document contents", async t => {
+  const f = fixture(t); f.save();
+  const client = await session(t, "mcp/settings.mjs", [], f);
+  const edit = (await client.call("settings.edit", { layerScope: "project_local", format: "yaml" }))._meta.data;
+  await assert.rejects(client.call("settings.preview", { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision,
+    text: "# synthetic-private-value\ncomponents:\n  broken: [\n" }), error => {
+    assert.match(error.message, /в строке 4/);
+    assert.doesNotMatch(error.message, /synthetic-private-value/);
+    return true;
+  });
+});
 
 test("MCP saves supported fields in the chosen layer and reports masking and revisions", async t => {
   const f = fixture(t); f.save();
@@ -24,7 +107,7 @@ test("MCP saves supported fields in the chosen layer and reports masking and rev
   assert.ok(fs.existsSync(profile.backup));
   assert.equal(load(profile.savedTo).connections.edt.url, "http://127.0.0.1:8123/mcp");
   current = await read(); assert.equal(current.connectionSources.edt, "profile"); assert.equal(profile.settingsRevision, current.settingsRevision);
-  await assert.rejects(client.call("settings.update", { set: { edtUrl: "http://127.0.0.1:8125/mcp" }, scope: "instance", expectedRevision: originalRevision }), /изменились/);
+  await assert.rejects(client.call("settings.update", { set: { edtUrl: "http://127.0.0.1:8125/mcp" }, scope: "project_local", expectedRevision: originalRevision }), /изменились/);
   await client.call("settings.update", { set: { bslLsEnabled: false }, scope: "profile" });
   assert.equal(load(current.writePaths.profile).components["bsl-ls"].enabled, false);
   current = await read();
@@ -33,12 +116,12 @@ test("MCP saves supported fields in the chosen layer and reports masking and rev
   assert.equal(local.savedTo, current.writePaths.project_local);
   assert.equal(load(local.savedTo).components["bsl-ls"].java, "local-java");
   current = await read(); assert.equal(current.values.bslLsEnabled, false); assert.equal(current.managedValueSources.bslLsJava, "project_local");
-  await client.call("settings.update", { set: { edtUrl: "http://127.0.0.1:8300/mcp", bslLsJava: "instance-java" }, scope: "instance", expectedRevision: current.settingsRevision });
-  current = await read(); assert.equal(current.connectionSources.edt, "instance"); assert.equal(current.managedValueSources.bslLsJava, "instance");
+  await client.call("settings.update", { set: { edtUrl: "http://127.0.0.1:8300/mcp", bslLsJava: "local-java-2" }, scope: "project_local", expectedRevision: current.settingsRevision });
+  current = await read(); assert.equal(current.connectionSources.edt, "project_local"); assert.equal(current.managedValueSources.bslLsJava, "project_local");
   const previousRevision = current.settingsRevision;
   await client.call("settings.update", { set: { bslLsJava: "global-java" }, scope: "global", expectedRevision: previousRevision });
   await assert.rejects(client.call("settings.reset_connection", { connection: "edt", expectedRevision: previousRevision }), /изменились/);
-  current = await read(); assert.equal(current.values.bslLsJava, "instance-java"); assert.equal(current.managedValueSources.bslLsJava, "instance");
+  current = await read(); assert.equal(current.values.bslLsJava, "local-java-2"); assert.equal(current.managedValueSources.bslLsJava, "project_local");
   assert.equal(load(current.writePaths.global).mcp.managed["bsl-ls"].java, "global-java");
 });
 
@@ -67,16 +150,16 @@ test("masked override URLs are validated before preview or direct writes", async
     { connections: { openviking: { url: "http://127.0.0.1:8203/mcp?credential=value" } } },
     { components: { "bsl-ls": { url: "http://user:password@127.0.0.1:8204/mcp" } } },
   ];
-  for (const layerScope of ["project_local", "instance"]) {
-    const edit = (await client.call("settings.edit", { layerScope }))._meta.data;
+  for (const layerScope of ["project_local"]) {
+    const edit = (await client.call("settings.edit", { layerScope, format:"yaml" }))._meta.data;
     for (const document of documents) await assert.rejects(client.call("settings.preview", {
       mode: "layer", layerScope, baseRevision: edit.baseRevision, text: JSON.stringify(document),
-    }), /credentials|query parameters/i);
+    }), /Некорректный URL MCP|Параметры запроса в URL OpenViking/);
     assert.equal(fs.existsSync(edit.path), false);
   }
-  for (const scope of ["project_local", "instance", undefined]) {
+  for (const scope of ["project_local", undefined]) {
     await assert.rejects(client.call("settings.update", { set: { openvikingUrl: "http://127.0.0.1:8203/mcp?credential=value" },
-      ...(scope ? { scope } : {}) }), /query parameters/i);
+      ...(scope ? { scope } : {}) }), /Параметры запроса/);
   }
   assert.equal(fs.existsSync(path.join(f.root, ".ai/project.local.yaml")), false);
 });
@@ -92,72 +175,20 @@ test("passive settings reads do not expose a pre-existing masked credential URL"
   const read = await client.call("settings.read", {});
   assert.equal(read.structuredContent.configurationError, true);
   assert.doesNotMatch(JSON.stringify(read), /synthetic-private-value/);
-  const edit = (await client.call("settings.edit", { layerScope: "project_local" }))._meta.data;
-  const request = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: '{"schema_version":"0.1"}' };
+  const edit = (await client.call("settings.edit", { layerScope: "project_local", format:"yaml" }))._meta.data;
+  const request = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: '{"schema_version":"0.2"}' };
   const preview = (await client.call("settings.preview", request)).structuredContent;
   await client.call("settings.apply", { ...request, revision: preview.revision });
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "loaded");
 });
 
-test("profile and global documents are edited separately with guarded previews and exact readback", async t => {
-  const f = fixture(t); f.save();
-  const client = await session(t, "mcp/settings.mjs", [], f);
-  await client.call("settings.update", { scope: "global", set: { bslLsJava: "before-java" } });
-  const current = (await client.call("settings.read", {})).structuredContent;
-  const globalBefore = fs.readFileSync(current.writePaths.global), globalTime = fs.statSync(current.writePaths.global).mtimeMs;
-  const profileBefore = fs.readFileSync(current.writePaths.profile);
-  const edit = (await client.call("settings.edit", { layerScope: "profile" }))._meta.data;
-  assert.equal(edit.path, current.writePaths.profile);
-  const profile = JSON.parse(edit.text); assert.equal(profile.project.id, f.profile.project.id); assert.equal(profile.settings, undefined);
-  profile.project.purpose = "Updated through the profile document";
-  const request = { mode: "layer", layerScope: "profile", baseRevision: edit.baseRevision, text: stringify(profile), projectRoot: f.root };
-  const preview = (await client.call("settings.preview", request)).structuredContent;
-  assert.equal(preview.layerPath, current.writePaths.profile); assert.equal(preview.replacesProfile, true);
-  assert.ok(preview.layerChanges.some(change => change.path === "project.purpose"));
-  await assert.rejects(client.call("settings.apply", { ...request, revision: preview.revision }), /замену/);
-  await assert.rejects(client.call("settings.apply", { ...request, text: request.text + "\n", revision: preview.revision, replace: true }), /предпросмотра/);
-  const result = (await client.call("settings.apply", { ...request, revision: preview.revision, replace: true })).structuredContent;
-  assert.equal(result.savedTo, current.writePaths.profile); assert.deepEqual(fs.readFileSync(result.backup), profileBefore);
-  assert.equal(load(current.writePaths.profile).project.purpose, profile.project.purpose);
-  assert.deepEqual(fs.readFileSync(current.writePaths.global), globalBefore);
-  assert.equal(fs.statSync(current.writePaths.global).mtimeMs, globalTime);
 
-  const savedProfile = fs.readFileSync(current.writePaths.profile), profileTime = fs.statSync(current.writePaths.profile).mtimeMs;
-  const globalEdit = (await client.call("settings.edit", { layerScope: "global" }))._meta.data;
-  assert.equal(globalEdit.path, current.writePaths.global);
-  const globalDocument = JSON.parse(globalEdit.text);
-  assert.equal(globalDocument.mcp.managed["bsl-ls"].java, "before-java"); assert.equal(globalDocument.profile, undefined);
-  globalDocument.mcp.managed["bsl-ls"].java = "after-java";
-  const globalRequest = { mode: "layer", layerScope: "global", baseRevision: globalEdit.baseRevision, text: stringify(globalDocument), projectRoot: f.root };
-  const globalPreview = (await client.call("settings.preview", globalRequest)).structuredContent;
-  assert.equal(globalPreview.layerPath, current.writePaths.global); assert.equal(globalPreview.replacesProfile, false);
-  const saved = (await client.call("settings.apply", { ...globalRequest, revision: globalPreview.revision })).structuredContent;
-  assert.equal(saved.savedTo, current.writePaths.global);
-  assert.equal(load(current.writePaths.global).mcp.managed["bsl-ls"].java, "after-java");
-  assert.deepEqual(fs.readFileSync(current.writePaths.profile), savedProfile);
-  assert.equal(fs.statSync(current.writePaths.profile).mtimeMs, profileTime);
-  const next = (await client.call("settings.edit", { layerScope: "global" }))._meta.data;
-  await assert.rejects(client.call("settings.preview", { ...globalRequest, baseRevision: next.baseRevision, text: stringify({ mcp: globalDocument.mcp, unexpected: true }) }), /недопустим/i);
-  await client.call("settings.update", { scope: "instance", set: { edtUrl: "http://127.0.0.1:9999/mcp" } });
-  await assert.rejects(client.call("settings.preview", { mode: "layer", layerScope: "global", baseRevision: next.baseRevision, text: next.text }), /изменились/);
-});
 
-test("saving a global document creates its file even when its values equal defaults", async t => {
+for (const layerScope of ["project_local"]) test(`MCP validates and saves the complete ${layerScope} override`, async t => {
   const f = fixture(t); f.save(); const client = await session(t, "mcp/settings.mjs", [], f);
-  const edit = (await client.call("settings.edit", { layerScope: "global" }))._meta.data;
-  assert.equal(fs.existsSync(edit.path), false);
-  const request = { mode: "layer", layerScope: "global", baseRevision: edit.baseRevision, text: edit.text };
-  const preview = (await client.call("settings.preview", request)).structuredContent;
-  const saved = (await client.call("settings.apply", { ...request, revision: preview.revision })).structuredContent;
-  assert.equal(saved.savedTo, edit.path);
-  assert.deepEqual(load(edit.path).mcp.managed, JSON.parse(edit.text).mcp.managed);
-});
-
-for (const layerScope of ["project_local", "instance"]) test(`MCP JSON editor validates and saves the complete ${layerScope} override`, async t => {
-  const f = fixture(t); f.save(); const client = await session(t, "mcp/settings.mjs", [], f);
-  const edit = (await client.call("settings.edit", { layerScope }))._meta.data;
-  assert.equal(JSON.parse(edit.text).schema_version, "0.1");
-  const document = { schema_version: "0.1", connections: { v8std: { url: "http://127.0.0.1:9001/mcp" } },
+  const edit = (await client.call("settings.edit", { layerScope, format:"yaml" }))._meta.data;
+  assert.deepEqual(parse(edit.text), {});
+  const document = { schema_version: "0.2", connections: { v8std: { url: "http://127.0.0.1:9001/mcp" } },
     components: { "bsl-ls": { java: "custom-java", node: "custom-node", configuration: ".bsl-language-server.json", version: "v2.0.0" } } };
   const args = { text: JSON.stringify(document), mode: "layer", layerScope, baseRevision: edit.baseRevision, projectRoot: f.root };
   const preview = (await client.call("settings.preview", args)).structuredContent;
@@ -169,8 +200,8 @@ for (const layerScope of ["project_local", "instance"]) test(`MCP JSON editor va
   assert.equal(current.values.v8stdUrl, document.connections.v8std.url);
   assert.equal(current.values.bslLsJava, "custom-java"); assert.equal(current.managedValueSources.bslLsJava, layerScope);
   await assert.rejects(client.call("settings.apply", { ...args, revision: preview.revision }), /изменились/);
-  const fresh = (await client.call("settings.edit", { layerScope }))._meta.data;
-  await assert.rejects(client.call("settings.preview", { ...args, baseRevision: fresh.baseRevision, text: '{"unsupported": true}' }), /additional properties/i);
+  const fresh = (await client.call("settings.edit", { layerScope, format:"yaml" }))._meta.data;
+  await assert.rejects(client.call("settings.preview", { ...args, baseRevision: fresh.baseRevision, text: '{"unsupported": true}' }), /неизвестное поле/);
   assert.deepEqual(load(edit.path), document);
 });
 
@@ -179,105 +210,138 @@ test("a malformed local override can be repaired through the layer editor", asyn
   fs.writeFileSync(file, "connections: [broken\n");
   const client = await session(t, "mcp/settings.mjs", [], f);
   assert.equal((await client.call("settings.read", {})).structuredContent.configurationError, true);
-  const edit = (await client.call("settings.edit", { layerScope: "project_local" }))._meta.data;
+  const edit = (await client.call("settings.edit", { layerScope: "project_local", format:"yaml" }))._meta.data;
   assert.match(edit.text, /broken/);
-  const args = { text: '{"schema_version":"0.1","components":{"bsl-ls":{"node":"node"}}}', mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, projectRoot: f.root };
+  const args = { text: '{"schema_version":"0.2","components":{"bsl-ls":{"node":"node"}}}', mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, projectRoot: f.root };
   const preview = (await client.call("settings.preview", args)).structuredContent;
   await client.call("settings.apply", { ...args, revision: preview.revision });
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "loaded");
   assert.equal(load(file).components["bsl-ls"].node, "node");
 });
 
-test("MCP profile rename changes only project.id and rejects stale or invalid edits", async t => {
+test("MCP profile rename creates a minimal local ID and leaves project.yaml byte-for-byte unchanged", async t => {
   const f = fixture(t); f.save();
+  const shared = path.join(f.root, ".ai/project.yaml"), local = path.join(f.root, ".ai/project.local.yaml");
+  fs.writeFileSync(shared, "\uFEFF# shared profile\r\n" + fs.readFileSync(shared, "utf8").replace(/\r?\n/g, "\r\n"));
+  const sharedBefore = fs.readFileSync(shared);
   const client = await session(t, "mcp/settings.mjs", [], f);
+  const contract = (await client.request("tools/list")).tools.find(tool => tool.name === "settings.rename_profile");
+  assert.match(contract.description, /project\.local\.yaml/);
+  assert.equal(contract.inputSchema.additionalProperties, false);
+  assert.equal(contract.inputSchema.properties.scope, undefined);
   const initial = (await client.call("settings.read", {})).structuredContent;
-  await assert.rejects(client.call("settings.rename_profile", { projectId: "bad name", expectedRevision: initial.settingsRevision }), /pattern|шаблон/i);
-  const renamed = (await client.call("settings.rename_profile", { projectId: "renamed.project", expectedRevision: initial.settingsRevision })).structuredContent;
-  const document = load(initial.writePaths.profile);
-  assert.equal(document.project.id, "renamed.project");
-  assert.equal(document.profile_id, f.profile.profile_id);
-  assert.deepEqual(document.repositories, f.profile.repositories);
-  assert.equal(load(renamed.backup).project.id, f.profile.project.id);
+  const renamed = (await client.call("settings.rename_profile", { projectId: "  renamed.project  ", expectedRevision: initial.settingsRevision })).structuredContent;
+  assert.equal(renamed.status, "renamed");
+  assert.deepEqual(load(local), { project: { id: "renamed.project" } });
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore, "rename must not write project.yaml, including comments, BOM and CRLF");
+  assert.equal(renamed.backup, null);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
   assert.match(renamed.detail, /Vanessa/);
-  await assert.rejects(client.call("settings.rename_profile", { projectId: "stale", expectedRevision: initial.settingsRevision }), /изменил/);
   const updated = (await client.call("settings.read", {})).structuredContent;
   assert.equal(updated.profile.projectId, "renamed.project");
+  assert.equal(updated.configurationValues.project.id, "renamed.project");
+  assert.equal(updated.configurationSources[JSON.stringify(["project", "id"])], "project_local");
+  assert.equal(updated.profileHistory.find(item => item.projectRoot === f.root).projectId, "renamed.project");
+
+  const localBefore = fs.readFileSync(local);
+  const repeated = (await client.call("settings.rename_profile", { projectId: "renamed.again", expectedRevision: updated.settingsRevision })).structuredContent;
+  assert.equal(repeated.profile.projectId, "renamed.again");
+  assert.deepEqual(load(local), { project: { id: "renamed.again" } });
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore, "repeated rename must not write project.yaml");
+  assert.deepEqual(fs.readFileSync(repeated.backup), localBefore);
+  assert.equal(path.dirname(repeated.backup), path.join(f.state, "backups"));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(project_directory(f.state, f.root), "profile-history.json"))).projectId, "renamed.again");
+  await assert.rejects(client.call("settings.rename_profile", { projectId: "stale", expectedRevision: initial.settingsRevision }), /изменил/);
+  assert.equal((await client.call("settings.read", {})).structuredContent.profile.projectId, "renamed.again");
 });
 
-test("registered profile import is validated in the target and excludes machine settings by default", async t => {
-  const f = fixture(t); f.save();
-  const other = path.join(f.base, "source"); fs.mkdirSync(other); fs.mkdirSync(path.join(other, "src"));
-  const source = structuredClone(f.profile); source.project.id = "source";
-  source.connections = { edt: { url: "http://127.0.0.1:9999/mcp" } };
-  source.testing.commands = [{ id: "machine-test", repository_id: "product", argv: ["node", "C:\\local\\runner.js"], effects: [] }];
-  dump(source, path.join(other, ".ai/project.yaml"));
-  dump({ components: { "bsl-ls": { java: "private-java" } } }, path.join(other, ".ai/project.local.yaml"));
-  remember_profile(f.state, other, profile_state(other));
-  const client = await session(t, "mcp/settings.mjs", [], f);
-  const portable = (await client.call("settings.profile_source", { sourceRoot: other }))._meta.data;
-  assert.equal(JSON.parse(portable.text).connections, undefined);
-  assert.equal(portable.localOverridesIncluded, false);
-  const withConnections = (await client.call("settings.profile_source", { sourceRoot: other, includeConnections: true }))._meta.data;
-  assert.equal(JSON.parse(withConnections.text).connections.edt.url, source.connections.edt.url);
-  await assert.rejects(client.call("settings.profile_source", { sourceRoot: f.root }), /другой доступный/);
-  const input = { text: withConnections.text, projectRoot: f.root, includeMachineSettings: false };
-  const preview = (await client.call("settings.preview", input)).structuredContent;
-  assert.equal(preview.replacesProfile, true);
-  assert.deepEqual(preview.omittedTestingCommands, ["machine-test"]);
-  assert.deepEqual(preview.projectSpecific.edtMappings, [{ repository: "product", project: "Product", status: "not_detected" }]);
-  await assert.rejects(client.call("settings.apply", { ...input, revision: preview.revision }), /Подтвердите замену/);
-  await client.call("settings.apply", { ...input, revision: preview.revision, replace: true });
-  const imported = load(path.join(f.root, ".ai/project.yaml"));
-  assert.equal(imported.project.id, "source"); assert.equal(imported.connections, undefined);
-  assert.deepEqual(imported.testing.commands, []);
-  assert.equal(fs.existsSync(path.join(f.root, ".ai/project.local.yaml")), false);
-  const bad = structuredClone(source); bad.repositories[0].path = "absent";
-  await assert.rejects(client.call("settings.preview", { text: JSON.stringify(bad), projectRoot: f.root, includeMachineSettings: false }), /отсутствует репозиторий/);
+for (const existing of [false, true]) test(`rename makes no persistent writes for unchanged, invalid or stale IDs (${existing ? "existing" : "absent"} local file)`, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml");
+  if (existing) dump({ project: { id: "local-name", purpose: "retained" } }, local);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), profile = profile_state(f.root);
+  remember_profile(f.state, f.root, profile);
+  const expectedRevision = backend.edit_revision(), sharedBefore = fs.readFileSync(shared), localBefore = existing ? fs.readFileSync(local) : null;
+  const writes = [], write = fs.writeFileSync;
+  t.mock.method(fs, "writeFileSync", (file, ...args) => {
+    if (file !== path.join(f.state, "operation.lock")) writes.push(file);
+    return write(file, ...args);
+  });
+  const unchanged = await backend.main({ action: "rename_profile", projectId: `  ${profile.projectId}  `, expectedRevision });
+  assert.equal(unchanged.status, "unchanged");
+  for (const projectId of ["", "  ", null, 42, "bad name", "-leading", "кириллица", "x".repeat(65)])
+    await assert.rejects(backend.main({ action: "rename_profile", projectId, expectedRevision }), /идентификатор|требуемому формату/i);
+  for (const revision of [undefined, "stale"])
+    await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision: revision }), /изменился/);
+  assert.deepEqual(writes, [], "only the transient operation lock may be written");
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+  assert.deepEqual(existing ? fs.readFileSync(local) : null, localBefore);
+  assert.equal(fs.existsSync(path.join(f.root, ".ai/.gitignore")), false);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+  assert.equal(fs.existsSync(path.join(f.state, "operation.lock")), false);
 });
 
-test("file import omits machine paths unless explicitly selected and reports missing paths", async t => {
-  const f = fixture(t); f.save();
-  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
-  const client = await session(t, "mcp/settings.mjs", [], f);
-  const exported = (await client.call("settings.export_data", {}))._meta.data;
-  const data = JSON.parse(exported.text);
-  data.settings.mcp.managed["bsl-ls"].java = "foreign-java";
-  data.settings.mcp.managed["bsl-ls"].mode = "external";
-  data.settings.mcp.managed["bsl-ls"].url = "http://127.0.0.1:9998/mcp";
-  data.profile.connections = { v8std: { url: "http://127.0.0.1:9000/mcp" } };
-  data.profile.testing.commands = [{ id: "machine-test", repository_id: "product", argv: ["node", "C:\\local\\runner.js"], effects: [] }];
-  data.profile.roots.source.push("missing-source");
-  const text = JSON.stringify(data);
-  const safe = (await client.call("settings.preview", { text, includeMachineSettings: false })).structuredContent;
-  assert.deepEqual(safe.missingPaths, ["missing-source"]);
-  assert.equal(safe.connectionUrls.v8std, "");
-  assert.deepEqual(safe.omittedTestingCommands, ["machine-test"]);
-  assert.equal(safe.projectSpecific.testing.commands, 0);
-  assert.deepEqual(safe.projectSpecific.edtMappings, [{ repository: "product", project: "Product", status: "detected" }]);
-  assert.equal(safe.sharedRuntimeChanges["bsl-ls"], undefined);
-  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Different</name></projectDescription>");
-  await assert.rejects(client.call("settings.apply", { text, includeMachineSettings: false, revision: safe.revision, replace: true }), /предпросмотра/);
-  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
-  const full = (await client.call("settings.preview", { text, includeMachineSettings: true })).structuredContent;
-  assert.equal(full.connectionUrls.v8std, "http://127.0.0.1:9000/mcp");
-  assert.equal(full.projectSpecific.testing.commands, 1);
-  const legacy = (await client.call("settings.preview", { text })).structuredContent;
-  assert.equal(legacy.projectSpecific.testing.commands, 1);
-  assert.equal(full.sharedRuntimeChanges["bsl-ls"].java, "foreign-java");
-  assert.equal(full.sharedRuntimeChanges["bsl-ls"].mode, "external");
-  await assert.rejects(client.call("settings.apply", { text, includeMachineSettings: true, revision: safe.revision, replace: true }), /предпросмотра/);
+test("repeated renames preserve unrelated local settings, comments, field order, BOM and mixed line endings", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
+  const original = '\uFEFF# local comment\r\ncomponents:\r\n  bsl-ls: {java: "custom-java"} # retained\nproject:\r\n  purpose: local purpose\r\n  id: "old-name" # project label\r\n# trailing comment\n';
+  fs.writeFileSync(local, original);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  let before = original;
+  for (const projectId of ["new-name", "next-name"]) {
+    const result = await backend.main({ action: "rename_profile", projectId, expectedRevision: backend.edit_revision() });
+    assert.equal(fs.readFileSync(result.backup, "utf8"), before);
+    const after = before.replace(/"(?:old|new)-name"/, `"${projectId}"`);
+    assert.equal(fs.readFileSync(local, "utf8"), after);
+    const read = await backend.main({ action: "read" });
+    assert.equal(read.profile.projectId, projectId);
+    assert.equal(read.values.bslLsJava, "custom-java");
+    assert.equal(read.configurationValues.project.purpose, "local purpose");
+    assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+    before = after;
+  }
 });
+
+for (const original of ["project: [broken\n", "project: old-name\n", "unexpected: true\n", Buffer.from([0xff])])
+  test(`rename safely rejects a damaged local document (${Buffer.isBuffer(original) ? "UTF-8" : original.trim()})`, async t => {
+    const f = fixture(t); environment(t, f.env); f.save();
+    const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), expectedRevision = backend.edit_revision();
+    const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
+    fs.writeFileSync(local, original);
+    await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision }));
+    // Even a revision obtained from the repair editor must not permit rename to replace a broken document.
+    await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision: backend.edit_revision() }), /YAML|ожидался тип|неизвестное поле|UTF-8/i);
+    assert.deepEqual(fs.readFileSync(local), Buffer.from(original));
+    assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+    assert.equal(fs.existsSync(path.join(f.root, ".ai/.gitignore")), false);
+    assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+  });
+
+test("rename checks the merged profile before any local write", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  const shared = path.join(f.root, ".ai/project.yaml"), local = path.join(f.root, ".ai/project.local.yaml");
+  // Each layer passes its partial schema, but the active profile has an unknown repository reference.
+  dump({ testing: { commands: [{ id: "test", repository_id: "missing", argv: ["runner"], effects: [] }] } }, local);
+  const before = fs.readFileSync(local), sharedBefore = fs.readFileSync(shared);
+  await assert.rejects(backend.main({ action: "rename_profile", projectId: "changed", expectedRevision: backend.edit_revision() }), /Неизвестные идентификаторы репозиториев/);
+  assert.deepEqual(fs.readFileSync(local), before);
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+  assert.equal(fs.existsSync(path.join(f.state, "backups")), false);
+});
+
+
 
 test("malformed profiles can be read as text and repaired through preview and replacement", async t => {
   const f = fixture(t); f.save(); const file = path.join(f.root, ".ai/project.yaml");
   fs.writeFileSync(file, "project: [unterminated\n");
   const client = await session(t, "mcp/settings.mjs", [], f);
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "invalid");
-  assert.match((await client.call("settings.repair_document", {}))._meta.data.text, /unterminated/);
-  const input = { text: JSON.stringify(f.profile), projectRoot: f.root, includeMachineSettings: true };
-  const preview = (await client.call("settings.preview", input)).structuredContent;
-  await client.call("settings.apply", { ...input, revision: preview.revision, replace: true });
+  assert.match((await client.call("settings.edit", {layerScope:"profile",format:"yaml"}))._meta.data.text, /unterminated/);
+  const context=(await client.call("settings.transfer_context",{projectRoot:f.root}))._meta.data;
+  const input = { documents:{profile:JSON.stringify(f.profile)}, projectRoot: f.root, baseRevision:context.baseRevision };
+  const preview = (await client.call("settings.transfer_preview", input))._meta.data;
+  await client.call("settings.transfer_apply", { ...input, revision: preview.revision, replace: true });
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "loaded");
 });
 
@@ -305,6 +369,20 @@ test("Java probe failure never includes arbitrary process output or error text",
   } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
 });
 
+test("Java probe remains available with invalid settings without inheriting credentials", async t => {
+  const f = fixture(t), backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  t.mock.method(backend, "current", () => { throw new Error("invalid settings"); });
+  const original = childProcess.spawnSync;
+  try {
+    childProcess.spawnSync = (_command, _args, options) => {
+      assert.deepEqual(options.env, {});
+      return { status: 0, stderr: 'java version "21"' };
+    };
+    syncBuiltinESMExports();
+    assert.equal((await backend.main({ action: "java_probe", command: process.execPath })).version, "21");
+  } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
+});
+
 test("failed Java startup does not copy JVM options into operations or the journal", async t => {
   if (!which("java")) return t.skip("Java is not installed in PATH");
   const f = fixture(t); f.save();
@@ -327,31 +405,39 @@ test("chosen exports write and verify exactly the selected file and reject inval
   assert.equal(fs.readFileSync(target, "utf8"), "second");
 });
 
+test("settings exposes only the current file-selection and transfer scenario", async t => {
+  const f=fixture(t);f.save();const client=await session(t,"mcp/settings.mjs",[],f);
+  const names=(await client.request("tools/list")).tools.map(tool=>tool.name);
+  assert.ok(names.includes("settings.transfer_preview"));
+  assert.equal(names.includes("settings.profile_source"),false);
+  assert.equal(names.includes("settings.repair_document"),false);
+});
+
 test("MCP file selection keeps contents app-only, prevents protected paths and saves only chosen destinations", async t => {
   const f = fixture(t); f.save(); const { client, choose } = await dialog_session(t, f);
-  const source = path.join(f.base, "input.yaml"), output = path.join(f.base, "user-selected.json");
+  const source = path.join(f.base, "input.yaml"), output = path.join(f.base, "user-selected.yaml");
   fs.writeFileSync(source, "schema_version: '0.2'\nprivate: example\n"); choose(source);
-  let job = (await client.call("settings.pick_import_file", {})).structuredContent;
+  let job = (await client.call("settings.pick_import_file", {scope:"profile"})).structuredContent;
   job = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
   assert.equal(job.status, "completed"); assert.equal(job.result.filename, "input.yaml");
   assert.doesNotMatch(JSON.stringify(job), /private: example/);
   const file = await client.call("settings.import_file", { fileId: job.result.fileId });
   assert.match(file._meta.data.text, /private: example/); assert.equal(file.structuredContent, undefined);
   await assert.rejects(client.call("settings.import_file", { fileId: job.result.fileId }), /устарел/);
-  const protectedFile = path.join(f.root, "src", "protected.json"); fs.writeFileSync(protectedFile, "{}"); choose(protectedFile);
-  job = (await client.call("settings.pick_import_file", {})).structuredContent;
+  const protectedFile = path.join(f.root, "src", "protected.yaml"); fs.writeFileSync(protectedFile, "{}"); choose(protectedFile);
+  job = (await client.call("settings.pick_import_file", {scope:"profile"})).structuredContent;
   job = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
   assert.equal(job.status, "failed"); assert.match(job.error, /защищённых исходниках/);
   choose(output);
-  const saved = (await client.call("settings.save_export", {}))._meta.data;
-  assert.equal(saved.path, output); assert.equal(JSON.parse(fs.readFileSync(output, "utf8")).format, "1c-ai-core-settings");
+  const saved = (await client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}))._meta.data;
+  assert.equal(saved.path, output); assert.equal(load(output).profile_id, f.profile.profile_id);
   assert.equal(fs.existsSync(path.join(f.state, "exports/1c-ai-core-settings.json")), false);
   const profileFile = path.join(f.root, ".ai/project.yaml"), before = fs.readFileSync(profileFile, "utf8");
-  choose(profileFile); await assert.rejects(client.call("settings.save_export", {}), /нельзя заменять файлы настроек проекта/i);
+  choose(profileFile); await assert.rejects(client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), /нельзя заменять файлы настроек проекта/i);
   assert.equal(fs.readFileSync(profileFile, "utf8"), before);
-  choose(path.join(f.state, "settings.json")); await assert.rejects(client.call("settings.save_export", {}), /служебное состояние/i);
+  choose(path.join(f.state, "settings.json")); await assert.rejects(client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), /служебное состояние/i);
   choose(null);
-  const cancelled = (await client.call("settings.save_export", {}))._meta.data;
+  const cancelled = (await client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}))._meta.data;
   assert.equal(cancelled.cancelled, true); assert.ok(fs.existsSync(output));
 });
 
@@ -360,12 +446,12 @@ test("file selection uses the canonical profile root when the chat opens a subdi
   const subdirectory = path.join(f.root, "subdirectory"); fs.mkdirSync(subdirectory);
   f.env.EDT_AI_PROJECT_ROOT = subdirectory;
   const { client, choose } = await dialog_session(t, f);
-  const source = path.join(f.root, "src", "protected.json"); fs.writeFileSync(source, "{}"); choose(source);
-  let job = (await client.call("settings.pick_import_file", {})).structuredContent;
+  const source = path.join(f.root, "src", "protected.yaml"); fs.writeFileSync(source, "{}"); choose(source);
+  let job = (await client.call("settings.pick_import_file", {scope:"profile"})).structuredContent;
   job = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
   assert.equal(job.status, "failed"); assert.match(job.error, /защищённых исходниках/);
   const profile = path.join(f.root, ".ai", "project.yaml"), before = fs.readFileSync(profile);
-  choose(profile); await assert.rejects(client.call("settings.save_export", {}), /нельзя заменять файлы настроек проекта/i);
+  choose(profile); await assert.rejects(client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), /нельзя заменять файлы настроек проекта/i);
   assert.deepEqual(fs.readFileSync(profile), before);
 });
 
@@ -377,9 +463,10 @@ for (const protectedTarget of [true, false]) test(`settings paths ${protectedTar
   const args = { scope: "project_local", set: { edtUrl: "http://127.0.0.1:8123/mcp" } };
   if (protectedTarget) {
     assert.equal((await client.call("settings.read", {})).structuredContent.configurationError, true);
-    await assert.rejects(client.call("settings.update", args), /redirects into protected project source/);
-    await assert.rejects(client.call("settings.edit", { layerScope: "project_local" }), /redirects into protected project source/);
-    await assert.rejects(client.call("settings.export_data", {}), /redirects into protected project source/);
+    await assert.rejects(client.call("settings.update", args), /Путь настроек перенаправляется в защищённые исходники проекта/);
+    await assert.rejects(client.call("settings.rename_profile", { projectId: "changed", expectedRevision: "unavailable" }), /Путь настроек перенаправляется в защищённые исходники проекта/);
+    await assert.rejects(client.call("settings.edit", { layerScope: "project_local", format:"yaml" }), /Путь настроек перенаправляется в защищённые исходники проекта/);
+    await assert.rejects(client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), /Путь настроек перенаправляется в защищённые исходники проекта/);
     assert.equal(fs.existsSync(path.join(target, "project.local.yaml")), false);
   } else {
     await client.call("settings.update", args);
@@ -395,18 +482,18 @@ test("shared settings cannot be redirected into protected sources, including leg
   f.env.EDT_AI_SETTINGS = path.join(alias, "settings.json");
   const client = await session(t, "mcp/settings.mjs", [], f);
   for (const scope of ["global", undefined])
-    await assert.rejects(client.call("settings.update", { set: { bslLsJava: "java" }, ...(scope ? { scope } : {}) }), /redirects into protected project source/);
+    await assert.rejects(client.call("settings.update", { set: { bslLsJava: "java" }, ...(scope ? { scope } : {}) }), /Путь настроек перенаправляется в защищённые исходники проекта/);
   assert.equal(fs.existsSync(path.join(target, "settings.json")), false);
 });
 
-test("an instance settings directory cannot redirect into protected sources", async t => {
+test("the state directory cannot redirect into protected sources", async t => {
   const f = fixture(t); f.save();
   const target = path.join(f.root, "src", "state-data"); fs.mkdirSync(target);
   const alias = path.join(f.base, "state-alias");
   fs.symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir");
   f.env.EDT_AI_STATE_DIR = alias;
   const client = await session(t, "mcp/settings.mjs", [], f);
-  await assert.rejects(client.call("settings.update", { scope: "instance", set: { edtUrl: "http://127.0.0.1:8123/mcp" } }), /redirects into protected project source/);
+  await assert.rejects(client.call("settings.update", { scope: "project_local", set: { edtUrl: "http://127.0.0.1:8123/mcp" } }), /Путь настроек перенаправляется в защищённые исходники проекта/);
   assert.equal(fs.existsSync(path.join(target, "projects")), false);
 });
 
@@ -417,8 +504,8 @@ test("ambiguous nested profiles protect the selected directory but allow an exte
     dump(f.profile, path.join(root, ".ai", "project.yaml"));
   }
   const { client, choose } = await dialog_session(t, f);
-  const protectedFile = path.join(f.root, "src", "protected.json"); fs.writeFileSync(protectedFile, "{}"); choose(protectedFile);
-  let job = (await client.call("settings.pick_import_file", {})).structuredContent;
+  const protectedFile = path.join(f.root, "src", "protected.yaml"); fs.writeFileSync(protectedFile, "{}"); choose(protectedFile);
+  let job = (await client.call("settings.pick_import_file", {scope:"profile"})).structuredContent;
   job = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
   assert.equal(job.status, "failed"); assert.match(job.error, /защищённых исходниках/);
   const report = path.join(f.base, "report.json"); choose(report);

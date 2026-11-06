@@ -24,7 +24,7 @@ export async function smoke(config) {
       required.some((name) => !tools.some((tool) => tool.name === name)) ||
       tools.some((tool) => !tool.annotations?.readOnlyHint)
     )
-      throw new Error("Bundled policy tool contract mismatch");
+      throw new Error("Контракт встроенных инструментов политики не совпадает");
     const selection = (
       await client.call("select_yaxunit_requirements", {
         target: "policy-readiness-probe",
@@ -38,7 +38,7 @@ export async function smoke(config) {
       "digest" in selection ||
       selection.operation !== "report"
     )
-      throw new Error("Bundled policy runtime-only probe failed");
+      throw new Error("Проверка выполнения встроенной политики не удалась");
     const authoring = (
       await client.call("select_yaxunit_requirements", {
         target: "policy-readiness-probe",
@@ -47,7 +47,7 @@ export async function smoke(config) {
       })
     ).structuredContent;
     if (!authoring.digest || !authoring.mandatory?.length)
-      throw new Error("Bundled policy authoring selection probe failed");
+      throw new Error("Проверка выбора требований встроенной политики не удалась");
     const current = {
       target: authoring.target,
       artifact: "yaxunit",
@@ -78,7 +78,7 @@ export async function smoke(config) {
       assessment.status !== "blocked" ||
       assessment.unresolved?.length !== ledger.length
     )
-      throw new Error("Bundled policy negative-ledger probe failed");
+      throw new Error("Отрицательная проверка реестра подтверждений встроенной политики не удалась");
     return {
       component: "policy",
       server,

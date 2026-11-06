@@ -24,17 +24,21 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { effective_settings } from "./project_context.mjs";
 import { WorkflowKnowledge } from "./openviking_adapter.mjs";
+import { loadProfile } from "../vanessa/profile.mjs";
 export function runtime_profile(selected, with_digest = false) {
   const root = locate_project(selected),
     data = project_profile(root);
   if (!data.testing.vanessa)
-    throw new ConfigError("Vanessa is disabled in this project profile");
+    throw new ConfigError("Vanessa отключена в профиле этого проекта");
   const config = data.testing.vanessa_config,
     file = inside(root, config.runtime_profile);
   if (fs.statSync(file).size > 65536)
-    throw new ConfigError("Vanessa runtime profile exceeds the 64 KiB limit");
+    throw new ConfigError("Профиль запуска Vanessa превышает 64 КиБ");
   const payload = fs.readFileSync(file),
     raw = JSON.parse(payload.toString("utf8").replace(/^\uFEFF/, ""));
+  // Runtime validation gives actionable diagnostics for conflicting user settings,
+  // duplicate names and cross-client infobase mismatches before schema validation.
+  loadProfile(file, sha256(payload));
   check_schema(raw, "vanessa-runtime.schema.json");
   for (const [key, expected] of [
     ["projectRoot", root],
@@ -43,11 +47,11 @@ export function runtime_profile(selected, with_digest = false) {
   ])
     if (resolve(path.resolve(path.dirname(file), raw[key])) !== expected)
       throw new ConfigError(
-        `Vanessa local runtime ${key} differs from the project binding`,
+        `Параметр локального запуска Vanessa ${key} отличается от привязки проекта`,
       );
   if ((raw.mcp.serverName || "vanessa") !== config.server_name)
     throw new ConfigError(
-      "Vanessa MCP server name differs from the project binding",
+      "Имя сервера MCP Vanessa отличается от привязки проекта",
     );
   const result = [root, data, config, file, raw];
   return with_digest ? [...result, sha256(payload)] : result;
@@ -65,6 +69,7 @@ export async function main() {
         "arguments_file",
         "authorization_file",
         "for_action",
+        "client",
       ],
     ),
     command = a._[0];
@@ -81,18 +86,19 @@ export async function main() {
       "run",
     ].includes(command)
   )
-    throw new ConfigError("Unknown Vanessa command");
+    throw new ConfigError("Неизвестная команда Vanessa");
   const [root, data, config, file, raw, runtimeHash] = runtime_profile(
       a.project_root,
       true,
     ),
     action = command === "describe" ? a.for_action || "run" : command;
+  const selected = loadProfile(file, runtimeHash, a.client);
   const knowledge = new WorkflowKnowledge(), usesKnowledge = !["describe", "configure", "doctor"].includes(command);
   const workflowConfig = usesKnowledge ? effective_settings(settings(a.settings), root, data) : null;
   const validateKnowledge = () => {
     if (!usesKnowledge) return;
     const current = project_profile(root), effective = effective_settings(settings(a.settings), root, current);
-    if (stable([data, workflowConfig]) !== stable([current, effective])) throw new ConfigError("Knowledge workflow binding changed; repeat readiness");
+    if (stable([data, workflowConfig]) !== stable([current, effective])) throw new ConfigError("Привязка рабочего процесса знаний изменилась; повторите проверку готовности");
     knowledge.check(current, effective, "runtime");
   };
   try {
@@ -106,7 +112,7 @@ export async function main() {
       : value;
   if (action === "run") {
     if (!a.feature || !a.scenario?.trim())
-      throw new ConfigError("Run requires an exact feature and scenario");
+      throw new ConfigError("Для запуска нужны точный файл сценариев и имя сценария");
     const feature = path.isAbsolute(a.feature)
       ? resolve(a.feature)
       : inside(root, a.feature);
@@ -115,7 +121,7 @@ export async function main() {
       !contained(root, feature)
     )
       throw new ConfigError(
-        "Feature must remain inside projectRoot or configured features",
+        "Файл сценариев должен оставаться внутри projectRoot или заданного каталога сценариев",
       );
   }
   let argumentsHash = null,
@@ -123,7 +129,7 @@ export async function main() {
   if (a.arguments_file) {
     argumentsFile = resolve(a.arguments_file);
     if (fs.statSync(argumentsFile).size > 1024 * 1024)
-      throw new ConfigError("Tool arguments exceed the 1 MiB limit");
+      throw new ConfigError("Аргументы инструмента превышают 1 МиБ");
     argumentsHash = sha256(fs.readFileSync(argumentsFile));
   }
   const scope = stable({
@@ -132,7 +138,8 @@ export async function main() {
     projectRoot: root,
     runtimeProfile: resolve(file),
     manager: infobase(raw.manager.infobase),
-    client: infobase(raw.client.infobase),
+    client: infobase(selected.client.infobase),
+    clientName: selected.client.name,
     runtime: runtimeHash,
     command: action,
     feature: a.feature || null,
@@ -161,12 +168,12 @@ export async function main() {
       effects.some((effect) => !request.effects?.includes(effect))
     )
       throw new ConfigError(
-        "Authorization scope/effects differ from the intended Vanessa action",
+        "Область или эффекты разрешения отличаются от планируемого действия Vanessa",
       );
   }
   if (command === "call" && !a.authorization_file)
     throw new ConfigError(
-      "Generic call needs an explicit effects/authorization record based on the live tool contract",
+      "Для прямого вызова нужна явная запись effects/authorization по действующему контракту инструмента",
     );
   const entry = binding(settings(a.settings)),
     client = new McpClient([entry.command, ...entry.args], ROOT);
@@ -179,7 +186,7 @@ export async function main() {
   }
   if (assessment.status !== "within_declared_scope")
     throw new ConfigError(
-      "Actual user agreement required for: " + assessment.missing.join(", "),
+      "Требуется разрешение пользователя для: " + assessment.missing.join(", "),
     );
   const args = [
     path.join(ROOT, "vanessa/vanessa.mjs"),
@@ -191,6 +198,7 @@ export async function main() {
   ];
   for (const key of ["feature", "scenario", "tool"])
     if (a[key]) args.push("--" + key, a[key]);
+  if (a.client) args.push("--client", a.client);
   if (argumentsFile)
     args.push(
       "--arguments-file",

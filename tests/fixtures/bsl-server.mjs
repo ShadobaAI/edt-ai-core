@@ -1,4 +1,6 @@
 import readline from "node:readline";
+import fs from "node:fs";
+if (process.env.BSL_TEST_PID_FILE) fs.writeFileSync(process.env.BSL_TEST_PID_FILE, String(process.pid));
 const folders = new Set();
 const replies = new Map();
 const calls = [];
@@ -13,7 +15,14 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (m.method === "initialize") {
-    result(m.id, { params: m.params, launch: JSON.parse(process.env.BSL_TEST_ARGS), pid: process.pid, cwd: process.cwd() });
+    if (process.env.BSL_TEST_MODE === "initialize_timeout") return;
+    result(m.id, { serverInfo: { name: "bsl-fixture", version: "1.1.0" }, params: m.params, launch: JSON.parse(process.env.BSL_TEST_ARGS), pid: process.pid, cwd: process.cwd() });
+  } else if (m.method === "tools/list") {
+    if (process.env.BSL_TEST_MODE === "tools_timeout") return;
+    result(m.id, { tools: process.env.BSL_TEST_MODE === "invalid_tools" ? [] : [
+      ...["register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder"].map(name => ({ name, inputSchema: { type: "object" } })),
+      { name: "analyze", inputSchema: { type: "object", properties: { workspaceFolder: { type: "string" } }, required: ["workspaceFolder"] } },
+    ] });
   } else if (m.method === "ping") result(m.id, {});
   else if (m.method === "server-request") {
     replies.set(m.id, { id: m.id, extra: {} });

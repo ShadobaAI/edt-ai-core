@@ -18,9 +18,10 @@ test("profile import does not connect runtime; status bootstraps prepared tools 
   assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, false);
   const revision = client.tools_revision;
   const settings = await session(t, "mcp/settings.mjs", [], f);
-  const request = { text: JSON.stringify(f.profile) };
-  const preview = (await settings.call("settings.preview", request)).structuredContent;
-  await settings.call("settings.apply", { ...request, revision: preview.revision });
+  const context = (await settings.call("settings.transfer_context", { projectRoot: f.root }))._meta.data;
+  const request = { projectRoot: f.root, baseRevision: context.baseRevision, documents: { profile: JSON.stringify(f.profile) } };
+  const preview = (await settings.call("settings.transfer_preview", request))._meta.data;
+  await settings.call("settings.transfer_apply", { ...request, revision: preview.revision, replace: true });
   assert.equal(client.tools_revision, revision);
   const status = (await client.call("core_runtime_status", {})).structuredContent;
   assert.equal(status.ready, true);
@@ -125,7 +126,7 @@ test("managed BSL binding fails closed on a lifecycle-incompatible native catalo
   const status = (await client.call("core_runtime_status", {}))
     .structuredContent;
   assert.equal(status.ready, false);
-  assert.match(status.detail, /native multi-workspace API/);
+  assert.match(status.detail, /В BSL LS отсутствует собственный API нескольких рабочих областей/);
   assert.deepEqual(
     (await client.request("tools/list")).tools.map((tool) => tool.name),
     ["core_runtime_status", "core_runtime_tools", "core_runtime_call"],

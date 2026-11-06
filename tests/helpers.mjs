@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { ROOT, load, dump } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
@@ -11,7 +11,7 @@ export function fixture(t) {
   const base = fs.realpathSync.native(
       fs.mkdtempSync(path.join(os.tmpdir(), "core fixture Юникод ")),
     ),
-    root = path.join(base, "project"),
+    root = path.join(base, "Product"),
     state = path.join(base, "state");
   fs.mkdirSync(root);
   fs.mkdirSync(state);
@@ -57,6 +57,11 @@ export function environment(t, env) {
     Object.assign(process.env, previous);
   });
 }
+export function edt_fixture(t) {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
+  return f;
+}
 export function node(file, args = [], options = {}) {
   return spawnSync(process.execPath, [path.resolve(ROOT, file), ...args], {
     encoding: "utf8",
@@ -64,6 +69,21 @@ export function node(file, args = [], options = {}) {
     shell: false,
     timeout: 20000,
     ...options,
+  });
+}
+// Async tests must not block their event loop while a CLI fixture runs.
+export function node_async(file, args = [], options = {}) {
+  const { input, ...execution } = options;
+  return new Promise(resolve => {
+    const child = execFile(process.execPath, [path.resolve(ROOT, file), ...args], {
+      encoding: "utf8", windowsHide: true, shell: false,
+      timeout: 20000, killSignal: "SIGKILL", ...execution,
+    }, (error, stdout, stderr) => resolve({
+      error: error && typeof error.code !== "number" ? error : undefined,
+      status: child.exitCode, signal: child.signalCode, stdout, stderr,
+    }));
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
   });
 }
 export function success(result) {
@@ -90,7 +110,7 @@ export async function dialog_session(t, f, { extra = {}, roots } = {}) {
   for (const dir of ["mcp", "scripts", "assets", "settings"]) fs.mkdirSync(path.join(plugin, dir), { recursive: true });
   for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "assets/icon.svg", "settings/defaults.json"])
     fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
-  for (const name of ["selection", "compatibility", "icons", "diagnostics", "project_paths", "common", "profile", "settings_export", "support_bundle"])
+  for (const name of ["selection", "compatibility", "icons", "diagnostics", "project_paths", "common", "profile", "settings_export", "support_bundle", "mcp_codec"])
     fs.writeFileSync(path.join(plugin, "scripts", name + ".mjs"), `export * from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts", name + ".mjs")).href)};`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `import fs from 'node:fs'; export async function folder_action() { return JSON.parse(fs.readFileSync(${JSON.stringify(choice)}, 'utf8')).path; }`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_backend.mjs"),

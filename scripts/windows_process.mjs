@@ -179,8 +179,8 @@ export function spawn_detached_windows(command, args, options) {
       return handle;
     };
     const input = open("NUL", 0x80000000, 3),
-      output = open(options.stdoutFile, 0x0004, 4),
-      error = open(options.stderrFile, 0x0004, 4),
+      output = open("NUL", 0x40000000, 3),
+      error = open("NUL", 0x40000000, 3),
       size = [0n];
     win.initAttributes(null, 1, 0, size);
     if (!Number(size[0]) || Number(size[0]) > 65536)
@@ -319,17 +319,11 @@ export function windows_process_identity(pid) {
       pid,
       executable: buffer.subarray(0, size[0] * 2).toString("utf16le"),
       created: "win32-filetime:" + ticks,
-      createdMs: Number((ticks - 116444736000000000n) / 10000n),
     };
   } finally {
     win.close(handle);
   }
 }
 export function same_creation(state, recorded) {
-  if (typeof recorded !== "string") return false;
-  if (recorded.startsWith("win32-filetime:")) return state.created === recorded;
-  // Preserve existing CIM owner records written before the Node migration.
-  const legacy = /\/?Date\((\d+)(?:[+-]\d+)?\)\/?/.exec(recorded),
-    value = legacy ? Number(legacy[1]) : Date.parse(recorded);
-  return Number.isFinite(value) && value === state.createdMs;
+  return typeof recorded === "string" && recorded.startsWith("win32-filetime:") && state.created === recorded;
 }

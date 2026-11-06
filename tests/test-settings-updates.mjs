@@ -38,19 +38,27 @@ test("installation requires authorization for the current project and instance b
   assert.equal(fs.existsSync(path.join(f.state,"projects")),false);
 });
 
+test("applying index mappings requires authorization for the selected project and instance", async t => {
+  const f=fixture(t);environment(t,f.env);f.save();
+  const backend=new SettingsBackend();
+  await assert.rejects(backend.main({action:"restart_index"}),/требует разрешения/);
+  await assert.rejects(backend.main({action:"restart_index",authorization:{scope:f.root+"#other-instance",effects:["launch"],evidence:"Apply index mappings"}}),/другой папке или экземпляру/);
+  assert.equal(fs.existsSync(path.join(f.state,"projects")),false);
+});
+
 test("installation commits the saved version only after validation and restores it if activation fails", async t => {
   const f=fixture(t);environment(t,f.env);f.save();
-  dump({mcp:{managed:{"bsl-ls":{enabled:true,version:"v1.0.0",java:process.execPath}}}},f.env.EDT_AI_SETTINGS);
+  dump({mcp:{managed:{"bsl-ls":{enabled:true,version:"v1.1.0",java:process.execPath}}}},f.env.EDT_AI_SETTINGS);
   const backend=new SettingsBackend(),authorization={scope:f.root+"#first",effects:["launch"],evidence:"Install selected version"};
   const source=tag=>{
     const bytes=zip({"fixture.txt":Buffer.from(tag)});
     return {bytes,release:{tag_name:tag,assets:[{name:`bsl-language-server-${tag}-exec.jar`,size:bytes.length,digest:"sha256:"+sha256(bytes),browser_download_url:`https://github.com/1c-syntax/bsl-language-server/releases/download/${tag}/server.jar`}]}};
   };
-  const first=source("v1.0.0");
+  const first=source("v1.1.0");
   await ensure_installed(f.state,settings(f.env.EDT_AI_SETTINGS),"bsl-ls",false,{fetch_json:async()=>first.release,fetch:async()=>new Response(first.bytes)});
   const original=artifact(f.state,"bsl-ls"),lockfile=path.join(f.state,"runtime-lock.json");
-  assert.equal((await backend.main({action:"read"})).installedVersions["bsl-ls"],"v1.0.0");
-  let valid=true,offline=false,failWrite="",expectedSaved="v1.0.0";
+  assert.equal((await backend.main({action:"read"})).installedVersions["bsl-ls"],"v1.1.0");
+  let valid=true,offline=false,failWrite="",expectedSaved="v1.1.0";
   const server=path.join(f.base,"updates-mcp.mjs");
   fs.writeFileSync(server,`import readline from 'node:readline';
     readline.createInterface({input:process.stdin}).on('line',line=>{
@@ -60,14 +68,23 @@ test("installation commits the saved version only after validation and restores 
       console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result}));
     });`);
   const spawn=childProcess.spawn,spawnSync=childProcess.spawnSync,rename=fs.renameSync;
+  const replace=path.join(f.base,"updates-spawn.mjs");
+  fs.writeFileSync(replace,`import cp from 'node:child_process'; import {syncBuiltinESMExports} from 'node:module';
+    const spawn=cp.spawn;
+    cp.spawn=(command,args,options)=>args.some(arg=>String(arg).endsWith('bsl-ls-proxy.mjs'))
+      ? spawn(process.execPath,[${JSON.stringify(server)},process.env.UPDATE_FIXTURE_MODE],options) : spawn(command,args,options);
+    syncBuiltinESMExports();`);
   t.mock.method(childProcess,"spawn",(command,args,options)=>{
-    if(args?.some(arg=>String(arg).endsWith("bsl-ls-proxy.mjs"))){
+    if(path.basename(args?.[0]||"")==="process_supervisor.mjs" && options.cwd===f.root){
       assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version,expectedSaved);
-      return spawn(process.execPath,[server,valid?"valid":"invalid"],options);
+      return spawn(process.execPath,["--import",pathToFileURL(replace).href,...args],{...options,env:{...options.env,UPDATE_FIXTURE_MODE:valid?"valid":"invalid"}});
     }
     return spawn(command,args,options);
   });
   t.mock.method(childProcess,"spawnSync",(command,args,options)=>args?.[0]==="-version"?{status:0,stderr:'java version "21"'}:spawnSync(command,args,options));
+  const execFile=childProcess.execFile;
+  t.mock.method(childProcess,"execFile",(command,args,options,callback)=>args?.[0]==="-version"
+    ? queueMicrotask(()=>callback(null,"",'java version "21"')) : execFile(command,args,options,callback));
   syncBuiltinESMExports();
   t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
   t.mock.method(fs,"renameSync",(from,to)=>{
@@ -76,22 +93,22 @@ test("installation commits the saved version only after validation and restores 
   });
   t.mock.method(globalThis,"fetch",async url=>{
     if(offline)throw new Error("offline");
-    const value=String(url),tag=/\/(?:tags|download)\/(v[^/]+)/.exec(value)?.[1]||"v1.0.0",item=source(tag);
+    const value=String(url),tag=/\/(?:tags|download)\/(v[^/]+)/.exec(value)?.[1]||"v1.1.0",item=source(tag);
     return new Response(value.startsWith("https://api.github.com/")?JSON.stringify(item.release):item.bytes);
   });
   const install=version=>backend.main({action:"updates",operation:"install",component:"bsl-ls",version,authorization});
   const unchanged=async()=>{
-    assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version,"v1.0.0");
+    assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version,"v1.1.0");
     assert.equal(artifact(f.state,"bsl-ls"),original);
     assert.equal(await installed_runtime(f.state,settings(f.env.EDT_AI_SETTINGS),"bsl-ls"),original);
   };
   offline=true;await assert.rejects(install("v2.0.0"),/offline/);await unchanged();offline=false;
-  valid=false;await assert.rejects(install("v2.0.0"),/native multi-workspace API/);await unchanged();valid=true;
+  valid=false;await assert.rejects(install("v2.0.0"),/В BSL LS отсутствует собственный API нескольких рабочих областей/);await unchanged();valid=true;
   for(const target of ["settings","activation"]){failWrite=target;await assert.rejects(install("v2.0.0"),/Simulated write failure/);await unchanged();}
   failWrite="";
   assert.equal((await install("v2.0.0")).release,"v2.0.0");expectedSaved="v2.0.0";
   assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version,"v2.0.0");
-  assert.equal((await install("v1.0.0")).release,"v1.0.0");expectedSaved="v1.0.0";
+  assert.equal((await install("v1.1.0")).release,"v1.1.0");expectedSaved="v1.1.0";
   await unchanged();
   const rollback=await backend.main({action:"updates",operation:"rollback",component:"bsl-ls",authorization});
   assert.equal(rollback.release,"v2.0.0");assert.equal(settings(f.env.EDT_AI_SETTINGS).mcp.managed["bsl-ls"].version,"v2.0.0");
@@ -128,19 +145,19 @@ test("an update waiting for the state lock reads the release policy after acquir
 test("the settings MCP never caches empty catalogs and refresh bypasses both caches", async t => {
   const f=fixture(t),preload=path.join(f.base,"catalog-fetch.mjs");
   fs.writeFileSync(preload,`let calls=0;globalThis.fetch=async(url,options)=>{
-    if(String(url).endsWith('/latest'))return new Response(JSON.stringify({tag_name:'v1.0.7',prerelease:false}));
+    if(String(url).endsWith('/latest'))return new Response(JSON.stringify({tag_name:'v1.2.7',prerelease:false}));
     const count=++calls;
-    if(count<=3)return new Response('[]');
-    if(count===5&&!(options.cache==='no-store'&&options.headers['Cache-Control']==='no-cache'))throw new Error('Refresh did not revalidate HTTP cache');
-    return new Response(JSON.stringify([{tag_name:'v1.0.'+count,published_at:'2026-10-22T00:00:00Z'}]));
+    if(count<=4)return new Response('[]');
+    if(count>=7&&!(options.cache==='no-store'&&options.headers['Cache-Control']==='no-cache'))throw new Error('Refresh did not revalidate HTTP cache');
+    return new Response(JSON.stringify([{tag_name:'v1.2.'+count,published_at:'2026-10-22T00:00:00Z'}]));
   };`);
   const client=new McpClient([process.execPath,"--import",pathToFileURL(preload).href,path.join(ROOT,"mcp/settings.mjs")],f.root,f.env,10);f.clients.push(client);await client.initialize();
   await assert.rejects(client.call("settings.versions",{component:"bsl-ls"}),/пустую страницу/);
   const first=(await client.call("settings.versions",{component:"bsl-ls"})).structuredContent;
-  assert.equal(first.versions[0].version,"v1.0.4");assert.equal(first.latest,"v1.0.7");
+  assert.equal(first.versions[0].version,"v1.2.5");assert.equal(first.latest,"v1.2.7");assert.equal(first.latestPrerelease,"v1.2.6");
   assert.deepEqual((await client.call("settings.versions",{component:"bsl-ls"})).structuredContent,first);
   const refreshed=(await client.call("settings.versions",{component:"bsl-ls",refresh:true})).structuredContent;
-  assert.equal(refreshed.versions[0].version,"v1.0.5");
+  assert.equal(refreshed.versions[0].version,"v1.2.7");assert.equal(refreshed.latestPrerelease,"v1.2.8");
   const snapshot=(await client.call("settings.read",{})).structuredContent;
   assert.deepEqual(snapshot.installedVersions,{"code-index":null,"bsl-ls":null});
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);

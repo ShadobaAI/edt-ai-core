@@ -61,6 +61,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         binding: process.cwd(),
         rows_elided_already_delivered: 3,
         response_sections_omitted: true,
+        ...(process.env.FIXTURE_CHECK_KNOWLEDGE_ENV ? { knowledgeEnvironmentPresent:
+          ["OPENVIKING_SEARCH_TOKEN", "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "TEAM_KNOWLEDGE_TOKEN", "OTHER_PROJECT_TOKEN"]
+            .filter(name => Object.hasOwn(process.env, name)) } : {}),
       },
     };
   } else result = {};

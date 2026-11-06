@@ -3,15 +3,21 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
-import { fixture, environment, session, node, success } from "./helpers.mjs";
-import { dump, settings } from "../scripts/common.mjs";
+import { fixture, environment, session, node_async, success } from "./helpers.mjs";
+import { dump, inside, parse, settings } from "../scripts/common.mjs";
 import { locate_project, resolve, ProfileNotFound } from "../scripts/project_paths.mjs";
 import { project_profile } from "../scripts/profile.mjs";
-import { resolved_settings, instance_file } from "../scripts/project_context.mjs";
+import { resolved_settings } from "../scripts/project_context.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, edt_project_count, edt_project_descriptors, git_context } from "../scripts/directory_context.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 
 const prefs = workspace => path.join(workspace, ".metadata/.plugins/org.eclipse.core.runtime/.settings/com.ditrix.edt.mcp.server.prefs");
+test("path resolution rejects dangling directory links instead of treating them as missing", t => {
+  const f = fixture(t), link = path.join(f.root, "dangling");
+  fs.symlinkSync(path.join(f.base, "missing-outside"), link, process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => inside(f.root, "dangling/new/file"));
+  assert.equal(inside(f.root, "new/file"), path.join(f.root, "new", "file"));
+});
 function write(file, text) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, text);
@@ -38,16 +44,16 @@ test("a unique nested canonical profile keeps its own relative paths and rejects
   assert.deepEqual(project_profile(f.root), f.profile);
   const other = path.join(f.root, "another");
   dump(f.profile, path.join(other, ".ai/project.yaml"));
-  assert.throws(() => locate_project(f.root), /Multiple.*select a specific project/);
-  const refused = node("scripts/profile.mjs", ["init", f.root]);
+  assert.throws(() => locate_project(f.root), /В выбранном каталоге несколько профилей \.ai\/project\.yaml/);
+  const refused = await node_async("scripts/profile.mjs", ["init", f.root]);
   assert.notEqual(refused.status, 0);
-  assert.match(refused.stdout, /Multiple/);
+  assert.match(refused.stdout, /несколько профилей/);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
   const client = await session(t, "mcp/settings.mjs", [], f), view = (await client.call("settings.profile", {})).structuredContent;
   assert.equal(view.profile.status, "ambiguous");
   assert.equal(view.profile.candidates.length, 2);
   assert.equal(view.directoryContext.directory, f.root);
-  await assert.rejects(client.call("settings.create", {}), /Multiple/);
+  await assert.rejects(client.call("settings.create", {}), /несколько профилей/);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
 });
 
@@ -64,7 +70,7 @@ test("nested profile selection remembers the user visit without writing project 
   assert.ok(view.profileHistory[0].lastOpened);
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
   assert.equal(fs.existsSync(path.join(f.root, ".ai")), false);
-  const context = success(node("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
+  const context = success(await node_async("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
   assert.match(context, /directoryContext/);
   assert.match(context, /"status":"loaded"/);
 });
@@ -101,7 +107,7 @@ test("profile discovery ignores profiles inside EDT sources while finding nested
   assert.equal(locate_project(f.root), child);
   assert.deepEqual(project_profile(f.root), f.profile);
   const other = path.join(f.root, "another");dump(f.profile, path.join(other, ".ai/project.yaml"));
-  assert.throws(() => locate_project(f.root), /Multiple.*select a specific project/);
+  assert.throws(() => locate_project(f.root), /В выбранном каталоге несколько профилей \.ai\/project\.yaml/);
 });
 
 test("discovery does not follow a junction to another project's profile or EDT metadata", t => {
@@ -109,7 +115,7 @@ test("discovery does not follow a junction to another project's profile or EDT m
   configuration(outside);
   dump(f.profile, path.join(outside, ".ai/project.yaml"));
   fs.symlinkSync(outside, path.join(f.root, "linked"), "junction");
-  assert.throws(() => locate_project(f.root), /No .ai/);
+  assert.throws(() => locate_project(f.root), /Профиль \.ai\/project\.yaml не найден в выбранном репозитории или его подкаталогах/);
   assert.deepEqual(directory_context(f.root).edt.projects, []);
 });
 
@@ -141,16 +147,18 @@ test("discovered ports refresh without writes and never override explicit or dis
   let [effective, sources] = resolved_settings(config, f.root, f.profile);
   assert.equal(effective.mcp.required.edt.url, "http://127.0.0.1:19801/mcp");
   assert.equal(sources.edt, "edt_workspace");
-  const exported = await backend.main({ action: "export" });
-  assert.equal(JSON.parse(exported.text).profile.connections, undefined);
-  const preview = await backend.main({ action: "preview", text: exported.text });
+  const exported = await backend.main({ action: "transfer_export", scope: "profile" });
+  assert.equal(parse(exported.text).connections, undefined);
+  const context = await backend.main({ action: "transfer_context" });
+  const args = { baseRevision: context.baseRevision, documents: { profile: exported.text } };
+  const preview = await backend.main({ action: "transfer_preview", ...args });
   write(prefs(f.base), "mcpServerPort=19802");
-  await assert.rejects(backend.main({ action: "apply", text: exported.text, revision: preview.revision }), /измен/i);
+  await assert.rejects(backend.main({ action: "transfer_apply", ...args, revision: preview.revision, replace: true }), /измен/i);
   assert.equal((await backend.main({ action: "read" })).values.edtUrl, "http://127.0.0.1:19802/mcp");
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   f.profile.connections = { edt: { url: "https://edt.example.test/mcp" } };
   assert.equal(resolved_settings(config, f.root, f.profile)[0].mcp.required.edt.url, f.profile.connections.edt.url);
-  dump({ connections: { edt: { url: "" } } }, instance_file(config, f.root));
+  dump({ connections: { edt: { url: "" } } }, path.join(f.root, ".ai/project.local.yaml"));
   assert.equal(resolved_settings(config, f.root, f.profile)[0].mcp.required.edt.url, "");
   process.env.EDT_AI_EDT_URL = "http://localhost:19803/mcp";
   assert.equal(resolved_settings(config, f.root, f.profile)[0].mcp.required.edt.url, process.env.EDT_AI_EDT_URL);
@@ -167,7 +175,7 @@ test("changed EDT preferences offer a local port update without writing the prof
   assert.equal(view.edtPortSuggestion.detectedPort,19803);
   await backend.main({action:"update",set:{edtUrl:view.edtPortSuggestion.url}});
   view=await backend.main({action:"read"});assert.equal(view.edtPortSuggestion,null);assert.equal(view.values.edtUrl,"http://localhost:19803/custom/mcp");
-  assert.equal(view.connectionSources.edt,"instance");assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);
+  assert.equal(view.connectionSources.edt,"project_local");assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);
   assert.equal(fs.readFileSync(prefs(f.base),"utf8"),"mcpServerPort=19803");
   assert.equal(edt_port_suggestion("https://remote.example.test:19801/mcp",edt_connection(f.root)),null);
 });
@@ -181,7 +189,7 @@ test("EDT counts use .project files independently of enrichment metadata and ign
     write(path.join(f.root, directory, "fixture/.project"), "ignored");
   assert.equal(edt_project_count(f.root), 2);
   assert.equal(directory_context(f.root).edt.projectCount, 2);
-  assert.deepEqual(edt_project_descriptors(f.root).map(item=>item.name),["Base","Extension"]);
+  assert.deepEqual(edt_project_descriptors(f.root).map(item=>item.name),[path.basename(f.root),"extension"]);
   assert.equal(edt_project_count(path.join(f.root, "absent")), null);
 });
 
@@ -190,10 +198,11 @@ test("one shared Git repository contains two descriptor-backed EDT projects inde
   const base=path.join(f.root,"configuration"),extension=path.join(f.root,"extension");
   write(path.join(base,".project"),"<projectDescription><!-- comment --><name>Base &amp; Shared</name></projectDescription>");
   write(path.join(extension,".project"),"<projectDescription><name>Extension</name><buildSpec><name>Wrong</name></buildSpec></projectDescription>");
-  const context=directory_context(f.root);
+  const context=directory_context(f.root, { includeDisplayName: true });
   assert.equal(context.git.status,"detected");assert.equal(context.git.root,f.root);
   assert.equal(context.edt.projectCount,2);
-  assert.deepEqual(context.edt.detectedProjects.map(item=>[item.name,item.directory]),[["Base & Shared",base],["Extension",extension]]);
+  assert.deepEqual(context.edt.detectedProjects.map(item=>[item.name,item.directory]),[["configuration",base],["extension",extension]]);
+  assert.deepEqual(context.edt.detectedProjects.map(item=>item.displayName),["Base & Shared","Extension"]);
   assert.equal(context.edt.projects.length,0); // No PMF is needed for the displayed inventory.
   fs.rmSync(path.join(extension,".project"));assert.equal(directory_context(f.root).edt.projectCount,1);
 });
@@ -208,7 +217,7 @@ test("EDT inventory skips configuration sources while retaining nested extension
     return readdir(directory,...args);
   });
   const projects=edt_project_descriptors(f.root);
-  assert.deepEqual(projects.map(project=>project.name),["Large configuration","Extension"]);
+  assert.deepEqual(projects.map(project=>project.name),[path.basename(f.root),"extension"]);
   assert.equal(edt_project_count(f.root),2);assert.equal(sourceReads,0);
 });
 
@@ -224,13 +233,13 @@ test("profile inventory stays rooted at the canonical profile when the chat open
   assert.equal(view.profileDirectoryContext.directory,f.root);
   assert.equal(view.profileDirectoryContext.edt.projectCount,2);
   assert.equal(view.profileDirectoryContext.git.root,f.root);
-  assert.deepEqual(view.profileDirectoryContext.edt.detectedProjects.map(project=>project.name),["Base","Extension"]);
+  assert.deepEqual(view.profileDirectoryContext.edt.detectedProjects.map(project=>project.name),["configuration","extension"]);
   assert.equal(view.profileHistory[0].edtProjectCount,2);
   const status=(await client.call("settings.status",{})).structuredContent;
   assert.equal(status.profileDirectoryContext.edt.projectCount,2);
 });
 
-test("EDT descriptors enrich the selected directory, without assuming folder names or reading sources", async t => {
+test("EDT descriptors enrich the selected directory using folder names without reading sources", async t => {
   const f = fixture(t), first = path.join(f.root, "configuration"), second = path.join(f.root, "extension");
   configuration(first, "Base &amp; Library");
   configuration(second, "Расширение", "8.3.27");
@@ -241,8 +250,8 @@ test("EDT descriptors enrich the selected directory, without assuming folder nam
   write(path.join(first, "src/source.bsl"), "source contents are irrelevant");
   write(prefs(f.base), "mcpServerPort=19801");
   const before = fs.readFileSync(path.join(first, ".project")),
-    context = directory_context(f.root);
-  assert.deepEqual(context.edt.projects.map(item => [item.name, item.runtimeVersion]), [["Base & Library", "8.5.1"], ["Расширение", "8.3.27"]]);
+    context = directory_context(f.root, { includeDisplayName: true });
+  assert.deepEqual(context.edt.projects.map(item => [item.name, item.runtimeVersion]), [["configuration", "8.5.1"], ["extension", "8.3.27"]]);
   assert.equal(context.edt.projects[0].source, path.join(first, "src"));
   assert.equal(context.edt.projects[0].settingsDirectory, path.join(first, ".settings"));
   assert.equal(context.edt.projects[1].settingsDirectory, null);
@@ -251,8 +260,9 @@ test("EDT descriptors enrich the selected directory, without assuming folder nam
     view = (await client.call("settings.profile", {})).structuredContent;
   assert.equal(view.profile.status, "missing");
   assert.deepEqual(view.directoryContext, context);
-  const hook = success(node("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
-  assert.match(hook, /Base & Library/);
+  const hook = success(await node_async("hooks/session-start.mjs", [], { env: f.env, input: JSON.stringify({ cwd: f.root }) })).hookSpecificOutput.additionalContext;
+  assert.match(hook, /configuration/);
+  assert.doesNotMatch(hook, /displayName|Base & Library/);
   assert.match(hook, /8\.5\.1/);
   assert.deepEqual(fs.readFileSync(path.join(first, ".project")), before);
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);

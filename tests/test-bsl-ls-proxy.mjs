@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { once } from "node:events";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { fixture, environment } from "./helpers.mjs";
+import { settings } from "../scripts/common.mjs";
+import { smoke, save_json } from "../scripts/runtime.mjs";
+import { sha256 } from "../scripts/project_paths.mjs";
+import { McpClient } from "../scripts/mcp_client.mjs";
+import { alive } from "../scripts/processes.mjs";
 
 const proxy = fileURLToPath(new URL("../mcp/bsl-ls-proxy.mjs", import.meta.url));
 const preload = new URL("./fixtures/bsl-spawn.mjs", import.meta.url).href;
@@ -164,6 +171,27 @@ test("EOF terminates even a child that ignores disconnect", async (t) => {
   const s = await session(t, { hang: true });
   s.proc.stdin.end(); await s.closed;
   assert.throws(() => process.kill(s.init.pid, 0));
+});
+
+for(const mode of ["ready","invalid_tools","initialize_timeout","tools_timeout"])test(`BSL smoke closes its temporary child before returning: ${mode}`,async t=>{
+  const f=fixture(t);environment(t,f.env);f.save();
+  const config=settings();config.active_project=f.root;
+  Object.assign(config.mcp.managed["bsl-ls"],{enabled:true,java:process.execPath,node:process.execPath,timeout_seconds:mode.endsWith("timeout")?1:5});
+  const bytes=Buffer.from("fixture jar"),hash=sha256(bytes),jar=path.join(f.state,"runtime/bsl-ls/v1.1.0",hash,"bsl-language-server-exec.jar");
+  fs.mkdirSync(path.dirname(jar),{recursive:true});fs.writeFileSync(jar,bytes);
+  save_json(path.join(f.state,"runtime-lock.json"),{"bsl-ls":{release:"v1.1.0",path:path.relative(f.state,jar),sha256:hash}});
+  const sibling=new McpClient([process.execPath,"--import",preload,proxy,"--project-root",f.root,"--jar",jar],f.root,process.env,5);
+  f.clients.push(sibling);const siblingInfo=await sibling.initialize();assert.equal(alive(siblingInfo.pid),true);
+  const originalSpawn=childProcess.spawn,pidFile=path.join(f.base,"smoke-child.pid");
+  t.mock.method(childProcess,"spawn",(command,args,options)=>originalSpawn(command,
+    ["--import",new URL("./fixtures/bsl-smoke-spawn.mjs",import.meta.url).href,...args],
+    {...options,env:{...options.env,BSL_TEST_MODE:mode,BSL_TEST_HANG:"1",BSL_TEST_PID_FILE:pidFile}}));
+  t.mock.method(childProcess,"execFile",(_command,_args,_options,callback)=>queueMicrotask(()=>callback(null,"",'java version "21"')));
+  syncBuiltinESMExports();t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
+  if(mode==="ready")assert.equal((await smoke(f.state,config,f.root,f.profile,"bsl-ls",5,false,null,false)).status,"mcp_ready");
+  else await assert.rejects(smoke(f.state,config,f.root,f.profile,"bsl-ls",5,false,null,false),mode==="invalid_tools"?/ не предоставляет инструментов MCP/:/timed out/);
+  const pid=Number(fs.readFileSync(pidFile,"utf8"));assert.equal(alive(pid),false,"temporary child must have exited before smoke settles");
+  assert.equal(alive(siblingInfo.pid),true,"an independent session must remain alive");
 });
 
 test("malformed JSON and invalid request objects fail without poisoning the connection", async (t) => {

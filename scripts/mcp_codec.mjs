@@ -17,26 +17,46 @@ export function json_message(text, maxBytes = DEFAULT_MAX_BYTES) {
   if (Buffer.byteLength(text) > maxBytes) throw new Error("MCP output budget exceeded; outcome unknown");
   return envelope(JSON.parse(text));
 }
-export function read_lines(stream, receive, fail, maxBytes = DEFAULT_MAX_BYTES) {
-  let buffer = Buffer.alloc(0), failed = false;
-  const reject = error => { if (!failed) { failed = true; buffer = Buffer.alloc(0); fail(error); } };
+export function read_frames(stream, receive, fail, maxBytes = DEFAULT_MAX_BYTES) {
+  let pending = null, bytes = 0, failed = false;
+  const reject = error => { if (!failed) { failed = true; pending = null; bytes = 0; fail(error); } };
+  const append = (data, start, end) => {
+    const size = bytes + end - start;
+    if (size > maxBytes) throw new Error("MCP input budget exceeded");
+    if (!pending || pending.length < size) {
+      const next = Buffer.allocUnsafe(Math.min(maxBytes, Math.max(size, pending ? pending.length * 2 : 4096)));
+      if (bytes) pending.copy(next, 0, 0, bytes);
+      pending = next;
+    }
+    data.copy(pending, bytes, start, end);
+    bytes = size;
+  };
   stream.on("data", chunk => {
     if (failed) return;
-    buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
-    let end, consumed = false;
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let start = 0, end;
     try {
-      while ((end = buffer.indexOf(10)) !== -1) {
-        const line = buffer.subarray(0, end); buffer = buffer.subarray(end + 1);
-        consumed = true;
-        if (line.toString().trim()) receive(json_message(line.toString(), maxBytes));
+      while ((end = data.indexOf(10, start)) !== -1) {
+        const size = bytes + end - start;
+        if (size > maxBytes) throw new Error("MCP input budget exceeded");
+        let line;
+        if (bytes) {
+          append(data, start, end);
+          line = pending.toString("utf8", 0, bytes);
+        } else line = data.toString("utf8", start, end);
+        pending = null; bytes = 0; start = end + 1;
+        if (line.trim()) receive(line);
       }
-      if (buffer.length > maxBytes) throw new Error("MCP output budget exceeded; outcome unknown");
-      // A subarray retains its entire backing allocation, even when empty. Keep
-      // only the unfinished line after processing a potentially large message.
-      if (consumed) buffer = buffer.length ? Buffer.from(buffer) : Buffer.alloc(0);
+      // Retain only the unfinished frame. Geometric growth bounds copying and
+      // prevents tiny fragments from retaining an object per input chunk.
+      if (start < data.length) append(data, start, data.length);
     } catch (error) { reject(error); }
   });
-  stream.on("end", () => { if (buffer.length) reject(new Error("Truncated MCP envelope; outcome unknown")); });
+  stream.once("end", () => { if (bytes) reject(new Error("Truncated MCP envelope; outcome unknown")); });
+  stream.once("error", reject);
+}
+export function read_lines(stream, receive, fail, maxBytes = DEFAULT_MAX_BYTES) {
+  read_frames(stream, line => receive(json_message(line, maxBytes)), fail, maxBytes);
 }
 export async function response_json(response, maxBytes = DEFAULT_MAX_BYTES) {
   const chunks = []; let bytes = 0;

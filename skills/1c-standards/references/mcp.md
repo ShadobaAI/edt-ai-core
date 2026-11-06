@@ -2,7 +2,8 @@
 
 ## Live contract and shared server
 
-The selected directory's profile and instance/environment overrides determine the
+The selected directory's profile, project-local settings and explicit connection
+file or environment overrides determine the
 assigned endpoint. Do not embed addresses, checkouts, server versions or operation
 catalogues in the skill. For a new binding read `core_runtime_status`:
 `binding` identifies project/instance/endpoint; `serverContract` supplies negotiated
@@ -79,7 +80,6 @@ schema, descriptions and targeted errors outweigh old skill numbers.
 Not all limits are declared in JSON Schema: no maximum does not mean unlimited
 output. If complete text cannot be obtained, retain unverified status.
 
-<a id="повторное-использование-evidence"></a>
 ## Evidence reuse
 
 Within the task retain a compact record: endpoint and available corpus identity,

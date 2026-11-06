@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixture, node, success } from "./helpers.mjs";
+import { fixture, environment, node, success } from "./helpers.mjs";
 import { runtime_profile } from "../scripts/vanessa.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
 import { createServer } from "node:http";
@@ -10,6 +10,9 @@ import { once } from "node:events";
 import { launch, stop_child } from "../scripts/processes.mjs";
 import { ROOT } from "./helpers.mjs";
 import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
+import { check_schema } from "../scripts/common.mjs";
+import { loadProfile } from "../vanessa/profile.mjs";
+import { SettingsBackend } from "../scripts/settings_backend.mjs";
 function binding(t) {
   const f = fixture(t),
     file = path.join(f.root, ".ai/vanessa.local.json");
@@ -59,7 +62,7 @@ test("KORA blocks Vanessa workflow before connecting or launching", t => {
   for (const command of ["list", "connect", "start", "run", "call"]) {
     const result = f.invoke(command);
     assert.notEqual(result.status, 0);
-    assert.match(result.stdout + result.stderr, /Knowledge workflow blocked/, command);
+    assert.match(result.stdout + result.stderr, /Рабочий процесс заблокирован настройкой знаний/, command);
   }
 });
 
@@ -67,11 +70,11 @@ test("Vanessa wrapper rejects disabled and mismatched bindings before launching 
   const f = binding(t);
   f.profile.testing.vanessa = false;
   f.save();
-  assert.throws(() => runtime_profile(f.root), /disabled/);
+  assert.throws(() => runtime_profile(f.root), /Vanessa отключена в профиле этого проекта/);
   f.profile.testing.vanessa = true;
   f.raw.features = f.base;
   f.save();
-  assert.throws(() => runtime_profile(f.root), /differs/);
+  assert.throws(() => runtime_profile(f.root), /отличается/);
 });
 test("Vanessa describe preserves Unicode and binds exact canonical targets and runtime bytes", (t) => {
   const f = binding(t),
@@ -89,6 +92,55 @@ test("Vanessa describe preserves Unicode and binds exact canonical targets and r
   assert.equal(scope.projectRoot, f.root);
   assert.equal(scope.feature, "features/测试.feature");
 });
+test("Vanessa client selection is validated and bound to authorization scope", (t) => {
+  const f = binding(t);
+  f.raw.manager.user = "АдминистраторТакси";
+  f.raw.client.user = "АдминистраторKafka";
+  f.raw.clients = [{ ...f.raw.client, name: "RestrictedClient", user: "ПользовательKafka" }];
+  f.save();
+  const args = ["--for-action", "connect"];
+  const normal = success(f.invoke("describe", args));
+  const restricted = success(f.invoke("describe", [...args, "--client", "RestrictedClient"]));
+  assert.equal(JSON.parse(normal.scope).clientName, "TestClient");
+  assert.equal(JSON.parse(restricted.scope).clientName, "RestrictedClient");
+  assert.notEqual(normal.scope, restricted.scope);
+  const startApproval = success(f.invoke("describe", ["--for-action", "start"]));
+  delete startApproval.runtimeProfile;
+  startApproval.authorizations = [{ scope: startApproval.scope, effects: startApproval.effects, evidence: "synthetic instruction for default client" }];
+  const approval = path.join(f.base, "client-approval.json");
+  fs.writeFileSync(approval, JSON.stringify(startApproval));
+  const changedClient = f.invoke("start", ["--client", "RestrictedClient", "--authorization-file", approval]);
+  assert.notEqual(changedClient.status, 0);
+  assert.match(changedClient.stdout + changedClient.stderr, /Область или эффекты разрешения отличаются от планируемого действия Vanessa/);
+  const bad = f.invoke("describe", [...args, "--client", "missing"]);
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stdout + bad.stderr, /Неизвестное имя клиента/);
+  for (const [change, diagnostic] of [
+    [() => { f.raw.manager.userEnv = "MANAGER_USER"; }, /Для manager нельзя одновременно указывать user и userEnv/],
+    [() => { delete f.raw.manager.userEnv; f.raw.client.userEnv = "CLIENT_USER"; }, /Для client нельзя одновременно указывать user и userEnv/],
+    [() => { delete f.raw.client.userEnv; f.raw.clients[0].user = " "; }, /Некорректное поле client user/],
+  ]) {
+    change(); f.save();
+    assert.throws(() => runtime_profile(f.root), diagnostic);
+  }
+  f.raw.clients[0].user = "ПользовательKafka";
+  delete f.raw.manager.user; delete f.raw.client.user; delete f.raw.clients;
+  f.raw.manager.userEnv = "MANAGER_USER"; f.raw.client.userEnv = "CLIENT_USER";
+  f.save();
+  assert.doesNotThrow(() => runtime_profile(f.root));
+  assert.equal(success(f.invoke("describe", args)).scope.includes('"clientName":"TestClient"'), true);
+});
+test("documented local Vanessa profile is valid and selects both clients", t => {
+  const f = binding(t);
+  const docs = fs.readFileSync(path.join(ROOT, "docs/PROFILES.md"), "utf8");
+  const section = docs.split("Пример `.ai/vanessa.local.json`")[1];
+  const example = JSON.parse(section.match(/```json\s*([\s\S]*?)```/)[1]);
+  check_schema(example, "vanessa-runtime.schema.json");
+  fs.writeFileSync(f.file, JSON.stringify(example));
+  assert.equal(loadProfile(f.file).client.user, "АдминистраторKafka");
+  assert.equal(loadProfile(f.file, undefined, "RestrictedClient").client.user, "ПользовательKafka");
+  assert.equal(loadProfile(f.file).manager.user, "АдминистраторТакси");
+});
 for (const feature of ["features/smoke.feature", ".local/repair.feature"])
   test(
     "configured/temporary feature has a precise run agreement gate: " + feature,
@@ -105,13 +157,13 @@ for (const feature of ["features/smoke.feature", ".local/repair.feature"])
       assert.equal(JSON.parse(request.scope).feature, feature);
       const result = f.invoke("run", args);
       assert.notEqual(result.status, 0);
-      assert.match(result.stdout, /agreement required/);
+      assert.match(result.stdout, /Требуется разрешение пользователя/);
       assert.ok(!fs.existsSync(path.join(f.root, "results")));
     },
   );
 test("Vanessa start requires actual agreement and changed targets invalidate old authorization", (t) => {
   const f = binding(t);
-  assert.match(f.invoke("start").stdout, /agreement required/);
+  assert.match(f.invoke("start").stdout, /Требуется разрешение пользователя/);
   const request = success(f.invoke("describe", ["--for-action", "start"]));
   delete request.runtimeProfile;
   request.authorizations = [
@@ -127,7 +179,25 @@ test("Vanessa start requires actual agreement and changed targets invalidate old
   f.save();
   const result = f.invoke("start", ["--authorization-file", approval]);
   assert.notEqual(result.status, 0);
-  assert.match(result.stdout, /scope\/effects differ/);
+  assert.match(result.stdout, /Область или эффекты разрешения отличаются/);
+});
+
+test("local profile rename changes Vanessa authorization scope without transferring old permissions", async t => {
+  const f = binding(t); environment(t, f.env);
+  const shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
+  const request = success(f.invoke("describe", ["--for-action", "start"]));
+  request.authorizations = [{ scope: request.scope, effects: request.effects, evidence: "synthetic actual user instruction" }];
+  const approval = path.join(f.base, "approval.json"); fs.writeFileSync(approval, JSON.stringify(request));
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  await backend.main({ action: "rename_profile", projectId: "local-name", expectedRevision: backend.edit_revision() });
+  const changed = success(f.invoke("describe", ["--for-action", "start"])), scope = JSON.parse(changed.scope);
+  assert.equal(scope.project, "local-name");
+  assert.deepEqual({ ...scope, project: f.profile.project.id }, JSON.parse(request.scope));
+  const result = f.invoke("start", ["--authorization-file", approval]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /Область или эффекты разрешения отличаются/);
+  assert.deepEqual(fs.readFileSync(shared), sharedBefore);
+  assert.deepEqual(JSON.parse(fs.readFileSync(approval)), request);
 });
 test("Vanessa outside paths, non-feature suffix and missing exact scenario are rejected before policy", (t) => {
   const f = binding(t);
@@ -144,7 +214,7 @@ test("Vanessa outside paths, non-feature suffix and missing exact scenario are r
         "Exact",
       ]);
       assert.notEqual(result.status, 0);
-      assert.match(result.stdout, /Feature must remain|Path escapes/);
+      assert.match(result.stdout, /Файл сценариев должен оставаться|Путь выходит за границы проекта/);
     }
 });
 test("relative tool arguments hash binds caller bytes and generic calls require an explicit record", (t) => {
@@ -170,7 +240,7 @@ test("relative tool arguments hash binds caller bytes and generic calls require 
     sha256(fs.readFileSync(path.join(caller, "arguments.json"))),
   );
   const result = f.invoke("call", args, { cwd: caller });
-  assert.match(result.stdout, /explicit effects\/authorization/);
+  assert.match(result.stdout, /явная запись effects\/authorization/);
 });
 test("identical relative runtime files in distinct clones cannot share authorization", (t) => {
   const f = binding(t);
@@ -200,7 +270,7 @@ test("identical relative runtime files in distinct clones cannot share authoriza
     { env: f.env },
   );
   assert.notEqual(result.status, 0);
-  assert.match(result.stdout, /scope\/effects differ/);
+  assert.match(result.stdout, /Область или эффекты разрешения отличаются от планируемого действия Vanessa/);
 });
 test("authorized generic call resolves relative argument bytes before changing to the project directory", async (t) => {
   const f = binding(t),

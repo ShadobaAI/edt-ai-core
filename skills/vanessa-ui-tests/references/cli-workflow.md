@@ -32,6 +32,15 @@ authorization record; for other actions use
 Do not create it as a substitute for agreement or expand old permission.
 `configure` only displays settings; `start/setup/connect` may launch clients/
 manager and modify runtime, so require corresponding effects.
+Select an initial TestClient with `--client NAME` on both `describe` and the
+action; without it the local profile's `client` is used. Additional named
+clients are in `clients` and share its infobase. Prepare each profile while
+the manager is disconnected, using `setup` with the appropriate agreement.
+An already connected different client is not disconnected automatically.
+Scenario steps can switch between prepared Vanessa profile names; readiness
+checks the selected initial client, so inspect actual state again after a run.
+For local profile fields and the mutual exclusion of `user` and `userEnv`, see
+`docs/PROFILES.md` in the plugin package.
 For generic `call`, establish effects from live schema/guide and actual arguments.
 
 `run` holds the shared endpoint/TestClient lock from full readiness through reload,

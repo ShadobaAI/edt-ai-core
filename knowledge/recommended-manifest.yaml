@@ -11,5 +11,5 @@ collections:
   - id: memory
     description: Проверенная память команды и результаты ревью
   - id: experience
-    description: Опубликованный переносимый опыт с provenance
+    description: Опубликованный переносимый опыт с подтверждённым происхождением
 materials: []

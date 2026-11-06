@@ -6,9 +6,9 @@ description: Use when choosing a 1C authority or skill route from the active pro
 # Profile-driven routing
 
 Routing comes from the effective profile and plugin MCP settings:
-the current repository directory selects the profile; URLs account for the current
-`EDT_AI_INSTANCE` and overrides. Two instances of one directory may use different
-URLs; Kafka adapter/unit/conversion use their own repo-local profiles.
+the current repository directory selects the profile. Project-local settings apply
+to every instance of that directory; explicit connection files and environment
+variables may override them. `EDT_AI_INSTANCE` isolates runtime sessions and state.
 Read the shared [action policy](references/action-policy.md) before project
 operations; reuse it and permissions until scope/conditions change.
 

@@ -7,7 +7,9 @@ import { pathToFileURL } from "node:url";
 import http from "node:http";
 import { fixture, environment, session, dialog_session, ROOT, node } from "./helpers.mjs";
 import { LOG_POLICY, create_diagnostic_logger, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, diagnostic_state, diagnostic_journal, connection_failure, environment_compatibility } from "../scripts/diagnostics.mjs";
-import { support_bundle, save_support_bundle, saved_support_report } from "../scripts/support_bundle.mjs";
+import { support_bundle, saved_support_report, detailed_log_export } from "../scripts/support_bundle.mjs";
+
+import { save_export_to_path } from "../scripts/settings_export.mjs";
 import { project_directory } from "../scripts/project_paths.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { json_message } from "../scripts/mcp_codec.mjs";
@@ -18,10 +20,20 @@ import { settings } from "../scripts/common.mjs";
 import { instance_directory } from "../scripts/project_paths.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 
+test("detailed log export filters the requested period and sanitizes event details", t => {
+  const f = fixture(t), logger = create_diagnostic_logger("fixture", f.state);
+  logger.event("test-event", { token: "private-secret", projectRoot: f.root });
+  const recent = detailed_log_export(f.state, 1), future = detailed_log_export(f.state, 1, Date.now() + 2 * 86400000);
+  assert.match(recent.text, /test-event/);
+  assert.doesNotMatch(recent.text, /private-secret/);
+  assert.doesNotMatch(future.text, /test-event/);
+  assert.throws(() => detailed_log_export(f.state, 30), /период/);
+});
+
 test("errors, retained operations, readiness cache and exports exclude credential representations", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const secret = 'search-credential-9831/"'; process.env.PLAIN_VALUE = secret;
-  const refs = { openvikingHeadersEnv: { "X-Search": "PLAIN_VALUE" } };
+  const refs = { headers_env: { "X-Search": "PLAIN_VALUE" } };
   register_diagnostic_secrets(refs);
   const encoded = Buffer.from(secret).toString("base64"), arbitrary = [...secret].join(".");
   const logger = create_diagnostic_logger("fixture", f.state);
@@ -39,7 +51,7 @@ test("errors, retained operations, readiness cache and exports exclude credentia
   const outputs = [JSON.stringify(operations.status(job.id)), JSON.stringify(failing.status(failure.id)), cache,
     fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8"), bundle.text].join("\n");
   for (const value of [secret, encoded, arbitrary]) assert.equal(outputs.includes(value), false);
-  assert.match(failing.status(failure.id).error, /RPC -32000.*remote error text omitted/);
+  assert.match(failing.status(failure.id).error, /RPC -32000.*текст внешней ошибки скрыт/);
   const cli = node("scripts/settings_backend.mjs", [], { env: f.env, input: '{"secret":"unmarked-source-8812"' });
   assert.equal(cli.status, 1); assert.doesNotMatch(cli.stdout + cli.stderr, /unmarked-source-8812/);
 });
@@ -181,6 +193,10 @@ test("support collection is partial, bounded, read-only and does not include sou
   const f = fixture(t); environment(t, f.env); f.save();
   fs.writeFileSync(path.join(f.root, "src/private.bsl"), "SOURCE-MUST-NOT-BE-EXPORTED");
   fs.writeFileSync(path.join(f.state, "chat.json"), "CHAT-MUST-NOT-BE-EXPORTED");
+  fs.mkdirSync(path.join(f.root, ".ai/instances"), { recursive: true });
+  fs.writeFileSync(path.join(f.root, ".ai/instances/first.local.yaml"), "legacy: LEGACY-INSTANCE-MUST-NOT-BE-EXPORTED\n");
+  fs.mkdirSync(instance_directory(f.state, f.root), { recursive: true });
+  fs.writeFileSync(path.join(instance_directory(f.state, f.root), "first.yaml"), "legacy: LEGACY-STATE-MUST-NOT-BE-EXPORTED\n");
   fs.writeFileSync(f.env.EDT_AI_SETTINGS, '{"password":"malformed-secret",');
   fs.writeFileSync(path.join(f.state, "runtime-lock.json"), JSON.stringify({ oversized: "x".repeat(300000) }));
   create_diagnostic_logger("fixture", f.state).event("failure", { message: "ECONNREFUSED", projectRoot: f.root });
@@ -192,7 +208,7 @@ test("support collection is partial, bounded, read-only and does not include sou
   assert.equal(report.snapshot.runtimeArtifacts.omitted, "file_size_limit");
   assert.equal(report.snapshot.host.operation.status, "running");
   assert.ok(report.collection.issues.some(issue => issue.section === "current"));
-  for (const secret of ["SOURCE-MUST-NOT", "CHAT-MUST-NOT", "malformed-secret"]) assert.equal(exported.text.includes(secret), false);
+  for (const secret of ["SOURCE-MUST-NOT", "CHAT-MUST-NOT", "malformed-secret", "LEGACY-INSTANCE-MUST-NOT", "LEGACY-STATE-MUST-NOT"]) assert.equal(exported.text.includes(secret), false);
   assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
   assert.equal(fs.existsSync(path.join(f.state, "runtime")), false);
 });
@@ -218,6 +234,15 @@ test("export is app-only, contains no report in model content and survives corru
   assert.ok(report.events.some(event => event.event === "settings_unavailable"));
 });
 
+test("detailed log export is app-only and writes a sanitized text file through MCP", async t => {
+  const f=fixture(t);create_diagnostic_logger("fixture",f.state).event("log-export-fixture",{token:"not-for-export"});
+  const {client,choose}=await dialog_session(t,f);choose(path.join(f.base,"events.txt"));
+  const tools=(await client.request("tools/list")).tools;
+  assert.deepEqual(tools.find(tool=>tool.name==="settings.export_log")._meta.ui.visibility,["app"]);
+  const result=await client.call("settings.export_log",{days:3}), text=fs.readFileSync(result._meta.data.path,"utf8");
+  assert.match(text,/log-export-fixture/);assert.doesNotMatch(text,/not-for-export/);assert.equal(result._meta.data.text,undefined);
+});
+
 test("an unbound settings app can export without creating a project or preparing runtimes", async t => {
   const f = fixture(t), { client, choose } = await dialog_session(t, f, { extra: { EDT_AI_PROJECT_ROOT: "" }, roots: [] });
   choose(path.join(f.base, "diagnostics.json"));
@@ -231,15 +256,15 @@ test("an unbound settings app can export without creating a project or preparing
 
 test("support export writes one real file and a failed replacement preserves the previous report", t => {
   const f = fixture(t), first = '{"format":"1c-ai-core-diagnostics","sequence":1}', target = path.join(f.base, "support.json");
-  assert.throws(() => save_support_bundle(f.state, { text: first }), /Выберите место/);
-  const saved = save_support_bundle(f.state, { text: first }, target);
+  assert.throws(() => save_export_to_path("", { text: first }), /абсолютный путь/);
+  const saved = save_export_to_path(target, { text: first }, 16 * 1024 * 1024);
   assert.equal(saved.path, target);
   assert.equal(fs.readFileSync(saved.path, "utf8"), first);
   const second = '{"format":"1c-ai-core-diagnostics","sequence":2}';
-  assert.equal(save_support_bundle(f.state, { text: second }, target).path, saved.path);
+  assert.equal(save_export_to_path(target, { text: second }, 16 * 1024 * 1024).path, saved.path);
   const rename = fs.renameSync;
   fs.renameSync = (from, to) => { if (to === saved.path) throw Object.assign(new Error("Disk unavailable"), { code: "EACCES" }); return rename(from, to); };
-  try { assert.throws(() => save_support_bundle(f.state, { text: first }, target), /Disk unavailable/); }
+  try { assert.throws(() => save_export_to_path(target, { text: first }, 16 * 1024 * 1024), /Disk unavailable/); }
   finally { fs.renameSync = rename; }
   assert.equal(fs.readFileSync(saved.path, "utf8"), second);
   assert.equal(saved_support_report(f.state), null);
@@ -271,15 +296,15 @@ test("native logs contribute metadata without copying untrusted runtime contents
   process.env.CUSTOM_SUPPORT_HEADER = "custom-support-secret-184782";
   f.profile.connections = { edt: { url: "http://localhost:4000/mcp", headers_env: { "X-Custom": "CUSTOM_SUPPORT_HEADER" } } }; f.save();
   const home = path.join(project_directory(f.state, f.root), "code-index"); fs.mkdirSync(home, { recursive: true });
-  fs.writeFileSync(path.join(home, "stderr.log"), "old-error\n" + "x".repeat(100000) + "\nLatest error: " + process.env.CUSTOM_SUPPORT_HEADER);
+  fs.writeFileSync(path.join(home, "daemon.log"), "old-error\n" + "x".repeat(100000) + "\nLatest error: " + process.env.CUSTOM_SUPPORT_HEADER);
   const directory = path.join(f.state, "diagnostics"); fs.mkdirSync(directory);
   fs.writeFileSync(path.join(directory, "events.0.jsonl"), JSON.stringify({ time: new Date().toISOString(), detail: { message: process.env.CUSTOM_SUPPORT_HEADER } }) + "\n");
   const result = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root });
   assert.equal(result.text.includes(process.env.CUSTOM_SUPPORT_HEADER), false);
   const report = JSON.parse(result.text);
-  assert.ok(report.snapshot.codeIndex_stderr.bytes > 100000);
-  assert.equal(report.snapshot.codeIndex_stderr.omitted, "untrusted_runtime_log_content");
-  assert.equal(report.snapshot.codeIndex_stderr.tail, undefined);
+  assert.ok(report.snapshot["codeIndex_daemon.log"].bytes > 100000);
+  assert.equal(report.snapshot["codeIndex_daemon.log"].omitted, "untrusted_runtime_log_content");
+  assert.equal(report.snapshot["codeIndex_daemon.log"].tail, undefined);
   assert.equal(result.text.includes("old-error"), false);
 });
 
@@ -342,15 +367,15 @@ test("stdio timeout and exit omit stderr while preserving an unknown operation o
   }
 });
 
-test("legacy request failure records cannot export arbitrary encoded credentials", async t => {
+test("unsupported diagnostic records cannot export arbitrary encoded credentials", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const encoded = [..."private-credential-8193"].join("~");
   fs.mkdirSync(path.join(f.state, "diagnostics"));
   fs.writeFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), JSON.stringify({ time: new Date().toISOString(), event: "request_failed",
     detail: { error: { message: encoded, stack: encoded } } }) + "\n");
-  const events = read_diagnostic_logs(f.state).events;
-  assert.equal(events[0].event, "legacy_event");
-  assert.equal(events[0].detail.omitted, "untrusted_legacy_record");
+  const { events, issues } = read_diagnostic_logs(f.state);
+  assert.deepEqual(events, []);
+  assert.ok(issues.includes("Unsupported log format: record details omitted"));
   const bundle = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root });
   assert.equal((JSON.stringify(events) + bundle.text).includes(encoded), false);
 });

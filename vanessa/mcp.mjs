@@ -6,14 +6,14 @@ export async function listTools(client) {
   let cursor;
   do {
     const page = await client.request("tools/list", cursor ? { cursor } : {});
-    if (!Array.isArray(page?.tools)) fail("invalid MCP tools/list");
+    if (!Array.isArray(page?.tools)) fail("Некорректный ответ MCP tools/list");
     for (const tool of page.tools) {
-      if (typeof tool?.name !== "string" || !tool.name || seen.has(tool.name) || !tool.inputSchema || tool.inputSchema.type !== "object") fail("invalid or duplicate MCP tool schema");
+      if (typeof tool?.name !== "string" || !tool.name || seen.has(tool.name) || !tool.inputSchema || tool.inputSchema.type !== "object") fail("Некорректная или повторная схема инструмента MCP");
       seen.add(tool.name); tools.push(tool);
-      if (tools.length > 2000) fail("MCP tool count limit exceeded");
+      if (tools.length > 2000) fail("Превышено допустимое число инструментов MCP");
     }
     cursor = page.nextCursor;
-    if (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursors.has(cursor))) fail("invalid MCP tools/list cursor");
+    if (cursor !== undefined && (typeof cursor !== "string" || !cursor || cursors.has(cursor))) fail("Некорректный курсор MCP tools/list");
     cursors.add(cursor);
   } while (cursor);
   return tools;
@@ -21,31 +21,31 @@ export async function listTools(client) {
 
 // These checks catch common argument mistakes; the server remains schema authority.
 export function checkArguments(schema, args) {
-  if (!args || typeof args !== "object" || Array.isArray(args)) fail("tool arguments must be an object");
-  for (const name of schema.required ?? []) if (!Object.hasOwn(args, name)) fail(`missing tool argument: ${name}`);
-  if (schema.additionalProperties === false && Object.keys(args).some(name => !Object.hasOwn(schema.properties ?? {}, name))) fail("unknown tool argument");
+  if (!args || typeof args !== "object" || Array.isArray(args)) fail("Аргументы инструмента должны быть объектом");
+  for (const name of schema.required ?? []) if (!Object.hasOwn(args, name)) fail(`Отсутствует аргумент инструмента: ${name}`);
+  if (schema.additionalProperties === false && Object.keys(args).some(name => !Object.hasOwn(schema.properties ?? {}, name))) fail("Неизвестный аргумент инструмента");
   for (const [name, value] of Object.entries(args)) {
     const property = schema.properties?.[name];
     if (!property) continue;
-    if (property.enum && !property.enum.some(item => JSON.stringify(item) === JSON.stringify(value))) fail(`invalid enum argument: ${name}`);
+    if (property.enum && !property.enum.some(item => JSON.stringify(item) === JSON.stringify(value))) fail(`Недопустимое значение перечисления аргумента: ${name}`);
     const types = Array.isArray(property.type) ? property.type : property.type ? [property.type] : [];
     const actual = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-    if (types.length && !types.includes(actual) && !(Number.isInteger(value) && types.includes("integer"))) fail(`invalid argument type: ${name}`);
+    if (types.length && !types.includes(actual) && !(Number.isInteger(value) && types.includes("integer"))) fail(`Некорректный тип аргумента: ${name}`);
   }
 }
 export const session = (profile, use) => withHttpMcp({ url: profile.mcp.url }, use, { timeout: profile.limits.timeoutMs, maxBytes: profile.limits.maxBytes });
 export async function callTool(client, tools, name, args, { onDispatch = () => {} } = {}) {
   const tool = tools.find(item => item.name === name);
-  if (!tool) fail("requested tool is unavailable");
+  if (!tool) fail("Запрошенный инструмент недоступен");
   checkArguments(tool.inputSchema, args);
   onDispatch();
   const result = await client.request("tools/call", { name, arguments: args });
-  if (!result || typeof result !== "object") fail("invalid MCP tool response");
+  if (!result || typeof result !== "object") fail("Некорректный ответ инструмента MCP");
   if (result.isError) {
-    const error = new Error("MCP tool returned an error response");
+    const error = new Error("Инструмент MCP вернул ошибку");
     error.code = "tool_error";
     error.detail = { classification: "tool_error", outcome: "responded", tool: name, result: redact(result),
-      nextAction: "Inspect the returned cause and authoritative state; do not retry unchanged arguments." };
+      nextAction: "Проверьте причину отказа и фактическое состояние; не повторяйте те же аргументы без изменений." };
     throw error;
   }
   return result;

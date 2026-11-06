@@ -24,7 +24,8 @@ import {
 import { validate_bsl_tools } from "./runtime.mjs";
 import { component_icons } from "./icons.mjs";
 import { launch_selection, roots_selection, explicit_selection } from "./selection.mjs";
-import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation } from "./components.mjs";
+import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation, native_environment } from "./components.mjs";
+import { index_repositories } from "./directory_context.mjs";
 import { read_lines } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
 import { Ajv, Ajv2019, Ajv2020, draft6MetaSchema } from "../vendor/deps.mjs";
@@ -116,6 +117,7 @@ async function waitForRoots() {
 }
 function configContext() {
   const config = settings(configuration);
+  config.state_dir = state;
   if (selectionError) throw new ConfigError(selectionError);
   const directory = selected;
   if (!directory) throw new ConfigError("Выберите каталог проекта с .ai/project.yaml.");
@@ -226,7 +228,7 @@ async function bind(refreshSurface, retryFailed, connect) {
         ],
         root,
         {
-          ...process.env,
+          ...native_environment(config),
           EDT_AI_STATE_DIR: state,
           EDT_AI_SETTINGS: configuration,
           EDT_AI_PROJECT_ROOT: root,
@@ -252,7 +254,7 @@ async function bind(refreshSurface, retryFailed, connect) {
       throw error;
     }
     client = candidate;
-    boundAliases = new Set(profile.repositories.map(repo => repo.alias));
+    boundAliases = new Set((component === "code-index" ? index_repositories(root, profile) : profile.repositories).map(repo => repo.alias));
     connectingClient = null;
     failedRevision = null;
     lastError = "";

@@ -36,7 +36,7 @@ const registered = new Set();
 export function register_diagnostic_secrets(value) {
   if (!value || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value)) {
-    if (["headers_env", "openvikingHeadersEnv"].includes(key) && child && typeof child === "object") {
+    if (key === "headers_env" && child && typeof child === "object") {
       for (const variable of Object.values(child)) if (process.env[variable]) registered.add(process.env[variable]);
     }
     else if (secretKey.test(key) && typeof child === "string" && child.length >= 4) registered.add(child);
@@ -154,11 +154,14 @@ function clean_text(value) {
 export function safe_error_message(error) {
   if (error?.remote === true) {
     const evidence = connection_failure(error);
-    return "External MCP rejected the request" + (evidence.httpStatus ? " (HTTP " + evidence.httpStatus + ")" : "") +
-      (evidence.rpcCode !== undefined ? " (RPC " + evidence.rpcCode + ")" : "") + "; remote error text omitted";
+    return "Внешний сервер MCP отклонил запрос" + (evidence.httpStatus ? " (HTTP " + evidence.httpStatus + ")" : "") +
+      (evidence.rpcCode !== undefined ? " (RPC " + evidence.rpcCode + ")" : "") + "; текст внешней ошибки скрыт";
   }
-  if (error?.code === "INVALID_DOCUMENT" || error instanceof SyntaxError) return "Invalid document; input excerpt omitted";
-  return clean_text(error?.message || "Operation failed").slice(0, 4000);
+  if (error?.code === "INVALID_DOCUMENT" || error instanceof SyntaxError) return "Некорректный документ" +
+    (Number.isSafeInteger(error?.documentLine) && error.documentLine > 0 && error.documentLine <= 2097152 ? ` в строке ${error.documentLine}` : "") + "; фрагмент исходного текста скрыт";
+  if (error?.outcomeUnknown === true && !/[А-Яа-яЁё]/.test(error.message || ""))
+    return "Исход операции неизвестен; проверьте фактическое состояние перед повтором.";
+  return clean_text(error?.message || "Не удалось выполнить операцию").slice(0, 4000);
 }
 // Setup results are operational data. Clean diagnostic prose without rewriting
 // keys, state enums, flags, fingerprints or other fields used by the workflow.
@@ -255,9 +258,8 @@ export function read_diagnostic_logs(state = diagnostic_state()) {
           const timestamp = Date.parse(event.time);
           if (!Number.isFinite(timestamp) || timestamp < Date.now() - LOG_POLICY.days * 86400000) continue;
           if (event.formatVersion !== LOG_FORMAT_VERSION) {
-            event = { formatVersion: LOG_FORMAT_VERSION, time: new Date(timestamp).toISOString(), component: "legacy", event: "legacy_event", level: "warning",
-              detail: { omitted: "untrusted_legacy_record" } };
             issues.push("Unsupported log format: record details omitted");
+            continue;
           }
           if (event.event === "runtime_stderr") event.detail = { content: "omitted", ...(Number.isSafeInteger(event.detail?.bytes) ? { bytes: event.detail.bytes } : {}) };
           events.push(sanitize_diagnostics(event));

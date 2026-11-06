@@ -25,8 +25,7 @@ async function check_worker(selected) {
   assert.equal(manifest.hooks, "./hooks/hooks.json");
   for (const extension of [manifest, universal.extensions["com.openai"]]) {
     assert.equal(extension.requires_local_executor, true);
-    assert.equal(extension.onboardingSkill, "./skills/edt-ai-core/SKILL.md");
-    assert.ok(fs.existsSync(path.join(root, extension.onboardingSkill)));
+    assert.equal(Object.hasOwn(extension, "onboardingSkill"), false);
   }
   for (const listing of [manifest.interface, universal.extensions["com.openai"].interface]) {
     assert.equal(listing.developerName, "ShadobaAI");
@@ -155,12 +154,9 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       path.join(temp, "profile.yaml"),
     ]);
     run("scripts/profile.mjs", ["validate", path.join(temp, "profile.yaml")]);
-    run("scripts/profile.mjs", [
-      "configure-instance",
-      project,
-      "--edt-url",
-      "http://127.0.0.1:18765/mcp",
-    ]);
+    fs.writeFileSync(path.join(project, ".ai", "project.local.yaml"), "connections:\n  edt:\n    url: http://127.0.0.1:18765/mcp\n");
+    const effective = JSON.parse(run("scripts/profile.mjs", ["effective", project]));
+    assert.equal(effective.profile.connections.edt.url, "http://127.0.0.1:18765/mcp");
     const profile = path.join(project, ".ai/project.yaml");
     let yaml = fs.readFileSync(profile, "utf8");
     // Exercise the shipped knowledge schemas and containment validator through
@@ -208,6 +204,9 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
     );
     for (const [name, entry] of Object.entries(json("mcp.json").mcpServers)) {
       assert.equal(entry.command, "node");
+      // The portable MCP manifest parser rejects entries with Codex's
+      // config.toml-only env_vars field before they can be started.
+      assert.equal(Object.hasOwn(entry, "env_vars"), false);
       const args = entry.args.map((arg) =>
         arg.replaceAll("${PLUGIN_ROOT}", root),
       );
@@ -242,9 +241,10 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
           // caller-selected destination without presenting an OS dialog.
           const journal = await client.call("settings.diagnostics", {});
           assert.equal(journal.structuredContent, undefined);
-          const { support_bundle, save_support_bundle } = await import(pathToFileURL(path.join(root, "scripts/support_bundle.mjs")).href);
+          const { support_bundle } = await import(pathToFileURL(path.join(root, "scripts/support_bundle.mjs")).href);
+          const { save_export_to_path } = await import(pathToFileURL(path.join(root, "scripts/settings_export.mjs")).href);
           const bundle = await support_bundle({ state: env.EDT_AI_STATE_DIR, configPath: env.EDT_AI_SETTINGS, selectedRoot: null });
-          const support = save_support_bundle(env.EDT_AI_STATE_DIR, bundle, path.join(temp, "support.json"));
+          const support = save_export_to_path(path.join(temp, "support.json"), bundle, 16 * 1024 * 1024);
           assert.equal(JSON.parse(fs.readFileSync(support.path, "utf8")).format, "1c-ai-core-diagnostics");
           const resource = await client.request("resources/read", { uri: app._meta.ui.resourceUri });
           assert.deepEqual(resource.contents[0]._meta["openai/ui"].availableDisplayModes,["fullscreen"]);
@@ -261,15 +261,11 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
           const observed = (await client.call("settings.status", {})).structuredContent;
           assert.equal(observed.profileHistory[0].projectRoot, project);
           assert.ok(observed.summary.observedAt);
-          const preview = (
-            await client.call("settings.preview", {
-              text: yaml,
-              projectRoot: project,
-            })
-          ).structuredContent;
+          const edit=(await client.call("settings.edit",{layerScope:"profile",format:"yaml"}))._meta.data;
+          const args={text:edit.text,mode:"layer",layerScope:"profile",baseRevision:edit.baseRevision,projectRoot:project};
+          const preview = (await client.call("settings.preview", args)).structuredContent;
           await client.call("settings.apply", {
-            text: yaml,
-            projectRoot: project,
+            ...args,
             revision: preview.revision,
             replace: true,
           });
@@ -278,11 +274,8 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
               .projectRoot,
             project,
           );
-          assert.ok(
-            (
-              await client.call("settings.export_data", {})
-            )._meta.data.text.includes("1c-ai-core-settings"),
-          );
+          assert.ok(tools.find(tool=>tool.name==="settings.transfer_export"));
+          assert.ok((await client.call("settings.transfer_context",{projectRoot:project}))._meta.data.baseRevision);
         }
         if (["edt", "v8std", "code-index", "bsl-ls"].includes(name))
           assert.equal(

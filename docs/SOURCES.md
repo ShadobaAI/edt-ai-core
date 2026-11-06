@@ -10,14 +10,14 @@
 
 ## Внешние компоненты
 
-Registry компонентов задан в [components.mjs](../scripts/components.mjs),
-release/runtime contract — в [runtime-manifest.yaml](../runtime/runtime-manifest.yaml).
+Реестр компонентов задан в [components.mjs](../scripts/components.mjs),
+контракт выпусков и окружения — в [runtime-manifest.yaml](../runtime/runtime-manifest.yaml).
 
 | Компонент | Источник/назначение |
 | --- | --- |
-| Code-index | [Regsorm/code-index-mcp](https://github.com/Regsorm/code-index-mcp), managed release binary |
+| Code-index | [Regsorm/code-index-mcp](https://github.com/Regsorm/code-index-mcp), управляемый исполняемый файл выпуска |
 | BSL Language Server | [1c-syntax/bsl-language-server](https://github.com/1c-syntax/bsl-language-server), внешний JAR |
-| Koffi | [Koromix/koffi](https://github.com/Koromix/koffi), bundled Windows API bridge |
+| Koffi | [Koromix/koffi](https://github.com/Koromix/koffi), включённый в пакет доступ к Windows API |
 | Unicode case folding | [Unicode](https://www.unicode.org/), данные и отдельная лицензия в пакете |
 | EDT-MCP | Сервер пользователя; проверяется по живому MCP-контракту |
 | v8std: исходный проект | [zeegin/v8std](https://github.com/zeegin/v8std), основа |
@@ -38,12 +38,12 @@ v8std запускается пользователем отдельно и пр
 | CRM | [crm-ai-dev](https://git.fsk.ru/ShadobaAI/crm-ai-dev.git), требуется доступ к корпоративному Git | `skills/` |
 | Kafka | [kafka-tools](https://github.com/ShadobaAI/kafka-tools.git) | `ai/.codex/skills/` |
 
-Наблюдаемые ревизии и принятые решения находятся в
-[skills/catalog.yaml](../skills/catalog.yaml). При использовании этих источников
-учитывайте `migration_decisions` и проверяйте поведение по доступному исходнику.
+Состав навыков и правила включения универсального поведения заданы в
+[skills/catalog.yaml](../skills/catalog.yaml), в том числе в `migration_decisions`.
+Применимость поведения проверяется по доступному исходнику.
 
-В ядро переносится универсальное поведение. Проектные пути, aliases,
-EDT-проекты, профили и exports не поставляются; остаётся только `generic-1c`.
-`1c-docs-mcp` (HelpSearchServer) и `1c-ssl-mcp` исключены, включая optional
-и fallback варианты. Замещающие маршруты оцениваются отдельно.
+Плагин содержит универсальные навыки и профиль `generic-1c`. Проектные пути,
+псевдонимы, EDT-проекты, профили и экспорты не входят в поставку.
+`1c-docs-mcp` (HelpSearchServer) и `1c-ssl-mcp` исключены, включая дополнительные
+и резервные подключения. Достаточность маршрутов EDT/code-index проверяется по задаче.
 Контракт знаний и границы интеграций описаны в [INTEGRATIONS.md](INTEGRATIONS.md).

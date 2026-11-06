@@ -1,24 +1,31 @@
 import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
-import { once } from "node:events";
-import { own_windows_tree } from "./windows_process.mjs";
+import { fileURLToPath } from "node:url";
+const lifecycles = new WeakMap();
 export function launch(command, args = [], options = {}) {
-  const child = spawn(command, args, {
+  const { sessionOwned = true, ...spawnOptions } = options;
+  const detached = spawnOptions.detached ?? process.platform !== "win32";
+  const env = spawnOptions.env || process.env;
+  const stdio = spawnOptions.stdio ?? "pipe";
+  const child = spawn(sessionOwned ? process.execPath : command, sessionOwned ? [fileURLToPath(new URL("./process_supervisor.mjs", import.meta.url))] : args, {
     windowsHide: true,
-    detached: process.platform !== "win32",
-    ...options,
+    ...spawnOptions,
+    ...(sessionOwned ? {
+      env: Object.fromEntries(Object.entries(env).filter(([name]) => name.toUpperCase() !== "NODE_OPTIONS")),
+      stdio: [...(Array.isArray(stdio) ? stdio : [stdio, stdio, stdio]), "ipc"],
+    } : {}),
+    detached,
     shell: false,
   });
-  if (process.platform === "win32" && !options.detached && child.pid) {
-    try {
-      child.ownedJob = own_windows_tree(child.pid);
-      child.once("close", () => child.ownedJob.close());
-    } catch (error) {
-      child.on("error", () => {});
-      child.kill("SIGKILL");
-      throw error;
-    }
+  const lifecycle = { supervised: sessionOwned, closed: false, stopping: null };
+  lifecycles.set(child, lifecycle);
+  child.once("close", () => { lifecycle.closed = true; });
+  if (sessionOwned) {
+    child.on("message", message => { if (message.error) child.emit("error", Object.assign(new Error(message.error.message), message.error)); });
+    if (child.pid) child.send({ command, args, env }, error => {
+      if (error && child.exitCode === null && child.signalCode === null) child.emit("error", error);
+    });
   }
   return child;
 }
@@ -31,9 +38,17 @@ export function alive(pid) {
     return error.code === "EPERM";
   }
 }
-export async function stop_child(child, grace = 5000) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  const closed = once(child, "close").catch(() => {});
+export function stop_child(child, grace = 5000) {
+  let lifecycle = lifecycles.get(child);
+  if (!lifecycle) {
+    lifecycle = { supervised: false, closed: child.exitCode !== null || child.signalCode !== null, stopping: null };
+    lifecycles.set(child, lifecycle);
+  }
+  return lifecycle.stopping ||= terminate_child(child, lifecycle, grace);
+}
+async function terminate_child(child, lifecycle, grace) {
+  if (lifecycle.closed) return;
+  const closed = new Promise(resolve => child.once("close", resolve));
   child.stdin?.end();
   let timer;
   const gone = await Promise.race([
@@ -45,41 +60,17 @@ export async function stop_child(child, grace = 5000) {
   clearTimeout(timer);
   if (gone) return;
   // This handle was created by this session. Never kill by name or state-file PID.
-  if (process.platform === "win32") {
-    if (child.ownedJob) child.ownedJob.close();
-    else child.kill("SIGKILL");
-  } else {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      child.kill("SIGTERM");
-    }
-  }
-  let killTimer;
-  await Promise.race([
-    closed,
-    new Promise((done) => {
-      killTimer = setTimeout(() => {
-        if (process.platform !== "win32") {
-          try {
-            process.kill(-child.pid, "SIGKILL");
-          } catch {
-            child.kill("SIGKILL");
-          }
-        } else child.kill("SIGKILL");
-        done();
-      }, 2000);
-    }),
-  ]);
-  clearTimeout(killTimer);
-  if (child.exitCode === null && child.signalCode === null) {
+  if (lifecycle.supervised) {
+    if (child.connected) child.send({ stop: true }, () => {});
+  } else child.kill("SIGKILL");
+  if (!lifecycle.closed) {
     let finalTimer;
     await Promise.race([
       closed,
       new Promise((_, reject) => {
         finalTimer = setTimeout(
-          () => reject(new Error("Owned process termination is not confirmed")),
-          2000,
+          () => reject(Object.assign(new Error("Owned process termination is not confirmed"), { outcomeUnknown: true })),
+          5000,
         );
       }),
     ]).finally(() => clearTimeout(finalTimer));

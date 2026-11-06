@@ -46,7 +46,6 @@ modify data: these are separate actual effects even within read-only investigati
 Resume only execution suspended by this task; do not terminate another client or
 restore an assumed state.
 
-<a id="замер-производительности"></a>
 ## Performance measurement
 
 For performance questions, choose one reproducible operation, data volume and exact

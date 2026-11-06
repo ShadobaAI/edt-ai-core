@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { stable } from "../scripts/common.mjs";
-import { environment } from "./helpers.mjs";
+import { environment, fixture as project_fixture } from "./helpers.mjs";
+import { read_openviking_record, save_openviking_record } from "../scripts/openviking_store.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
 import { publication_inventory } from "../scripts/knowledge.mjs";
 import { match_publication_receipt, publication_entry, verify_publication_material, PublicationConfirmation, publication_revision } from "../scripts/openviking_publication.mjs";
@@ -10,9 +11,14 @@ import { match_publication_receipt, publication_entry, verify_publication_materi
 const now = Date.parse("2026-10-26T08:00:00Z");
 const keys = generateKeyPairSync("ed25519");
 const signed = payload => ({ payload, signature: sign(null, Buffer.from(stable(payload)), keys.privateKey).toString("base64") });
-function trust(t, receipts) {
-  environment(t, { ...process.env, EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY: keys.publicKey.export({ type: "spki", format: "pem" }),
-    EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS: JSON.stringify(receipts) });
+const endpoint = "https://example.org/mcp";
+async function update(values) {
+  const current = read_openviking_record(endpoint);
+  await save_openviking_record(endpoint, "", { ...current.values, ...values }, current.revision);
+}
+async function trust(t, receipts) {
+  const f = project_fixture(t); environment(t, f.env);
+  await update({ publicationPublicKey: keys.publicKey.export({ type: "spki", format: "pem" }), publicationReceipts: JSON.stringify(receipts) });
 }
 function fixture() {
   const metadata = { schema_version: "0.1", kind: "document", id: "design", title: "Design",
@@ -47,9 +53,9 @@ test("publication match rejects missing, expired, mixed and stale declarations",
     { collection_snapshots: f.receipt.collection_snapshots.map(item => ({ ...item, root: item.root + "/other" })) }])
     assert.throws(() => match_publication_receipt({ ...f.receipt, ...patch }, f.expected, now));
   assert.throws(() => match_publication_receipt(f.receipt, { ...f.expected,
-    manifest: { ...f.expected.manifest, data: { ...f.expected.manifest.data, materials: [] } } }, now), /inventory/);
+    manifest: { ...f.expected.manifest, data: { ...f.expected.manifest.data, materials: [] } } }, now), /Индекс публикации не соответствует точному составу выбранных коллекций/);
   assert.throws(() => match_publication_receipt({ ...f.receipt, collection_snapshots: f.receipt.collection_snapshots.map(item =>
-    ({ ...item, root: "viking://resources/team/architecture" + (item.collection === "empty" ? "/nested" : "") })) }, f.expected, now), /overlap/);
+    ({ ...item, root: "viking://resources/team/architecture" + (item.collection === "empty" ? "/nested" : "") })) }, f.expected, now), /пересекаться/);
 });
 
 test("publication retrieval rejects excluded, deleted, changed and partial materials", () => {
@@ -61,12 +67,12 @@ test("publication retrieval rejects excluded, deleted, changed and partial mater
   assert.throws(() => publication_entry(f.receipt, f.expected.manifest, f.uri + "/../design.md", "architecture"));
   const changed = structuredClone(f.expected.manifest);
   changed.data.materials[0].sha256 = sha256(f.text + "New edition");
-  assert.throws(() => verify_publication_material(f.receipt, changed, { ...read, text: f.text + "New edition" }), /inventory/);
+  assert.throws(() => verify_publication_material(f.receipt, changed, { ...read, text: f.text + "New edition" }), /Манифест материала отличается от подтверждённого состава публикации/);
   for (const text of [f.text.replace('"id":"design"', '"id":"other"'), f.text.replace('"published"', '"draft"')]) {
     const manifest = structuredClone(f.expected.manifest); manifest.data.materials[0].sha256 = sha256(text);
     const receipt = { ...f.receipt, collection_snapshots: publication_inventory(manifest.data, f.receipt.collections)
       .map(item => ({ ...item, root: f.expected.collections.get(item.collection) })) };
-    assert.throws(() => verify_publication_material(receipt, manifest, { ...read, text }), /identity or status/);
+    assert.throws(() => verify_publication_material(receipt, manifest, { ...read, text }), /Идентичность или статус/);
   }
 });
 
@@ -82,8 +88,8 @@ test("delivery uses stable ids while Git source paths retain spaces and Unicode"
     "Архитектура/design notes.md");
 });
 
-test("only an operator-signed publisher confirmation authenticates the exact snapshot", t => {
-  const f = fixture(); trust(t, [signed(f.receipt)]);
+test("only an operator-signed publisher confirmation authenticates the exact snapshot", async t => {
+  const f = fixture(); await trust(t, [signed(f.receipt)]);
   const confirmation = new PublicationConfirmation(f.expected, now);
   assert.equal(confirmation.check(now).index_revision, "index-1");
   assert.equal(confirmation.material({ uri: f.uri, collection: "architecture", text: f.text }, now).id, "design");
@@ -91,13 +97,13 @@ test("only an operator-signed publisher confirmation authenticates the exact sna
     [signed({ ...f.receipt, index_revision: "index-2" }), signed(f.receipt)],
     [signed({ ...f.receipt, manifest_sha256: "f".repeat(64) })], [signed({ ...f.receipt, expires_at: "2026-10-26T07:30:00Z" })],
     [{ ready: true }], []]) {
-    process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = JSON.stringify(envelopes);
+    await update({ publicationReceipts: JSON.stringify(envelopes) });
     assert.throws(() => new PublicationConfirmation(f.expected, now));
   }
 });
 
-test("confirmation reuse is bounded by time and operator state, with no corpus rescan", t => {
-  const f = fixture(); trust(t, [signed(f.receipt)]);
+test("confirmation reuse is bounded by time and operator state, with no corpus rescan", async t => {
+  const f = fixture(); await trust(t, [signed(f.receipt)]);
   const revision = publication_revision({ url: f.expected.endpoint });
   const confirmation = new PublicationConfirmation(f.expected, now);
   // Caller-owned objects, including returned evidence, cannot mutate the pin.
@@ -108,38 +114,38 @@ test("confirmation reuse is bounded by time and operator state, with no corpus r
     assert.equal(confirmation.check(now).index_revision, "index-1");
     assert.equal(confirmation.entry(f.uri, "architecture", now).id, "design");
   }
-  assert.throws(() => confirmation.check(Date.parse("2026-10-26T09:00:00Z")), /current/);
-  process.env.EDT_AI_OPENVIKING_PUBLICATION_PUBLIC_KEY = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" });
+  assert.throws(() => confirmation.check(Date.parse("2026-10-26T09:00:00Z")), /Подтверждение публикации больше не действует/);
+  await update({ publicationPublicKey: generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }) });
   assert.notEqual(publication_revision({ url: f.expected.endpoint }), revision);
-  assert.throws(() => confirmation.check(now), /trust key changed/);
-  assert.throws(() => new PublicationConfirmation(f.expected, now), /signed publication/);
+  assert.throws(() => confirmation.check(now), /доверенный ключ изменились/);
+  assert.throws(() => new PublicationConfirmation(f.expected, now), /подписанного подтверждения публикации/);
 });
 
-test("a staged future confirmation invalidates reuse when it becomes active", t => {
+test("a staged future confirmation invalidates reuse when it becomes active", async t => {
   const f = fixture(), next = { ...f.receipt, index_revision: "index-2", verified_at: "2026-10-26T08:30:00Z" };
-  trust(t, [signed(f.receipt), signed(next)]);
+  await trust(t, [signed(f.receipt), signed(next)]);
   const confirmation = new PublicationConfirmation(f.expected, now);
   assert.equal(confirmation.check(now).index_revision, "index-1");
   const activated = Date.parse(next.verified_at);
-  assert.throws(() => confirmation.check(activated), /became active/);
-  assert.throws(() => new PublicationConfirmation(f.expected, activated), /Conflicting/);
+  assert.throws(() => confirmation.check(activated), /Вступило в силу другое подписанное подтверждение публикации/);
+  assert.throws(() => new PublicationConfirmation(f.expected, activated), /Конфликтуют/);
 });
 
-test("conflicting snapshots for shared roots cannot hide behind another manifest or selected subset", t => {
-  const f = fixture(); trust(t, [signed(f.receipt)]);
+test("conflicting snapshots for shared roots cannot hide behind another manifest or selected subset", async t => {
+  const f = fixture(); await trust(t, [signed(f.receipt)]);
   const subset = { ...f.receipt, collections: ["architecture"], collection_snapshots: f.receipt.collection_snapshots.slice(0, 1) };
-  process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = JSON.stringify([signed(f.receipt), signed(subset)]);
+  await update({ publicationReceipts: JSON.stringify([signed(f.receipt), signed(subset)]) });
   assert.equal(new PublicationConfirmation(f.expected, now).check(now).index_revision, "index-1");
-  process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = JSON.stringify([signed(f.receipt), signed({ ...f.receipt,
-    verified_at: "2026-10-26T07:30:00Z", evidence_ref: "https://example.org/publication/renewed" })]);
+  await update({ publicationReceipts: JSON.stringify([signed(f.receipt), signed({ ...f.receipt,
+    verified_at: "2026-10-26T07:30:00Z", evidence_ref: "https://example.org/publication/renewed" })]) });
   assert.equal(new PublicationConfirmation(f.expected, now).check(now).index_revision, "index-1");
   for (const patch of [{ manifest_sha256: "f".repeat(64) }, { index_revision: "index-2" }, { publication_revision: "f".repeat(40) },
     { collection_snapshots: subset.collection_snapshots.map(item => ({ ...item, materials_sha256: "f".repeat(64) })) }]) {
-    process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = JSON.stringify([signed(f.receipt), signed({ ...subset, ...patch })]);
-    assert.throws(() => new PublicationConfirmation(f.expected, now), /Conflicting/);
+    await update({ publicationReceipts: JSON.stringify([signed(f.receipt), signed({ ...subset, ...patch })]) });
+    assert.throws(() => new PublicationConfirmation(f.expected, now), /Конфликтуют подписанные снимки публикации для пересекающихся областей коллекций/);
   }
   const future = { ...subset, manifest_sha256: "f".repeat(64), verified_at: "2026-10-26T08:30:00Z" };
-  process.env.EDT_AI_OPENVIKING_PUBLICATION_RECEIPTS = JSON.stringify([signed(f.receipt), signed(future)]);
+  await update({ publicationReceipts: JSON.stringify([signed(f.receipt), signed(future)]) });
   const confirmation = new PublicationConfirmation(f.expected, now);
-  assert.throws(() => confirmation.check(Date.parse(future.verified_at)), /became active/);
+  assert.throws(() => confirmation.check(Date.parse(future.verified_at)), /Вступило в силу/);
 });

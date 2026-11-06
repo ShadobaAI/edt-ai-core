@@ -34,14 +34,13 @@ prefixes, aliases, ports or a running EDT.
   assessment in $1c-code-change; do not import CRM conventions into other projects.
 - Resolve `PLUGIN_ROOT` from this installed package (two levels above this skill).
   Run Node.js commands with `<PLUGIN_ROOT>/scripts/...`, not relative to the
-  project cwd. Use `node <PLUGIN_ROOT>/scripts/profile.mjs init|validate|export|import|effective|configure-instance`.
+  project cwd. Use `node <PLUGIN_ROOT>/scripts/profile.mjs init|validate|export|import|effective`.
   Import into an existing profile requires `--merge` or `--replace`; both save a backup.
-- Tracked `connections.edt/v8std.url` are repository defaults. Effective settings
-  apply instance/environment overrides; read the plugin README's project/instance
-  contract. `EDT_AI_INSTANCE` distinguishes parallel instances of the same directory.
-  Do not rewrite tracked defaults when changing one instance's URL. Shared runtime
-  defaults live once in `settings/defaults.json`; old plugin URL settings are a
-  compatibility fallback. A selected directory never borrows another active project.
+- Tracked `connections.edt/v8std.url` are repository defaults. Project-local settings
+  apply to all instances of that directory; an explicit connections file and environment
+  variables can take precedence. `EDT_AI_INSTANCE` distinguishes runtime sessions and
+  state, not project settings. Shared runtime defaults live in `settings/defaults.json`.
+  A selected directory never borrows another active project.
 - BSL LS registers multiple configuration folders through its native MCP tools.
   Obtain their paths from the assigned EDT, then select context per file or
   `workspaceFolder`; no persistent repository choice is required. Each stdio

@@ -2,33 +2,82 @@ import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixture, environment, ROOT, node, success } from "./helpers.mjs";
+import { edt_fixture as fixture, environment, ROOT, node, success } from "./helpers.mjs";
 import { settings, sleep, operation_lock } from "../scripts/common.mjs";
 import {
   platform_build,
   ensure_installed,
+  latest_version,
+  list_versions,
   artifact,
   sha,
   save_json,
   read_json,
   validate_bsl_tools,
+  index_config,
   index_readiness,
   index_status,
   rebuild_index,
+  rebuild_all_indexes,
+  restart_index,
+  acquire_reader,
   path_key,
   ensure_daemon,
   start_daemon,
   daemon_health,
+  fetch_json,
   stop_daemon,
   project_home,
 } from "../scripts/runtime.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
-import { zip, extract_binary } from "../scripts/archives.mjs";
+import { zip, unzip, extract_binary } from "../scripts/archives.mjs";
 import { launch, stop_child, alive } from "../scripts/processes.mjs";
 import { inspect } from "../scripts/doctor.mjs";
 import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { native_environment } from "../scripts/components.mjs";
+import { LOG_POLICY, read_diagnostic_logs } from "../scripts/diagnostics.mjs";
+
+test("release metadata is bounded and failed HTTP bodies are cancelled", async t => {
+  for (const status of [200, 503]) {
+    let cancelled = false;
+    const body = new ReadableStream({
+      start(controller) { if (status === 200) controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); },
+      cancel() { cancelled = true; },
+    });
+    t.mock.method(globalThis, "fetch", async () => new Response(body, { status }));
+    await assert.rejects(fetch_json("https://catalog.invalid/releases"), status === 200 ? /8 МиБ/ : /HTTP 503/);
+    assert.equal(cancelled, true);
+    t.mock.restoreAll();
+  }
+});
+
+test("BSL release selection prefers a supported stable release and falls back to the latest supported RC", async () => {
+  let stable = { tag_name: "v1.0.7", prerelease: false };
+  const releases = [
+    { tag_name: "v1.1.0-rc.9", draft: true, prerelease: true },
+    { tag_name: "v1.1.0-rc.8", prerelease: true },
+    { tag_name: "v1.1.0-rc.3", prerelease: true },
+    stable,
+  ];
+  const io = { fetch_json: async url => url.endsWith("/latest") ? stable : releases };
+  assert.equal(await latest_version("bsl-ls", io), "v1.1.0-rc.8");
+  assert.deepEqual((await list_versions("bsl-ls", io)).versions.map(item => item.version), ["v1.1.0-rc.8"]);
+  stable = { tag_name: "v1.1.0", prerelease: false };
+  assert.equal(await latest_version("bsl-ls", io), "v1.1.0");
+  assert.equal(await latest_version("bsl-ls", io, { allowPrerelease: true }), "v1.1.0-rc.8");
+  const missingStable = { fetch_json: async url => { if (url.endsWith("/latest")) throw Object.assign(new Error("fixture release unavailable"), { status: 404 }); return releases; } };
+  assert.equal(await latest_version("bsl-ls", missingStable), "v1.1.0-rc.8");
+});
+
+test("BSL rejects an explicitly selected old release before contacting GitHub", async t => {
+  const f = fixture(t), config = settings();
+  for (const version of ["v1.0.7", "v1.1.0-rc.3", "unknown"]) {
+    config.mcp.managed["bsl-ls"].version = version;
+    await assert.rejects(ensure_installed(f.state, config, "bsl-ls", false, { fetch_json: async () => { throw new Error("unexpected request"); } }), /1\.1\.0-rc\.4/);
+  }
+});
 
 for (const [platform, arch, expected] of [
   ["win32", "x64", "windows-x64.zip"],
@@ -47,7 +96,7 @@ for (const [platform, arch] of [
   test(`unsupported ${platform}/${arch} has actionable error`, () =>
     assert.throws(
       () => platform_build(platform, arch),
-      /Unsupported code-index platform.*Available builds/,
+      /Неподдерживаемая платформа code-index.*Доступны сборки/,
     ));
 function ioFor(bytes, digest = sha256(bytes)) {
   return {
@@ -168,7 +217,7 @@ test("ZIP binary extraction accepts only one regular known executable", () => {
         "zip",
         "bsl-indexer.exe",
       ),
-    /exactly one/,
+    /Архив должен содержать ровно один файл /,
   );
   assert.throws(
     () =>
@@ -177,8 +226,55 @@ test("ZIP binary extraction accepts only one regular known executable", () => {
         "zip",
         "bsl-indexer.exe",
       ),
-    /Unsafe/,
+    /Небезопасная запись ZIP/,
   );
+});
+test("ZIP decoding uses the validated directory despite signatures in comments and rejects ZIP64", () => {
+  const original = Buffer.from(zip({ "bsl-indexer.exe": Buffer.from("binary") }));
+  const end = original.length - 22;
+  const fakeEnd = Buffer.alloc(22);
+  fakeEnd.writeUInt32LE(0x06054b50);
+  fakeEnd.writeUInt16LE(1, 20);
+  const commented = Buffer.concat([original, fakeEnd]);
+  commented.writeUInt16LE(fakeEnd.length, end + 20);
+  assert.equal(Buffer.from(unzip(commented)["bsl-indexer.exe"]).toString(), "binary");
+
+  const directory = original.readUInt32LE(end + 16);
+  const locator = Buffer.alloc(20);
+  locator.writeUInt32LE(0x07064b50);
+  const zip64 = Buffer.concat([original.subarray(0, end), locator, original.subarray(end)]);
+  zip64.writeUInt16LE(locator.length, directory + 32);
+  zip64.writeUInt32LE(original.readUInt32LE(end + 12) + locator.length, end + locator.length + 12);
+  assert.throws(() => unzip(zip64), /ZIP64 не поддерживается/);
+
+  const normalComment = Buffer.concat([original, Buffer.from("release")]);
+  normalComment.writeUInt16LE(7, end + 20);
+  assert.equal(Buffer.from(unzip(normalComment)["bsl-indexer.exe"]).toString(), "binary");
+});
+
+test("ZIP inflation enforces the declared output size while decompressing", () => {
+  for (const claimedSize of [0, 1]) {
+    const bytes = Buffer.from(zip({ "payload.txt": Buffer.alloc(64 * 1024, 65) }));
+    const directory = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    bytes.writeUInt32LE(claimedSize, directory + 24);
+    bytes.writeUInt32LE(claimedSize, 22);
+    assert.throws(() => unzip(bytes), error => error.code === "ARCHIVE_SIZE_LIMIT");
+  }
+  assert.equal(unzip(zip({ empty: Buffer.alloc(0) })).empty.length, 0);
+});
+
+test("ZIP entries cannot redirect the decoder through contradictory local headers", () => {
+  for (const change of [
+    (bytes, directory) => bytes.writeUInt32LE(directory, directory + 42),
+    bytes => bytes.writeUInt16LE(0, 8),
+    bytes => { bytes[30] ^= 1; },
+    (bytes, directory) => bytes.writeUInt32LE(bytes.length, directory + 20),
+  ]) {
+    const bytes = Buffer.from(zip({ "payload.txt": Buffer.from("bounded contents") }));
+    const directory = bytes.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    change(bytes, directory);
+    assert.throws(() => unzip(bytes), /ZIP/);
+  }
 });
 test("tar.gz binary extraction checks checksum and refuses links or duplicate executables", () => {
   const make = (type = "0") => {
@@ -207,13 +303,13 @@ test("tar.gz binary extraction checks checksum and refuses links or duplicate ex
   );
   assert.throws(
     () => extract_binary(gzipSync(make("2")), "tar.gz", "bsl-indexer"),
-    /regular/,
+    /Исполняемый файл компонента должен быть обычным файлом/,
   );
   const bad = make();
   bad[0]++;
   assert.throws(
     () => extract_binary(gzipSync(bad), "tar.gz", "bsl-indexer"),
-    /checksum/,
+    /контрольная сумма/,
   );
 });
 test("BSL capability gate accepts live analyzer names and requires native lifecycle and scoping", () => {
@@ -272,7 +368,7 @@ test("index status distinguishes existing ready data, active indexing, stale dat
   fs.mkdirSync(path.join(f.root,".code-index"));fs.writeFileSync(path.join(f.root,".code-index/index.db"),"existing");
   assert.equal(index_status(body,f.root,f.profile).state,"ready");
   assert.equal(index_status(body,f.root,f.profile).repositories[0].present,true);
-  for(const [status,stale,expected] of [["indexing",false,"indexing"],["ready",true,"stale"],["error",false,"error"],["unknown",undefined,"not_checked"]]){
+  for(const [status,stale,expected] of [["indexing",false,"indexing"],["initial_indexing",false,"indexing"],["reindexing_batch",false,"indexing"],["reindexing_extras",false,"indexing"],["ready",true,"stale"],["error",false,"error"],["unknown",undefined,"not_checked"]]){
     const changed=structuredClone(body);changed.repos[0].path_status.status=status;changed.repos[0].data_version.stale=stale;
     assert.equal(index_status(changed,f.root,f.profile).state,expected);
   }
@@ -288,11 +384,85 @@ test("index status distinguishes existing ready data, active indexing, stale dat
   body.repos[0].root_path=f.base;assert.equal(index_status(body,f.root,f.profile).state,"mismatch");
 });
 
+test("index selects repositories with matching nested EDT descriptors and ignores feature-only repositories", async t => {
+  const f=fixture(t), ui=path.join(f.root,"ui"), framework=path.join(f.root,"framework"), nested=path.join(framework,"exts/Core");
+  fs.mkdirSync(ui); fs.mkdirSync(nested,{recursive:true});
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Different.Internal.Name</name></projectDescription>");
+  f.profile.repositories.push({id:"ui",path:"ui",alias:"ui"},{id:"framework",path:"framework",alias:"framework",edt_project:"Core"});
+  f.profile.policy.unbound_edt_repositories=["ui"];
+  const home=path.join(f.base,"index-home");fs.mkdirSync(home);
+  index_config(home,f.root,f.profile);
+  const config=fs.readFileSync(path.join(home,"daemon.toml"),"utf8");
+  assert.match(config,/alias = "framework"/);assert.doesNotMatch(config,/alias = "ui"/);
+  const body={mcp:{status:"ok"},daemon:{status:"online"},repos:[
+    {repo:"product",root_path:f.root,path_status:{status:"ready"},data_version:{stale:false}},
+    {repo:"framework",root_path:framework,path_status:{status:"ready"},data_version:{stale:false}}]};
+  assert.equal(index_status(body,f.root,f.profile).state,"ready");
+  assert.deepEqual(index_status(body,f.root,f.profile).repositories.map(item=>item.id),["product","framework"]);
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name></name></projectDescription>");
+  assert.equal(index_status(body,f.root,f.profile).state,"ready");
+  await assert.rejects(rebuild_index(f.state,settings(),f.root,f.profile,"ui"),/EDT-проект/);
+  const duplicate=path.join(framework,"other/Core");fs.mkdirSync(duplicate,{recursive:true});
+  fs.writeFileSync(path.join(duplicate,".project"),"<projectDescription><name>Another</name></projectDescription>");
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+  fs.rmSync(path.join(duplicate,".project"));
+  f.profile.repositories.find(repo=>repo.id==="framework").edt_project="Different.Internal.Name";
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+  f.profile.repositories.find(repo=>repo.id==="framework").edt_project="Core";
+  fs.rmSync(path.join(nested,".project"));
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+  assert.deepEqual(index_status(body,f.root,f.profile).missingProjects,["framework"]);
+  fs.writeFileSync(path.join(nested,".project"),"<projectDescription><name>Core</name>");
+  assert.equal(index_status(body,f.root,f.profile).state,"missing_project");
+});
+
+test("applying index mappings waits for readers and restarts without rebuilding", async t => {
+  const f=fixture(t), calls=[], config=settings();
+  const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async()=>assert.fail("must not rebuild"),restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true})};
+  const lease=await acquire_reader(f.state,f.root);
+  await assert.rejects(restart_index(f.state,config,f.root,f.profile,io),/Завершите текущие запросы/);
+  assert.deepEqual(calls,[]);await lease.close();
+  assert.equal((await restart_index(f.state,config,f.root,f.profile,io)).state,"ready");
+  assert.deepEqual(calls,["stop","restart"]);
+});
+
+test("applying changed mappings replaces the owned live daemon without rebuilding", async t => {
+  const f=fixture(t), digest=sha256(fs.readFileSync(process.execPath)), exe=path.join(f.state,"runtime/code-index/fixture",digest,"node.exe"), children=[];
+  fs.mkdirSync(path.dirname(exe),{recursive:true});fs.copyFileSync(process.execPath,exe);
+  const launchIo={launch:(command,args,options)=>{
+    const child=launch(command,[path.join(ROOT,"tests/fixtures/index-daemon.mjs")],options);
+    children.push(child);f.clients.push({close:()=>stop_child(child,0)});return child;
+  }};
+  const home=await ensure_daemon(f.state,f.root,f.profile,exe,launchIo), old=(await daemon_health(home)).pid;
+  fs.mkdirSync(path.join(f.root,"extension"));
+  fs.writeFileSync(path.join(f.root,"extension/.project"),"<projectDescription><name>Extension</name></projectDescription>");
+  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"extension"});
+  const result=await restart_index(f.state,settings(),f.root,f.profile,{
+    installed:async()=>exe,
+    stop:(state,root)=>stop_daemon(state,root,{stop:async()=>stop_child(children[0],0)}),
+    restart:(state,root,data,binary)=>ensure_daemon(state,root,data,binary,launchIo),
+    run:async()=>assert.fail("must not rebuild"),smoke:async()=>({index_ready:true}),
+  });
+  assert.equal(result.state,"ready");assert.notEqual((await daemon_health(home)).pid,old);
+  assert.match(fs.readFileSync(path.join(home,"daemon.toml"),"utf8"),/alias = "extension"/);
+});
+
+test("a .project link to another repository cannot make feature files indexable", t => {
+  const f=fixture(t), ui=path.join(f.root,"ui");fs.mkdirSync(ui);
+  try { fs.symlinkSync(path.join(f.root,".project"),path.join(ui,".project"),"file"); }
+  catch (error) { if (["EPERM","EACCES","ENOTSUP"].includes(error.code)) return t.skip("file symlinks unavailable"); throw error; }
+  f.profile.repositories.push({id:"ui",path:"ui",alias:"ui"});
+  const home=path.join(f.base,"index-home");fs.mkdirSync(home);index_config(home,f.root,f.profile);
+  assert.doesNotMatch(fs.readFileSync(path.join(home,"daemon.toml"),"utf8"),/alias = "ui"/);
+});
+
 test("index rebuild targets exactly one repository and restores the owned service", async t => {
   const f=fixture(t), config=settings(), calls=[];
-  f.profile.repositories.push({id:"extension",path:"src",alias:"extension",edt_project:"Extension"});f.save();
+  f.profile.repositories.push({id:"extension",path:"extension",alias:"extension",edt_project:"extension"});f.save();
+  fs.mkdirSync(path.join(f.root,"extension"));
+  fs.writeFileSync(path.join(f.root,"extension/.project"),"<projectDescription><name>Extension</name></projectDescription>");
   const before=fs.readFileSync(path.join(f.root,".ai/project.yaml")), home=path.join(project_home(f.state,f.root),"code-index");
-  const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async(exe,directory)=>{assert.equal(exe,"fixture-exe");assert.equal(directory,path.join(f.root,"src"));calls.push("run");},restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true,index_state:"ready"})};
+  const io={installed:async()=>"fixture-exe",stop:async()=>calls.push("stop"),run:async(exe,directory)=>{assert.equal(exe,"fixture-exe");assert.equal(directory,path.join(f.root,"extension"));calls.push("run");},restart:async()=>calls.push("restart"),smoke:async()=>({index_ready:true,index_state:"ready"})};
   const result=await rebuild_index(f.state,config,f.root,f.profile,"extension",io);
   assert.equal(result.repository,"extension");assert.equal(result.state,"ready");assert.deepEqual(calls,["stop","run","restart"]);
   assert.deepEqual(fs.readFileSync(path.join(f.root,".ai/project.yaml")),before);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
@@ -302,26 +472,100 @@ test("index rebuild targets exactly one repository and restores the owned servic
   assert.deepEqual(calls,["stop","restart"]);assert.equal(fs.existsSync(path.join(home,"maintenance.json")),false);
   await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>{throw new Error("unknown stop");}}),error=>error.outcomeUnknown===true);
   assert.equal(fs.existsSync(path.join(home,"maintenance.json")),true);
+  await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>assert.fail("must not retry an uncertain stop")}),/прервано/);
 });
 
-test("daemon launch closes its first log handle if opening the second fails", async t => {
+test("rebuilding all indexes reports each EDT project while holding one maintenance window", async t => {
+  const f = fixture(t), calls = [], progress = [];
+  for (const [id, edt] of [["extension", true], ["features", false]]) {
+    fs.mkdirSync(path.join(f.root, id));
+    if (edt) fs.writeFileSync(path.join(f.root, id, ".project"), "<projectDescription><name>Extension</name></projectDescription>");
+    f.profile.repositories.push({ id, path: id, alias: id, ...(edt ? { edt_project: id } : {}) });
+  }
+  f.save(); const before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
+  let release, entered;
+  const gate = new Promise(done => { release = done; }), started = new Promise(done => { entered = done; });
+  const rebuilding = rebuild_all_indexes(f.state, settings(), f.root, f.profile, {
+    installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
+    run: async (_exe, directory) => { calls.push(directory); if (directory === f.root) { entered(); await gate; } },
+    restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }), progress: item => progress.push(item),
+  });
+  await started;
+  try {
+    assert.deepEqual(calls, ["stop", f.root]);
+    assert.deepEqual(progress.at(-1), { phase: "indexing", total: 2, completed: 0, repository: "product", edtProject: "Product" });
+    assert.equal(fs.existsSync(path.join(project_home(f.state, f.root), "code-index/maintenance.json")), true);
+  } finally { release(); await rebuilding; }
+  const result = await rebuilding;
+  assert.deepEqual(calls, ["stop", f.root, path.join(f.root, "extension"), "restart"]);
+  assert.equal(result.all, true); assert.equal(result.state, "ready");
+  assert.deepEqual(result.rebuilt.map(item => item.repository), ["product", "extension"]);
+  assert.deepEqual(progress.filter(item => item.phase === "indexing").map(item => [item.repository, item.completed]), [["product", 0], ["extension", 1]]);
+  assert.deepEqual(progress.at(-1), { phase: "checking", total: 2, completed: 2 });
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
+  assert.equal(fs.existsSync(path.join(project_home(f.state, f.root), "code-index/maintenance.json")), false);
+});
+
+test("a failed bulk rebuild retains partial progress and restores the service before returning an error", async t => {
+  const f = fixture(t), calls = [], progress = [];
+  for (const id of ["extension", "later"]) {
+    fs.mkdirSync(path.join(f.root, id)); fs.writeFileSync(path.join(f.root, id, ".project"), `<projectDescription><name>${id}</name></projectDescription>`);
+    f.profile.repositories.push({ id, path: id, alias: id, edt_project: id });
+  }
+  await assert.rejects(rebuild_all_indexes(f.state, settings(), f.root, f.profile, {
+    installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
+    run: async (_exe, directory) => { calls.push(directory); if (directory.endsWith("extension")) throw new Error("failed extension"); },
+    restart: async () => calls.push("restart"), smoke: async () => assert.fail("failed rebuild cannot pass smoke"), progress: item => progress.push(item),
+  }), /failed extension/);
+  assert.deepEqual(calls, ["stop", f.root, path.join(f.root, "extension"), "restart"]);
+  assert.deepEqual(progress.at(-1), { phase: "restoring", total: 3, completed: 1, repository: "extension", edtProject: "extension" });
+  assert.equal(fs.existsSync(path.join(project_home(f.state, f.root), "code-index/maintenance.json")), false);
+});
+
+test("daemon launch leaves logging to the component without duplicate output files", async t => {
   const f = fixture(t), home = path.join(f.base, "daemon");
   fs.mkdirSync(home);
-  const outFile = path.join(home, "stdout.log"), errFile = path.join(home, "stderr.log");
-  const open = fs.openSync, close = fs.closeSync;
-  let opened, closed = false;
-  t.mock.method(fs, "openSync", (file, ...args) => {
-    if (file === errFile) throw new Error("simulated stderr open failure");
-    const fd = open(file, ...args);
-    if (file === outFile) opened = fd;
-    return fd;
-  });
-  t.mock.method(fs, "closeSync", fd => { if (fd === opened) closed = true; return close(fd); });
-  try {
-    await assert.rejects(start_daemon(home, f.root, f.profile, process.execPath, { launch: () => assert.fail("must not launch") }), /simulated stderr open failure/);
-    assert.notEqual(opened, undefined);
-    assert.equal(closed, true);
-  } finally { if (opened !== undefined && !closed) close(opened); }
+  await assert.rejects(start_daemon(home, f.root, f.profile, process.execPath, { launch: (_exe, args, options) => {
+    assert.deepEqual(args, ["daemon", "run"]);
+    assert.equal(options.stdio, "ignore");
+    assert.equal(options.sessionOwned, false);
+    assert.equal(options.env.CODE_INDEX_HOME, home);
+    throw new Error("fixture launcher stopped");
+  } }), /fixture launcher stopped/);
+  for (const name of ["stdout.log", "stderr.log", "rebuild.log"])
+    assert.equal(fs.existsSync(path.join(home, name)), false);
+});
+
+test("a noisy failed rebuild uses bounded diagnostics and restores its service without a separate log", async t => {
+  const f = fixture(t), calls = [];
+  fs.writeFileSync(path.join(f.root, "index"), `const chunk=Buffer.alloc(65536,'x');
+    for(let i=0;i<128;i++) { process.stdout.write(chunk); process.stderr.write(chunk); }
+    process.exitCode=3;`);
+  await assert.rejects(rebuild_index(f.state, settings(), f.root, f.profile, "product", {
+    installed: async () => process.execPath, stop: async () => calls.push("stop"),
+    restart: async () => calls.push("restart"), smoke: async () => assert.fail("failed rebuild cannot pass smoke"),
+  }), /журнал поддержки.*код 3/);
+  assert.deepEqual(calls, ["stop", "restart"]);
+  const home = path.join(project_home(f.state, f.root), "code-index");
+  for (const name of ["rebuild.log", "stdout.log", "stderr.log", "maintenance.json"])
+    assert.equal(fs.existsSync(path.join(home, name)), false);
+  const files = fs.readdirSync(path.join(f.state, "diagnostics")).filter(name => name.endsWith(".jsonl"));
+  assert.ok(files.length > 0 && files.length <= LOG_POLICY.files);
+  for (const name of files) assert.ok(fs.statSync(path.join(f.state, "diagnostics", name)).size <= LOG_POLICY.fileBytes);
+  assert.ok(read_diagnostic_logs(f.state).events.some(event => event.component === "code-index" && event.event === "index_output"));
+});
+
+test("an unconfirmed index writer retains maintenance and cannot restart the daemon over that writer", async t => {
+  const f = fixture(t), calls = [];
+  await assert.rejects(rebuild_index(f.state, settings(), f.root, f.profile, "product", {
+    installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
+    run: async () => { calls.push("run"); throw Object.assign(new Error("writer termination unknown"), { outcomeUnknown: true }); },
+    restart: async () => assert.fail("must not start a competing writer"),
+  }), error => error.outcomeUnknown === true);
+  assert.deepEqual(calls, ["stop", "run"]);
+  const marker = path.join(project_home(f.state, f.root), "code-index/maintenance.json"), before = fs.readFileSync(marker);
+  await assert.rejects(acquire_reader(f.state, f.root), /прервано/);
+  assert.deepEqual(fs.readFileSync(marker), before);
 });
 
 test("parallel readers share exactly one owned daemon per profile and preserve unrelated processes", async (t) => {
@@ -345,8 +589,9 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
   ]);
   assert.equal(a, b);
   assert.equal(launches, 1);
-  const anotherRoot = path.join(f.base, "other");
-  fs.mkdirSync(anotherRoot);
+  const anotherRoot = path.join(f.base, "other", "Product");
+  fs.mkdirSync(anotherRoot, { recursive: true });
+  fs.writeFileSync(path.join(anotherRoot,".project"),"<projectDescription><name>Product</name></projectDescription>");
   const other = await ensure_daemon(
     f.state,
     anotherRoot,
@@ -360,19 +605,21 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
     otherHealth = await daemon_health(other);
   assert.notEqual(health.pid, otherHealth.pid);
   const changed = structuredClone(f.profile);
-  changed.repositories.push({ id: "extra", path: "src", alias: "extra" });
+  fs.mkdirSync(path.join(f.root,"extra"));
+  fs.writeFileSync(path.join(f.root,"extra/.project"),"<projectDescription><name>Extra</name></projectDescription>");
+  changed.repositories.push({ id: "extra", path: "extra", alias: "extra", edt_project: "extra" });
   await assert.rejects(
     ensure_daemon(f.state, f.root, changed, process.execPath, io),
-    /mapping changed/,
+    /репозиториев изменился/,
   );
   const ownerFile = path.join(a, "owner.json"),
     owner = read_json(ownerFile);
   save_json(ownerFile, { ...owner, pid: owner.pid + 1 });
   await assert.rejects(
     ensure_daemon(f.state, f.root, f.profile, process.execPath, io),
-    /ownership/,
+    /Владелец демона(?: проекта)? не совпадает/,
   );
-  await assert.rejects(stop_daemon(f.state, f.root), /ownership/);
+  await assert.rejects(stop_daemon(f.state, f.root), /Владелец демона(?: проекта)? не совпадает/);
   assert.equal(alive(otherHealth.pid), true);
 });
 test("daemon stop waits for process exit after its HTTP listener closes", async t => {
@@ -382,7 +629,7 @@ test("daemon stop waits for process exit after its HTTP listener closes", async 
   server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>server.close());
   save_json(path.join(home,"daemon.json"),{pid:process.pid,http_port:server.address().port});
   save_json(path.join(home,"owner.json"),{pid:process.pid,project_root:f.root,executable:exe});
-  await assert.rejects(stop_daemon(f.state,f.root,{stop:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}}),/stop is not confirmed/);
+  await assert.rejects(stop_daemon(f.state,f.root,{stop:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}}),/Остановка демона не подтверждена/);
 });
 
 test("an unhealthy but live stale PID blocks competing daemon startup on every OS", async (t) => {
@@ -395,7 +642,7 @@ test("an unhealthy but live stale PID blocks competing daemon startup on every O
         throw new Error("must not launch");
       },
     }),
-    /alive but unhealthy/,
+    /работает, но не отвечает/,
   );
 });
 test("doctor separates configuration from live acceptance and does not make OpenViking a gate", async (t) => {
@@ -427,4 +674,59 @@ test("CLI installation and exported bindings respect disabled components without
   assert.equal(bindings["code-index"],undefined);assert.equal(bindings["bsl-ls"],undefined);
   assert.ok(bindings.edt.args[0].endsWith("lazy_mcp.mjs"));assert.equal(bindings.edt.env.EDT_AI_PROJECT_ROOT,f.root);
   assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
+});
+
+test("exported MCP bindings do not list OpenViking credential variables", t => {
+  const f = fixture(t);
+  f.profile.connections = { openviking: { enabled: true, url: "http://127.0.0.1:1/mcp", connection_id: "team" } };
+  f.save(); f.env.TEAM_KNOWLEDGE_TOKEN = "fixture-private-token";
+  const output = path.join(f.base, "mcp.json");
+  success(node("scripts/runtime.mjs", ["config", "--output", output], { env: f.env }));
+  const contents = fs.readFileSync(output, "utf8"), exported = JSON.parse(contents), bindings = exported.mcpServers;
+  assert.equal(Object.hasOwn(exported, "$schema"), false);
+  for (const name of ["openviking", "edt", "v8std", "code-index", "bsl-ls"]) {
+    assert.equal(Object.hasOwn(bindings[name], "env_vars"), false, name);
+  }
+  assert.doesNotMatch(contents, /fixture-private-token/);
+});
+
+test("native environments remove standard and configured knowledge variables without changing the caller", () => {
+  const config = settings();
+  const source = Object.fromEntries(["OPENVIKING_SEARCH_TOKEN", "EDT_AI_OPENVIKING_ACCESS_BINDING_KEY", "TEAM_KNOWLEDGE_TOKEN"].map(name => [name, "fixture-secret"]));
+  source.PATH = "kept"; source.OTHER_PROJECT_TOKEN = "removed";
+  if (process.platform === "win32") source.team_knowledge_token = "also-secret";
+  assert.deepEqual(native_environment(config, source), { PATH: "kept" });
+  assert.equal(source.TEAM_KNOWLEDGE_TOKEN, "fixture-secret");
+});
+
+test("daemon startup passes a sanitized environment to its native launcher", async t => {
+  const f = fixture(t), home = path.join(f.base, "daemon"); fs.mkdirSync(home);
+  const config = settings();
+  const source = { ...process.env, OPENVIKING_SEARCH_TOKEN: "fixture-token", TEAM_KNOWLEDGE_TOKEN: "custom-token", PATH: "native-path" };
+  const environment = native_environment(config, source);
+  await assert.rejects(start_daemon(home, f.root, f.profile, process.execPath, { launch: (_exe, _args, options) => {
+    assert.equal(options.env.OPENVIKING_SEARCH_TOKEN, undefined);
+    assert.equal(options.env.TEAM_KNOWLEDGE_TOKEN, undefined);
+    assert.equal(options.env.PATH, "native-path");
+    assert.equal(options.env.CODE_INDEX_HOME, home);
+    throw new Error("fixture launcher stopped");
+  } }, environment), /fixture launcher stopped/);
+});
+
+test("index maintenance passes the sanitized environment to stop, rebuild and restart", async t => {
+  const f = fixture(t), config = settings(); f.save();
+  Object.assign(f.env, { OPENVIKING_SEARCH_TOKEN: "standard", TEAM_KNOWLEDGE_TOKEN: "custom", OTHER_PROJECT_TOKEN: "other" });
+  environment(t, f.env);
+  const calls = [], verify = (action, env) => {
+    for (const name of ["OPENVIKING_SEARCH_TOKEN", "TEAM_KNOWLEDGE_TOKEN", "OTHER_PROJECT_TOKEN"]) assert.equal(env[name], undefined);
+    calls.push(action);
+  };
+  await rebuild_index(f.state, config, f.root, f.profile, "product", {
+    installed: async () => "fixture-exe",
+    stop: async (_state, _root, _io, env) => verify("stop", env),
+    run: async (_exe, _directory, _home, env) => verify("run", env),
+    restart: async (_state, _root, _data, _exe, _io, env) => verify("restart", env),
+    smoke: async () => ({ index_ready: true }),
+  });
+  assert.deepEqual(calls, ["stop", "run", "restart"]);
 });

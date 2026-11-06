@@ -3,7 +3,7 @@ description: Descriptive runtime contract; scripts/runtime.mjs implements releas
 platform: auto
 release_selection:
   default: latest_stable
-  allow_prerelease: user_opt_in_per_component
+  allow_prerelease: user_opt_in_per_component_except_bsl_ls_fallback
   version: latest_or_explicit_tag
 managed:
   code-index:
@@ -17,6 +17,8 @@ managed:
   bsl-ls:
     repository: 1c-syntax/bsl-language-server
     artifact: bsl-language-server-VERSION-exec.jar
+    minimum: 1.1.0-rc.4
+    latest: stable_1.1.0_or_newer_else_latest_1.1.0_rc
     integrity: github_asset_sha256_and_size
     mode: client_owned_stdio
     prerequisites:

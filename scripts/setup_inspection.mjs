@@ -20,7 +20,8 @@ export function setup_inspection(read, state) {
   const { values, profile, directoryContext, instance, connectionSources, preparationScope, operation, projectSelection } = read;
   let document;
   try { if (profile.path) document = load(profile.path); } catch { /* profile.detail contains validation failure */ }
-  const repositories = (Array.isArray(document?.repositories) ? document.repositories : []).filter(item => item && typeof item === "object").map(({ id, path: directory, alias, edt_project }) => ({ id, path: directory, alias, edt_project }));
+  const configured = profile.status === "loaded" ? profile.repositories : document?.repositories;
+  const repositories = (Array.isArray(configured) ? configured : []).filter(item => item && typeof item === "object").map(({ id, path: directory, alias, edt_project, edt_required }) => ({ id, path: directory, alias, edt_project, edt_required: edt_required !== false }));
   const detected = directoryContext?.edt?.connection;
   const issues = [];
   const next = [];
@@ -33,7 +34,7 @@ export function setup_inspection(read, state) {
   else if (profile.status === "missing") next.push("create_profile");
   else if (profile.status !== "loaded") next.push("repair_profile");
   if (detected?.url && values.edtUrl && !same_endpoint(detected.url, values.edtUrl))
-    issues.push({ code: "edt_endpoint_mismatch", effective: values.edtUrl, detected: detected.url, source: connectionSources?.edt, resolution: "Verify the assigned EDT before changing an explicit URL; detection never overrides it automatically." });
+    issues.push({ code: "edt_endpoint_mismatch", effective: values.edtUrl, detected: detected.url, source: connectionSources?.edt, resolution: "Перед изменением явного URL проверьте назначенный EDT; обнаруженный адрес не заменяет его автоматически." });
   const projects = directoryContext?.edt?.projects || [];
   if (profile.status === "loaded") {
     if (!repositories.length) next.push("configure_repositories");
@@ -59,11 +60,16 @@ export function setup_inspection(read, state) {
   } : null;
   if (knowledgeSetup && read.knowledge.configured &&
       !(["ready", "blocked"].includes(read.readiness?.state) && read.readiness.knowledge?.ready)) next.push("verify_knowledge_readiness");
+  const yaxunit = read.componentChecks?.find(item => item.id === "yaxunit") || read.readiness?.checks?.find(item => item.id === "yaxunit");
+  if (profile.testing?.yaxunit === true && yaxunit?.state !== "ready") {
+    issues.push({ code: yaxunit?.reasonCode || "yaxunit_not_checked", component: "yaxunit", state: yaxunit?.state || "not_checked", detail: yaxunit?.detail, nextStep: yaxunit?.nextStep });
+    next.push("verify_yaxunit_launch_settings");
+  }
   return {
     coreVersion: core_version, projectRoot: values.projectRoot, instance, profile: { ...profile, ...(document?.compatibility ? { compatibility: document.compatibility } : {}) },
     values, connectionSources, valueSources: read.valueSources, repositories, managed, preparationScope, projectSelection, operation,
     detected: { edt: detected || null, projects, ...(directoryContext?.edt?.errors ? { errors: directoryContext.edt.errors } : {}) },
-    issues, nextSteps: next, readiness: read.readiness, knowledge: read.knowledge, knowledgeSetup,
+    issues, nextSteps: next, readiness: read.readiness, componentChecks: read.componentChecks, knowledge: read.knowledge, knowledgeSetup,
     environmentCompatibility: read.environmentCompatibility,
     bindingGuidance: "When a runtime's selectedDirectory is empty, call its core_runtime_status with this projectRoot once. A new chat/restart does not supply missing roots. Do not spawn substitute relays or inspect plugin source for setup.",
   };

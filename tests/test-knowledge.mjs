@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { fixture, environment, session } from "./helpers.mjs";
 import { settings, load } from "../scripts/common.mjs";
-import { instance_file } from "../scripts/project_context.mjs";
 import { validate } from "../scripts/profile.mjs";
 import { knowledge_status, knowledge_gate, WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 import { probe_connections } from "../scripts/setup_probe.mjs";
@@ -228,13 +228,13 @@ test("KORA blocks native relay calls, batches, resources and prompts while keepi
   assert.equal(status.knowledge.mode, "kora");
   assert.equal(status.knowledge.koraReady, false);
   await client.call("core_runtime_tools", {});
-  await assert.rejects(client.call("read_metadata", {}), /Knowledge workflow blocked/);
+  await assert.rejects(client.call("read_metadata", {}), /Рабочий процесс заблокирован настройкой знаний/);
   const batch = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "read_metadata", arguments: {} }, { name: "read_metadata", arguments: {} }] } });
   assert.equal(batch.isError, true);
   assert.equal(batch.structuredContent.completed, 0);
   assert.equal(batch.structuredContent.results[0].error.outcome, "not_executed");
   for (const [method, args] of [["resources/list", {}], ["resources/read", { uri: "fixture://data" }], ["prompts/get", { name: "fixture" }]])
-    await assert.rejects(client.request(method, args), /Knowledge workflow blocked/);
+    await assert.rejects(client.request(method, args), /Рабочий процесс заблокирован настройкой знаний/);
   assert.equal(workflowCalls, 1);
 });
 
@@ -292,7 +292,7 @@ test("inspection, doctor and setup report a conflicting transport without disabl
   const f = fixture(t); environment(t, f.env); f.save();
   const backend = new SettingsBackend();
   await backend.main({ action: "update", set: { openvikingEnabled: true, openvikingUrl: "https://knowledge.example/mcp" } });
-  const savedFile = instance_file(backend.current(), f.root);
+  const savedFile = path.join(f.root, ".ai/project.local.yaml");
   const saved = fs.readFileSync(savedFile, "utf8");
   const read = await backend.main({ action: "read" });
   assert.equal(read.knowledge.state, "invalid");

@@ -50,7 +50,7 @@ function catalog_fixture(t, metadata = material()) {
 test("manifest defines a selected catalog without requiring every recommended collection", () => {
   validate_manifest(manifest(), ["architecture"]);
   validate_manifest(load(path.join(ROOT, "knowledge/recommended-manifest.yaml")));
-  assert.throws(() => validate_manifest(manifest(), ["bsp"]), /Unknown selected/);
+  assert.throws(() => validate_manifest(manifest(), ["bsp"]), /Неизвестная выбранная коллекция манифеста/);
   const data = manifest(); data.materials.push(entry()); validate_manifest(data);
   for (const patch of [{ provider: "none" }, { kind: "unknown" }, { schema_version: "1.0" }, { unexpected: true }])
     assert.throws(() => validate_manifest({ ...data, ...patch }));
@@ -63,7 +63,7 @@ test("manifest rejects ambiguous collections, entries and unsafe portable paths"
     assert.throws(() => validate_manifest(data));
   }
   const duplicate = manifest(); duplicate.collections.push({ ...duplicate.collections[0] });
-  assert.throws(() => validate_manifest(duplicate), /unique/);
+  assert.throws(() => validate_manifest(duplicate), /Идентификаторы коллекций манифеста должны быть уникальными/);
   for (const patch of [{ id: "../item" }, { collection: "missing" }, { sha256: "invalid" },
     ...["../file.md", "/file.md", "C:/file.md", "dir/../file.md", "dir\\file.md", "file.md?x", "file.md#x", "dir/%2e%2e/file.md"].map(path => ({ path }))]) {
     const data = manifest(); data.materials = [{ ...entry(), ...patch }];
@@ -71,7 +71,7 @@ test("manifest rejects ambiguous collections, entries and unsafe portable paths"
   }
   for (const patch of [{ id: "other" }, { path: "other.md" }]) {
     const data = manifest(); data.materials = [entry(), { ...entry(), ...patch }];
-    assert.throws(() => validate_manifest(data), /unique/);
+    assert.throws(() => validate_manifest(data), /уникальн/);
   }
 });
 
@@ -129,7 +129,7 @@ test("profile loading validates the complete manifest, exact file bytes and meta
   assert.equal(result.sha256, sha256(fs.readFileSync(path.join(f.corpus, "catalog.yaml"))));
   assert.deepEqual(project_profile(f.root), f.profile);
   fs.appendFileSync(f.target, "Changed\n");
-  assert.throws(() => project_profile(f.root), /SHA-256 mismatch/);
+  assert.throws(() => project_profile(f.root), /Не совпадает SHA-256 материала знаний/);
 });
 
 test("manifest validation rejects missing, malformed, unpublished and mismatched materials", t => {
@@ -141,8 +141,8 @@ test("manifest validation rejects missing, malformed, unpublished and mismatched
   for (const text of ["# No metadata\n", "---\nid: design\n---\nBody\n", "---\na: 1\na: 2\n---\nBody\n"]) {
     f.write(null, text); assert.throws(() => f.read());
   }
-  f.write(); fs.rmSync(f.target); assert.throws(() => f.read(), /missing/);
-  fs.mkdirSync(f.target); assert.throws(() => f.read(), /regular file/);
+  f.write(); fs.rmSync(f.target); assert.throws(() => f.read(), /Файл знаний отсутствует/);
+  fs.mkdirSync(f.target); assert.throws(() => f.read(), /обычный файл/);
   assert.throws(() => load_manifest(f.root, "knowledge/missing.yaml"), /missing/);
 });
 
@@ -163,9 +163,9 @@ test("references accept explicit web and contained file targets without network 
 test("front matter is strict YAML and verification dates must be real calendar dates", () => {
   const text = "\uFEFF---\r\n" + stringify(material(), { schema: "yaml-1.1" }).replaceAll("\n", "\r\n") + "---\r\nBody\r\n";
   assert.deepEqual(parse_material(text), material());
-  assert.throws(() => parse_material(text.replace("Body", " ")), /nonempty/);
+  assert.throws(() => parse_material(text.replace("Body", " ")), /Для материала знаний нужны заголовок YAML и непустой текст Markdown/);
   for (const verified_at of ["2026-02-29", "2026-13-01", "2026-00-01", "2026-01-32"])
-    assert.throws(() => validate_material({ ...card(), verified_at }), /calendar date/);
+    assert.throws(() => validate_material({ ...card(), verified_at }), /календарная дата/);
   validate_material({ ...card(), verified_at: "2024-02-29" });
 });
 
@@ -180,23 +180,23 @@ test("portable paths and filesystem containment also reject junctions, aliases a
   }
   fs.symlinkSync(outside, path.join(f.corpus, "linked"), process.platform === "win32" ? "junction" : "dir");
   f.data.materials[0].path = "linked/design.md"; dump(f.data, path.join(f.corpus, "catalog.yaml"));
-  assert.throws(() => f.read(), /escapes project/);
+  assert.throws(() => f.read(), /выходит за границы проекта/);
   f.data.materials[0].path = "docs/design.md";
   f.write({ ...material(), provenance: { source: "linked/source.md" } });
-  assert.throws(() => validate_at(f.root, f.profile), /escapes project/);
+  assert.throws(() => validate_at(f.root, f.profile), /выходит за границы проекта/);
   f.write();
   fs.linkSync(f.target, path.join(f.corpus, "docs/alias.md"));
   f.data.materials.push({ ...entry(), id: "alias", path: "docs/alias.md", sha256: f.data.materials[0].sha256 });
-  dump(f.data, path.join(f.corpus, "catalog.yaml")); assert.throws(() => f.read(), /same file/);
+  dump(f.data, path.join(f.corpus, "catalog.yaml")); assert.throws(() => f.read(), /Пути материалов манифеста указывают на один файл/);
   fs.symlinkSync(outside, path.join(f.root, "external"), process.platform === "win32" ? "junction" : "dir");
-  f.profile.knowledge.manifest = "external/catalog.yaml"; assert.throws(() => validate_at(f.root, f.profile), /escapes project/);
+  f.profile.knowledge.manifest = "external/catalog.yaml"; assert.throws(() => validate_at(f.root, f.profile), /выходит за границы проекта/);
 });
 
 test("recommendation lists and unknown selected collections cannot masquerade as a catalog", t => {
   const f = catalog_fixture(t);
-  assert.throws(() => load_manifest(f.root, "knowledge/catalog.yaml", ["unknown"]), /Unknown selected/);
+  assert.throws(() => load_manifest(f.root, "knowledge/catalog.yaml", ["unknown"]), /Неизвестная выбранная коллекция манифеста/);
   f.data.kind = "recommendations"; f.data.materials = []; dump(f.data, path.join(f.corpus, "catalog.yaml"));
-  assert.throws(() => f.read(), /recommendations manifest/);
+  assert.throws(() => f.read(), /Манифест рекомендаций/);
 });
 
 test("distinct 64-bit file identities do not collide through Number rounding", t => {
@@ -225,14 +225,15 @@ test("versioned contracts reject missing, legacy, future and incorrectly typed v
     for (const value of [undefined, "0.0", "99.0", 0.1, null]) {
       const bad = structuredClone(data);
       if (value === undefined) delete bad[field]; else bad[field] = value;
-      assert.throws(() => check(bad), error => error.code === "UNSUPPORTED_CONTRACT_VERSION" && error.expectedVersion === expected && error.message.includes("expected"));
+      assert.throws(() => check(bad), error => error.code === "UNSUPPORTED_CONTRACT_VERSION" && error.expectedVersion === expected && error.message.includes("ожидается"));
     }
   }
   const old = profile(); old.schema_version = "0.1";
   assert.throws(() => validate(old), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
   assert.equal(old.schema_version, "0.1");
-  check_schema({ connections: {} }, "project-local.schema.json"); // Existing unversioned, unchanged partial overrides remain supported.
-  check_schema({ schema_version: "0.1" }, "project-local.schema.json");
+  check_schema({ connections: {} }, "project-local.schema.json");
+  check_schema({ schema_version: "0.2" }, "project-local.schema.json");
+  assert.throws(() => check_schema({ schema_version: "0.1" }, "project-local.schema.json"), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
   assert.throws(() => check_schema({ schema_version: "9.0" }, "project-local.schema.json"), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
 });
 
@@ -283,12 +284,10 @@ test("profile CLI and settings preview reject an old contract without changing s
   old.schema_version = "0.1";
   const input = path.join(f.base, "old.yaml"); dump(old, input);
   const result = node("scripts/profile.mjs", ["import", f.root, "--input", input, "--replace"], { env: f.env });
-  assert.equal(result.status, 1); assert.match(result.stdout, /Unsupported contract version/);
+  assert.equal(result.status, 1); assert.match(result.stdout, /Неподдерживаемая версия контракта/);
   const backend = new SettingsBackend();
-  await assert.rejects(backend.main({ action: "preview", text: JSON.stringify(old) }), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
-  for (const version of [undefined, 0, 2, "1"]) {
-    await assert.rejects(backend.main({ action: "preview", text: JSON.stringify({ format: "1c-ai-core-settings", version, profile: f.profile }) }), /версия/);
-  }
+  const context = await backend.main({ action: "transfer_context" });
+  await assert.rejects(backend.main({ action: "transfer_preview", baseRevision: context.baseRevision, documents: {profile: JSON.stringify(old)} }), error => error.code === "UNSUPPORTED_CONTRACT_VERSION");
   assert.deepEqual(fs.readFileSync(target), before);
   assert.deepEqual(fs.readdirSync(path.dirname(target)), ["project.yaml"]);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);

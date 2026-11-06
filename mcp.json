@@ -4,7 +4,9 @@
     "openviking": {
       "type": "stdio",
       "command": "node",
-      "args": ["${PLUGIN_ROOT}/mcp/openviking.mjs"]
+      "args": [
+        "${PLUGIN_ROOT}/mcp/openviking.mjs"
+      ]
     },
     "policy": {
       "type": "stdio",

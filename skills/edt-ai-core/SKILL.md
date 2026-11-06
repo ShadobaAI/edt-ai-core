@@ -43,26 +43,33 @@ another chat before correcting the actual connection problem.
 - Create a missing generic profile with settings.create under the user's setup
   request. Never replace an existing profile to repair it. A template still needs
   explicit repository mappings before development.
+- When completing mappings, preserve repositories[].edt_required: a YAML-only
+  boolean, defaulting to true when absent. Use confirmed work rules or user intent
+  to mark a project optional; its being closed or owning tests alone does not
+  establish that choice. Several required assignments are allowed; EDT readiness
+  needs at least one ready required assignment. Edit this flag through the YAML
+  edit/preview/apply flow below, respecting the selected shared/local layer and
+  array replacement. It has no settings.update field or form control. See the
+  [profile contract and examples](../../docs/PROFILES.md) for matching and defaults.
 - When creating a profile or asked to create/review project AGENTS.md, follow
   [project instructions](references/project-instructions.md). Creation returns
   projectInstructions.created/preserved with contentValidated=false; finish the
   project-specific rules from confirmed facts and preserve existing instructions.
   A valid profile or ready environment does not prove those rules are complete.
-- For an invalid existing profile, settings.edit returns its repairable document
+- For an invalid existing profile, settings.edit with layerScope=profile and
+  format=yaml returns its repairable document
   and baseRevision. Use that document and the validation detail from inspect;
   do not reverse-engineer scripts or export/read the profile repeatedly.
-- For edits use settings.preview/apply with mode=edit and the same baseRevision.
-  This is a full document: omitted runtime fields reset to defaults. Keep other
-  values intact. Explain shared runtime changes; replacing an existing profile
-  requires explicit agreement, reviewed preview and backup. A stale revision
+- For edits use settings.preview/apply with mode=layer, the selected profile
+  layerScope and the same baseRevision. Replacing an existing profile
+  requires a reviewed preview and backup. A stale revision
   requires a fresh document and reconciliation, never an automatic retry.
-- For supplied portable files use preview/apply import semantics. settings.import
-  only opens the form. For a simple connection/component change use settings.update
+- For supplied portable YAML or ZIP files use the settings.import transfer dialog.
+  For a simple connection/component change use settings.update
   with changed fields only; respect read-only/environment/connection-file sources.
   Both form entrypoints, chat tools and the Node CLI use SettingsBackend with
   the same selected root, instance and precedence. OpenViking transport fields
-  are openvikingEnabled/Url/Timeout/MaxResponseBytes/HeadersEnv; HeadersEnv is a
-  complete map of header names to environment variable names, never secrets.
+  are openvikingEnabled/Url/Timeout/MaxResponseBytes/ConnectionId. Shared OpenViking credentials and signed confirmations are entered in the settings form and never in project profiles or ordinary agent responses.
   OpenViking is optional and disabled by default. Its enabled flag is independent
   of the URL: to connect under the user's request, explicitly set
   openvikingEnabled=true. Changing a URL does not enable a disabled transport.
@@ -86,8 +93,7 @@ Keep the profile's explicit knowledge choice: disabled (`provider: none`),
 transitional with selected collections, or KORA with mandatory knowledge for
 the whole workflow. Change that choice only under the user's settings request.
 Use inspect.knowledge/knowledgeSetup and valueSources. For OpenViking obtain
-the assigned MCP endpoint, collection IDs/URIs, environment variable names for
-search credentials and external access/publication confirmations from the team.
+the assigned MCP endpoint, collection IDs/URIs and external access/publication confirmations from the team. Direct the user to enter the search credential, binding key, public keys and confirmations in the shared connection form.
 Connect that existing server; do not install OpenViking, create a corpus, index,
 publish, guess a URL or substitute another authority when readiness fails.
 Use edit/preview/apply to set the project knowledge contract and update for
@@ -103,6 +109,21 @@ If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
   A connected server with unverified/mismatched projects is not ready for writes.
   OpenViking setup acceptance covers the selected collections and snapshot;
   each workflow must establish readiness in its own bound knowledge session.
+- Distinguish aggregate EDT requirements from a project's operational readiness:
+  a matched optional project with open=false has ready=false and
+  requirementsMet=true. An open optional project still needs state=ready and
+  edtProject=true. Verify the actual target before dependent operations; preserve
+  exact name/path/descriptor checks and code-index's independent selection.
+  Do not use unbound_edt_repositories to make an assigned project optional.
+- Report full setup readiness.state separately from readiness.mainReadiness
+  (scope=setup_main). Unavailable enabled YaXUnit blocks full setup while the main
+  environment can remain ready for independent work. YaXUnit needs all projects
+  referenced by repository_id, framework_repository_id and product_repository_ids
+  open and ready regardless of edt_required, plus its existing launch checks.
+  A feature-only Vanessa repository needs no EDT assignment. Preserve test
+  settings and closed optional projects; setup diagnosis alone authorizes neither
+  opening projects nor launching tests. Changed flags invalidate dependent saved
+  checks; repeat only the check needed by the selected route.
 - Preparation may download and launch managed services. Use settings.run_check
   only with the user's actual authorization and current preparationScope. Prior
   scoped permission persists; do not ask again. Profile inspection never launches

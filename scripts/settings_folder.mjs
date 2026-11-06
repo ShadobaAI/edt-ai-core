@@ -8,6 +8,24 @@ import { Worker, isMainThread, parentPort, workerData } from "node:worker_thread
 import { windows_process_identity } from "./windows_process.mjs";
 
 let modalActive = false;
+export async function activate_folder_window(api, { attempts = 60, pause = ms => new Promise(done => setTimeout(done, ms)) } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const window = api.find();
+    if (window) {
+      if (api.minimized(window)) api.restore(window);
+      api.activate(window);
+      // Foreground activation crosses Explorer's thread; observe the result
+      // rather than interpreting the request's return value as actual focus.
+      for (let check = 0; check < 10; check++) {
+        if (api.foreground() === window) return;
+        await pause(50);
+      }
+      throw new Error("Папка открыта, но Windows не перевела Проводник на передний план. Выберите его окно на панели задач.");
+    }
+    await pause(50);
+  }
+  throw new Error("Папка открыта, но не удалось найти её окно Проводника для активации.");
+}
 export function folder_action(action, directory = "", options = {}) {
   if (process.platform !== "win32") return Promise.reject(new Error("Системный диалог доступен только в Windows в этой версии плагина."));
   if (!["pick", "open", "save", "file"].includes(action)) return Promise.reject(new Error("Неизвестное действие с папкой."));
@@ -17,6 +35,7 @@ export function folder_action(action, directory = "", options = {}) {
   if (action === "open") {
     try {
       if (!directory || !path.isAbsolute(directory) || !fs.statSync(directory).isDirectory()) throw new Error("Папка проекта не найдена.");
+      if (options.select && (!path.isAbsolute(options.select) || path.dirname(fs.realpathSync(options.select)).toLowerCase() !== fs.realpathSync(directory).toLowerCase() || !fs.statSync(options.select).isFile())) throw new Error("Файл должен находиться в открываемой папке.");
     } catch (error) { return Promise.reject(error); }
   }
   if (action !== "open") modalActive = true;
@@ -33,14 +52,23 @@ export function folder_action(action, directory = "", options = {}) {
 
 export function windows_folder_api() {
   const koffi = createRequire(import.meta.url)(fileURLToPath(new URL(`../vendor/native/win32_${process.arch}/koffi.node`, import.meta.url)));
-  const ole = koffi.load("ole32.dll"), shell = koffi.load("shell32.dll"), user = koffi.load("user32.dll");
+  const ole = koffi.load("ole32.dll"), shell = koffi.load("shell32.dll"), user = koffi.load("user32.dll"), props = koffi.load("propsys.dll"), automation = koffi.load("oleaut32.dll");
   const init = ole.func("int32_t __stdcall CoInitializeEx(void *reserved, uint32_t flags)"),
     uninit = ole.func("void __stdcall CoUninitialize()"),
     free = ole.func("void __stdcall CoTaskMemFree(void *memory)"),
     create = ole.func("int32_t __stdcall CoCreateInstance(const void *clsid, void *outer, uint32_t context, const void *iid, _Out_ void **object)"),
     itemFromPath = shell.func("int32_t __stdcall SHCreateItemFromParsingName(str16 path, void *context, const void *iid, _Out_ void **item)"),
+    parsePath = shell.func("int32_t __stdcall SHParseDisplayName(str16 path, void *context, _Out_ void **pidl, uint32_t attributes, void *result)"),
+    openSelected = shell.func("int32_t __stdcall SHOpenFolderAndSelectItems(void *folder, uint32_t count, void *items, uint32_t flags)"),
+    pidlSize = shell.func("uint32_t __stdcall ILGetSize(const void *pidl)"),
+    variantFromBuffer = props.func("int32_t __stdcall InitVariantFromBuffer(const void *data, uint32_t size, void *variant)"),
+    clearVariant = automation.func("int32_t __stdcall VariantClear(void *variant)"),
     open = shell.func("intptr_t __stdcall ShellExecuteW(void *owner, str16 operation, str16 file, str16 parameters, str16 directory, int show)"),
     foreground = user.func("void * __stdcall GetForegroundWindow()"),
+    foregroundHandle = user.func("uintptr_t __stdcall GetForegroundWindow()"),
+    activate = user.func("int __stdcall SetForegroundWindow(uintptr_t window)"),
+    minimized = user.func("int __stdcall IsIconic(uintptr_t window)"),
+    restore = user.func("int __stdcall ShowWindowAsync(uintptr_t window, int show)"),
     windowPid = user.func("uint32_t __stdcall GetWindowThreadProcessId(void *window, _Out_ uint32_t *pid)");
   const guid = text => {
     const hex = text.replaceAll("-", ""), data = Buffer.from(hex, "hex");
@@ -61,16 +89,48 @@ export function windows_folder_api() {
     const table = koffi.decode(object, "void *"), pointer = koffi.decode(table, slot * koffi.sizeof("void *"), "void *");
     return koffi.call(pointer, signatures.get(key), object, ...args);
   }
-  const checked = code => { if (code < 0) throw new Error(`Ошибка диалога Windows (0x${(code >>> 0).toString(16)}).`); };
+  const checked = code => { if (code < 0) throw new Error(`Ошибка Windows (0x${(code >>> 0).toString(16)}).`); };
   const release = object => { if (object) method(object, 2, "uint32_t", []); };
   function shellItem(directory) {
     const item = [null]; checked(itemFromPath(directory, null, shellIID, item)); return item[0];
   }
+  function folderWindow(directory) {
+    const pidl = [null], windows = [null], location = Buffer.alloc(24);
+    try {
+      checked(parsePath(directory, null, pidl, 0, null));
+      checked(create(guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39"), null, 5, guid("85CB6900-4D95-11CF-960C-0080C7F4EE85"), windows));
+      // Marshal the absolute PIDL as a byte-array VARIANT. A raw by-reference
+      // pointer is process-local and cannot cross Explorer's COM boundary.
+      checked(variantFromBuffer(pidl[0], pidlSize(pidl[0]), location));
+      return {
+        find() {
+          const handle = [0], dispatch = [null];
+          try { checked(method(windows[0], 15, "int32_t", ["void *", "void *", "int", "_Out_ int32_t *", "int", "_Out_ void **"], location, Buffer.alloc(24), 0, handle, 0, dispatch));return handle[0] ? BigInt(handle[0] >>> 0) : 0n; }
+          finally { release(dispatch[0]); }
+        },
+        dispose() { clearVariant(location);release(windows[0]);free(pidl[0]); },
+      };
+    } catch (error) { clearVariant(location);release(windows[0]);if(pidl[0])free(pidl[0]);throw error; }
+  }
   return {
-    open(directory) {
+    async open(directory, options = {}) {
       checked(init(null, 2));
-      try { if (BigInt(open(null, "explore", directory, null, null, 1)) <= 32n) throw new Error("Не удалось открыть папку в Проводнике."); }
-      finally { uninit(); }
+      let window;
+      try {
+        window = folderWindow(directory);
+        if (options.select) {
+          if (!path.isAbsolute(options.select) || path.dirname(fs.realpathSync(options.select)).toLowerCase() !== fs.realpathSync(directory).toLowerCase() || !fs.statSync(options.select).isFile()) throw new Error("Файл должен находиться в открываемой папке.");
+          const pidl = [null];checked(parsePath(options.select, null, pidl, 0, null));
+          try { checked(openSelected(pidl[0], 0, null, 0)); } finally { free(pidl[0]); }
+        } else if (BigInt(open(foreground(), "explore", directory, null, null, 1)) <= 32n) throw new Error("Не удалось открыть папку в Проводнике.");
+        await activate_folder_window({ find: window.find, minimized, restore: handle => restore(handle, 9), activate, foreground: () => BigInt(foregroundHandle()) });
+      }
+      finally { window?.dispose();uninit(); }
+    },
+    findFolderWindow(directory) {
+      checked(init(null, 2));let window;
+      try { window = folderWindow(directory);return window.find(); }
+      finally { window?.dispose();uninit(); }
     },
     createDialog(directory = "", options = {}) {
       checked(init(null, 2)); // COINIT_APARTMENTTHREADED on this worker only
@@ -82,7 +142,7 @@ export function windows_folder_api() {
         checked(method(dialog[0], 9, "int32_t", ["uint32_t"], flags));
         checked(method(dialog[0], 17, "int32_t", ["str16"], options.title || (options.save ? "Сохранить файл · 1C AI Core" : "Выберите папку проекта · 1C AI Core")));
         if (options.save && options.filename) checked(method(dialog[0], 15, "int32_t", ["str16"], options.filename));
-        if (options.save) checked(method(dialog[0], 22, "int32_t", ["str16"], "json"));
+        if (options.save) checked(method(dialog[0], 22, "int32_t", ["str16"], options.extension || "json"));
         if (directory && fs.existsSync(directory) && fs.statSync(directory).isDirectory()) {
           const item = shellItem(path.resolve(directory));
           try { checked(method(dialog[0], 12, "int32_t", ["void *"], item)); }
@@ -121,7 +181,7 @@ if (!isMainThread && workerData?.settingsFolder) {
     const { action, directory, options = {} } = workerData, api = windows_folder_api();
     if (action === "open") {
       if (!directory || !path.isAbsolute(directory) || !fs.statSync(directory).isDirectory()) throw new Error("Папка проекта не найдена.");
-      api.open(directory); parentPort.postMessage({ directory });
+      await api.open(directory, options); parentPort.postMessage({ directory });
     } else {
       const dialog = api.createDialog(directory, { ...options, save: action === "save", file: action === "file" });
       try { parentPort.postMessage({ directory: dialog.show() }); }
