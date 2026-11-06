@@ -18,6 +18,7 @@ import {
   index_readiness,
   index_status,
   rebuild_index,
+  rebuild_all_indexes,
   restart_index,
   acquire_reader,
   path_key,
@@ -472,6 +473,53 @@ test("index rebuild targets exactly one repository and restores the owned servic
   await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>{throw new Error("unknown stop");}}),error=>error.outcomeUnknown===true);
   assert.equal(fs.existsSync(path.join(home,"maintenance.json")),true);
   await assert.rejects(rebuild_index(f.state,config,f.root,f.profile,"extension",{...io,stop:async()=>assert.fail("must not retry an uncertain stop")}),/прервано/);
+});
+
+test("rebuilding all indexes reports each EDT project while holding one maintenance window", async t => {
+  const f = fixture(t), calls = [], progress = [];
+  for (const [id, edt] of [["extension", true], ["features", false]]) {
+    fs.mkdirSync(path.join(f.root, id));
+    if (edt) fs.writeFileSync(path.join(f.root, id, ".project"), "<projectDescription><name>Extension</name></projectDescription>");
+    f.profile.repositories.push({ id, path: id, alias: id, ...(edt ? { edt_project: id } : {}) });
+  }
+  f.save(); const before = fs.readFileSync(path.join(f.root, ".ai/project.yaml"));
+  let release, entered;
+  const gate = new Promise(done => { release = done; }), started = new Promise(done => { entered = done; });
+  const rebuilding = rebuild_all_indexes(f.state, settings(), f.root, f.profile, {
+    installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
+    run: async (_exe, directory) => { calls.push(directory); if (directory === f.root) { entered(); await gate; } },
+    restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }), progress: item => progress.push(item),
+  });
+  await started;
+  try {
+    assert.deepEqual(calls, ["stop", f.root]);
+    assert.deepEqual(progress.at(-1), { phase: "indexing", total: 2, completed: 0, repository: "product", edtProject: "Product" });
+    assert.equal(fs.existsSync(path.join(project_home(f.state, f.root), "code-index/maintenance.json")), true);
+  } finally { release(); await rebuilding; }
+  const result = await rebuilding;
+  assert.deepEqual(calls, ["stop", f.root, path.join(f.root, "extension"), "restart"]);
+  assert.equal(result.all, true); assert.equal(result.state, "ready");
+  assert.deepEqual(result.rebuilt.map(item => item.repository), ["product", "extension"]);
+  assert.deepEqual(progress.filter(item => item.phase === "indexing").map(item => [item.repository, item.completed]), [["product", 0], ["extension", 1]]);
+  assert.deepEqual(progress.at(-1), { phase: "checking", total: 2, completed: 2 });
+  assert.deepEqual(fs.readFileSync(path.join(f.root, ".ai/project.yaml")), before);
+  assert.equal(fs.existsSync(path.join(project_home(f.state, f.root), "code-index/maintenance.json")), false);
+});
+
+test("a failed bulk rebuild retains partial progress and restores the service before returning an error", async t => {
+  const f = fixture(t), calls = [], progress = [];
+  for (const id of ["extension", "later"]) {
+    fs.mkdirSync(path.join(f.root, id)); fs.writeFileSync(path.join(f.root, id, ".project"), `<projectDescription><name>${id}</name></projectDescription>`);
+    f.profile.repositories.push({ id, path: id, alias: id, edt_project: id });
+  }
+  await assert.rejects(rebuild_all_indexes(f.state, settings(), f.root, f.profile, {
+    installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
+    run: async (_exe, directory) => { calls.push(directory); if (directory.endsWith("extension")) throw new Error("failed extension"); },
+    restart: async () => calls.push("restart"), smoke: async () => assert.fail("failed rebuild cannot pass smoke"), progress: item => progress.push(item),
+  }), /failed extension/);
+  assert.deepEqual(calls, ["stop", f.root, path.join(f.root, "extension"), "restart"]);
+  assert.deepEqual(progress.at(-1), { phase: "restoring", total: 3, completed: 1, repository: "extension", edtProject: "extension" });
+  assert.equal(fs.existsSync(path.join(project_home(f.state, f.root), "code-index/maintenance.json")), false);
 });
 
 test("daemon launch leaves logging to the component without duplicate output files", async t => {

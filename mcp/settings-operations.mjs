@@ -18,7 +18,8 @@ export class SettingsOperations {
     if (this.active?.status === "running" || (background && this.background?.status === "running")) {
       throw new Error(`Операция ${this.current().id} ещё выполняется. Проверьте settings.operation; повтор не запущен.`);
     }
-    const job = { id: randomUUID(), action, ...context, ...(["probe", "refresh_readiness"].includes(action) && args.component ? { component: args.component } : {}), status: "running", startedAt: new Date().toISOString() };
+    const job = { id: randomUUID(), action, ...context, ...(["probe", "refresh_readiness"].includes(action) && args.component ? { component: args.component } : {}),
+      ...(["rebuild_index", "restart_index"].includes(action) ? { component: "code-index", ...(args.all === true ? { all: true } : {}) } : {}), status: "running", startedAt: new Date().toISOString() };
     this.observe("operation_started", { id: job.id, action, ...context });
     if (background) this.background = job;
     else this.active = job;
@@ -29,7 +30,14 @@ export class SettingsOperations {
       if (!oldest) break;
       this.jobs.delete(oldest[0]);
     }
-    job.finished = Promise.resolve().then(() => this.run(action, args, context)).then(
+    const progress = value => {
+      if (job.status !== "running" || !["rebuild_index", "restart_index"].includes(action) || !value ||
+          !["preparing", "waiting_lock", "waiting_readers", "stopping", "indexing", "restarting", "checking", "restoring"].includes(value.phase) ||
+          !Number.isSafeInteger(value.total) || !Number.isSafeInteger(value.completed) || value.total < 0 || value.completed < 0 || value.completed > value.total) return;
+      job.progress = { phase: value.phase, total: value.total, completed: value.completed, updatedAt: new Date().toISOString(),
+        ...Object.fromEntries(["repository", "edtProject"].filter(key => typeof value[key] === "string").map(key => [key, value[key].slice(0, 512)])) };
+    };
+    job.finished = Promise.resolve().then(() => this.run(action, args, context, progress)).then(
       result => {
         if (["probe", "check", "refresh_readiness"].includes(action)) result = sanitize_setup_result(result);
         if (result?.values && Object.hasOwn(result.values, "projectRoot")) job.projectRoot = result.values.projectRoot || null;

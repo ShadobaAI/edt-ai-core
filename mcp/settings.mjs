@@ -174,7 +174,7 @@ const tools = [
     inputSchema: empty, annotations: annotations(), _meta: { ui: { resourceUri: resource, visibility: ["app"] }, "openai/ui": { entrypoints: [{ type: "global" }] } } },
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
     inputSchema: inspectInput, annotations: annotations(), _meta: shared },
-  { name: "settings.probe_connections", title: "Проверить компонент или подключения", description: "Check the selected component, or all external connections when component is omitted. Reuses local BSL LS evidence until launch inputs change. Invalidated local BSL LS checks require an existing project/instance preparation grant and installed JAR; their temporary JVM closes before completion. Never downloads, installs or restarts a daemon. Testing configuration is distinct from runtime acceptance. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
+  { name: "settings.probe_connections", title: "Проверить компонент или подключения", description: "Check the selected component and cache its scoped result, or check all external connections when component is omitted. YaXUnit checks exact EDT project mappings, client launch configurations and applications against the live API; ready confirms launch settings, never test results. Does not run a client, tests or database updates or change project settings. Reuses local BSL LS evidence until launch inputs change. Invalidated local BSL LS checks require an existing project/instance preparation grant and installed JAR; their temporary JVM closes before completion. Never downloads, installs or restarts a daemon. Testing configuration is distinct from runtime acceptance. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
     inputSchema: { type: "object", properties: { component: { enum: ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"], description: "Check only this component; invalidated local BSL LS evidence may use a temporary JVM under its existing scoped grant. Omit for all external connections." }, connections: { type: "object", properties: { edt: { type: "string" }, v8std: { type: "string" }, openviking: openvikingTransport }, additionalProperties: false, description: "Optional unsaved transport fields to test without persisting them. Empty URLs disconnect transport without changing knowledge requirements." } }, additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: shared },
   { name: "settings.profile", title: "Настройки проекта", description: "Open the settings form for this chat's selected profile only on an explicit user request to open/show this form. Chat configuration, code analysis and runtime troubleshooting do not authorize opening a form; use settings.inspect instead. Always supply this chat's known projectRoot so the form retains its directory across MCP connections; {} uses host roots when available. Does not reload profiles or borrow another chat's directory.",
     inputSchema: inspectInput, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "thread" }] } } },
@@ -261,12 +261,12 @@ tools.push({ name: "settings.openviking_save", title: "Сохранить общ
   inputSchema: { type: "object", properties: { ...ovIdentity, values: ovValues, expectedRevision: { type: "string", minLength: 1 } },
     required: ["url", "connectionId", "values", "expectedRevision"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly });
 
-function backend(action, args, context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }, readDeadline = 0) {
+function backend(action, args, context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }, readDeadline = 0, onProgress = null) {
   register_diagnostic_secrets(args);
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath,
       [path.join(root, "scripts", "settings_backend.mjs")], {
-        cwd: root, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+        cwd: root, windowsHide: true, stdio: ["pipe", "pipe", "pipe", ...(onProgress ? ["ipc"] : [])],
         env: { ...process.env, EDT_AI_STATE_DIR: state, EDT_AI_SETTINGS: configPath,
           EDT_AI_PROJECT_ROOT: context.selectedDirectory || "", EDT_AI_SETTINGS_ROOT_LOCKED: context.rootLocked === false ? "0" : "1" },
       });
@@ -277,6 +277,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
     }, readDeadline) : null;
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", chunk => { output += chunk; });
+    if (onProgress) child.on("message", message => { if (message?.type === "progress") onProgress(message.progress); });
     child.stderr.on("data", () => { errors = "Содержимое stderr сервиса скрыто."; });
     child.once("error", error => { clearTimeout(timer); reject(error); });
     child.stdin.on("error", () => {}); // close/output below owns the operation outcome
@@ -306,7 +307,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
     child.stdin.end(JSON.stringify({ action, ...args }));
   });
 }
-const operations = new SettingsOperations(async (action, args, context) => {
+const operations = new SettingsOperations(async (action, args, context, progress) => {
   if (action === "pick_import_file") {
     if (args.path !== undefined && !path.isAbsolute(args.path)) throw new Error("Укажите абсолютный путь к файлу.");
     const file = args.path ?? await folder_action("file", context.selectedDirectory || "", { title: "Выберите файл настроек · 1C AI Core" });
@@ -339,7 +340,7 @@ const operations = new SettingsOperations(async (action, args, context) => {
     if (context.selectionRevision !== selectionRevision) throw new Error("Папка чата изменилась во время выбора. Откройте настройки заново.");
     return directory ? { directory } : { cancelled: true };
   }
-  if (action !== "pick_directory") return backend(action, args, context);
+  if (action !== "pick_directory") return backend(action, args, context, 0, ["rebuild_index", "restart_index"].includes(action) ? progress : null);
   const directory = await folder_action("pick", args.projectRoot || context.selectedDirectory || "");
   if (context.selectionRevision !== selectionRevision) throw new Error("Папка чата изменилась во время выбора. Откройте настройки заново.");
   if (!directory) return { cancelled: true };
@@ -652,7 +653,10 @@ async function call(name, args, meta = {}) {
   const context = { projectRoot: proposedRoot === undefined ? selectedRoot : proposedRoot || null,
     selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" };
   if (["settings.run_check", "settings.refresh_readiness"].includes(name)) return result(operations.status(operations.start(actions[name], args, context).id));
-  if (["settings.rebuild_index", "settings.restart_index"].includes(name)) return result(operations.status(operations.start(actions[name], args, context).id));
+  if (["settings.rebuild_index", "settings.restart_index"].includes(name)) {
+    if (name === "settings.rebuild_index" && (args.all === true) === Object.hasOwn(args, "repository")) throw new Error("Выберите один EDT-проект или все EDT-проекты.");
+    return result(operations.status(operations.start(actions[name], args, context).id));
+  }
   if (name === "settings.updates") return result(operations.status(operations.start("updates", args, context).id));
   const data = await (name === "settings.preview" ? backend(actions[name], args, context) : operations.execute(actions[name], args, context));
   if (revision === selectionRevision && !rootLocked && !selectionError && data.values && Object.hasOwn(data.values, "projectRoot")) {
@@ -688,8 +692,8 @@ tools.push({ name: "settings.run_check", title: "Подготовить и пр�
     refresh: { type: "boolean" }, authorization: preparationAuthorization,
   }, required: ["authorization"], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
-tools.push({ name: "settings.rebuild_index", title: "Пересоздать индекс EDT-проекта", description: "Rebuild only one configured repository with the native index --force CLI, after scoped authorization. Stops the owned project daemon and requires current readers to finish. Does not edit the profile or source files. Poll settings.operation; do not retry a running operation.",
-  inputSchema: { type: "object", properties: { repository: { type: "string", minLength: 1 }, authorization: preparationAuthorization }, required: ["repository", "authorization"], additionalProperties: false },
+tools.push({ name: "settings.rebuild_index", title: "Пересоздать индексы EDT-проектов", description: "Rebuild one configured EDT repository, or all=true for every configured EDT repository, with the native index --force CLI after scoped authorization. Specify exactly one of repository or all. Stops the owned project daemon once and rebuilds sequentially before restarting it. May take several minutes; poll settings.operation for phase, current project and completed/total counts. Never retry a running operation. Does not edit the profile or source files.",
+  inputSchema: { type: "object", properties: { repository: { type: "string", minLength: 1 }, all: { type: "boolean", const: true }, authorization: preparationAuthorization }, required: ["authorization"], oneOf: [{ required: ["repository"] }, { required: ["all"] }], additionalProperties: false },
   annotations: { ...annotations(false), openWorldHint: true }, _meta: shared });
 tools.push({ name: "settings.restart_index", title: "Применить состав проектов индекса", description: "Safely restart the owned code-index daemon with current repository mappings, without rebuilding indexes. Requires scoped authorization and waits for active readers. Poll settings.operation.",
   inputSchema: { type: "object", properties: { authorization: preparationAuthorization }, required: ["authorization"], additionalProperties: false },

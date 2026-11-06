@@ -154,7 +154,7 @@ junction. Guard защищает объединение `roots.source` и `roots
 | `testing.yaxunit_config.product_repository_ids` | Нет | Массив ID репозиториев продукта. | Конфигурация → Поля → `testing.yaxunit_config.product_repository_ids` |
 | `testing.yaxunit_config.runner` | Да | Способ запуска; только `edt`. | Конфигурация → Поля → `testing.yaxunit_config.runner` |
 | `testing.yaxunit_config.results` | Да | Относительный путь к результатам. | Конфигурация → Поля → `testing.yaxunit_config.results` |
-| `testing.yaxunit_config.launch_configuration` | Нет | Имя конфигурации запуска EDT. | Конфигурация → Поля → `testing.yaxunit_config.launch_configuration` |
+| `testing.yaxunit_config.launch_configuration` | Нет | Точное имя клиентской конфигурации запуска EDT. Поле предлагает имена, обнаруженные проверкой YaXUnit; без имени проверяется однозначный запуск через проект и приложение EDT. | Конфигурация → Поля → `testing.yaxunit_config.launch_configuration` |
 
 ### Vanessa
 

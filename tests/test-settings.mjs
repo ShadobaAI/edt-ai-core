@@ -685,7 +685,7 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     );
   fs.writeFileSync(
     path.join(plugin, "scripts/settings_backend.mjs"),
-    `import fs from 'node:fs'; let input=''; for await (const chunk of process.stdin) input+=chunk; const r=JSON.parse(input); await new Promise(done=>setTimeout(done,200)); fs.appendFileSync(process.env.EDT_AI_STATE_DIR+'/calls',r.action+'\\n'); if(r.set?.edtUrl==='unknown') { process.stderr.write('unmarked-backend-secret-8931'); process.exit(3); } console.log(JSON.stringify({ok:true,result:r.set?.edtUrl==='malformed'?null:{managed:[],values:{projectRoot:process.env.EDT_AI_PROJECT_ROOT}}}));`,
+    `import fs from 'node:fs'; let input=''; for await (const chunk of process.stdin) input+=chunk; const r=JSON.parse(input); await new Promise(done=>setTimeout(done,200)); fs.appendFileSync(process.env.EDT_AI_STATE_DIR+'/calls',r.action+'\\n'); if(r.set?.edtUrl==='unknown') { process.stderr.write('unmarked-backend-secret-8931'); process.exit(3); } if(r.action==='rebuild_index'){process.send?.({type:'progress',progress:{phase:'indexing',total:2,completed:1,repository:'extension',edtProject:'Extension',message:'unmarked-progress-secret-2184'}});await new Promise(done=>setTimeout(done,400));} console.log(JSON.stringify({ok:true,result:r.set?.edtUrl==='malformed'?null:{managed:[],values:{projectRoot:process.env.EDT_AI_PROJECT_ROOT}}}));if(process.connected)process.disconnect();`,
   );
   const client = new McpClient(
     [process.execPath, path.join(plugin, "mcp/settings.mjs")],
@@ -735,4 +735,22 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     .structuredContent;
   assert.doesNotMatch(client.stderr + JSON.stringify(status) + fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8"), /unmarked-backend-secret-8931/);
   assert.notEqual(status.status, "running");
+  const authorization = { scope: f.root + "#first", effects: ["launch"], evidence: "fixture" };
+  for (const selection of [{}, { all: true, repository: "product" }, { all: false }])
+    await assert.rejects(client.call("settings.rebuild_index", { ...selection, authorization }), /Выберите|Некорректное/);
+  const rebuild = (await client.call("settings.rebuild_index", { all: true, authorization })).structuredContent;
+  assert.equal(rebuild.status, "running"); assert.equal(rebuild.component, "code-index");
+  let observed;
+  for (let i = 0; i < 15; i++) {
+    observed = (await client.call("settings.operation", { operationId: rebuild.id, waitMs: 100 })).structuredContent;
+    if (observed.progress) break;
+  }
+  assert.equal(observed.status, "running"); assert.equal(observed.progress.phase, "indexing");
+  assert.equal(observed.progress.completed, 1); assert.equal(observed.progress.total, 2);
+  assert.equal(observed.progress.edtProject, "Extension"); assert.equal(observed.progress.message, undefined);
+  assert.doesNotMatch(JSON.stringify(observed), /unmarked-progress-secret/);
+  await assert.rejects(client.call("settings.rebuild_index", { all: true, authorization }), /ещё выполняется/);
+  const rebuilt = (await client.call("settings.operation", { operationId: rebuild.id, waitMs: 1000 })).structuredContent;
+  assert.equal(rebuilt.status, "completed"); assert.equal(rebuilt.progress.completed, 1);
+  assert.equal(fs.readFileSync(path.join(f.state, "calls"), "utf8").split("\n").filter(action => action === "rebuild_index").length, 1);
 });

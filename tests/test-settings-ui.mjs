@@ -10,6 +10,7 @@ import { McpClient } from "../scripts/mcp_client.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { patch_yaml_draft, SettingsBackend } from "../scripts/settings_backend.mjs";
+import { yaxunit_result } from "../scripts/yaxunit_readiness.mjs";
 
 const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
@@ -269,7 +270,20 @@ for(const id of ["edt","v8std","openviking","code-index","bsl-ls","yaxunit","van
   await f.ui.elements.get(item.kind==="external"?"probeButton":item.kind==="managed"?"managedProbeButton":"testingProbeButton").onclick();
   assert.equal(f.requests.length,3);assert.equal(f.requests[2].component,id);
   assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id===id).detail,/проверка 3/);
-  if(id==="code-index"){const row=f.ui.elements.get("connections").children.find(item=>item.serviceName==="code-index");assert.match(row.textNode.textContent,/Последняя проверка/);assert.match(row.textNode.textContent,/Product: готов/);}
+  if(id==="code-index"){
+    assert.equal(f.ui.elements.get("connections").hidden,true);
+    assert.match(f.ui.elements.get("managedDialogCheckedAt").textContent,/Последняя проверка/);
+    assert.deepEqual(f.ui.elements.get("managedProjectStates").children.map(row=>row.textContent),["Product: готов"]);
+    assert.equal(f.ui.elements.get("managedProjectStates").hidden,false);
+    vm.runInContext('componentObservations.get("code-index").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
+    f.ui.context.renderDialogStates();
+    assert.equal(f.ui.elements.get("managedProjectStates").hidden,true);
+    assert.equal(f.ui.elements.get("managedProjectStates").children.length,0);
+    f.ui.elements.get("managedDialog").close();
+    f.ui.context.openManagedDialog(f.ui.context.catalogItems(f.current).find(item=>item.id==="bsl-ls"),null);await f.ui.flush();
+    assert.equal(f.ui.elements.get("managedProjectStates").hidden,true);
+    assert.equal(f.ui.elements.get("connections").hidden,false);
+  }
 });
 
 test("an in-flight all-component refresh covers opened cards and is not duplicated",async()=>{
@@ -440,7 +454,7 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
   assert.equal(ui.elements.get(prefix+"State").attributes["data-state"],item.kind==="testing"?"configured":"ready");
   assert.equal(ui.elements.get(prefix+"State").attributes["data-tone"],item.kind==="testing"?"warning":"good");
   const refresh=ui.elements.get(item.kind==="external"?"probeButton":item.kind==="managed"?"managedProbeButton":"testingProbeButton");
-  assert.equal(refresh.attributes["aria-label"],"Проверить "+item.name);assert.equal(refresh.attributes["aria-busy"],"false");
+  assert.equal(refresh.attributes["aria-label"],id==="yaxunit"?"Проверить настройки запуска YaXUnit":"Проверить "+item.name);assert.equal(refresh.attributes["aria-busy"],"false");
   assert.match(ui.elements.get(item.kind === "external" ? "probeResult" : item.kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent, /Проверен выбранный компонент/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   assert.equal(ui.calls.filter(call => ["settings.update", "settings.run_check"].includes(call.params?.name)).length, 0);
@@ -811,7 +825,7 @@ test("standalone preview keeps saving, updates and service launches unavailable 
   assert.equal(ui.elements.get("journalCount").textContent,"Недоступен в предпросмотре");
   for(const mode of ["check","editor","support"]){
     ui.elements.get(mode+"Tab").onclick();
-    for(const id of ["saveButton","saveComponentsButton","readinessButton","rebuildIndexButton","installUpdateButton","refreshVersionsButton","transferExport","transferPreview","applyButton","diagnosticsButton"])
+    for(const id of ["saveButton","saveComponentsButton","readinessButton","rebuildIndexButton","rebuildAllIndexesButton","installUpdateButton","refreshVersionsButton","transferExport","transferPreview","applyButton","diagnosticsButton"])
       assert.equal(ui.elements.get(id).disabled,true,id);
   }
   await ui.elements.get("readinessButton").onclick();
@@ -2093,6 +2107,63 @@ test("rebuilding an index uses the selected EDT repository and never repeats the
   assert.match(ui.elements.get("status").textContent,/Extension.*пересоздан.*Готов/);
 });
 
+test("bulk rebuild remains observable after several minutes, a polling error and reopening the card", async () => {
+  let launched = false, failPoll = false;
+  const current = { ...read, instance: "default", values: { ...read.values, codeIndexEnabled: true },
+    profile: { ...read.profile, repositories: [{ id: "main", path: "src", edt_project: "Main" }, { id: "ext", path: "extension", edt_project: "Extension" }] },
+    summary: { components: [{ id: "code-index", status: "running" }] } };
+  const startedAt = new Date().toISOString(), job = { id: "bulk", action: "rebuild_index", component: "code-index", all: true,
+    projectRoot: current.values.projectRoot, instance: current.instance, status: "running", startedAt,
+    progress: { phase: "indexing", total: 2, completed: 0, edtProject: "Main" } };
+  const ui = screen(async (name, args) => {
+    if (name === "settings.read" || name === "settings.status") return { ...current, ...(launched ? { operation: job } : {}) };
+    if (name === "settings.versions") return { versions: [] };
+    if (name === "settings.rebuild_index") { assert.equal(args.all, true); assert.equal(args.repository, undefined); assert.equal(args.authorization.scope, read.preparationScope); launched = true; return job; }
+    if (name === "settings.operation") { if (failPoll) { failPoll = false; throw new Error("offline"); } return job; }
+    throw new Error(name);
+  }); await ui.flush();
+  const open = () => ui.context.openManagedDialog(ui.context.catalogItems(current).find(item => item.id === "code-index"), null);
+  open(); await ui.flush(); await ui.elements.get("rebuildAllIndexesButton").onclick();
+  assert.equal(ui.elements.get("indexMaintenanceProgress").hidden, false);
+  assert.match(ui.elements.get("indexMaintenanceDetail").textContent, /Main.*0 из 2/);
+  assert.equal(ui.elements.get("indexMaintenanceMeter").hidden, false);
+  assert.equal(ui.elements.get("rebuildIndexButton").disabled, true); assert.equal(ui.elements.get("rebuildAllIndexesButton").disabled, true);
+  assert.equal(ui.elements.get("managedDialogClose").disabled, false);
+  vm.runInContext("Date.now=()=>" + (Date.parse(startedAt) + 7 * 60000 + 12000), ui.context);
+  ui.context.renderIndexMaintenance(); assert.match(ui.elements.get("indexMaintenanceElapsed").textContent, /7 мин 12 с/);
+  failPoll = true; await ui.context.pollOperation(job.id);
+  assert.match(ui.elements.get("indexMaintenanceHint").textContent, /повторим проверку через 5 секунд/);
+  assert.equal(ui.elements.get("indexMaintenanceMeter").hidden, false);
+  job.progress = { phase: "indexing", total: 2, completed: 1, edtProject: "Extension" };
+  await ui.tick(5000); assert.match(ui.elements.get("indexMaintenanceDetail").textContent, /Extension.*1 из 2/);
+  await ui.elements.get("managedDialogClose").onclick();
+  const card = ui.elements.get("componentCatalog").children.flatMap(group => group.children[1].children).find(card => componentName(card) === "Code Index");
+  assert.equal(componentButton(card).disabled, false); await componentButton(card).onclick(); await ui.flush();
+  assert.equal(ui.elements.get("indexMaintenanceProgress").hidden, false); assert.match(ui.elements.get("indexMaintenanceElapsed").textContent, /7 мин 12 с/);
+  job.progress = { phase: "checking", total: 2, completed: 2 }; await ui.context.pollOperation(job.id);
+  assert.match(ui.elements.get("indexMaintenanceDetail").textContent, /Проверяем.*2 из 2/);
+  job.status = "completed"; job.completedAt = new Date(Date.parse(startedAt) + 8 * 60000).toISOString(); job.result = { all: true, state: "ready", rebuilt: [{ repository: "main" }, { repository: "ext" }] };
+  await ui.context.pollOperation(job.id); await ui.flush();
+  assert.match(ui.elements.get("indexMaintenanceTitle").textContent, /завершено/); assert.equal(ui.elements.get("indexMaintenanceMeter").hidden, true);
+  assert.match(ui.elements.get("indexMaintenanceDetail").textContent, /2 из 2.*готов/);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.rebuild_index").length, 1);
+});
+
+test("failed index maintenance shows partial progress and never shows another instance's operation", async () => {
+  const current = { ...read, instance: "default", values: { ...read.values, codeIndexEnabled: true }, summary: { components: [{ id: "code-index", status: "running" }] } };
+  const job = { id: "failed-index", action: "rebuild_index", component: "code-index", all: true, projectRoot: current.values.projectRoot, instance: current.instance,
+    status: "failed", startedAt: new Date().toISOString(), error: "Не удалось пересоздать индекс.", progress: { phase: "restoring", total: 3, completed: 1, edtProject: "Extension" } };
+  const ui = screen(async name => { if (name === "settings.operation") return job; if (name === "settings.versions") return { versions: [] }; return current; });
+  await ui.flush(); ui.context.openManagedDialog(ui.context.catalogItems(current).find(item => item.id === "code-index"), null); await ui.flush();
+  await ui.context.pollOperation(job.id);
+  assert.match(ui.elements.get("indexMaintenanceTitle").textContent, /ошибка/);
+  assert.match(ui.elements.get("indexMaintenanceDetail").textContent, /1 из 3.*Extension.*Не удалось/);
+  assert.equal(ui.elements.get("indexMaintenanceMeter").hidden, true);
+  current.instance = "another"; await ui.context.refresh();
+  assert.equal(ui.elements.get("indexMaintenanceProgress").hidden, true);
+  assert.doesNotMatch(ui.elements.get("managedDialogNotice").textContent, /Extension/);
+});
+
 test("index UI excludes feature-only repositories and applies mappings without rebuilding", async () => {
   const ui=screen(async(name,args)=>{
     if(name==="settings.read")return {...read,profile:{...read.profile,indexRepositories:["core"],repositories:[{id:"ui",path:"ui"},{id:"core",path:"framework",edt_project:"Core"}]}};
@@ -2107,38 +2178,33 @@ test("index UI excludes feature-only repositories and applies mappings without r
   assert.match(ui.elements.get("status").textContent,/Состав проектов индекса применён/);
 });
 
-test("index maintenance stays separate from diagnostic disclosures across status updates", async () => {
+test("index maintenance keeps its selection while per-project diagnostics refresh without a duplicate service block", async () => {
   let stale = false;
   const ui = screen(async name => {
     if(name==="settings.versions")return {versions:[]};
     assert.ok(["settings.read", "settings.status"].includes(name));
     return { ...read, profile: { ...read.profile, repositories: [{ id: "main", path: "src" }, { id: "ext", path: "ext" }] },
       values: { ...read.values, edtUrl: "http://localhost/mcp" },
-      readiness: { state: "ready", checks: [{ id: "edt", state: "ready" }] },
+      readiness: { state: "ready", checkedAt: new Date().toISOString(), checks: [{ id: "edt", state: "ready" },
+        { id: "code-index", state: stale ? "stale" : "ready", repositories: [{ id: "main", edtProject: "Main", state: "ready" }, { id: "ext", edtProject: "Extension", state: stale ? "stale" : "ready", present: true }] }] },
       summary: { components: [{ id: "code-index", status: stale ? "stale" : "ready" }, { id: "bsl-ls", status: "ready" }] } };
   });
   await ui.flush();
   ui.context.openManagedDialog(ui.context.catalogItems(vm.runInContext("currentData",ui.context)).find(item=>item.id==="code-index"),null);
-  const box = ui.elements.get("connections"), index = box.children.find(item => item.serviceName === "code-index"),
-    bsl = box.children.find(item => item.serviceName === "bsl-ls"), edt = box.children.find(item => item.serviceName === "edt");
-  assert.equal(index.tag, "details"); assert.equal(edt.tag, "details");
-  assert.equal(index.open, false); assert.equal(edt.open, false);
-  assert.equal(index.contains(ui.elements.get("indexActions")),false);assert.ok(ui.elements.get("managedControls").contains(ui.elements.get("indexActions")));
-  assert.equal(bsl.contains(ui.elements.get("indexActions")), false);
-  assert.match(edt.textNode.textContent, /Подключение проверено/);
-  assert.doesNotMatch(edt.textNode.textContent, /после проверки/);
+  const box = ui.elements.get("connections"), projects = ui.elements.get("managedProjectStates");
+  assert.equal(box.hidden, true); assert.equal(projects.hidden, false);
+  assert.deepEqual(projects.children.map(row=>row.textContent), ["Main: готов", "Extension: готов · индекс на диске найден"]);
+  assert.ok(ui.elements.get("managedControls").contains(ui.elements.get("indexActions")));
   const select = ui.elements.get("indexRepository"); ui.elements.get("indexActions").append(select);
-  index.open = true; edt.open = true; select.value = "ext"; const option = select.children[0]; select.focus();
+  ui.elements.get("managedDiagnostics").open = true; select.value = "ext"; const option = select.children[0]; select.focus();
   stale = true; await ui.tick(60000);
-  const updatedIndex = box.children.find(item => item.serviceName === "code-index");
-  assert.equal(updatedIndex, index);
-  assert.equal(updatedIndex.open, true);
-  assert.equal(box.children.find(item => item.serviceName === "edt").open, true);
-  assert.equal(updatedIndex.contains(ui.elements.get("indexActions")),false);assert.ok(ui.elements.get("managedControls").contains(ui.elements.get("indexActions")));
+  assert.equal(box.hidden, true); assert.equal(ui.elements.get("managedDiagnostics").open, true);
+  assert.deepEqual(projects.children.map(row=>row.textContent), ["Main: готов", "Extension: устарел · индекс на диске найден"]);
+  assert.match(ui.elements.get("managedDialogStatus").textContent, /Обслуживание индекса/);
   assert.equal(select.value, "ext"); assert.equal(select.children[0], option); assert.equal(ui.document.activeElement, select);
-  edt.children[0].focus(); stale = false; await ui.tick(60000);
-  assert.equal(box.children.find(item => item.serviceName === "edt"), edt);
-  assert.equal(ui.document.activeElement, edt.children[0]);
+  stale = false; await ui.tick(60000);
+  assert.deepEqual(projects.children.map(row=>row.textContent), ["Main: готов", "Extension: готов · индекс на диске найден"]);
+  assert.equal(ui.document.activeElement, select);
 });
 
 test("index maintenance explains when an external or disabled component cannot be managed", async () => {
@@ -2151,6 +2217,7 @@ test("index maintenance explains when an external or disabled component cannot b
   });
   await ui.flush();
   assert.equal(ui.elements.get("rebuildIndexButton").disabled, true);
+  assert.equal(ui.elements.get("rebuildAllIndexesButton").disabled, true);
   assert.equal(ui.elements.get("restartIndexButton").disabled, true);
   assert.match(ui.elements.get("indexActionsHint").textContent, /Внешний code-index/);
   state = "stale"; await ui.tick(60000);
@@ -2370,12 +2437,12 @@ test("opening, selecting and reloading a profile render its service status immed
     throw new Error(name);
   });
   await ui.flush();
-  assert.equal(headerState(ui,"Code Index"),"Требует подготовки");
+  assert.equal(headerState(ui,"Code Index"),"Сервис недоступен");
   assert.equal(headerState(ui,"BSL LS"),"Отключён");
   await ui.context.selectProfile("C:/fixture/other");
   assert.equal(headerState(ui,"Code Index"),"Процесс работает");
   await ui.elements.get("headerRefresh").onclick();
-  assert.equal(headerState(ui,"Code Index"),"Требует подготовки");
+  assert.equal(headerState(ui,"Code Index"),"Сервис недоступен");
   assert.match(ui.elements.get("headerRefresh").title, /автообновление/);
   assert.equal(ui.calls.filter(call => ["settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.status").length, 1);
@@ -2406,7 +2473,7 @@ test("opening and observing a profile keep managed status and service results co
   const detail=ui.elements.get("connections").children[1];detail.open=true;
   await ui.tick(60000);assert.equal(ui.elements.get("connections").children[1],detail);
   stale = true; await ui.tick(60000);
-  assert.equal(headerState(ui,"Code Index"),"Требует подготовки");
+  assert.equal(headerState(ui,"Code Index"),"Сервис недоступен");
   assert.equal(headerState(ui,"BSL LS"),"Проверка устарела");
   assert.doesNotMatch(contents(ui.elements.get("connections")), /API доступен|Индекс актуален/);
   assert.doesNotMatch(contents(ui.elements.get("connections")), /Product: готов/);
@@ -2576,11 +2643,11 @@ test("component catalogue shows checking instead of the previous ready receipt d
   assert.equal(edt.children[0].children[1].textContent,"Проверяется…");
 });
 
-test("enabled testing capabilities are not falsely claimed ready or treated as failed setup checks", async () => {
+test("enabled YaXUnit without launch evidence requires attention in the setup summary", async () => {
   const current={...read,profile:{...read.profile,testing:{yaxunit:true,vanessa:true}},values:{...read.values,edtUrl:"http://edt",v8stdUrl:"http://v8std"},readiness:{state:"ready",checkedAt:"2026-10-22T12:00:00Z",checks:[{id:"edt",state:"ready"},{id:"v8std",state:"ready"}]},summary:{components:[]}};
   const ui=screen(async()=>current);await ui.flush();
   const cards=ui.elements.get("componentCatalog").children.flatMap(group=>group.children[1].children),testCard=cards.find(item=>componentName(item)==="YaXUnit");
-  assert.equal(testCard.children[0].children[1].textContent,"Не настроен");assert.equal(ui.elements.get("headerStatusTitle").textContent,"Готово");
+  assert.equal(testCard.children[0].children[1].textContent,"Не настроен");assert.equal(ui.elements.get("headerStatusTitle").textContent,"Требует внимания");
 });
 
 test("header names non-component readiness failures and opens their details", async () => {
@@ -3678,4 +3745,82 @@ for (const expanded of [false, true]) test(`a rolling journal tail preserves the
   assert.equal(reading.open, true); assert.equal(ui.document.activeElement, reading.children[0]);
   assert.equal(ui.elements.get("journalResumeButton").hidden, false);
   assert.equal(Boolean(ui.elements.get("journalDialog").open), expanded);
+});
+
+for (const [code, tone] of [["launch_required", "warning"], ["ambiguous", "warning"], ["api_unsupported", "warning"], ["unsupported_response", "warning"], ["edt_unavailable", "error"], ["check_stale", "warning"], ["launch_verified", "good"]]) test(`YaXUnit ${code} agrees across its card, dialog, counters and setup summary`, async () => {
+  const checkedAt = new Date().toISOString(), expiresAt = new Date(Date.now() + 60000).toISOString();
+  const check = { ...yaxunit_result(code, code === "launch_verified" ? { target: { projectName: "Product", applicationId: "app", launchConfigurationName: "Unit tests" } } : {}), checkedAt, expiresAt };
+  const current = { ...read, instance: "default", settingsRevision: "r1", profile: { ...read.profile, testing: { yaxunit: true, vanessa: false } },
+    values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std", codeIndexEnabled: false, bslLsEnabled: false, openvikingEnabled: false },
+    testing: { yaxunit_config: {} }, componentChecks: [check], summary: { components: [] },
+    readiness: { state: check.state === "ready" ? "ready" : "blocked", checkedAt, expiresAt, checks: [{ id: "edt", label: "EDT", state: "ready" }, { id: "v8std", label: "v8std", state: "ready" }, { ...check, label: "YaXUnit" }] } };
+  const ui = screen(async name => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.edit") return { text: "testing: {}\n", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return new SettingsBackend("unused", "unused").main({ action: "document_fields", text: "testing: {}\n", layerScope: "profile" });
+    throw new Error(name);
+  });
+  await ui.flush(); ui.document.hidden = true;
+  const cards = ui.elements.get("componentCatalog").children.flatMap(group => group.children[1].children), card = cards.find(item => componentName(item) === "YaXUnit"), trigger = componentButton(card); trigger.isConnected = true;
+  await ui.context.openTestingSettings("yaxunit", trigger); await ui.flush();
+  assert.equal(ui.elements.get("testingDialogDiagnostic").textContent, check.title);
+  assert.equal(ui.elements.get("testingDialogState").attributes["data-tone"], tone);
+  assert.equal(ui.elements.get("testingLaunchSummary").hidden, false);
+  assert.match(ui.elements.get("testingLaunchText").textContent, new RegExp(check.state === "ready" ? "Проверенная цель: Unit tests" : (check.nextStep.includedInDetail ? check.detail : check.nextStep.detail).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(card.children[0].children[1].textContent, check.title);
+  assert.equal(card.children[0].children[1].className.includes(" ready"), check.state === "ready");
+  assert.equal(card.className.includes(" error"), check.state === "error");
+  assert.equal(ui.elements.get("countReady").textContent, check.state === "ready" ? "3" : "2");
+  assert.equal(ui.elements.get("countIssues").textContent, check.state === "ready" ? "0" : "1");
+  assert.equal(ui.elements.get("headerStatusTitle").textContent, check.state === "ready" ? "Готово" : "Требует внимания");
+  assert.equal(ui.elements.get("testingProbeButton").children.at(-1).textContent, "Проверить настройки запуска");
+  ui.elements.get("testingProbeButton").focus(); ui.context.renderDialogStates(); assert.equal(ui.document.activeElement, ui.elements.get("testingProbeButton"));
+  ui.elements.get("testingDialogClose").onclick(); assert.equal(ui.document.activeElement, trigger);
+});
+
+test("YaXUnit offers EDT names in the existing optional field and changing it invalidates green evidence", async () => {
+  const backend = new SettingsBackend("unused", "unused"), text = "testing:\n  yaxunit: true\n  yaxunit_config:\n    repository_id: product\n    runner: edt\n    results: results\n";
+  const current = { ...read, instance: "default", settingsRevision: "r1", profile: { ...read.profile, testing: { yaxunit: true, vanessa: false } }, testing: { yaxunit_config: {} },
+    componentChecks: [{ ...yaxunit_result("launch_verified", { choices: [{ name: "Discovered", projectName: "Product" }] }), checkedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() }] };
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.edit") return { text, baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return backend.main({ action: "document_fields", ...args });
+    if (name === "settings.document_patch") return backend.main({ action: "document_patch", ...args });
+    throw new Error(name);
+  });
+  await ui.flush(); ui.document.hidden = true; await ui.context.openTestingSettings("yaxunit", null); await ui.flush();
+  const input = treeInputs(ui).find(item => item.attributes?.["aria-label"] === "testing.yaxunit_config.launch_configuration");
+  assert.ok(input); assert.equal(input.value, ""); assert.equal(input.launchOptions.children[0].value, "Discovered");
+  input.focus(); input.value = "Discovered"; await input.onchange(); await ui.flush();
+  assert.equal(parse(ui.elements.get("settingsText").value).testing.yaxunit_config.launch_configuration, "Discovered");
+  assert.equal(ui.document.activeElement, input); assert.equal(ui.elements.get("testingDialogState").attributes["data-state"], "check_stale");
+  assert.notEqual(ui.elements.get("testingDialogDiagnostic").textContent, "Готово");
+});
+
+test("a successful background YaXUnit check immediately resolves its existing setup blocker", async () => {
+  const checkedAt = new Date(Date.now() - 1000).toISOString(), expiresAt = new Date(Date.now() + 60000).toISOString();
+  const current = { ...read, instance: "default", settingsRevision: "r1", profile: { ...read.profile, testing: { yaxunit: true, vanessa: false } },
+    values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std", codeIndexEnabled: false, bslLsEnabled: false, openvikingEnabled: false }, testing: { yaxunit_config: {} },
+    readiness: { state: "blocked", checkedAt, expiresAt, checks: [{ id: "edt", state: "ready" }, { id: "v8std", state: "ready" }, { ...yaxunit_result("launch_required"), label: "YaXUnit" }] } };
+  const ui = screen(async () => current); await ui.flush(); assert.equal(ui.elements.get("headerStatusTitle").textContent, "Требует внимания");
+  const check = { ...yaxunit_result("launch_verified"), checkedAt: new Date().toISOString(), expiresAt };
+  await ui.context.pollOperation("background-yaxunit", null, { id: "background-yaxunit", action: "refresh_readiness", component: "yaxunit", status: "completed", projectRoot: current.values.projectRoot, instance: current.instance,
+    result: { componentChecks: [check], readiness: { ...current.readiness, state: "ready", checks: [{ id: "edt", state: "ready" }, { id: "v8std", state: "ready" }, { ...check, label: "YaXUnit" }] } } });
+  assert.equal(ui.elements.get("headerStatusTitle").textContent, "Готово"); assert.equal(ui.elements.get("countReady").textContent, "3");
+  assert.equal(ui.context.catalogItems(current).find(item => item.id === "yaxunit").state, "ready");
+});
+
+test("disabled YaXUnit stays neutral, cannot probe launch settings and does not block ready setup", async () => {
+  const checkedAt = new Date().toISOString(), current = { ...read, instance: "default", profile: { ...read.profile, testing: { yaxunit: false, vanessa: false } },
+    values: { ...read.values, edtUrl: "http://edt", v8stdUrl: "http://v8std", codeIndexEnabled: false, bslLsEnabled: false, openvikingEnabled: false },
+    readiness: { state: "ready", checkedAt, checks: [{ id: "edt", state: "ready" }, { id: "v8std", state: "ready" }, { ...yaxunit_result("disabled"), label: "YaXUnit" }] } };
+  const ui = screen(async name => {
+    if (["settings.read", "settings.status"].includes(name)) return current;
+    if (name === "settings.edit") return { text: "testing: {}\n", baseRevision: "base", layerScope: "profile" };
+    return new SettingsBackend("unused", "unused").main({ action: "document_fields", text: "testing: {}\n", layerScope: "profile" });
+  });
+  await ui.flush(); ui.document.hidden = true; await ui.context.openTestingSettings("yaxunit", null); await ui.flush();
+  assert.equal(ui.elements.get("testingDialogState").attributes["data-tone"], "neutral"); assert.equal(ui.elements.get("testingProbeButton").disabled, true);
+  assert.equal(ui.elements.get("testingLaunchSummary").hidden, true); assert.equal(ui.elements.get("headerStatusTitle").textContent, "Готово");
 });

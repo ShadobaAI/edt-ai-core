@@ -876,36 +876,57 @@ export function index_status(body, root, data) {
 export async function rebuild_index(state, config, root, data, repositoryId, io = {}) {
   const repo = index_repositories(root, data).find(repo => repo.id === repositoryId);
   if (!repo) throw new ConfigError("Выберите EDT-проект из профиля.");
-  return maintain_index(state, config, root, data, repo, io);
+  return maintain_index(state, config, root, data, [repo], io);
+}
+export async function rebuild_all_indexes(state, config, root, data, io = {}) {
+  const repositories = index_repositories(root, data);
+  if (!repositories.length) throw new ConfigError("В репозиториях профиля не найдены проекты EDT с файлом .project.");
+  return { ...await maintain_index(state, config, root, data, repositories, io), all: true };
 }
 export async function restart_index(state, config, root, data, io = {}) {
   if (!index_repositories(root, data).length) throw new ConfigError("В репозиториях профиля не найдены проекты EDT с файлом .project.");
-  return maintain_index(state, config, root, data, null, io);
+  return maintain_index(state, config, root, data, [], io);
 }
-async function maintain_index(state, config, root, data, repo, io) {
+async function maintain_index(state, config, root, data, repositories, io) {
   if (!component_enabled(config, "code-index") || component_settings(config, "code-index").mode === "external")
     throw new ConfigError("Действие доступно для управляемого индекса кода.");
+  let completed = 0, current = null;
+  const progress = phase => {
+    // Losing an observer must never interrupt the index writer or its cleanup.
+    try { io.progress?.({ phase, total: repositories.length, completed, ...(current ? { repository: current.id, edtProject: current.edt_project } : {}) }); } catch {}
+  };
+  progress("preparing");
   const home = path.join(project_home(state, root), "code-index"), maintenance = path.join(home, "maintenance.json");
   const exe = await (io.installed || installed_runtime)(state, config, "code-index");
+  progress("waiting_lock");
   return operation_lock(state, async () => {
     if (!io.installed && artifact(state, "code-index") !== exe) throw new ConfigError("Версия индексатора изменилась. Повторите действие после завершения обновления.");
     await operation_lock(home, () => begin_maintenance(home, root));
     let keepMaintenance = false, stopped = false;
     try {
       signal_component(state, root, "code-index", true);
+      progress("waiting_readers");
       for (let i = 0; i < 12 && (await active_readers(state, root)).length; i++) await sleep(250);
       if ((await active_readers(state, root)).length) throw new ConfigError("Индекс используется. Завершите текущие запросы и повторите действие.");
       const environment = native_environment(config);
+      progress("stopping");
       try { await (io.stop || stop_daemon)(state, root, undefined, environment); stopped = true; }
       catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + safe_error_message(error)); }
-      if (repo) try { await (io.run || run_index)(exe, inside(root, repo.path), home, environment, state); }
-      catch (error) { if (error.outcomeUnknown) keepMaintenance = true; throw error; }
+      for (const repo of repositories) {
+        current = repo; progress("indexing");
+        try { await (io.run || run_index)(exe, inside(root, repo.path), home, environment, state); completed++; }
+        catch (error) { if (error.outcomeUnknown) keepMaintenance = true; throw error; }
+      }
+      current = null; progress("restarting");
       await (io.restart || ensure_daemon)(state, root, data, exe, undefined, environment); stopped = false;
+      progress("checking");
       const checked = await (io.smoke || smoke)(state, config, root, data, "code-index", 90, false, exe);
-      return { projectRoot: root, ...(repo ? { repository: repo.id, edtProject: repo.edt_project } : {}), state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
+      return { projectRoot: root, ...(repositories.length === 1 ? { repository: repositories[0].id, edtProject: repositories[0].edt_project } : {}),
+        ...(repositories.length ? { rebuilt: repositories.map(repo => ({ repository: repo.id, edtProject: repo.edt_project })) } : {}),
+        state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
     } finally {
       try {
-        if (stopped && !keepMaintenance) try { await (io.restart || ensure_daemon)(state, root, data, exe, undefined, native_environment(config)); }
+        if (stopped && !keepMaintenance) try { progress("restoring"); await (io.restart || ensure_daemon)(state, root, data, exe, undefined, native_environment(config)); }
         catch (error) { keepMaintenance = true; throw uncertain_update("Восстановление сервиса индекса требует проверки: " + safe_error_message(error)); }
         if (!keepMaintenance && read_json(maintenance)?.ownerId === runtimeOwner) fs.rmSync(maintenance, { force: true });
         signal_component(state, root, "code-index", true);

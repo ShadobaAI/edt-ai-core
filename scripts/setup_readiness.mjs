@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { ROOT, load, stable, atomic_write, inside } from "./common.mjs";
+import { randomUUID } from "node:crypto";
+import { ROOT, load, stable, atomic_write, inside, object, ConfigError } from "./common.mjs";
 import { exists, is_file, sha256, instance_directory, instance_name, reconnect_file, project_directory } from "./project_paths.mjs";
 import { edt_connection, repository_projects } from "./directory_context.mjs";
 import { setup_knowledge_status, edt_project_building } from "./setup_probe.mjs";
@@ -8,9 +9,12 @@ import { knowledge_evidence_revision } from "./components.mjs";
 import { verification_limits, sanitize_setup_result, register_diagnostic_secrets } from "./diagnostics.mjs";
 import { project_profile } from "./profile.mjs";
 import { which } from "./processes.mjs";
+import { yaxunit_result, yaxunit_unchecked } from "./yaxunit_readiness.mjs";
 
 const digest = file => is_file(file) ? sha256(fs.readFileSync(file)) : "missing";
 const receipt_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".readiness.json");
+const observations_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".readiness-observations.json");
+const checked_components = ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"];
 const local_bsl = config => config.mcp.managed["bsl-ls"].mode !== "external";
 
 // Local API compatibility survives time passing and unrelated project changes.
@@ -45,10 +49,53 @@ function component_record(state, config, check, checkedAt, fingerprint) {
     ...(durable ? { validity: "inputs", inputRevision, expiresAt: null } : {
       expiresAt: new Date(Math.min(Date.parse(observedAt) + 15 * 60 * 1000, Number.isFinite(Date.parse(check.expiresAt)) ? Date.parse(check.expiresAt) : Infinity)).toISOString() }) }) };
 }
-export const readiness_receipt_revision = (state, root) => digest(receipt_file(state, root));
+export function readiness_receipt_revision(state, root, components = null) {
+  const file = receipt_file(state, root);
+  if (!components) return digest(file);
+  let receipt;
+  try { receipt = JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch (error) {
+    return error.code === "ENOENT" ? sha256(stable({ version: 3, components: {} })) : digest(file);
+  }
+  if (!object(receipt) || receipt.version !== 3 || receipt.components !== undefined && !object(receipt.components)) return digest(file);
+  // Independent components may merge, but full setup and unknown receipt fields
+  // must still match. A missing receipt is equivalent to an empty component cache.
+  return sha256(stable({ ...receipt, components: Object.fromEntries(components
+    .filter(id => Object.hasOwn(receipt.components || {}, id)).map(id => [id, receipt.components[id]])) }));
+}
+
+function component_observations(state, root) {
+  try {
+    const record = JSON.parse(fs.readFileSync(observations_file(state, root), "utf8"));
+    if (record?.version !== 1 || !object(record.components)) return {};
+    return Object.fromEntries(checked_components.filter(id => typeof record.components[id] === "string" && /^[a-f0-9-]{36}$/.test(record.components[id]))
+      .map(id => [id, record.components[id]]));
+  } catch { return {}; }
+}
+
+// Call while holding the shared state lock, both when reserving and committing.
+// Tickets order observations across MCP processes without relying on wall clocks.
+// Keep reservations outside the receipt: a superseded probe must not renew it.
+export function begin_component_checks(state, root, components) {
+  const ids = [...new Set(components)];
+  if (!ids.length || ids.some(id => !checked_components.includes(id))) throw new ConfigError("Выберите компонент для проверки.");
+  const id = randomUUID(), current = component_observations(state, root);
+  for (const component of ids) current[component] = id;
+  const observation = { id, components: ids, root, instance: instance_name(), receiptRevision: readiness_receipt_revision(state, root, ids) };
+  atomic_write(observations_file(state, root), JSON.stringify({ version: 1, components: current }));
+  return observation;
+}
+
+export function component_checks_current(state, root, observation) {
+  if (root !== observation.root || instance_name() !== observation.instance) return false;
+  const current = component_observations(state, root);
+  return observation.components.every(id => current[id] === observation.id) &&
+    observation.receiptRevision === readiness_receipt_revision(state, root, observation.components);
+}
 function passed(item, profile) {
   if (item.state === "ready") return true;
   if (item.state !== "disabled") return false;
+  if (item.id === "yaxunit" && profile.testing?.yaxunit === true) return false;
   const authority = { "code-index": "code_index", "bsl-ls": "bsl_ls" }[item.id];
   return !authority || profile.authorities?.[authority] !== item.id;
 }
@@ -95,7 +142,7 @@ export function readiness_fingerprint(state, config, profile, assets = setup_ass
   })));
 }
 
-export function save_readiness(state, config, profile, managed, external) {
+export function save_readiness(state, config, profile, managed, external, testing = []) {
   register_diagnostic_secrets(config);
   const assets = setup_assets();
   const knowledge = setup_knowledge_status(profile, config, config.active_project, external.openviking, state);
@@ -104,6 +151,7 @@ export function save_readiness(state, config, profile, managed, external) {
     ...managed.map(item => ({ id: item.name, label: ({ "code-index": "Индекс кода", "bsl-ls": "BSL LS", policy: "Политика" })[item.name] || item.name, state: item.state === "disabled" ? "disabled" : item.ready ? "ready" : item.state || "error", detail: item.detail,
       ...(item.repositories ? { repositories: item.repositories } : {}) })),
     ...Object.entries(external).map(([id, item]) => ({ id, label: id === "edt" ? "EDT и готовность проектов" : id, state: item.ready ? "ready" : id === "edt" && edt_project_building(item) ? "building" : item.connected ? "not_verified" : "error", ...(item.failure ? { failure: item.failure } : {}), detail: item.detail || (!item.configured ? "Укажите адрес сервера в настройках подключений." : id === "edt" && item.projectReadiness !== "verified" ? "Не подтверждены точные пути, имена и готовность EDT-проектов." : "") })),
+    { ...(testing.find(item => item.id === "yaxunit") || yaxunit_unchecked(profile)), label: "YaXUnit" },
     ...assets.checks];
   const result = { state: checks.every(item => passed(item, profile)) ? "ready" : "blocked", checkedAt: new Date().toISOString(), checks, scope: "setup", knowledge,
     verificationLimits: verification_limits(knowledge.ready),
@@ -113,6 +161,7 @@ export function save_readiness(state, config, profile, managed, external) {
   const safe = sanitize_setup_result(result);
   const components = component_receipt(state, config.active_project).components || {};
   for (const id of [...managed.map(item => item.name), ...Object.keys(external)]) delete components[id];
+  delete components.yaxunit;
   const bsl = managed.find(item => item.name === "bsl-ls");
   if (bsl && local_bsl(config) && ["ready", "error"].includes(bsl.state))
     components["bsl-ls"] = component_record(state, config, { ...bsl, id: "bsl-ls" }, safe.checkedAt);
@@ -165,7 +214,7 @@ export function read_component_checks(state, config, profile) {
     }
     if (!Number.isFinite(Date.parse(result.expiresAt))) return [];
     return [{ ...result, ...(saved !== fingerprint || Date.now() < Date.parse(result.checkedAt) || Date.now() - Date.parse(result.checkedAt) > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt)
-      ? { state: "check_stale", lastState: result.lastState || result.state, detail: saved === fingerprint && result.state === "check_stale" && result.detail ? result.detail : "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." } : {}) }];
+      ? { ...(result.id === "yaxunit" ? yaxunit_result("check_stale", { target: undefined }) : { state: "check_stale", detail: saved === fingerprint && result.state === "check_stale" && result.detail ? result.detail : "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." }), lastState: result.lastState || result.state } : {}) }];
   });
 }
 
@@ -183,9 +232,17 @@ export async function read_readiness(state, config, profile) {
     if (!Number.isFinite(age) || age < 0 || typeof receipt.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(receipt.fingerprint))
       return { ...empty, reason: "Не удалось подтвердить сохранённую проверку готовности. Повторите проверку." };
     if (age > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt) || receipt.fingerprint !== readiness_fingerprint(state, config, data))
-      return { ...result, state: "stale", verificationLimits: verification_limits(), reason: "Настройки или файлы изменились либо проверка устарела. Повторите проверку готовности." };
+      return { ...result, state: "stale", checks: result.checks.map(item => item.id === "yaxunit" ? { ...yaxunit_result("check_stale"), label: item.label, lastState: item.state, checkedAt: result.checkedAt, expiresAt: result.expiresAt } : item),
+        verificationLimits: verification_limits(), reason: "Настройки или файлы изменились либо проверка устарела. Повторите проверку готовности." };
     if ((result.state === "ready") !== result.checks.every(item => passed(item, data)))
       return { ...empty, reason: "Сохранённый результат не соответствует обязательным компонентам. Повторите проверку готовности." };
-    return { ...result, verificationLimits: verification_limits(result.knowledge?.ready === true) };
+    // An addressed YaXUnit check can resolve (or introduce) its setup blocker.
+    // Keep the original receipt's age and expiry: partial checks never renew it.
+    const saved = read_component_checks(state, config, data).find(item => item.id === "yaxunit");
+    const previous = result.checks.find(item => item.id === "yaxunit");
+    const yaxunit = data.testing?.yaxunit !== true ? yaxunit_unchecked(data) : saved && (!previous || Date.parse(saved.checkedAt) >= Date.parse(result.checkedAt)) ? saved : previous || yaxunit_unchecked(data);
+    const replacement = { ...yaxunit, label: "YaXUnit" };
+    const checks = previous ? result.checks.map(item => item.id === "yaxunit" ? replacement : item) : [...result.checks, replacement];
+    return { ...result, checks, state: checks.every(item => passed(item, data)) ? "ready" : "blocked", verificationLimits: verification_limits(result.knowledge?.ready === true) };
   } catch { return empty; }
 }

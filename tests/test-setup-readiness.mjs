@@ -167,11 +167,11 @@ test("automatic readiness never prepares unapproved components or downloads miss
   const download=t.mock.method(globalThis,"fetch",async()=>{throw new Error("Unexpected download");});
   await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true,edtUrl:"",v8stdUrl:""}});
   const unprepared=await backend.main({action:"refresh_readiness",scope});
-  for(const component of ["code-index","bsl-ls"]){const item=unprepared.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не запущен|не проверена/);}
+  for(const component of ["code-index","bsl-ls"]){const item=unprepared.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/недоступен|не проверена/);}
   grant_preparation(f.state,f.root,["code-index","bsl-ls"]);
   const file=path.join(instance_directory(f.state,f.root),"first.preparation.json"),before=fs.readFileSync(file);
   const missing=await backend.main({action:"refresh_readiness",scope});
-  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/не запущен|не установлен/);}
+  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/недоступен|не установлен/);}
   assert.deepEqual(fs.readFileSync(file),before);assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   process.env.EDT_AI_INSTANCE="another";
   const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.equal(other.managed.find(item=>item.name==="code-index").state,"stopped");
@@ -315,7 +315,7 @@ test("passive managed probes preserve index expiry and durable BSL evidence with
   t.mock.method(globalThis,"fetch",(url,options)=>String(url)==="http://127.0.0.1:45678/health"?Promise.resolve(new Response(JSON.stringify({pid:process.pid,status:"running",paths:[]}))):fetch(url,options));
   save_readiness(f.state,config,f.profile,[{name:"code-index",state:"stale",ready:false},{name:"bsl-ls",state:"ready",ready:true}],{edt:{ready:true},v8std:{ready:true}});
   const file=path.join(instance_directory(f.state,f.root),"first.readiness.json"),receipt=JSON.parse(fs.readFileSync(file,"utf8"));
-  const checkedAt=new Date(Date.now()-16*60000).toISOString(),expiresAt=new Date(Date.now()-60000).toISOString();
+  const observedAt=Date.now(),checkedAt=new Date(observedAt-16*60000).toISOString(),expiresAt=new Date(observedAt-60000).toISOString();
   receipt.result.checkedAt=checkedAt;receipt.result.expiresAt=expiresAt;fs.writeFileSync(file,JSON.stringify(receipt));
   // Reproduce the old loop: a newer liveness-only observation used to hide
   // the older setup API result as soon as its 15-minute validity expired.
@@ -426,7 +426,10 @@ test("index observation never launches an unapproved, stopped, foreign or modifi
   fs.writeFileSync(ownerFile, JSON.stringify(owner)); fs.writeFileSync(exe, "modified artifact");
   assert.match((await refresh()).managed[0].detail, /исполняемый файл/);
   fs.writeFileSync(path.join(home, "daemon.json"), "{}");
-  assert.equal((await refresh()).managed[0].state, "stopped"); assert.equal(starts.length, 0);
+  const unavailable = (await refresh()).managed[0];
+  assert.equal(unavailable.state, "stopped"); assert.equal(starts.length, 0);
+  assert.match(unavailable.detail, /Сервис индекса недоступен.*Подготовить и проверить/);
+  assert.doesNotMatch(unavailable.detail, /не запущен|разрешённую подготовку/);
 });
 
 test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{

@@ -58,7 +58,8 @@ import {
 import { managed_components, component_enabled, grant_preparation, require_preparation, component_settings } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, index_repositories, repository_projects } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
-import { read_readiness, save_readiness, read_component_checks, save_component_checks, readiness_receipt_revision, readiness_fingerprint, bsl_readiness_fingerprint } from "./setup_readiness.mjs";
+import { read_readiness, save_readiness, read_component_checks, save_component_checks, begin_component_checks, component_checks_current, readiness_receipt_revision, readiness_fingerprint, bsl_readiness_fingerprint } from "./setup_readiness.mjs";
+import { probe_yaxunit } from "./yaxunit_readiness.mjs";
 import { project_directory } from "./project_paths.mjs";
 import { knowledge_status } from "./knowledge.mjs";
 
@@ -823,7 +824,7 @@ export class SettingsBackend {
       layerScope: "profile", layerPath: file.path, textChanged: file.textChanged, layerChanges: file.changes,
       layerChangesTruncated: file.changesTruncated, revision: prepared.summary.revision } };
   }
-  async main(request) {
+  async main(request, reportProgress = () => {}, { includeYaxunit = false } = {}) {
     const action = request.action;
     if (action === "transfer_context") {
       const config = this.current(), root = config.active_project;
@@ -1021,6 +1022,8 @@ export class SettingsBackend {
       if (component !== undefined && !["edt", "v8std", "openviking", ...managed_components, "yaxunit", "vanessa"].includes(component)) throw new ConfigError("Выберите компонент для проверки.");
       if (component && Object.keys(request.connections || {}).some(name => name !== component)) throw new ConfigError("Адресная проверка принимает настройки только выбранного компонента.");
       const profile = project_profile(root), original = stable(config), initialInputs = readiness_fingerprint(this.STATE, config, profile);
+      const observedComponents = component ? [component] : ["edt", "v8std", "openviking"];
+      const initialReceipt = readiness_receipt_revision(this.STATE, root, observedComponents), instance = instance_name();
       const initialBsl = component === "bsl-ls" && component_settings(config, component).mode !== "external" ? bsl_readiness_fingerprint(this.STATE, config) : null;
       if (request.connections !== undefined) {
         if (!object(request.connections) || Object.keys(request.connections).some(name => !["edt", "v8std", "openviking"].includes(name)))
@@ -1036,6 +1039,8 @@ export class SettingsBackend {
           config.mcp.required[name].url = url ? validate_url(url, name) : "";
         }
       }
+      const draft = original !== stable(config);
+      const observation = !request.collectOnly && !draft ? await operation_lock(this.STATE, () => begin_component_checks(this.STATE, root, observedComponents), 1) : null;
       let result, checks;
       if (managed_components.includes(component)) {
         const runtime = await import("./runtime.mjs"), options = component_settings(config, component);
@@ -1060,14 +1065,14 @@ export class SettingsBackend {
           } catch (error) { check = { id: component, state: "error", detail: safe_error_message(error) }; }
         } else if (component === "code-index") {
           const health = await runtime.daemon_health(path.join(project_directory(this.STATE, root), "code-index"));
-          check = health && (retained || expired) ? retained || expired : { ...check, state: health ? "running" : "stopped", detail: health ? "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
+          check = health && (retained || expired) ? retained || expired : { ...check, state: health ? "running" : "stopped", detail: health ? "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : "Сервис индекса недоступен. Нажмите «Подготовить и проверить»." };
           let prepared = false;
           try { require_preparation(this.STATE, root, component); prepared = true; } catch { /* Observation never grants preparation permission. */ }
           if (health && prepared) {
             try {
               const observed = await runtime.observe_index(this.STATE, config, root, profile);
               check = observed ? { id: component, state: observed.index_state, repositories: observed.index.repositories }
-                : { id: component, state: "stopped", detail: "Процесс не запущен. Используйте разрешённую подготовку сервисов." };
+                : { id: component, state: "stopped", detail: "Сервис индекса недоступен. Нажмите «Подготовить и проверить»." };
             } catch (error) {
               const busy = error.remote !== true && error.code === "RUNTIME_BUSY";
               check = { id: component, state: busy ? "preparing" : "error", detail: busy ? "Подготовка окружения выполняется…" : safe_error_message(error) };
@@ -1095,25 +1100,30 @@ export class SettingsBackend {
           }
         }
         checks = [check]; result = { managed: [{ name: component, ...check, ready: check.state === "ready" }], external: {} };
-      } else if (["yaxunit", "vanessa"].includes(component)) {
+      } else if (component === "yaxunit") {
+        checks = [await probe_yaxunit(config, root, profile)];
+        result = { managed: [], external: {} };
+      } else if (component === "vanessa") {
         const enabled = profile.testing[component], configured = Boolean(profile.testing[component + "_config"]);
         checks = [{ id: component, state: !enabled ? "disabled" : configured ? "configured" : "missing_config",
           detail: !enabled ? "Возможность отключена в профиле." : configured ? "Настройка профиля проверена. Работоспособность тестового контура не проверена; запуск тестов требует отдельного разрешения." : "В профиле отсутствует блок testing." + component + "_config." }];
         result = { managed: [], external: {} };
       } else {
         const { probe_connections, edt_project_building } = await import("./setup_probe.mjs");
-        result = await probe_connections(config, root, profile, this.STATE, component);
+        result = await probe_connections(config, root, profile, this.STATE, component, includeYaxunit);
         checks = Object.entries(result.external).map(([id, item]) => ({ id, state: item.ready === true ? "ready" : item.configured === false ? "missing_config" : id === "edt" && edt_project_building(item) ? "building" : item.connected ? "not_verified" : "error", detail: item.detail, repositories: item.repositories, expiresAt: item.readiness?.expiresAt }));
+        checks.push(...(result.componentChecks || []));
       }
-      const draft = original !== stable(config);
-      if (request.collectOnly) return sanitize_setup_result({ ...result, component, componentChecks: checks, draft, projectRoot: root, instance: instance_name() });
+      if (request.collectOnly) return sanitize_setup_result({ ...result, component, componentChecks: checks, draft, projectRoot: root, instance });
       let superseded;
       const componentChecks = await operation_lock(this.STATE, () => {
         const latest = this.effective(this.current());
-        superseded = initialInputs !== readiness_fingerprint(this.STATE, latest, project_profile(root)) || initialBsl !== null && initialBsl !== bsl_readiness_fingerprint(this.STATE, latest);
+        superseded = latest.active_project !== root || instance_name() !== instance ||
+          (observation ? !component_checks_current(this.STATE, root, observation) : initialReceipt !== readiness_receipt_revision(this.STATE, root, observedComponents)) ||
+          initialInputs !== readiness_fingerprint(this.STATE, latest, project_profile(root)) || initialBsl !== null && initialBsl !== bsl_readiness_fingerprint(this.STATE, latest);
         return !superseded && !draft ? save_component_checks(this.STATE, config, profile, checks) : checks;
       });
-      return sanitize_setup_result({ ...result, component, componentChecks, draft, superseded, projectRoot: root, instance: instance_name() });
+      return sanitize_setup_result({ ...result, component, componentChecks, draft, superseded, projectRoot: root, instance });
     }
     if (action === "read" || action === "status") {
       const { installed_versions } = await import("./runtime.mjs");
@@ -1397,29 +1407,37 @@ export class SettingsBackend {
       return { ...result, projectRoot };
     }
     if (action === "rebuild_index" || action === "restart_index") {
+      if (action === "rebuild_index" && (Object.hasOwn(request, "all") && request.all !== true || (request.all === true) === Object.hasOwn(request, "repository")))
+        throw new ConfigError("Выберите один EDT-проект или все EDT-проекты.");
       const runtime = await import("./runtime.mjs"), config = this.effective(this.current()), [root, data] = runtime.project(config.active_project, config, true);
       authorize_preparation(request, root);
       grant_preparation(this.STATE, root, ["code-index"]);
-      return action === "rebuild_index" ? runtime.rebuild_index(this.STATE, config, root, data, request.repository) : runtime.restart_index(this.STATE, config, root, data);
+      const io = { progress: reportProgress };
+      return action === "rebuild_index" ? request.all === true ? runtime.rebuild_all_indexes(this.STATE, config, root, data, io) : runtime.rebuild_index(this.STATE, config, root, data, request.repository, io) : runtime.restart_index(this.STATE, config, root, data, io);
     }
     if (action === "refresh_readiness") {
       const config = this.effective(this.current()), root = config.active_project;
       if (!root || request.scope !== preparation_scope(root)) throw new ConfigError("Проверка относится к другой папке или экземпляру.");
       const components = request.component ? [request.component] : ["edt", "v8std", "openviking", ...managed_components, "yaxunit", "vanessa"];
       if (request.connections !== undefined) throw new ConfigError("Обновление состояния использует сохранённые настройки.");
-      const profile = project_profile(root), initialInputs = readiness_fingerprint(this.STATE, config, profile), initialReceipt = readiness_receipt_revision(this.STATE, root);
+      const profile = project_profile(root), initialInputs = readiness_fingerprint(this.STATE, config, profile), instance = instance_name();
       const initialBsl = components.includes("bsl-ls") && component_settings(config, "bsl-ls").mode !== "external" ? bsl_readiness_fingerprint(this.STATE, config) : null;
-      const results = await Promise.all(components.map(component => this.main({ action: "probe", component, collectOnly: true })));
+      const observation = await operation_lock(this.STATE, () => begin_component_checks(this.STATE, root, components), 1);
+      const combined = !request.component;
+      const results = await Promise.all(components.filter(component => !combined || component !== "yaxunit")
+        .map(component => this.main({ action: "probe", component, collectOnly: true }, reportProgress, { includeYaxunit: combined && component === "edt" })));
       let superseded;
       const componentChecks = await operation_lock(this.STATE, () => {
         const latest = this.effective(this.current());
-        superseded = initialReceipt !== readiness_receipt_revision(this.STATE, root) || initialInputs !== readiness_fingerprint(this.STATE, latest, project_profile(root)) || initialBsl !== null && initialBsl !== bsl_readiness_fingerprint(this.STATE, latest);
+        superseded = latest.active_project !== root || instance_name() !== instance || !component_checks_current(this.STATE, root, observation) || initialInputs !== readiness_fingerprint(this.STATE, latest, project_profile(root)) || initialBsl !== null && initialBsl !== bsl_readiness_fingerprint(this.STATE, latest);
         const checks = results.flatMap(item => item.componentChecks);
         return superseded ? checks : save_component_checks(this.STATE, config, profile, checks);
       });
-      return sanitize_setup_result({ projectRoot: root, instance: instance_name(), component: request.component,
+      const readiness = superseded ? null : await read_readiness(this.STATE, config, profile);
+      return sanitize_setup_result({ projectRoot: root, instance, component: request.component,
         componentChecks, managed: results.flatMap(item => item.managed || []),
         external: Object.assign({}, ...results.map(item => item.external)),
+        ...(["ready", "blocked", "stale"].includes(readiness?.state) ? { readiness } : {}),
         draft: false, superseded });
     }
     if (action === "check") {
@@ -1491,16 +1509,25 @@ export class SettingsBackend {
       } };
       const { probe_connections } = await import("./setup_probe.mjs");
       atomic_write(reconnect_file(this.STATE, root), JSON.stringify({ id: randomUUID() }));
+      const initialReceipt = readiness_receipt_revision(this.STATE, root), instance = instance_name();
+      const observation = await operation_lock(this.STATE, () => begin_component_checks(this.STATE, root, [...managed_components, "edt", "v8std", "openviking", "yaxunit"]), 1);
       const [components, policyResult, probes] = await Promise.all([
         (async () => { const items = []; for (const component of managed_components) items.push(await check_component(component)); return items; })(),
-        check_policy(), probe_connections(config, root, data, this.STATE),
+        check_policy(), probe_connections(config, root, data, this.STATE, null, true),
       ]);
       const managed = [...components, policyResult], external = probes.external;
       const bsl = managed.find(item => item.name === "bsl-ls");
       if (bsl?.inputRevision && bsl.inputRevision !== bsl_readiness_fingerprint(this.STATE, config)) {
         bsl.ready = false; bsl.state = "check_stale"; bsl.detail = "Окружение BSL LS изменилось во время проверки. Повторите проверку.";
       }
-      const readiness = save_readiness(this.STATE, config, data, managed, external);
+      const inputs = readiness_fingerprint(this.STATE, config, data), testing = probes.componentChecks;
+      let superseded = false;
+      const readiness = await operation_lock(this.STATE, () => {
+        const latest = this.effective(this.current());
+        superseded = latest.active_project !== root || instance_name() !== instance || !component_checks_current(this.STATE, root, observation) || initialReceipt !== readiness_receipt_revision(this.STATE, root) || inputs !== readiness_fingerprint(this.STATE, latest, project_profile(root));
+        return superseded ? null : save_readiness(this.STATE, config, data, managed, external, testing);
+      });
+      if (superseded) return sanitize_setup_result({ managed, external, componentChecks: testing, superseded, projectRoot: root, instance, fullReadiness: "not_verified" });
       const savedBsl = read_component_checks(this.STATE, config, data).find(item => item.id === "bsl-ls" && item.validity === "inputs");
       if (savedBsl && bsl) Object.assign(bsl, savedBsl, { ready: savedBsl.state === "ready" });
       return sanitize_setup_result({
@@ -1509,6 +1536,7 @@ export class SettingsBackend {
         instance: instance_name(),
         actionPolicy: effective_policy(data.policy),
         external,
+        componentChecks: [...managed.map(item => ({ ...item, id: item.name })), ...readiness.checks.filter(item => ["edt", "v8std", "openviking", "yaxunit"].includes(item.id))],
         readiness,
         fullReadiness: readiness.state === "ready" ? "verified" : "not_ready",
         readinessScope: "setup",
@@ -1528,10 +1556,14 @@ if (entrypoint(import.meta.url)) {
       if (Buffer.byteLength(input) > 26 * 1024 * 1024)
         throw new Error("Запрос превышает допустимый размер");
     }
-    const result = await new SettingsBackend().main(JSON.parse(input));
+    const result = await new SettingsBackend().main(JSON.parse(input), progress => {
+      if (process.connected) try { process.send({ type: "progress", progress }, () => {}); } catch {}
+    });
     console.log(JSON.stringify({ ok: true, result }));
   } catch (error) {
     console.log(JSON.stringify({ ok: false, error: safe_error_message(error), ...(error.code ? { errorCode: error.code } : {}), ...(Number.isSafeInteger(error.documentLine) ? { documentLine: error.documentLine } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
     process.exitCode = 1;
+  } finally {
+    if (process.connected) process.disconnect();
   }
 }

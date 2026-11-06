@@ -40,6 +40,9 @@ Preserve directory, instance and MCP session isolation. Profile history and
 path checks, schema validation, source protection or the shared action policy.
 Do not pin an external MCP tool catalogue instead of checking its live API.
 
+Documentation in `docs/` must describe only current functionality, contracts,
+limitations and usage. Do not include project development history or changelogs.
+
 ## Verification
 
 Initial setup requires Node.js 22+ and dev dependencies:

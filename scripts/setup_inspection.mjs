@@ -59,11 +59,16 @@ export function setup_inspection(read, state) {
   } : null;
   if (knowledgeSetup && read.knowledge.configured &&
       !(["ready", "blocked"].includes(read.readiness?.state) && read.readiness.knowledge?.ready)) next.push("verify_knowledge_readiness");
+  const yaxunit = read.componentChecks?.find(item => item.id === "yaxunit") || read.readiness?.checks?.find(item => item.id === "yaxunit");
+  if (profile.testing?.yaxunit === true && yaxunit?.state !== "ready") {
+    issues.push({ code: yaxunit?.reasonCode || "yaxunit_not_checked", component: "yaxunit", state: yaxunit?.state || "not_checked", detail: yaxunit?.detail, nextStep: yaxunit?.nextStep });
+    next.push("verify_yaxunit_launch_settings");
+  }
   return {
     coreVersion: core_version, projectRoot: values.projectRoot, instance, profile: { ...profile, ...(document?.compatibility ? { compatibility: document.compatibility } : {}) },
     values, connectionSources, valueSources: read.valueSources, repositories, managed, preparationScope, projectSelection, operation,
     detected: { edt: detected || null, projects, ...(directoryContext?.edt?.errors ? { errors: directoryContext.edt.errors } : {}) },
-    issues, nextSteps: next, readiness: read.readiness, knowledge: read.knowledge, knowledgeSetup,
+    issues, nextSteps: next, readiness: read.readiness, componentChecks: read.componentChecks, knowledge: read.knowledge, knowledgeSetup,
     environmentCompatibility: read.environmentCompatibility,
     bindingGuidance: "When a runtime's selectedDirectory is empty, call its core_runtime_status with this projectRoot once. A new chat/restart does not supply missing roots. Do not spawn substitute relays or inspect plugin source for setup.",
   };

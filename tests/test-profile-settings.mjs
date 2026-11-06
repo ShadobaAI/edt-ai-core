@@ -84,7 +84,7 @@ test("addressed external probe contacts only its endpoint and preserves a full s
   assert.equal(read_component_checks(f.state, config, project_profile(f.root)).find(item=>item.id==="v8std").state, "check_stale");
 });
 
-test("testing probes validate configured contours without claiming their runtime works", async t => {
+test("YaXUnit requires EDT launch evidence while Vanessa retains its configured contour state", async t => {
   const f = fixture(t); environment(t, f.env);
   f.profile.testing.yaxunit = true;
   f.profile.testing.yaxunit_config = { repository_id: "product", runner: "edt", results: "test-results" };
@@ -93,7 +93,9 @@ test("testing probes validate configured contours without claiming their runtime
   f.save(); const backend = new SettingsBackend();
   for (const component of ["yaxunit", "vanessa"]) {
     const result = await backend.main({ action: "probe", component });
-    assert.equal(result.componentChecks[0].state, "configured"); assert.match(result.componentChecks[0].detail, /не проверена/);
+    assert.equal(result.componentChecks[0].state, component === "yaxunit" ? "error" : "configured");
+    if (component === "yaxunit") assert.equal(result.componentChecks[0].reasonCode, "edt_unavailable");
+    else assert.match(result.componentChecks[0].detail, /не проверена/);
     assert.deepEqual(result.external, {});
   }
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
