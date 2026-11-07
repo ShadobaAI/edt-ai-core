@@ -2,10 +2,12 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { own_windows_tree, join_windows_reader_job } from "./windows_process.mjs";
-import { linux_subreaper, linux_signal_children, linux_terminate_children } from "./unix_process.mjs";
+import { linux_subreaper, linux_signal_children, linux_terminate_children, linux_finish_daemon_lease, linux_retain_daemon_barrier, linux_pidfd_exited, linux_pidfd_signal, linux_close_fd } from "./unix_process.mjs";
+import { create_diagnostic_logger } from "./diagnostics.mjs";
 
-let child, job, stopping = false, exitCode = 0, escalation, strictLinux = false, draining = false, forwarding = false;
-const finish = () => { clearTimeout(escalation); process.exit(exitCode); };
+let child, job, stopping = false, exitCode = 0, escalation, strictLinux = false, draining = false, forwarding = false, daemonGuard = false;
+let ownerFd = null, guardFd = null, guardTimer = null, guardMisses = 0, daemonCommitted = false, guardId = null, guardDisconnected = false, guardKillRequested = false;
+const finish = () => { clearTimeout(escalation); clearInterval(guardTimer); process.exit(exitCode); };
 const signal_group = signal => {
   try { process.kill(-child.pid, signal); return true; }
   catch (error) { if (error.code === "ESRCH") return false; throw error; }
@@ -13,6 +15,7 @@ const signal_group = signal => {
 function stop() {
   if (stopping) return;
   stopping = true;
+  clearInterval(guardTimer);
   // Exiting closes the Windows Job handle, including all inherited descendants.
   if (process.platform === "win32") return finish();
   if (strictLinux) {
@@ -33,25 +36,64 @@ function stop() {
     else child.once("exit", finish);
   }, 2000);
 }
+function monitorDaemonGuard() {
+  if (stopping) return;
+  try {
+    if ((!daemonCommitted && linux_pidfd_exited(ownerFd)) || linux_pidfd_exited(guardFd) || ++guardMisses > 5) {
+      // The descriptor pins this exact guard, even if its PID has been reused.
+      if (!linux_pidfd_exited(guardFd)) { guardKillRequested = true; linux_pidfd_signal(guardFd, 9); }
+      return stop();
+    }
+    if (process.connected) process.send({ guardPing: true }, () => {});
+  } catch (error) {
+    try { linux_retain_daemon_barrier(process.cwd(), "daemon_guard_monitor_unknown"); } catch {}
+    if (process.env.EDT_AI_STATE_DIR) create_diagnostic_logger("index-daemon", process.env.EDT_AI_STATE_DIR)
+      .event("daemon_guard_monitor_failed", { supervisorPid: process.pid, error }, "error");
+    stop();
+  }
+}
 async function drainLinux() {
   if (draining) return; draining = true; clearTimeout(escalation);
-  const deadline = performance.now() + 2500;
+  const deadline = performance.now() + (daemonGuard ? 5000 : 2500);
   try {
     do {
       if (linux_terminate_children(child?.pid)) {
+        if (daemonGuard && (guardDisconnected || guardKillRequested || linux_pidfd_exited(guardFd))) {
+          while (!linux_pidfd_exited(guardFd) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+          if (!linux_pidfd_exited(guardFd)) throw new Error("Daemon outer guard termination is not confirmed");
+          linux_finish_daemon_lease(process.cwd(), guardId);
+        }
         if (process.connected) return process.send({ readerTree: "terminated" }, () => finish());
         return finish();
       }
       await new Promise(resolve => setTimeout(resolve, 25));
     } while (performance.now() < deadline);
   } catch { /* The owner must retain the unconfirmed reader barrier. */ }
+  if (daemonGuard) {
+    const diagnostic = process.env.EDT_AI_STATE_DIR ? create_diagnostic_logger("index-daemon", process.env.EDT_AI_STATE_DIR) : null;
+    try { linux_retain_daemon_barrier(process.cwd(), "daemon_guard_cleanup_unknown"); diagnostic?.event("daemon_guard_cleanup_unconfirmed", { supervisorPid: process.pid }, "error"); }
+    catch (error) { diagnostic?.event("daemon_guard_barrier_failed", { supervisorPid: process.pid, error }, "error"); }
+  }
   exitCode = 1; finish();
 }
-process.once("disconnect", stop);
+process.once("disconnect", () => { guardDisconnected = true; stop(); });
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-process.on("message", ({ command, args, env, readerJob, forwardIpc, relay, stop: requested }) => {
+process.on("message", ({ command, args, env, readerJob, forwardIpc, relay, daemonGuard: guard, daemonGuardId, guardPrepare, guardCommit, guardPong, stop: requested }) => {
   if (requested) return stop();
+  if (guardPong && daemonGuard) { guardMisses = 0; return; }
+  if (guardPrepare && daemonGuard && !stopping) { if (process.connected) process.send({ guardPrepared: true }); return; }
+  if (guardCommit && daemonGuard && !stopping) {
+    try {
+      if (linux_pidfd_exited(ownerFd) || linux_pidfd_exited(guardFd)) return stop();
+      linux_close_fd(ownerFd); ownerFd = null; daemonCommitted = true;
+      if (process.connected) process.send({ guardCommitted: true });
+    } catch (error) {
+      try { linux_retain_daemon_barrier(process.cwd(), "daemon_guard_handoff_unknown"); } catch {}
+      stop();
+    }
+    return;
+  }
   if (relay !== undefined) {
     if (forwarding && child?.connected) child.send(relay, () => {});
     return;
@@ -63,6 +105,14 @@ process.on("message", ({ command, args, env, readerJob, forwardIpc, relay, stop:
     // even descendants spawned by the target's very first instruction.
     if (process.platform === "win32") job = readerJob ? join_windows_reader_job(readerJob, process.pid) : own_windows_tree(process.pid);
     if (process.platform === "linux" && readerJob) { linux_subreaper(); strictLinux = true; }
+    daemonGuard = guard === true && strictLinux;
+    if (daemonGuard) {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(daemonGuardId || "")) throw new Error("Invalid daemon guard identity");
+      guardId = daemonGuardId;
+      ownerFd = 3; guardFd = 4;
+      if (linux_pidfd_exited(ownerFd) || linux_pidfd_exited(guardFd)) throw new Error("Daemon startup owner has exited");
+      guardTimer = setInterval(monitorDaemonGuard, 1000);
+    }
     forwarding = forwardIpc === true;
     child = spawn(command, args, {
       env, windowsHide: true, shell: false,

@@ -13,10 +13,10 @@ export function read_regular_file(file, maxBytes) {
     fd = fs.openSync(file, flags);
     const opened = fs.fstatSync(fd, { bigint: true });
     const stamp = stat => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(":");
-    if (!opened.isFile() || stamp(opened) !== stamp(before) || opened.size > BigInt(maxBytes)) throw new Error("Local input changed while opening");
+    if (!opened.isFile() || stamp(opened) !== stamp(before) || opened.size > BigInt(maxBytes)) throw Object.assign(new Error("Local input changed while opening"), { code: "LOCAL_FILE_CHANGED" });
     const bytes = Buffer.alloc(Number(opened.size) + 1); let length = 0;
     while (length < bytes.length) { const count = fs.readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
-    if (length !== Number(opened.size) || stamp(fs.fstatSync(fd, { bigint: true })) !== stamp(opened)) throw new Error("Local input changed while reading");
+    if (length !== Number(opened.size) || stamp(fs.fstatSync(fd, { bigint: true })) !== stamp(opened)) throw Object.assign(new Error("Local input changed while reading"), { code: "LOCAL_FILE_CHANGED" });
     return { bytes: bytes.subarray(0, length), stat: opened };
   } catch (error) { if (error.code === "ENOENT") return null; throw error; }
   finally { if (fd !== undefined) fs.closeSync(fd); }

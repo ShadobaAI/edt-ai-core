@@ -915,10 +915,10 @@ function rescheduleAfterObservation(result){
   });
   if(deadlines.length)scheduleAutomaticRefresh(Math.max(1000,Math.min(60000,Math.min(...deadlines)-now)),true);
 }
-function queueComponentRefresh(component=null,{refreshSnapshot=false,retry=0,automatic=false}={}){
+function queueComponentRefresh(component=null,{refreshSnapshot=false,retry=0,automatic=false,manual=false}={}){
   const key=componentRefreshScope();if(!key||!connected||disposed||standalone||pendingScope||dirtyFields.has("projectRoot"))return Promise.resolve(false);
-  const covered=[componentRefresh,...componentRefreshQueue].find(item=>item&&item.key===key&&(!item.component||item.component===component));if(covered){Promise.resolve().then(runComponentRefresh);return covered.promise;}
-  let resolve;const promise=new Promise(done=>{resolve=done;});componentRefreshQueue.push({key,component,promise,resolve,refreshSnapshot,retry,automatic,scope:currentData.preparationScope,projectRoot:currentData.values.projectRoot,instance:currentData.instance});
+  const covered=[componentRefresh,...componentRefreshQueue].find(item=>item&&item.key===key&&(!item.component||item.component===component));if(covered){covered.manual||=manual;Promise.resolve().then(runComponentRefresh);return covered.promise;}
+  let resolve;const promise=new Promise(done=>{resolve=done;});componentRefreshQueue.push({key,component,promise,resolve,refreshSnapshot,retry,automatic,manual,scope:currentData.preparationScope,projectRoot:currentData.values.projectRoot,instance:currentData.instance});
   Promise.resolve().then(runComponentRefresh);return promise;
 }
 function finishComponentRefresh(success,task=componentRefresh){if(!task||componentRefresh!==task)return;if(componentPollTimer)clearTimeout(componentPollTimer);componentPollTimer=null;componentRefresh=null;task.resolve(success);Promise.resolve().then(runComponentRefresh);}
@@ -942,7 +942,7 @@ function reportComponentRefreshFailure(task,error){
 }
 function failComponentRefresh(task,error){
   if(componentRefresh!==task)return;
-  if(activeOperation?.action==="refresh_readiness")activeOperation={...activeOperation,status:"failed"};reportComponentRefreshFailure(task,error.message);finishComponentRefresh(false,task);
+  if(activeOperation?.action==="refresh_readiness")activeOperation={...activeOperation,status:"failed"};reportComponentRefreshFailure(task,error.message);if(task.manual&&operationMatchesProfile(task))notice(error.message,true);finishComponentRefresh(false,task);
 }
 async function pollComponentRefresh(task,initial=null){
   try{
@@ -950,9 +950,9 @@ async function pollComponentRefresh(task,initial=null){
     if(disposed||componentRefresh!==task)return;
     if(activeOperation?.action==="refresh_readiness")activeOperation=operation;
     if(operation.status==="running"){componentPollTimer=setTimeout(()=>{componentPollTimer=null;pollComponentRefresh(task);},1000);return;}
-    if(operation.status!=="completed"){reportComponentRefreshFailure(task,operation.error);finishComponentRefresh(false,task);return;}
+    if(operation.status!=="completed"){reportComponentRefreshFailure(task,operation.error);if(task.manual&&operationMatchesProfile(task))notice(operation.error,true);finishComponentRefresh(false,task);return;}
     const sameProfile=operationMatchesProfile(task),revisionChanged=task.settingsRevision!==currentData?.settingsRevision,superseded=operation.result?.superseded||revisionChanged&&!Array.isArray(currentData?.componentStatuses);
-    if(sameProfile&&operation.result?.transient){finishComponentRefresh(false,task);scheduleAutomaticRefresh(5000,true);return;}
+    if(sameProfile&&operation.result?.transient){if(task.manual&&operation.result.detail)notice(userMessage(operation.result.detail));finishComponentRefresh(false,task);scheduleAutomaticRefresh(5000,true);return;}
     if(sameProfile&&!superseded&&!operation.result?.transient&&!task.component)rescheduleAfterObservation(operation.result);
     if(sameProfile&&!superseded&&Array.isArray(currentData?.componentStatuses)){
       if(busyActive){finishComponentRefresh(false,task);return;}
@@ -1412,7 +1412,7 @@ $("openViewDirectoryButton").onclick=()=>selectProfile($("viewDirectoryPath").va
 $("viewDirectoryPath").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();selectProfile($("viewDirectoryPath").value.trim());}});
 $("pickViewDirectoryButton").onclick=()=>{if(!confirmedChatRoot()){notice("Сначала определите каталог текущего чата.",true);return;}if(hasProfileDraft()){notice("Сохраните изменения или отмените их перед выбором другого профиля.",true);return;}return busy("Выберите папку для просмотра…",async()=>{viewPickerRevision=chatInputRevision;const operation=await tool("settings.pick_view_directory");activeOperation=operation;await pollOperation(operation.id);}).catch(()=>{viewPickerRevision=null;});};
 
-$("headerRefresh").onclick=()=>{interacted=true;return componentRefreshScope()?queueComponentRefresh(null,{refreshSnapshot:true}):refreshStatus();};
+$("headerRefresh").onclick=()=>{interacted=true;return componentRefreshScope()?queueComponentRefresh(null,{refreshSnapshot:true,manual:true}):refreshStatus();};
 $("headerStatus").onclick=()=>{componentFilter="issues";show("check");renderComponentCatalog(currentData);$("readinessDetails").open=true;};
 $("resolveChatButton").onclick=()=>busy("Запрашиваем проект текущего чата…",async()=>{await rpc("ui/message",{role:"user",content:[{type:"text",text:"Открой настройки 1C AI Core для проекта этого чата. Используй каталог текущего чата, не выбирай другой профиль из истории."}]});notice("Запрос отправлен в текущий чат. Настройки откроются с каталогом проекта.");}).catch(()=>{});
 $("historySearch").addEventListener("input",()=>{interacted=true;if(currentData){renderHistory(currentData);syncControls();}});

@@ -413,14 +413,14 @@ for (const [route, expected] of [["/v8-cross", /поиска/], ["/v8-extra", /�
 
 test("remote credential changes invalidate only the observations that used them", async t => {
   const {f,backend}=await ready_fixture(t),config=backend.effective(backend.current()),profile=project_profile(f.root);
-  config.mcp.required.edt.headers_env={Authorization:"EDT_REVIEW_TEST_TOKEN"};process.env.EDT_REVIEW_TEST_TOKEN="first";
+  config.mcp.required.edt.headers_env={Authorization:"EDT_REVIEW_TEST_TOKEN"};process.env.EDT_REVIEW_TEST_TOKEN="fixture-edt-token-before-rotation";
   t.after(()=>{delete process.env.EDT_REVIEW_TEST_TOKEN;});
   save_component_checks(f.state,config,profile,[{id:"edt",state:"ready"},{id:"v8std",state:"ready"},{id:"yaxunit",state:"ready"}]);
-  process.env.EDT_REVIEW_TEST_TOKEN="second";
+  process.env.EDT_REVIEW_TEST_TOKEN="fixture-edt-token-after-rotation";
   assert.deepEqual(Object.fromEntries(read_component_checks(f.state,config,profile).map(item=>[item.id,item.state])),
     {edt:"check_stale",v8std:"ready",yaxunit:"check_stale"});
   const receipt=fs.readFileSync(path.join(instance_directory(f.state,f.root),"first.readiness.json"),"utf8");
-  assert.doesNotMatch(receipt,/first|second/);
+  assert.doesNotMatch(receipt,/fixture-edt-token-(?:before|after)-rotation/);
 });
 
 test("a foreground check invalidates an older background job before delayed backend dispatch", async t => {
@@ -643,6 +643,29 @@ test("queued foreground claims in four separate processes cannot run again after
   assert.equal(await foreground_readiness_active(f.state, f.root, "first"), false);
 });
 
+for (const persistent of [false, true]) test(`foreground marker reads ${persistent ? "reject persistent changes" : "retry a transient ctime change"}`, t => {
+  const f = fixture(t), previous = begin_foreground_readiness(f.state, f.root, "first", randomUUID());
+  const open = fs.openSync, fstat = fs.fstatSync; let markerFd, changes = 0, next;
+  t.mock.method(fs, "openSync", (file, ...args) => {
+    const fd = open(file, ...args);
+    if (file === previous) markerFd = fd;
+    return fd;
+  });
+  t.mock.method(fs, "fstatSync", (fd, ...args) => {
+    const stat = fstat(fd, ...args);
+    if (fd === markerFd && (persistent || changes === 0)) { stat.ctimeNs += 1n; changes++; }
+    return stat;
+  });
+  try {
+    if (persistent) assert.throws(() => begin_foreground_readiness(f.state, f.root, "first", randomUUID()), /барьер/i);
+    else { next = begin_foreground_readiness(f.state, f.root, "first", randomUUID()); assert.equal(changes, 1); }
+  } finally {
+    t.mock.restoreAll();
+    if (next) assert.equal(release_foreground_readiness(f.state, next), true);
+    assert.equal(release_foreground_readiness(f.state, previous), true);
+  }
+});
+
 test("a failed foreground marker unlink retains the barrier until cleanup succeeds", async t => {
   const {f}=await ready_fixture(t),marker=begin_foreground_readiness(f.state,f.root,"first",randomUUID()),remove=fs.rmSync;let failed=false;
   t.mock.method(fs,"rmSync",(file,options)=>{if(file===marker&&!failed){failed=true;throw Object.assign(new Error("busy"),{code:"EPERM"});}return remove(file,options);});
@@ -650,6 +673,27 @@ test("a failed foreground marker unlink retains the barrier until cleanup succee
   assert.equal(JSON.parse(fs.readFileSync(marker,"utf8")).phase,"cleanup_unknown");assert.equal(await foreground_readiness_active(f.state,f.root,"first"),true);
   assert.throws(() => begin_foreground_readiness(f.state,f.root,"first",randomUUID()), /не подтверждено/i);
   assert.equal(release_foreground_readiness(f.state,marker),true);assert.equal(fs.existsSync(marker),false);
+});
+
+test("legacy cleanup barriers survive MCP reconnect and expose a specific manual recovery path", async t => {
+  const { f } = await ready_fixture(t), id = randomUUID();
+  const directory = path.join(project_directory(f.state, f.root), "coordination", "first.readiness-active"), marker = path.join(directory, id);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(marker, JSON.stringify({ pid: process.pid, id, phase: "cleanup_unknown" }));
+  const original = fs.readFileSync(marker);
+  for (let i = 0; i < 2; i++) {
+    const client = await session(t, "mcp/settings.mjs", [], f);
+    await assert.rejects(client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "v8std" }),
+      error => error.message.includes(JSON.stringify(marker).slice(1, -1)) && error.message.includes("USAGE.md"));
+    await client.close(); assert.deepEqual(fs.readFileSync(marker), original);
+  }
+  // The record is a synthetic fixture: unlike a real legacy barrier, this test
+  // knows that no owned backend or remote session was ever started for it.
+  fs.unlinkSync(marker);
+  const recovered = await session(t, "mcp/settings.mjs", [], f);
+  const job = (await recovered.call("settings.refresh_readiness", { scope: f.root + "#first", component: "v8std" })).structuredContent;
+  const done = (await recovered.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "completed", JSON.stringify(done));
 });
 
 test("lease cleanup reports persistent write errors without scheduling endless retries", async t => {
@@ -771,6 +815,9 @@ test("a foreground marker without its endpoint keeps refresh transient until cle
   const operations=new SettingsOperations((action,args)=>backend.main({action,...args}),()=>{},{stateDirectory:f.state});
   const background=operations.start("refresh_readiness",{scope:f.root+"#first"},{projectRoot:f.root,instance:"first"});await background.finished;
   assert.equal(background.status,"completed");assert.equal(background.result.transient,true);
+  assert.ok(background.result.detail.includes(path.dirname(marker)), background.result.detail); assert.match(background.result.detail, /USAGE\.md/);
+  const foreground=operations.start("probe",{component:"v8std"},{projectRoot:f.root,instance:"first"});await foreground.finished;
+  assert.equal(foreground.status,"failed");assert.ok(foreground.error.includes(path.dirname(marker)));assert.match(foreground.error,/USAGE\.md/);
   assert.equal(fs.existsSync(path.join(instance_directory(f.state,f.root),"first.readiness.json")),false);
   release_foreground_readiness(f.state,marker);
 });

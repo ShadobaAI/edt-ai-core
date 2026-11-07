@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
+import { read_regular_file } from "./bounded_file.mjs";
 
 let native;
 function systemAPI() {
@@ -126,6 +128,7 @@ function linuxAPI() {
   const { koffi, libc } = systemAPI();
   linux = { koffi,
     prctl: libc.func("int prctl(int option, unsigned long a, unsigned long b, unsigned long c, unsigned long d)"),
+    getppid: libc.func("int getppid(void)"),
     pidfdOpen: libc.func("long syscall(long number, int pid, unsigned int flags)"),
     pidfdSignal: libc.func("long syscall(long number, int fd, int signal, void *info, unsigned int flags)"),
     close: libc.func("int close(int fd)"),
@@ -134,18 +137,92 @@ function linuxAPI() {
   };
   return linux;
 }
+export function linux_require_parent(expected) {
+  if (!Number.isSafeInteger(expected) || expected <= 0) throw new Error("Invalid settings process owner");
+  const api = linuxAPI();
+  // Install first, then check the kernel's current parent to close the window
+  // in which the MCP process could have exited before prctl was called.
+  if (api.prctl(1, 9, 0, 0, 0) !== 0 || api.getppid() !== expected)
+    throw Object.assign(new Error("Settings process owner is no longer available"), { notSpawned: true });
+}
+export function linux_parent_pid() { return linuxAPI().getppid(); }
+export function linux_process_identity(pid) {
+  try {
+    const value = fs.readFileSync(`/proc/${pid}/stat`, "utf8"), tail = value.slice(value.lastIndexOf(")") + 2).split(" ");
+    const start = tail[19], boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return /^\d+$/.test(start || "") && /^[a-f0-9-]{36}$/i.test(boot) ? "linux:" + boot + ":" + start : null;
+  } catch { return null; }
+}
+export function linux_read_daemon_lease(home) {
+  const file = path.join(home, "guard-lifecycle.json"), input = read_regular_file(file, 16 * 1024);
+  if (!input) return null;
+  const record = JSON.parse(input.bytes.toString("utf8"));
+  if (!record || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.id || "") || !["active", "completed"].includes(record.state) ||
+      record.state === "completed" && record.notSpawned !== true && (!Number.isSafeInteger(record.finisher?.pid) || record.finisher.pid <= 0 || !/^linux:[a-f0-9-]{36}:\d+$/i.test(record.finisher?.creation || "")))
+    throw new Error("Invalid daemon guard lifecycle record");
+  return record;
+}
+export function linux_create_daemon_lease(home, id) {
+  if (process.platform !== "linux" || !path.isAbsolute(home) || !/^[0-9a-f-]{36}$/.test(id || "")) throw new Error("Invalid daemon guard lifecycle");
+  fs.writeFileSync(path.join(home, "guard-lifecycle.json"), JSON.stringify({ id, state: "active" }), { flag: "wx", mode: 0o600 });
+}
+export function linux_finish_daemon_lease(home, id, { notSpawned = false } = {}) {
+  const file = path.join(home, "guard-lifecycle.json"), previous = linux_read_daemon_lease(home);
+  if (!previous || previous.id !== id) throw new Error("Daemon guard lifecycle identity changed");
+  if (previous.state === "completed") return;
+  const creation = notSpawned ? null : linux_process_identity(process.pid);
+  if (!notSpawned && !creation) throw new Error("Cannot confirm daemon guard completion identity");
+  const tmp = path.join(home, ".guard-" + randomUUID() + ".tmp");
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ id, state: "completed", ...(notSpawned ? { notSpawned: true } : { finisher: { pid: process.pid, creation } }) }), { flag: "wx", mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } finally { fs.rmSync(tmp, { force: true }); }
+}
+export function linux_retain_daemon_barrier(home, reason, { forceSeparate = false } = {}) {
+  if (process.platform !== "linux" || !path.isAbsolute(home) || typeof reason !== "string") throw new Error("Invalid daemon cleanup barrier");
+  // A lifecycle record written before spawn is itself a durable barrier until
+  // a surviving supervisor records confirmed completion.
+  if (!forceSeparate) try { if (linux_read_daemon_lease(home)?.state === "active") return path.join(home, "guard-lifecycle.json"); } catch {}
+  const file = path.join(home, "guard-cleanup-unknown.json"); let last;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      fs.writeFileSync(file, JSON.stringify({ pid: process.pid, reason }), { flag: "wx", mode: 0o600 });
+      return file;
+    } catch (error) {
+      if (error.code === "EEXIST") {
+        try { fs.lstatSync(file); return file; } catch (missing) { last = missing; continue; }
+      }
+      last = error;
+    }
+  }
+  throw Object.assign(new Error("Cannot retain daemon cleanup barrier"), { outcomeUnknown: true, cause: last });
+}
+export function linux_pidfd_exited(fd) {
+  if (!Number.isInteger(fd) || fd < 0) throw new Error("Invalid Linux process handle");
+  const pollfd = Buffer.alloc(8); pollfd.writeInt32LE(fd, 0); pollfd.writeInt16LE(1, 4);
+  const result = linuxAPI().poll(pollfd, 1, 0);
+  if (result < 0 || (result && !(pollfd.readInt16LE(6) & 0x11))) throw new Error("Cannot inspect Linux process handle");
+  return result !== 0;
+}
+export function linux_pidfd_signal(fd, signal) {
+  if (!Number.isInteger(fd) || fd < 0 || ![9, 15, 18, 19].includes(signal)) throw new Error("Invalid Linux process signal");
+  const api = linuxAPI();
+  if (api.pidfdSignal(424, fd, signal, null, 0) < 0 && api.koffi.errno() !== 3) throw new Error("Cannot signal pinned Linux process");
+}
+export function linux_close_fd(fd) {
+  if (!Number.isInteger(fd) || fd < 0 || linuxAPI().close(fd) !== 0) throw new Error("Cannot close Linux process handle");
+}
 export function pin_linux_process(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid process PID");
   const api = linuxAPI(), fd = api.pidfdOpen(434, pid, 0);
   if (fd < 0) throw new Error("Cannot pin daemon process");
   let closed = false;
   return {
+    get descriptor() { if (closed) throw new Error("Daemon pidfd is closed"); return fd; },
+    signal(signal) { if (closed) throw new Error("Daemon pidfd is closed"); linux_pidfd_signal(fd, signal); },
     alive() {
       if (closed) throw new Error("Daemon pidfd is closed");
-      const pollfd = Buffer.alloc(8); pollfd.writeInt32LE(fd, 0); pollfd.writeInt16LE(1, 4);
-      const result = api.poll(pollfd, 1, 0);
-      if (result < 0) throw new Error("Cannot inspect daemon pidfd");
-      return result === 0;
+      return !linux_pidfd_exited(fd);
     },
     close() { if (!closed) { closed = true; if (api.close(fd) !== 0) throw Object.assign(new Error("Cannot close daemon pidfd"), { outcomeUnknown: true }); } },
   };

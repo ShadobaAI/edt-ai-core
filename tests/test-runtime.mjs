@@ -31,7 +31,7 @@ import {
 } from "../scripts/runtime.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
 import { zip, unzip, extract_binary } from "../scripts/archives.mjs";
-import { launch, stop_child, alive } from "../scripts/processes.mjs";
+import { launch, spawn_guarded_linux, stop_child, alive } from "../scripts/processes.mjs";
 import { inspect } from "../scripts/doctor.mjs";
 import { gzipSync } from "node:zlib";
 import { createServer } from "node:http";
@@ -572,6 +572,70 @@ test("an unconfirmed index writer retains maintenance and cannot restart the dae
   assert.deepEqual(fs.readFileSync(marker), before);
 });
 
+test("an unconfirmed daemon startup blocks later sessions, including launch failures before a controller is returned", async t => {
+  for (const phase of ["launch", "rollback"]) {
+    const f = fixture(t), home = path.join(project_home(f.state, f.root), "code-index"); let launches = 0;
+    const io = { launch: () => {
+      launches++;
+      if (phase === "launch") throw Object.assign(new Error("launch outcome unknown"), { outcomeUnknown: true });
+      return { pid: process.pid, exitCode: 1, signalCode: null, once() {}, unref() {},
+        rollback: async () => { throw new Error("rollback was not confirmed"); }, release() {} };
+    } };
+    await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath, io), error => error.outcomeUnknown === true);
+    const marker = path.join(home, "maintenance.json"), before = fs.readFileSync(marker);
+    assert.equal(JSON.parse(before).reason, "daemon_start_cleanup_unknown");
+    assert.equal(fs.existsSync(path.join(home, "operation.lock")), false);
+    await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath, io), error => error.message.includes(marker));
+    assert.equal(launches, 1); assert.deepEqual(fs.readFileSync(marker), before);
+  }
+});
+
+test("an unwritable daemon cleanup barrier retains the project lock", async t => {
+  const f = fixture(t), home = path.join(project_home(f.state, f.root), "code-index"), marker = path.join(home, "maintenance.json");
+  const link = fs.linkSync;
+  t.mock.method(fs, "linkSync", (source, destination) => {
+    if (destination === marker) throw Object.assign(new Error("fixture denied"), { code: "EACCES" });
+    return link(source, destination);
+  });
+  await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath, { launch: () => {
+    throw Object.assign(new Error("launch outcome unknown"), { outcomeUnknown: true });
+  } }), error => error.outcomeUnknown === true && error.message.includes(path.join(home, "operation.lock")));
+  const lock = path.join(home, "operation.lock"); assert.equal(fs.existsSync(lock), true);
+  await assert.rejects(operation_lock(home, () => assert.fail("must stay blocked")), error => error.code === "RUNTIME_BUSY" && error.message.includes(lock));
+});
+
+test("a vanished cleanup marker after EEXIST retains the project lock", async t => {
+  const f = fixture(t), home = path.join(project_home(f.state, f.root), "code-index"), marker = path.join(home, "maintenance.json");
+  const link = fs.linkSync;
+  t.mock.method(fs, "linkSync", (source, destination) => {
+    if (destination === marker) throw Object.assign(new Error("fixture marker vanished"), { code: "EEXIST" });
+    return link(source, destination);
+  });
+  await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath, { launch: () => {
+    throw Object.assign(new Error("launch outcome unknown"), { outcomeUnknown: true });
+  } }), error => error.outcomeUnknown === true && error.message.includes(path.join(home, "operation.lock")));
+  assert.equal(fs.existsSync(marker), false);
+  await assert.rejects(operation_lock(home, () => assert.fail("must stay blocked")), error => error.code === "RUNTIME_BUSY");
+});
+
+test("a dangling maintenance symlink never permits a daemon launch", { skip: process.platform === "win32" }, async t => {
+  const f = fixture(t), home = path.join(project_home(f.state, f.root), "code-index"), marker = path.join(home, "maintenance.json");
+  fs.mkdirSync(home, { recursive: true }); fs.symlinkSync(path.join(home, "missing"), marker);
+  await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath, { launch: () => assert.fail("must stay blocked") }),
+    error => error.message.includes(marker) && error.message.includes("USAGE.md"));
+  assert.equal(fs.lstatSync(marker).isSymbolicLink(), true);
+});
+
+test("an unconfirmed daemon restart keeps maintenance and is never retried automatically", async t => {
+  const f = fixture(t), calls = [];
+  await assert.rejects(restart_index(f.state, settings(), f.root, f.profile, {
+    installed: async () => "fixture", stop: async () => calls.push("stop"),
+    restart: async () => { calls.push("restart"); throw Object.assign(new Error("unconfirmed"), { outcomeUnknown: true }); },
+  }), error => error.outcomeUnknown === true);
+  assert.deepEqual(calls, ["stop", "restart"]);
+  assert.equal(fs.existsSync(path.join(project_home(f.state, f.root), "code-index", "maintenance.json")), true);
+});
+
 test("parallel readers share exactly one owned daemon per profile and preserve unrelated processes", async (t) => {
   const f = fixture(t);
   let launches = 0;
@@ -641,19 +705,40 @@ test("daemon stop refuses a forged owner and leaves the listening service alive"
 test("daemon stop uses a verified loopback connection to its owned process", { timeout: 30000, skip: process.platform === "darwin" }, async t => {
   const f = fixture(t), digest = sha256(fs.readFileSync(process.execPath)), exe = path.join(f.state, "runtime/code-index/fixture", digest, "owned-node.exe");
   fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.copyFileSync(process.execPath, exe);
-  const launchIo = { launch: (command, _args, options) => {
+  if (process.platform === "linux") fs.chmodSync(exe, 0o755);
+  let originalOwner;
+  const launchIo = { launch: async (command, _args, options) => {
+    if (process.platform === "linux") {
+      const child = await spawn_guarded_linux(command, [path.join(ROOT, "tests/fixtures/index-daemon.mjs")], options);
+      f.clients.push({ close: async () => {
+        const home = path.join(project_home(f.state, f.root), "code-index");
+        if (originalOwner && await daemon_health(home)) { save_json(path.join(home, "owner.json"), originalOwner); await stop_daemon(f.state, f.root); }
+        child.release();
+      } });
+      return child;
+    }
     const child = launch(command, [path.join(ROOT, "tests/fixtures/index-daemon.mjs")], options);
     f.clients.push({ close: () => stop_child(child, 0) }); return child;
   } };
   const home = await ensure_daemon(f.state, f.root, f.profile, exe, launchIo), ownerFile = path.join(home, "owner.json"), daemonFile = path.join(home, "daemon.json"),
     owner = read_json(ownerFile), daemon = read_json(daemonFile);
+  originalOwner = owner;
   assert.ok(owner.creation); assert.equal(alive(owner.pid), true);
   save_json(daemonFile, { ...daemon, http_host: "203.0.113.1" });
   await assert.rejects(stop_daemon(f.state, f.root), /идентичность/); assert.equal(alive(owner.pid), true);
   save_json(daemonFile, daemon);
   save_json(ownerFile, { ...owner, creation: owner.creation + "-replaced" });
-  await assert.rejects(stop_daemon(f.state, f.root), /идентичность/); assert.equal(alive(owner.pid), true);
-  const { creation, daemon_started_at, health_started_at, ...legacy } = owner;
+  await assert.rejects(stop_daemon(f.state, f.root), /идентичность|наблюдател/); assert.equal(alive(owner.pid), true);
+  if (process.platform === "linux") {
+    // This fixture deliberately forged the identity before any stop request
+    // could be sent. Assert the durable barrier, then remove only the marker
+    // created by that controlled test before exercising the legacy owner.
+    const marker = path.join(home, "guard-cleanup-unknown.json");
+    assert.equal(fs.existsSync(marker), true);
+    save_json(ownerFile, owner);
+    fs.unlinkSync(marker);
+  }
+  const { creation, daemon_started_at, health_started_at, guards, guardId, ...legacy } = owner;
   save_json(ownerFile, legacy);
   assert.equal(await ensure_daemon(f.state, f.root, f.profile, exe, launchIo), home, "a verified legacy daemon remains usable read-only");
   await assert.rejects(stop_daemon(f.state, f.root), /идентичность/); assert.equal(alive(owner.pid), true);
@@ -673,8 +758,9 @@ test("an unhealthy but live stale PID blocks competing daemon startup on every O
         throw new Error("must not launch");
       },
     }),
-    /работает, но не отвечает/,
+    error => error.message.includes("PID") && error.message.includes(path.join(home, "owner.json")) && error.message.includes("USAGE.md"),
   );
+  assert.equal(alive(process.pid), true);
   assert.equal(fs.readFileSync(config, "utf8"), "# existing daemon configuration\n");
 });
 test("doctor separates configuration from live acceptance and does not make OpenViking a gate", async (t) => {

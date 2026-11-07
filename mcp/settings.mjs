@@ -319,6 +319,13 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
         env: { ...process.env, EDT_AI_STATE_DIR: state, EDT_AI_SETTINGS: configPath,
           EDT_AI_PROJECT_ROOT: context.selectedDirectory || "", EDT_AI_SETTINGS_ROOT_LOCKED: context.rootLocked === false ? "0" : "1" },
       };
+    for (const name of Object.keys(options.env)) if (name.toUpperCase() === "EDT_AI_SETTINGS_PARENT_PID") delete options.env[name];
+    if (process.platform === "linux" && process.arch === "x64" && createsDaemon) {
+      // The backend can hand the project daemon to its own guard. Tie only
+      // this backend to the MCP process, including an uncatchable owner exit.
+      for (const name of Object.keys(options.env)) if (name.toUpperCase() === "NODE_OPTIONS") delete options.env[name];
+      options.env.EDT_AI_SETTINGS_PARENT_PID = String(process.pid);
+    }
     const command = [path.join(root, "scripts", "settings_backend.mjs")];
     const child = supervised ? launch(process.execPath, command, { ...options, readerJob: owner, forwardIpc }) : spawn(process.execPath, command, options);
     diagnostic.event("backend_process_started", { owner, action, supervisorPid: child.pid });

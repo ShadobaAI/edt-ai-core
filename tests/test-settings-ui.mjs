@@ -399,6 +399,52 @@ test("component checks refresh on load, every minute and on manual request",asyn
   await f.ui.elements.get("headerRefresh").onclick();await f.ui.flush();assert.equal(f.requests.length,5);assert.equal(f.requests[4].scope,"C:/fixture/second#default");
 });
 
+test("manual refresh shows the recovery path when an older foreground barrier blocks it", async () => {
+  const current={...read,instance:"default",settingsRevision:"saved"}, detail="Проверка отложена. Файл блокировки: C:/state/readiness-active. См. USAGE.md.";
+  const ui=screen(async name=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.refresh_readiness")return {id:"blocked",action:"refresh_readiness",status:"completed",projectRoot:current.values.projectRoot,instance:current.instance,
+      result:{transient:true,superseded:true,detail}};
+    throw new Error(name);
+  },{liveRefresh:true});
+  await ui.flush();await ui.flush();
+  await ui.elements.get("headerRefresh").onclick();await ui.flush();
+  assert.match(ui.elements.get("status").textContent,/C:\/state\/readiness-active/);
+  assert.match(ui.elements.get("status").textContent,/USAGE\.md/);
+});
+
+test("manual refresh shows the recovery path when cleanup is unconfirmed", async () => {
+  const current={...read,instance:"default",settingsRevision:"saved"};
+  const ui=screen(async name=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.refresh_readiness")throw new Error("Очистка не подтверждена. Файл: C:/state/barrier. См. USAGE.md.");
+    throw new Error(name);
+  },{liveRefresh:true});
+  await ui.flush();await ui.flush();
+  await ui.elements.get("headerRefresh").onclick();await ui.flush();
+  assert.match(ui.elements.get("status").textContent,/C:\/state\/barrier/);
+  assert.match(ui.elements.get("status").textContent,/USAGE\.md/);
+});
+
+for (const failedResponse of [false, true]) test(`a previous profile's manual refresh ${failedResponse ? "failure" : "exception"} does not show its recovery path`, async () => {
+  let current={...read,instance:"default",settingsRevision:"saved"}, hold=false, release, entered;
+  const started=new Promise(done=>{entered=done;}), gate=new Promise(done=>{release=done;});
+  const ui=screen(async name=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.refresh_readiness") {
+      if(hold){hold=false;entered();await gate;if(!failedResponse)throw new Error("Старый путь C:/old/barrier USAGE.md");
+        return {id:"old",action:"refresh_readiness",status:"failed",error:"Старый путь C:/old/barrier USAGE.md"};}
+      return {id:"ok",action:"refresh_readiness",status:"completed",projectRoot:current.values.projectRoot,instance:current.instance,result:{componentChecks:[]}};
+    }
+    throw new Error(name);
+  },{liveRefresh:true});
+  await ui.flush();await ui.flush();hold=true;
+  const pending=ui.elements.get("headerRefresh").onclick();await started;
+  current={...current,values:{...current.values,projectRoot:"C:/fixture/other"},preparationScope:"C:/fixture/other#default"};
+  ui.context.renderSelectedProfile(current);release();await pending;await ui.flush();
+  assert.doesNotMatch(ui.elements.get("status").textContent,/C:\/old\/barrier/);
+});
+
 test("a shared near-expiry observation schedules the next refresh from its actual check time",async()=>{
   const current={...read,instance:"default",settingsRevision:"saved",values:{...read.values,edtUrl:"http://edt"}};let attempts=0;
   const ui=screen(async name=>{

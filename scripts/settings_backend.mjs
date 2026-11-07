@@ -6,6 +6,7 @@ import { stringify } from "../vendor/deps.mjs";
 import { read_project_archive, write_project_archive } from "./archives.mjs";
 import {
   ConfigError,
+  barrier_recovery_hint,
   atomic_write,
   check_schema,
   deep_merge,
@@ -66,6 +67,7 @@ import { project_directory } from "./project_paths.mjs";
 import { knowledge_status } from "./knowledge.mjs";
 import { alive, which } from "./processes.mjs";
 import { read_regular_file } from "./bounded_file.mjs";
+import { linux_require_parent } from "./unix_process.mjs";
 
 function index_process_may_exist(home) {
   for (const name of ["daemon.json", "owner.json"]) {
@@ -1555,7 +1557,7 @@ export class SettingsBackend {
       // here would only duplicate that work and could not update the receipt.
       if (transient && !cancelled() && !priorityChanged()) return { projectRoot: root, instance, component: request.component,
         componentChecks: [], managed: [], external: {}, draft: false, transient: true, superseded: true,
-        detail: "Проверка отложена до завершения текущей операции." };
+        detail: "Проверка отложена до завершения текущей операции. " + barrier_recovery_hint(path.join(project_directory(this.STATE, root), "coordination", instance + ".readiness-active")) };
       const initialTransientReceipt = transient ? readiness_receipt_revision(this.STATE, root) : null;
       const ownerId = randomUUID(), owner = transient ? null : await open_reader(ownerId);
       try {
@@ -1825,6 +1827,11 @@ function parent_index_observer(token) {
 if (entrypoint(import.meta.url)) {
   let indexBridge;
   try {
+    if (process.platform === "linux" && process.env.EDT_AI_SETTINGS_PARENT_PID !== undefined) {
+      const expected = Number(process.env.EDT_AI_SETTINGS_PARENT_PID);
+      delete process.env.EDT_AI_SETTINGS_PARENT_PID;
+      linux_require_parent(expected);
+    }
     let input = "";
     for await (const chunk of process.stdin) {
       input += chunk;

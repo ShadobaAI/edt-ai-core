@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import {
   ROOT,
   ConfigError,
+  barrier_recovery_hint,
   atomic_write,
   cli,
   inside,
@@ -39,7 +40,7 @@ import {
 import { project_profile, merged_profile } from "./profile.mjs";
 import { effective_settings, external_override_files } from "./project_context.mjs";
 import { safe_error_message, create_diagnostic_logger } from "./diagnostics.mjs";
-import { launch, stop_child, alive, which, require_protected_process_support } from "./processes.mjs";
+import { launch, stop_child, alive, which, require_protected_process_support, spawn_guarded_linux } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
 import { all_pages } from "./mcp_pages.mjs";
@@ -50,7 +51,7 @@ import { spawn_detached_windows, windows_process_identity, windows_tcp_rows, pin
 import { index_repositories, index_selection } from "./directory_context.mjs";
 import { capture_index_snapshot, snapshot_bytes } from "./index_snapshot.mjs";
 import { open_reader, reader_active, observe_reader } from "./reader_lease.mjs";
-import { darwin_process_identity, darwin_process_executable, darwin_has_loopback_listener, linux_has_loopback_listener, pin_linux_process, linux_has_tcp_peer } from "./unix_process.mjs";
+import { darwin_process_identity, darwin_process_executable, darwin_has_loopback_listener, linux_has_loopback_listener, pin_linux_process, linux_has_tcp_peer, linux_process_identity, linux_read_daemon_lease, linux_retain_daemon_barrier } from "./unix_process.mjs";
 import { read_regular_file, hash_regular_file } from "./bounded_file.mjs";
 import { private_observation_directory } from "./openviking_store.mjs";
 
@@ -442,13 +443,13 @@ async function active_readers_locked(state, root) {
     const file = path.join(directory, name);
     let reader;
     try { const value = read_regular_file(file, 64 * 1024); if (!value) continue; reader = JSON.parse(value.bytes.toString("utf8")); }
-    catch { throw new ConfigError("Неподдерживаемая запись читателя индекса; обслуживание заблокировано."); }
+    catch { throw new ConfigError("Неподдерживаемая запись читателя индекса; обслуживание заблокировано. " + barrier_recovery_hint(file)); }
     if (!reader || typeof reader !== "object" || Array.isArray(reader) ||
         typeof reader.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reader.id) || name !== reader.id + ".json" ||
         reader.root !== resolve(root) || !Number.isSafeInteger(reader.pid) || reader.pid <= 0 ||
         reader.phase !== undefined && !["preparing", "active", "closing"].includes(reader.phase) ||
         ["active", "closing"].includes(reader.phase) && reader.orphanedBarrier !== true)
-      throw new ConfigError("Неподдерживаемая запись читателя индекса; обслуживание заблокировано.");
+      throw new ConfigError("Неподдерживаемая запись читателя индекса; обслуживание заблокировано. " + barrier_recovery_hint(file));
     if (await reader_active(reader.id, { timeoutMs: Math.max(1, Math.min(2000, deadline - performance.now())) })) active.push(reader);
     // An observation may have spawned a supervised native reader. Loss of the
     // backend's socket alone does not prove that child tree has terminated.
@@ -474,14 +475,38 @@ async function wait_for_readers(state, root, timeoutMs = 6000) {
   }
 }
 function check_maintenance(home, allowOwned = false) {
+  const guard = path.join(home, "guard-cleanup-unknown.json");
+  try {
+    fs.lstatSync(guard);
+    throw new ConfigError("Не подтверждено завершение дерева демона индекса. " + barrier_recovery_hint(guard));
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
   const file = path.join(home, "maintenance.json");
-  if (!exists(file)) return;
+  let entry;
+  try { entry = fs.lstatSync(file); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  if (!entry.isFile() || entry.isSymbolicLink())
+    throw new ConfigError("Повреждён барьер обслуживания индекса. " + barrier_recovery_hint(file));
   let record;
   if (allowOwned && activeMaintenance.has(home)) {
     try { record = read_json(file); } catch { /* An unreadable marker remains a barrier. */ }
   }
   if (!allowOwned || !activeMaintenance.has(home) || record?.pid !== process.pid || record?.ownerId !== runtimeOwner)
-    throw new ConfigError("Обновление компонента выполняется или было прервано; проверьте settings.operation до подключения читателей");
+    throw new ConfigError("Обновление компонента выполняется или было прервано; проверьте settings.operation до подключения читателей. " + barrier_recovery_hint(file));
+}
+function check_index_observation(home) {
+  check_maintenance(home);
+  const lock = path.join(home, "operation.lock");
+  try { fs.lstatSync(lock); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  throw Object.assign(new ConfigError("Операция индекса ещё выполняется или её завершение не подтверждено. " + barrier_recovery_hint(lock)), { code: "INDEX_BUSY" });
+}
+async function wait_index_observation(home) {
+  const deadline = performance.now() + 1000;
+  while (true) {
+    try { check_index_observation(home); return; }
+    catch (error) { if (error.code !== "INDEX_BUSY" || performance.now() >= deadline) throw error; }
+    await sleep(25);
+  }
 }
 function begin_maintenance(home, root) {
   check_maintenance(home);
@@ -494,8 +519,9 @@ export async function acquire_reader(state, root, { preparing = true, observerBi
   return operation_lock(home, async () => {
     check_maintenance(home);
     const readers = await active_readers_locked(state, root);
-    if (readers.some(reader => reader.orphaned))
-      throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое подключение заблокировано до проверки процесса.");
+    const orphaned = readers.find(reader => reader.orphaned);
+    if (orphaned)
+      throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое подключение заблокировано. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
     const existing = observerBinding && readers.find(reader => reader.observerBinding === observerBinding && reader.instance === instance_name());
     if (existing) return existing.phase === "closing" ? { closing: existing.id } : { joined: existing.id };
     const id = randomUUID(), file = path.join(home, "readers", id + ".json"), owner = await open_reader(id, { binding: observerBinding, observe });
@@ -507,8 +533,9 @@ export async function acquire_reader(state, root, { preparing = true, observerBi
     const ensureAvailable = async () => {
       if (closing) throw new ConfigError("Читатель индекса уже закрывается.");
       check_maintenance(home);
-      if ((await active_readers_locked(state, root)).some(reader => reader.orphaned))
-        throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое наблюдение заблокировано до проверки процесса.");
+      const orphaned = (await active_readers_locked(state, root)).find(reader => reader.orphaned);
+      if (orphaned)
+        throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое наблюдение заблокировано. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
     };
     return { id, file, assertAvailable: () => operation_lock(home, ensureAvailable, 45), arm: () => operation_lock(home, async () => {
       await ensureAvailable();
@@ -587,6 +614,7 @@ export async function update_component(state, config, root, data, component, act
       return { component, state: "applied", release: entry[slot].release, requested: component_settings(config, component).version, protocol: checked.status, indexReady: checked.index_ready ?? null, reconnect };
     } catch (error) {
       if (component === "code-index") {
+        if (error.outcomeUnknown) { leaveMaintenance = true; throw error; }
         try { await (io.stop || stop_daemon)(state, root); }
         catch (stopError) { leaveMaintenance = true; throw uncertain_update("Проверка кандидата не удалась: " + safe_error_message(error) + "; остановка кандидата не подтверждена: " + safe_error_message(stopError)); }
         const old = artifact(state, component);
@@ -663,24 +691,34 @@ export async function start_daemon(
   data,
   exe,
   io = {
-    launch: process.platform === "win32" ? spawn_detached_windows : launch,
+    launch: process.platform === "win32" ? spawn_detached_windows : process.platform === "linux" ? spawn_guarded_linux : launch,
   },
   environment = native_environment(),
   beforeStart = null,
 ) {
   const health = await daemon_health(home);
+  let lifecycle = null;
+  if (process.platform === "linux") {
+    try { lifecycle = linux_read_daemon_lease(home); }
+    catch { throw new ConfigError("Не удалось проверить запись наблюдателя демона. " + barrier_recovery_hint(path.join(home, "guard-lifecycle.json"))); }
+  }
   if (!health) {
     // The public runtime CLI can reach this path without going through smoke.
     // Do not start an uncontained local daemon on macOS.
     if (process.platform === "darwin") require_protected_process_support();
     const stale = read_json(path.join(home, "daemon.json"), {}), owner = read_json(path.join(home, "owner.json"), {});
+    if (process.platform === "linux" && owner.guardId && (!lifecycle || lifecycle.id !== owner.guardId))
+      throw uncertain_update("Не подтверждена запись предыдущих наблюдателей демона. " + barrier_recovery_hint(path.join(home, "guard-lifecycle.json")));
     if (alive(stale.pid) || alive(owner.pid))
-      throw new ConfigError("Демон проекта работает, но не отвечает проверке; перед перезапуском изучите его журналы");
+      throw new ConfigError("Демон проекта работает либо его старый PID занят, но health не подтверждён; перезапуск запрещён. Записи: " + path.join(home, "owner.json") + ", " + path.join(home, "daemon.json") + ". " + barrier_recovery_hint(path.join(home, "daemon.json")));
+    if (lifecycle?.state === "active") throw new ConfigError("Не подтверждено завершение предыдущего дерева демона. " + barrier_recovery_hint(path.join(home, "guard-lifecycle.json")));
     if (beforeStart) await beforeStart();
   }
   index_config(home, root, data, health);
   if (health) {
     const owner = read_json(path.join(home, "owner.json"), {});
+    if (process.platform === "linux" && owner.guardId && (lifecycle?.id !== owner.guardId || lifecycle.state !== "active"))
+      throw uncertain_update("Не подтверждена запись наблюдателей работающего демона. " + barrier_recovery_hint(path.join(home, "guard-lifecycle.json")));
     if (owner.executable !== exe)
       throw new ConfigError(
         "Демон проекта использует другую версию компонента; остановите его до смены версии",
@@ -704,7 +742,7 @@ export async function start_daemon(
       );
     return home;
   }
-  const proc = io.launch(exe, ["daemon", "run"], {
+  const proc = await io.launch(exe, ["daemon", "run"], {
     cwd: home,
     env: {
       ...environment,
@@ -719,7 +757,7 @@ export async function start_daemon(
     stdio: "ignore",
   });
   const diagnostic = environment.EDT_AI_STATE_DIR ? create_diagnostic_logger("index-daemon", environment.EDT_AI_STATE_DIR) : null;
-  diagnostic?.event("daemon_starting", { projectRoot: root, pid: proc.pid });
+  diagnostic?.event("daemon_starting", { projectRoot: root, pid: proc.pid, guardPid: proc.guardPid, workerPid: proc.workerPid });
   try {
     let launchError;
     proc.once("error", (error) => {
@@ -737,6 +775,12 @@ export async function start_daemon(
       creation: daemon_process_identity(proc.pid),
     };
     if (!owner.creation) throw uncertain_update("Не удалось зафиксировать идентичность запущенного демона индекса.");
+    if (process.platform === "linux" && proc.guardPid && proc.workerPid) {
+      const guardCreation = daemon_process_identity(proc.guardPid), workerCreation = daemon_process_identity(proc.workerPid);
+      if (!guardCreation || !workerCreation) throw uncertain_update("Не удалось зафиксировать идентичность наблюдателей демона индекса.");
+      owner.guardId = proc.guardId;
+      owner.guards = [{ pid: proc.guardPid, creation: guardCreation }, { pid: proc.workerPid, creation: workerCreation }];
+    }
     save_json(path.join(home, "owner.json"), owner);
     const deadline = Date.now() + 40000;
     while (Date.now() < deadline) {
@@ -747,7 +791,7 @@ export async function start_daemon(
             typeof ready.started_at !== "string" || !ready.started_at || daemon_owner_identity(owner, daemon) !== owner.creation)
           throw uncertain_update("Не удалось подтвердить процесс и порт запущенного демона индекса.");
         save_json(path.join(home, "owner.json"), { ...owner, daemon_started_at: daemon.started_at, health_started_at: ready.started_at });
-        proc.commit?.();
+        await proc.commit?.();
         diagnostic?.event("daemon_started", { projectRoot: root, pid: proc.pid });
         return home;
       }
@@ -783,10 +827,43 @@ export async function ensure_daemon(state, root, data, exe, io, environment, rea
   const home = path.join(project_home(state, root), "code-index");
   return operation_lock(
     home,
-    () => { check_maintenance(home, true); return start_daemon(home, root, data, exe, io, environment, async () => {
-      if ((await active_readers_locked(state, root)).some(reader => reader.id !== readerId && (reader.orphaned || reader.phase !== "preparing")))
-        throw new ConfigError("Запуск демона заблокирован: другие читатели индекса ещё работают или их завершение не подтверждено.");
-    }); },
+    async () => {
+      check_maintenance(home, true);
+      try {
+        return await start_daemon(home, root, data, exe, io, environment, async () => {
+          const readers = (await active_readers_locked(state, root)).filter(reader => reader.id !== readerId && (reader.orphaned || reader.phase !== "preparing"));
+          const orphaned = readers.find(reader => reader.orphaned);
+          if (orphaned)
+            throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Запуск демона заблокирован. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
+          if (readers.length)
+            throw new ConfigError("Запуск демона заблокирован: другие читатели индекса ещё работают или их завершение не подтверждено.");
+        });
+      } catch (error) {
+        if (error.outcomeUnknown) {
+          const marker = path.join(home, "maintenance.json"), diagnostic = create_diagnostic_logger("index-daemon", state);
+          try {
+            // The pre-spawn lifecycle record remains in place until the
+            // guards prove cleanup. It already blocks any competing start.
+            const protectedByLifecycle = process.platform === "linux" && linux_read_daemon_lease(home)?.state === "active";
+            if (!protectedByLifecycle) {
+              // Do not replace a maintenance marker already owned by this operation.
+              try { atomic_write(marker, JSON.stringify({ pid: process.pid, root: resolve(root), reason: "daemon_start_cleanup_unknown" }), false); }
+              catch (failure) { if (failure.code !== "EEXIST") throw failure; }
+              const entry = fs.lstatSync(marker);
+              if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Invalid daemon cleanup barrier");
+            }
+            diagnostic.event("daemon_start_barrier_retained", { projectRoot: root });
+          } catch (failure) {
+            // Preserve the already-acquired project lock if a regular
+            // maintenance marker cannot be confirmed after creation.
+            error.retainOperationLock = true;
+            error.message += " Не удалось сохранить барьер. " + barrier_recovery_hint(path.join(home, "operation.lock"));
+            diagnostic.event("daemon_start_barrier_failed", { projectRoot: root, error: failure }, "error");
+          }
+        }
+        throw error;
+      }
+    },
     45,
   );
 }
@@ -1061,6 +1138,9 @@ async function maintain_index(state, config, root, data, repositories, io) {
       return { projectRoot: root, ...(repositories.length === 1 ? { repository: repositories[0].id, edtProject: repositories[0].edt_project } : {}),
         ...(repositories.length ? { rebuilt: repositories.map(repo => ({ repository: repo.id, edtProject: repo.edt_project })) } : {}),
         state: checked.index_state || (checked.index_ready ? "ready" : "not_checked"), index: checked.index };
+    } catch (error) {
+      if (error.outcomeUnknown) keepMaintenance = true;
+      throw error;
     } finally {
       try {
         if (stopped && !keepMaintenance) try { progress("restoring"); await (io.restart || ensure_daemon)(state, root, data, exe, undefined, native_environment(config)); }
@@ -1206,15 +1286,69 @@ function daemon_process_identity(pid) {
   try {
     if (process.platform === "win32") return windows_process_identity(pid)?.created || null;
     if (process.platform === "darwin") return darwin_process_identity(pid);
-    if (process.platform === "linux") {
-      const value = fs.readFileSync(`/proc/${pid}/stat`, "utf8"), tail = value.slice(value.lastIndexOf(")") + 2).split(" ");
-      const start = tail[19], boot = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-      return /^\d+$/.test(start || "") && /^[a-f0-9-]{36}$/i.test(boot) ? "linux:" + boot + ":" + start : null;
-    }
+    if (process.platform === "linux") return linux_process_identity(pid);
   } catch { /* An unavailable kernel identity prevents safe reuse. */ }
   return null;
 }
-export function daemon_owner_identity(owner, daemon) {
+function linux_process_parent(pid) {
+  try {
+    const value = fs.readFileSync(`/proc/${pid}/stat`, "utf8"), parent = Number(value.slice(value.lastIndexOf(")") + 2).split(" ")[1]);
+    return Number.isSafeInteger(parent) && parent > 0 ? parent : null;
+  } catch { return null; }
+}
+function linux_process_state(pid) {
+  try { const value = fs.readFileSync(`/proc/${pid}/stat`, "utf8"); return value.slice(value.lastIndexOf(")") + 2).split(" ")[0]; }
+  catch { return null; }
+}
+function close_process_pins(pins) {
+  const failures = [];
+  for (const pin of pins) try { pin.close(); } catch (error) { failures.push(error); }
+  if (failures.length) throw Object.assign(new AggregateError(failures, "Process handle cleanup is not confirmed"), { outcomeUnknown: true });
+}
+function pin_daemon_guards(owner, requireLineage, home, allowStopped = false) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(owner.guardId || "") ||
+      !Array.isArray(owner.guards) || owner.guards.length !== 2 || owner.guards[0]?.pid === owner.guards[1]?.pid ||
+      owner.guards.some(item => !Number.isSafeInteger(item?.pid) || item.pid <= 0 || !/^linux:[a-f0-9-]{36}:\d+$/i.test(item.creation || "")))
+    throw new ConfigError("Для старого демона Linux нет подтверждённых наблюдателей; безопасная остановка дерева недоступна. " + barrier_recovery_hint(path.join(home, "owner.json")));
+  const pins = [];
+  try {
+    for (const item of owner.guards) {
+      const identity = daemon_process_identity(item.pid);
+      if (!identity) { if (alive(item.pid)) throw uncertain_update("Идентичность наблюдателя демона недоступна."); continue; }
+      if (identity !== item.creation) continue;
+      const pin = pin_linux_process(item.pid);
+      pins.push(pin);
+      if (!pin.alive() || daemon_process_identity(item.pid) !== item.creation) { pin.close(); pins.pop(); continue; }
+    }
+    if (requireLineage && (pins.length !== 2 || owner.guards.some(item => !(allowStopped ? ["R", "S", "I", "T", "t"] : ["R", "S", "I"]).includes(linux_process_state(item.pid))) ||
+        linux_process_parent(owner.pid) !== owner.guards[1].pid || linux_process_parent(owner.guards[1].pid) !== owner.guards[0].pid ||
+        daemon_process_identity(owner.pid) !== owner.creation || pins.some(pin => !pin.alive())))
+      throw uncertain_update("Не подтверждена связь демона с его наблюдателями.");
+    return pins;
+  } catch (error) { try { close_process_pins(pins); } catch (cleanup) { error.outcomeUnknown = true; error.cause = cleanup; } throw error; }
+}
+async function wait_daemon_guards(pins, home, owner) {
+  const deadline = performance.now() + 12000;
+  try {
+    let lifecycle;
+    do {
+      try { lifecycle = linux_read_daemon_lease(home); }
+      catch { throw uncertain_update("Запись завершения наблюдателей недоступна."); }
+      if (!lifecycle || lifecycle.id !== owner.guardId) throw uncertain_update("Запись завершения наблюдателей изменилась или отсутствует.");
+      const running = pins.some(pin => pin.alive());
+      if (lifecycle.state === "completed" && !running) break;
+      if (!running && lifecycle.state !== "completed") throw uncertain_update("Завершение дерева демона не подтверждено.");
+      await sleep(50);
+    } while (performance.now() < deadline);
+    if (lifecycle?.state !== "completed" || pins.some(pin => pin.alive()) || lifecycle.notSpawned === true ||
+        !owner.guards.some(item => item.pid === lifecycle.finisher?.pid && item.creation === lifecycle.finisher?.creation))
+      throw uncertain_update("Завершение наблюдателей и дерева демона не подтверждено.");
+    const marker = path.join(home, "guard-cleanup-unknown.json");
+    try { fs.lstatSync(marker); throw uncertain_update("Очистка дерева демона не подтверждена. " + barrier_recovery_hint(marker)); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  } finally { close_process_pins(pins); }
+}
+export function daemon_owner_identity(owner, daemon, { allowStoppedGuard = false } = {}) {
   const pid = owner?.pid, port = daemon?.http_port;
   if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isInteger(port) || port < 1 || port > 65535 || typeof owner.executable !== "string") return null;
   try {
@@ -1227,12 +1361,13 @@ export function daemon_owner_identity(owner, daemon) {
     } else if (process.platform === "linux") {
       const actual = fs.statSync(`/proc/${pid}/exe`, { bigint: true }), expected = fs.statSync(owner.executable, { bigint: true });
       if (actual.dev !== expected.dev || actual.ino !== expected.ino || !linux_has_loopback_listener(pid, port)) return null;
+      if (owner.guardId || owner.guards !== undefined) close_process_pins(pin_daemon_guards(owner, true, ".", allowStoppedGuard));
     } else if (process.platform === "darwin") {
       const executable = darwin_process_executable(pid);
       if (!executable || path_identity(executable) !== path_identity(owner.executable) || !darwin_has_loopback_listener(pid, port)) return null;
     } else return null;
     return before === daemon_process_identity(pid) ? before : null;
-  } catch { return null; }
+  } catch (error) { if (error.outcomeUnknown) throw error; return null; }
 }
 function reader_binding(state, config, root, snapshot) {
   const bytes = read_regular_file(path.join(state, "runtime-lock.json"), 4 * 1024 * 1024)?.bytes;
@@ -1285,7 +1420,14 @@ function reader_watch(state, root, previous = null) {
 // the complete owned process tree has been confirmed stopped.
 export class IndexObserver {
   constructor(state) { this.state = state; this.entry = null; this.pending = Promise.resolve(); this.closing = null; this.closed = false; this.cleanupError = null; this.closePromise = null; this.cancelCopy = null; }
-  verifyDaemon(owner, daemon) { return daemon_owner_identity(owner, daemon); }
+  verifyDaemon(owner, daemon, home) {
+    if (home) check_index_observation(home);
+    if (process.platform === "linux" && (owner.guardId || owner.guards !== undefined)) {
+      try { const lifecycle = linux_read_daemon_lease(home); if (lifecycle?.id !== owner.guardId || lifecycle.state !== "active") return null; }
+      catch { return null; }
+    }
+    return daemon_owner_identity(owner, daemon);
+  }
   observe(config, root, data, snapshot = capture_index_snapshot(this.state, root, data), { cancelled = () => false } = {}) {
     const run = this.pending.then(async () => {
       if (cancelled()) throw new ConfigError("Ожидание наблюдения индекса отменено.");
@@ -1346,6 +1488,7 @@ export class IndexObserver {
     if (this.closing) await this.closing;
     if (this.cleanupError) throw Object.assign(new ConfigError("Завершение предыдущего читателя индекса не подтверждено."), { outcomeUnknown: true });
     const state = this.state, home = path.join(project_home(state, root), "code-index"), diagnostic = create_diagnostic_logger("index-observer", state);
+    await wait_index_observation(home);
     const watch = reader_watch(state, root, this.entry?.watch);
     if (this.entry && this.entry.watch.signature !== watch.signature) {
       await this.retire(this.entry, "inputs_changed");
@@ -1356,6 +1499,7 @@ export class IndexObserver {
     if (stable(requested) !== stable(watch.binding))
       throw Object.assign(new ConfigError("Настройки наблюдения индекса изменились."), { inputsChanged: true });
     const checkAuthority = () => {
+      check_index_observation(home);
       require_preparation(state, root, "code-index");
       const current = reader_watch(state, root, watch);
       if (current.signature !== watch.signature)
@@ -1375,7 +1519,7 @@ export class IndexObserver {
     if (daemon.http_host !== undefined && daemon.http_host !== "127.0.0.1") throw new ConfigError("Адрес работающего демона индекса не является локальным.");
     if (!pathsMatch(health, root, data, snapshot.selection)) throw new ConfigError("Пути репозиториев демона проекта не совпадают с выбранным профилем");
     if (!configBytes || configBytes.toString("utf8") !== index_config_text(root, data, snapshot.selection)) throw new ConfigError("Конфигурация индекса не соответствует выбранным репозиториям.");
-    const identity = this.verifyDaemon(owner, daemon), key = reader_binding(state, config, root, snapshot), executable = reader_file_identity(owner.executable);
+    const identity = this.verifyDaemon(owner, daemon, home), key = reader_binding(state, config, root, snapshot), executable = reader_file_identity(owner.executable);
     if (!identity) throw new ConfigError("Не удалось подтвердить процесс и локальный порт демона индекса.");
     if (this.closed) throw Object.assign(new ConfigError("Сеанс наблюдения индекса закрыт."), { ownerClosing: true });
     let entry = this.entry;
@@ -1401,7 +1545,7 @@ export class IndexObserver {
           const result = await observe_reader(lease.joined, key), after = await daemon_health(home, snapshot);
           checkAuthority();
           if (this.closed || !after || after.pid !== health.pid || after.started_at !== health.started_at ||
-              this.verifyDaemon(owner, daemon) !== identity || !index_snapshot_current(state, root, data, snapshot))
+              this.verifyDaemon(owner, daemon, home) !== identity || !index_snapshot_current(state, root, data, snapshot))
             throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
           return result;
         } catch (error) {
@@ -1448,17 +1592,21 @@ export class IndexObserver {
         diagnostic.event("reader_started", { projectRoot: root, reader: lease.id, supervisorPid: client.process.pid });
         client.process.once("exit", () => { void this.retire(entry, "supervisor_exited").catch(() => {}); });
         entry.timer = setInterval(() => {
+          try { check_maintenance(home); }
+          catch { void this.retire(entry, "maintenance").catch(() => {}); return; }
           try {
-            fs.lstatSync(path.join(home, "maintenance.json"));
-            void this.retire(entry, "maintenance").catch(() => {});
+            fs.lstatSync(path.join(home, "operation.lock"));
+            entry.lockSince ||= performance.now();
+            if (performance.now() - entry.lockSince >= 1000) { void this.retire(entry, "index_locked").catch(() => {}); return; }
           } catch (error) {
-            if (error.code !== "ENOENT") void this.retire(entry, "maintenance_unknown").catch(() => {});
-            else try {
-              const current = reader_watch(state, root, entry.watch);
-              if (current.signature !== entry.watch.signature) void this.retire(entry, "inputs_changed").catch(() => {});
-              else entry.watch = current;
-            } catch { void this.retire(entry, "inputs_unknown").catch(() => {}); }
+            if (error.code !== "ENOENT") { void this.retire(entry, "index_lock_unknown").catch(() => {}); return; }
+            entry.lockSince = 0;
           }
+          try {
+            const current = reader_watch(state, root, entry.watch);
+            if (current.signature !== entry.watch.signature) void this.retire(entry, "inputs_changed").catch(() => {});
+            else entry.watch = current;
+          } catch { void this.retire(entry, "inputs_unknown").catch(() => {}); }
         }, 500);
         entry.timer.unref?.();
       } catch (error) {
@@ -1492,7 +1640,7 @@ export class IndexObserver {
       const after = await daemon_health(home, snapshot);
       checkAuthority();
       if (this.entry !== entry || !after || after.pid !== health.pid || after.started_at !== health.started_at ||
-          this.verifyDaemon(owner, daemon) !== identity ||
+          this.verifyDaemon(owner, daemon, home) !== identity ||
           !index_snapshot_current(state, root, data, snapshot))
         throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
       // No kernel creation identity (or server start time) means a future PID
@@ -1583,7 +1731,7 @@ async function stop_owned_daemon(owner, daemon, guard) {
   socket.once("close", () => disconnected());
   try {
     if (!guard.alive() || process.platform === "win32" && guard.created !== owner.creation ||
-        daemon_owner_identity(owner, daemon) !== owner.creation)
+        daemon_owner_identity(owner, daemon, { allowStoppedGuard: true }) !== owner.creation)
       throw new ConfigError("Не подтверждена идентичность демона; остановка запрещена.");
     const deadline = performance.now() + 20000;
     timer = setTimeout(() => socket.destroy(timeoutError()), 20000);
@@ -1594,13 +1742,13 @@ async function stop_owned_daemon(owner, daemon, guard) {
     });
     let peer = false;
     while (performance.now() < deadline && !socket.destroyed) {
-      if (!guard.alive() || daemon_owner_identity(owner, daemon) !== owner.creation) break;
+      if (!guard.alive() || daemon_owner_identity(owner, daemon, { allowStoppedGuard: true }) !== owner.creation) break;
       peer = process.platform === "win32" ? windows_has_tcp_peer(owner.pid, daemon.http_port, socket.localPort)
         : linux_has_tcp_peer(owner.pid, daemon.http_port, socket.localPort);
       if (peer) break;
       await Promise.race([sleep(25), closed]);
     }
-    if (!peer || socket.destroyed || !guard.alive() || daemon_owner_identity(owner, daemon) !== owner.creation)
+    if (!peer || socket.destroyed || !guard.alive() || daemon_owner_identity(owner, daemon, { allowStoppedGuard: true }) !== owner.creation)
       throw new ConfigError("Не подтверждён владелец соединения с демоном; остановка запрещена.");
     const response = new Promise((resolve, reject) => {
       let text = "";
@@ -1636,6 +1784,7 @@ export async function stop_daemon(state, root, io = null, environment = native_e
   await operation_lock(
     home,
     async () => {
+      try {
       const owner = read_json(path.join(home, "owner.json"), {}),
         health = await daemon_health(home);
       if (!health) {
@@ -1646,6 +1795,13 @@ export async function stop_daemon(state, root, io = null, environment = native_e
           throw new ConfigError(
             "Демон не отвечает проверке состояния; остановка не подтверждена",
           );
+        if (process.platform === "linux" && !io?.stop) {
+          if (owner.pid) await wait_daemon_guards(pin_daemon_guards(owner, false, home), home, owner);
+          else {
+            const lifecycle = linux_read_daemon_lease(home);
+            if (lifecycle) throw new ConfigError("Запись наблюдателя требует проверки перед остановкой. " + barrier_recovery_hint(path.join(home, "guard-lifecycle.json")));
+          }
+        }
         return;
       }
       if (
@@ -1655,15 +1811,22 @@ export async function stop_daemon(state, root, io = null, environment = native_e
         !owned_executable(state, owner)
       )
         throw new ConfigError("Владелец демона не совпадает; остановка запрещена");
+      if (process.platform === "linux" && owner.guardId) {
+        let lifecycle;
+        try { lifecycle = linux_read_daemon_lease(home); } catch { throw uncertain_update("Запись наблюдателей демона недоступна."); }
+        if (lifecycle?.id !== owner.guardId || lifecycle.state !== "active") throw uncertain_update("Запись наблюдателей демона не подтверждена.");
+      }
       const daemon = read_json(path.join(home, "daemon.json"), {});
       if (!owner.creation || !owner.daemon_started_at || !owner.health_started_at || daemon.started_at !== owner.daemon_started_at ||
-          health.started_at !== owner.health_started_at || daemon.http_host !== "127.0.0.1" || daemon_owner_identity(owner, daemon) !== owner.creation)
+          health.started_at !== owner.health_started_at || daemon.http_host !== "127.0.0.1" || daemon_owner_identity(owner, daemon, { allowStoppedGuard: true }) !== owner.creation)
         throw new ConfigError("Не подтверждена идентичность процесса и порта демона; остановка запрещена.");
       if (!["win32", "linux"].includes(process.platform)) throw new ConfigError("Безопасная остановка демона на этой платформе недоступна.");
-      const guard = process.platform === "win32" ? pin_windows_process(owner.pid) : pin_linux_process(owner.pid);
+      let treePins = process.platform === "linux" && !io?.stop ? pin_daemon_guards(owner, true, home, true) : null;
+      let guard;
       let requested = false, stopped = false;
       diagnostic.event("daemon_stop_started", { projectRoot: root, pid: owner.pid });
       try {
+        guard = process.platform === "win32" ? pin_windows_process(owner.pid) : pin_linux_process(owner.pid);
         if (!guard.alive() || process.platform === "win32" && guard.created !== owner.creation || daemon_process_identity(owner.pid) !== owner.creation)
           throw new ConfigError("Идентичность процесса демона изменилась; остановка запрещена.");
         if (io?.stop) {
@@ -1675,15 +1838,23 @@ export async function stop_daemon(state, root, io = null, environment = native_e
           await sleep(250);
         }
         if (!stopped) throw uncertain_update("Остановка демона не подтверждена");
+        if (treePins) { const pending = treePins; treePins = null; await wait_daemon_guards(pending, home, owner); }
       } catch (error) {
         if (requested) error.outcomeUnknown = true;
         diagnostic.event("daemon_stop_failed", { projectRoot: root, pid: owner.pid, error }, "error");
         throw error;
       } finally {
-        try { guard.close(); }
+        try { close_process_pins([...(guard ? [guard] : []), ...(treePins || [])]); }
         catch (error) { diagnostic.event("daemon_cleanup_failed", { projectRoot: root, pid: owner.pid, error }, "error"); throw error; }
       }
       diagnostic.event("daemon_stopped", { projectRoot: root, pid: owner.pid });
+      } catch (error) {
+        if (process.platform === "linux" && error.outcomeUnknown) {
+          try { linux_retain_daemon_barrier(home, "daemon_stop_cleanup_unknown", { forceSeparate: true }); }
+          catch (barrier) { error.retainOperationLock = true; diagnostic.event("daemon_guard_barrier_failed", { projectRoot: root, error: barrier }, "error"); }
+        }
+        throw error;
+      }
     },
     45,
   );

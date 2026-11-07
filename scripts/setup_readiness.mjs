@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { ROOT, load, stable, atomic_write, inside, object, ConfigError, operation_lock } from "./common.mjs";
+import { ROOT, load, stable, atomic_write, inside, object, ConfigError, operation_lock, barrier_recovery_hint } from "./common.mjs";
 import { exists, is_file, sha256, instance_directory, instance_name, reconnect_file, project_directory, path_identity } from "./project_paths.mjs";
 import { edt_connection, repository_projects } from "./directory_context.mjs";
 import { setup_knowledge_status, edt_project_building } from "./setup_probe.mjs";
@@ -16,9 +16,20 @@ import { read_regular_file } from "./bounded_file.mjs";
 
 const maxReadinessFileBytes = 16 * 1024 * 1024;
 const read_readiness_file = file => {
-  const result = read_regular_file(file, maxReadinessFileBytes);
-  if (!result) throw Object.assign(new Error("Readiness input is missing"), { code: "ENOENT" });
-  return result.bytes.toString("utf8");
+  // Publishing an exclusive marker links a complete temporary file and then
+  // unlinks the temporary name. That last unlink can change ctime between
+  // lstat and fstat without changing the marker. Retry the same strict read;
+  // never accept a partial or changing file after the bounded retries.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const result = read_regular_file(file, maxReadinessFileBytes);
+      if (!result) throw Object.assign(new Error("Readiness input is missing"), { code: "ENOENT" });
+      return result.bytes.toString("utf8");
+    } catch (error) {
+      if (error.code !== "LOCAL_FILE_CHANGED" || attempt === 4) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1);
+    }
+  }
 };
 const digest = file => {
   const actual = path_identity(file);
@@ -62,9 +73,10 @@ export function assert_readiness_cleanup_known(state, root, instance) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(name)) continue;
     let record;
     try { record = JSON.parse(read_readiness_file(inside(state, path.relative(state, path.join(paths.active, name))))); }
-    catch (error) { if (error.code === "ENOENT") continue; throw new ConfigError("Не удалось прочитать барьер предыдущей проверки готовности."); }
-    if (!valid_foreground_marker(record, name)) throw new ConfigError("Повреждён барьер предыдущей проверки готовности.");
-    if (record?.phase === "cleanup_unknown") throw new ConfigError("Не подтверждено завершение предыдущей проверки готовности; новая проверка заблокирована.");
+    catch (error) { if (error.code === "ENOENT") continue; throw new ConfigError("Не удалось прочитать барьер предыдущей проверки готовности. " + barrier_recovery_hint(path.join(paths.active, name))); }
+    const marker = path.join(paths.active, name);
+    if (!valid_foreground_marker(record, name)) throw new ConfigError("Повреждён барьер предыдущей проверки готовности. " + barrier_recovery_hint(marker));
+    if (record?.phase === "cleanup_unknown") throw new ConfigError("Не подтверждено завершение предыдущей проверки готовности; новая проверка заблокирована. " + barrier_recovery_hint(marker));
   }
 }
 export function begin_foreground_readiness(state, root, instance, id) {
@@ -105,7 +117,7 @@ export async function activate_foreground_readiness(state, root, instance, marke
         throw Object.assign(new Error("Маркер проверки изменился до запуска."), { outcomeUnknown: true, markerChanged: true });
       assert_readiness_cleanup_known(state, root, instance);
       if (own.observedActive || own.claimRevision !== priority_revision(paths.claim))
-        throw Object.assign(new ConfigError("Проверка готовности уже выполнялась в другой MCP-сессии."), { code: "READINESS_BUSY" });
+        throw Object.assign(new ConfigError("Проверка готовности уже выполнялась в другой MCP-сессии. " + barrier_recovery_hint(paths.active)), { code: "READINESS_BUSY" });
       for (const name of fs.readdirSync(paths.active)) {
         if (name === id || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(name)) continue;
         let record;
@@ -119,7 +131,7 @@ export async function activate_foreground_readiness(state, root, instance, marke
         // Allow a concurrently completed owner to remove its marker first.
         try { read_readiness_file(inside(state, path.relative(state, path.join(paths.active, name)))); }
         catch (error) { if (error.code === "ENOENT") continue; throw error; }
-        throw new ConfigError("Не подтверждено завершение предыдущей проверки готовности; новая проверка заблокирована.");
+        throw new ConfigError("Не подтверждено завершение предыдущей проверки готовности; новая проверка заблокирована. " + barrier_recovery_hint(path.join(paths.active, name)));
       }
       if (!retain_foreground_readiness(state, marker, id))
         throw Object.assign(new Error("Не удалось сохранить барьер проверки готовности."), { outcomeUnknown: true });

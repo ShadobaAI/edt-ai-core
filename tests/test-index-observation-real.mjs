@@ -4,7 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { edt_fixture as fixture, environment, session } from "./helpers.mjs";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { edt_fixture as fixture, environment, session, ROOT } from "./helpers.mjs";
 import { settings } from "../scripts/common.mjs";
 import { sha256, project_directory } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
@@ -12,6 +14,7 @@ import { active_readers, daemon_health, index_config, observe_index, save_json, 
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { launch, stop_child } from "../scripts/processes.mjs";
 import { pin_windows_process, spawn_detached_windows } from "../scripts/windows_process.mjs";
+import { pin_linux_process } from "../scripts/unix_process.mjs";
 
 // Explicit opt-in only: no test downloads a runtime or touches a user's index.
 // The binary, daemon, database, configuration and logs live in the fixture.
@@ -19,7 +22,7 @@ test("the real Code Index reader uses an isolated runtime snapshot", { skip: !pr
   const trace = message => { if (process.env.EDT_AI_TEST_INDEX_TRACE === "1") process.stderr.write("fixture: " + message + "\n"); };
   const source = process.env.EDT_AI_TEST_REAL_INDEX;
   assert.ok(path.isAbsolute(source) && fs.statSync(source).isFile());
-  const f = fixture(t); environment(t, f.env); f.save();
+  const f = fixture(t, { preserveOnCleanupFailure: true }); environment(t, f.env); f.save();
   await new SettingsBackend().main({ action: "update", set: { codeIndexEnabled: true } });
   fs.writeFileSync(path.join(f.root, "src", "Example.bsl"), "Процедура Пример() Экспорт\nКонецПроцедуры\n");
   const bytes = fs.readFileSync(source), hash = sha256(bytes), exe = path.join(f.state, "runtime", "code-index", "fixture", hash, path.basename(source));
@@ -27,22 +30,39 @@ test("the real Code Index reader uses an isolated runtime snapshot", { skip: !pr
   trace("runtime copied");
   const home = path.join(project_directory(f.state, f.root), "code-index"); fs.mkdirSync(home, { recursive: true });
   index_config(home, f.root, f.profile);
-  const daemon = launch(exe, ["daemon", "run"], { cwd: home, env: { ...process.env, CODE_INDEX_HOME: home, CODE_INDEX_DAEMON_DETACHED: "1" },
-    readerJob: randomUUID(), stdio: ["ignore", "ignore", "ignore"] });
-  trace("daemon started");
-  f.clients.push({ close: () => stop_child(daemon, 0) });
+  let daemon, managed = false, startupUnknown = false, cleanupHandle;
+  const closeDaemon = async () => {
+    const failures = [];
+    for (const client of f.clients) if (client !== cleanupHandle) try { await client.close(); } catch (error) { failures.push(error); }
+    try {
+      if (managed) {
+        await stop_daemon(f.state, f.root);
+        if (startupUnknown) throw new Error("Startup cleanup was not confirmed; preserve fixture " + f.base);
+        managed = false;
+      } else if (daemon) { await stop_child(daemon, 0); daemon = null; }
+    } catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, "Fixture cleanup was not confirmed; preserve fixture " + f.base);
+  };
+  cleanupHandle = { close: closeDaemon }; f.clients.push(cleanupHandle);
   try {
-    assert.ok(daemon.pid);
+    if (["linux", "win32"].includes(process.platform)) {
+      managed = true;
+      try { await ensure_daemon(f.state, f.root, f.profile, exe); }
+      catch (error) { startupUnknown = error.outcomeUnknown === true; throw error; }
+    } else daemon = launch(exe, ["daemon", "run"], { cwd: home, env: { ...process.env, CODE_INDEX_HOME: home, CODE_INDEX_DAEMON_DETACHED: "1" },
+      readerJob: randomUUID(), stdio: ["ignore", "ignore", "ignore"] });
+    trace("daemon started");
+    if (daemon) assert.ok(daemon.pid);
     const until = Date.now() + 30000; let health;
     while (Date.now() < until) {
-      if (daemon.exitCode !== null || daemon.signalCode !== null) throw new Error("Fixture index daemon exited before becoming ready");
+      if (daemon && (daemon.exitCode !== null || daemon.signalCode !== null)) throw new Error("Fixture index daemon exited before becoming ready");
       try { health = await daemon_health(home); } catch { health = null; }
       if (health?.paths?.some(item => item.status === "ready")) break;
       await new Promise(done => setTimeout(done, 200));
     }
     assert.ok(health?.paths?.some(item => item.status === "ready"), "fixture index daemon did not become ready");
     trace("daemon ready");
-    save_json(path.join(home, "owner.json"), { pid: health.pid, executable: exe, project_root: f.root });
+    if (daemon) save_json(path.join(home, "owner.json"), { pid: health.pid, executable: exe, project_root: f.root });
     grant_preparation(f.state, f.root, ["code-index"]);
     const config = settings(); config.active_project = f.root; config.state_dir = f.state;
     const observed = await observe_index(f.state, config, f.root, f.profile);
@@ -50,10 +70,12 @@ test("the real Code Index reader uses an isolated runtime snapshot", { skip: !pr
     assert.equal(observed.index_state, "ready", JSON.stringify(observed.index));
     assert.equal(observed.index.repositories[0].alias, "product");
     const client = await session(t, "mcp/settings.mjs", [], f), second = await session(t, "mcp/settings.mjs", [], f);
+    assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "loaded");
+    const database = path.join(f.root, ".code-index", "index.db"), databaseBefore = sha256(fs.readFileSync(database));
     let readerId;
     for (let i = 0; i < 3; i++) {
       const current = i % 2 ? second : client;
-      const job = (await current.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+      const job = (await current.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index", ...(i === 1 ? { automatic: true } : {}) })).structuredContent;
       const deadline = Date.now() + 30000; let completed;
       do {
         completed = (await current.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
@@ -80,11 +102,12 @@ test("the real Code Index reader uses an isolated runtime snapshot", { skip: !pr
     assert.equal(result.result.componentChecks[0].state, "ready", JSON.stringify(result.result));
     const afterRestart = await daemon_health(home);
     assert.equal(afterRestart.pid, health.pid); assert.equal(afterRestart.started_at, health.started_at);
+    assert.equal(sha256(fs.readFileSync(database)), databaseBefore, "manual, automatic and reconnected observations must preserve the existing index database");
     assert.notEqual((await active_readers(f.state, f.root))[0].id, readerId);
     await restarted.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
   } finally {
     trace("stopping daemon");
-    await stop_child(daemon, 0);
+    await closeDaemon();
   }
 });
 
@@ -109,6 +132,36 @@ test("the real Windows Code Index startup uses the guarded persistent handoff", 
   }
 });
 
+test("the real Linux Code Index cannot outlive a launcher crash before owner registration", { skip: process.platform !== "linux" || !process.env.EDT_AI_TEST_REAL_INDEX, timeout: 60000 }, async t => {
+  const source = process.env.EDT_AI_TEST_REAL_INDEX, f = fixture(t); environment(t, f.env); f.save();
+  const bytes = fs.readFileSync(source), hash = sha256(bytes), exe = path.join(f.state, "runtime", "code-index", "fixture", hash, path.basename(source));
+  fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, bytes, { mode: 0o755 });
+  fs.writeFileSync(path.join(f.root, "src", "Example.bsl"), "Процедура Пример() Экспорт\nКонецПроцедуры\n");
+  const home = path.join(project_directory(f.state, f.root), "code-index"), info = path.join(f.base, "real-guard.json");
+  const runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href, processes = pathToFileURL(path.join(ROOT, "scripts/processes.mjs")).href;
+  const code = `import fs from 'node:fs';import {ensure_daemon} from ${JSON.stringify(runtime)};import {spawn_guarded_linux} from ${JSON.stringify(processes)};
+    const io={launch:async(command,args,options)=>{const c=await spawn_guarded_linux(command,args,options);
+      fs.writeFileSync(${JSON.stringify(info)},JSON.stringify({pid:c.pid,guard:c.guardPid,worker:c.workerPid,id:c.guardId}));await new Promise(()=>{});return c;}};
+    await ensure_daemon(${JSON.stringify(f.state)},${JSON.stringify(f.root)},${JSON.stringify(f.profile)},${JSON.stringify(exe)},io,process.env);`;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", code], { env: f.env, stdio: "ignore" });
+  const closed = new Promise(resolve => owner.once("close", resolve)); let pins = [];
+  f.clients.push({ close: async () => {
+    if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await closed;
+    const until = Date.now() + 15000; while (pins.some(pin => pin.alive()) && Date.now() < until) await new Promise(done => setTimeout(done, 25));
+    assert.ok(pins.every(pin => !pin.alive())); pins.forEach(pin => pin.close());
+  } });
+  const until = Date.now() + 15000; while (!fs.existsSync(info) && Date.now() < until) await new Promise(done => setTimeout(done, 25));
+  assert.ok(fs.existsSync(info), "the real daemon did not start");
+  const ids = JSON.parse(fs.readFileSync(info));
+  assert.equal(fs.existsSync(path.join(home, "owner.json")), false);
+  pins = [ids.guard, ids.worker, ids.pid].map(pin_linux_process);
+  owner.kill("SIGKILL"); await closed;
+  const deadline = Date.now() + 15000; while (pins.some(pin => pin.alive()) && Date.now() < deadline) await new Promise(done => setTimeout(done, 25));
+  assert.ok(pins.every(pin => !pin.alive()));
+  const receipt = JSON.parse(fs.readFileSync(path.join(home, "guard-lifecycle.json")));
+  assert.equal(receipt.id, ids.id); assert.equal(receipt.state, "completed");
+});
+
 test("the real Code Index startup records ownership and stops only its own daemon", { skip: !process.env.EDT_AI_TEST_REAL_INDEX, timeout: 120000 }, async t => {
   const source = process.env.EDT_AI_TEST_REAL_INDEX;
   assert.ok(path.isAbsolute(source) && fs.statSync(source).isFile());
@@ -117,10 +170,22 @@ test("the real Code Index startup records ownership and stops only its own daemo
   const bytes = fs.readFileSync(source), hash = sha256(bytes), exe = path.join(f.state, "runtime", "code-index", "fixture", hash, path.basename(source));
   fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, bytes, { mode: 0o755 });
   const sentinel = launch(process.execPath, ["-e", "process.stdin.resume();setInterval(()=>{},1000)"], { readerJob: randomUUID(), stdio: ["pipe", "ignore", "ignore"] });
-  let daemon;
+  let daemon, home, started = false, pins = [];
   try {
+    if (process.platform === "linux") {
+      home = await ensure_daemon(f.state, f.root, f.profile, exe); started = true;
+      const owner = read_json(path.join(home, "owner.json"));
+      assert.ok(owner.creation && owner.daemon_started_at && owner.health_started_at && owner.guardId);
+      pins = [owner.pid, ...owner.guards.map(item => item.pid)].map(pin_linux_process);
+      assert.ok(pins.every(pin => pin.alive()));
+      assert.equal(await ensure_daemon(f.state, f.root, f.profile, exe), home);
+      await stop_daemon(f.state, f.root); started = false;
+      assert.ok(pins.every(pin => !pin.alive()));
+      assert.equal(sentinel.exitCode, null); assert.equal(sentinel.signalCode, null);
+      return;
+    }
     const io = { launch: (command, args, options) => { daemon = launch(command, args, options); return daemon; } };
-    const home = await ensure_daemon(f.state, f.root, f.profile, exe, io), owner = read_json(path.join(home, "owner.json"));
+    home = await ensure_daemon(f.state, f.root, f.profile, exe, io); const owner = read_json(path.join(home, "owner.json"));
     assert.ok(owner.creation && owner.daemon_started_at && owner.health_started_at);
     assert.equal(daemon.pid, owner.pid);
     await stop_daemon(f.state, f.root);
@@ -128,6 +193,8 @@ test("the real Code Index startup records ownership and stops only its own daemo
     if (daemon.exitCode === null && daemon.signalCode === null) await once(daemon, "exit");
     assert.equal(daemon.exitCode !== null || daemon.signalCode !== null, true);
   } finally {
+    if (started) await stop_daemon(f.state, f.root);
+    for (const pin of pins) pin.close();
     if (daemon) await stop_child(daemon, 0);
     await stop_child(sentinel, 0);
   }

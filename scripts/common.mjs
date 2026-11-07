@@ -211,6 +211,8 @@ export function state_path(config, override) {
   return resolve(value);
 }
 export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+export const barrier_recovery_hint = file =>
+  `Путь состояния: ${file}. Если операция не завершается, следуйте разделу «Восстановление после неподтверждённой очистки» в ${path.join(ROOT, "docs", "USAGE.md")}.`;
 export async function operation_lock(state, action, timeout = 0) {
   fs.mkdirSync(state, { recursive: true });
   const lock = path.join(state, "operation.lock"),
@@ -223,15 +225,19 @@ export async function operation_lock(state, action, timeout = 0) {
       if (error.code !== "EEXIST") throw error;
       if (Date.now() >= deadline)
         throw Object.assign(new ConfigError(
-          `Другая операция удерживает ${lock}. Перед удалением устаревшей блокировки проверьте её PID.`,
+          `Другая операция удерживает блокировку. ${barrier_recovery_hint(lock)}`,
         ), { code: "RUNTIME_BUSY" });
       await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
     }
   }
+  let retain = false;
   try {
     return await action();
+  } catch (error) {
+    retain = error?.retainOperationLock === true;
+    throw error;
   } finally {
-    fs.rmSync(lock, { force: true });
+    if (!retain) fs.rmSync(lock, { force: true });
   }
 }
 export const stable = (value) =>

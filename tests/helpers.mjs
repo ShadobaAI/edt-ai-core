@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { ROOT, load, dump } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 export { ROOT };
-export function fixture(t) {
+export function fixture(t, { preserveOnCleanupFailure = false } = {}) {
   const base = fs.realpathSync.native(
       fs.mkdtempSync(path.join(os.tmpdir(), "core fixture Юникод ")),
     ),
@@ -40,6 +40,8 @@ export function fixture(t) {
   t.after(async () => {
     const failures = [];
     for (const client of clients) try { await client.close(); } catch (error) { failures.push(error); }
+    if (failures.length && preserveOnCleanupFailure)
+      throw new AggregateError(failures, "Fixture cleanup was not confirmed; preserved at " + base);
     // Windows may briefly retain cwd/stdio handles after a process exits.
     try { await fs.promises.rm(base, {
       recursive: true, force: true, maxRetries: 10, retryDelay: 100,
@@ -59,8 +61,8 @@ export function environment(t, env) {
     Object.assign(process.env, previous);
   });
 }
-export function edt_fixture(t) {
-  const f = fixture(t);
+export function edt_fixture(t, options) {
+  const f = fixture(t, options);
   fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
   return f;
 }
