@@ -2,11 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-export const LOG_POLICY = Object.freeze({ files: 4, fileBytes: 512 * 1024, days: 7, eventBytes: 8192 });
-export const LOG_FORMAT_VERSION = 2;
+export const LOG_POLICY = Object.freeze({ files: 4, fileBytes: 512 * 1024, priorityFiles: 2, priorityFileBytes: 256 * 1024, days: 7, eventBytes: 8192 });
+export const LOG_FORMAT_VERSION = 3;
 const failureCategories = new Set(["configuration", "transport", "authorization", "server_contract", "access_scope", "index"]);
 export function verification_limits(knowledgeVerified = false) {
   return { hostHookTrust: "not_verified", hostHookActivation: "not_verified", hostEffectiveToolCatalogue: "not_verified",
@@ -29,6 +29,119 @@ export function connection_failure(error, phase = "transport") {
     : failureCategories.has(phase) ? phase : "transport";
   const rpcCode = Number.isInteger(error?.code) ? error.code : error?.rpcCode;
   return { category, ...(status ? { httpStatus: status } : {}), ...(Number.isInteger(rpcCode) ? { rpcCode } : {}) };
+}
+
+// Only locally established codes are retained. An upstream message, code
+// string or stack is never evidence and may contain arbitrary private data.
+const osCodes = new Set(["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "EEXIST", "ENOSPC", "EMFILE", "ENFILE", "EPIPE", "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"]);
+const localCodes = new Set(["INVALID_DOCUMENT", "LOCAL_FILE_CHANGED", "BACKEND_OUTPUT_LIMIT", "READ_TIMEOUT", "RUNTIME_BUSY", "unsupported_response"]);
+export function diagnostic_failure(error, phase = "unknown") {
+  const code = error?.cause?.code || error?.code;
+  const httpStatus = Number.isInteger(error?.status) ? error.status : error?.httpStatus;
+  const rpcCode = Number.isInteger(error?.code) ? error.code : error?.rpcCode;
+  let category = "unknown", reasonCode = "unknown_failure";
+  if (error?.outcomeUnknown === true) { category = "outcome_unknown"; reasonCode = "outcome_unknown"; }
+  else if (["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "READ_TIMEOUT"].includes(code) || error?.name === "TimeoutError" || httpStatus === 408) { category = "timeout"; reasonCode = "timeout"; }
+  else if (error?.name === "AbortError" || error?.cancelled === true) { category = "cancelled"; reasonCode = "cancelled"; }
+  else if (code === "RUNTIME_BUSY") { category = "blocked"; reasonCode = "runtime_busy"; }
+  else if (httpStatus === 401 || httpStatus === 403) { category = "authorization"; reasonCode = "authorization_denied"; }
+  else if (httpStatus === 429) { category = "blocked"; reasonCode = "rate_limited"; }
+  else if (["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "EPIPE"].includes(code)) { category = "connection"; reasonCode = "connection_failed"; }
+  else if (error instanceof SyntaxError || code === "INVALID_DOCUMENT" || code === "unsupported_response" || [-32700, -32600, -32601, -32602].includes(rpcCode)) { category = "contract"; reasonCode = "invalid_response"; }
+  else if ((Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599) || Number.isInteger(rpcCode)) { category = "remote_error"; reasonCode = "remote_error"; }
+  else if (["EACCES", "EPERM"].includes(code)) { category = "permission"; reasonCode = "access_denied"; }
+  else if (code === "ENOENT") { category = "configuration"; reasonCode = "path_not_found"; }
+  else if (code === "BACKEND_OUTPUT_LIMIT") { category = "resource_limit"; reasonCode = "output_limit"; }
+  else if ((error?.remote !== true && /^(?:ConfigError|ProfileNotFound|ProfileAmbiguous)$/.test(error?.constructor?.name || "")) || phase === "configuration" || phase === "preparation") { category = "configuration"; reasonCode = "configuration_invalid"; }
+  const causeCategory = category === "outcome_unknown" ? (["ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT", "READ_TIMEOUT"].includes(code) || error?.name === "TimeoutError" || httpStatus === 408 ? "timeout"
+    : ["ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "EPIPE"].includes(code) ? "connection" : undefined) : undefined;
+  return { category, reasonCode, ...(causeCategory ? { causeCategory } : {}),
+    ...(Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599 ? { httpStatus } : {}),
+    ...(Number.isSafeInteger(rpcCode) && Math.abs(rpcCode) <= 2147483648 ? { rpcCode } : {}),
+    ...(osCodes.has(code) ? { osCode: code } : {}), ...(localCodes.has(code) ? { localCode: code } : {}) };
+}
+export function diagnostic_id(value) {
+  return typeof value === "string" && value ? createHash("sha256").update(value).digest("hex").slice(0, 24) : null;
+}
+export function diagnostic_project_id(value) {
+  if (typeof value !== "string" || !value) return null;
+  const resolved = path.resolve(value);
+  return diagnostic_id(process.platform === "win32" ? resolved.toLowerCase() : resolved);
+}
+
+const diagnosticActions = new Set("read status check probe refresh_readiness rebuild_index restart_index updates pick_directory pick_view_directory pick_java check_java pick_import_file update create load save preview import export transfer_apply transfer_export document_patch rename open close install download apply rollback java_probe".split(" "));
+const diagnosticPhases = new Set("configuration preparation initialize tools/list native_validation transport server_contract authorization access_scope index preparing waiting_lock waiting_readers stopping indexing restarting checking restoring cleanup dispatch completed unknown".split(" "));
+const diagnosticReasons = new Set("completed timeout error output_limit project_changed observation_cleanup_failed backend_timeout cancelled shutdown disconnect expired session_closed cleanup_unknown".split(" "));
+const diagnosticStates = new Set("idle running completed failed outcome_unknown cancelled ready disabled stopped missing missing_config missing_project mismatch stale indexing building not_checked not_verified not_configured invalid check_stale awaiting_observation preparing error connected disconnected verified not_ready blocked superseded".split(" "));
+const diagnosticReasonCodes = new Set("disabled profile_missing not_checked launch_required configuration_missing configuration_project configuration_type target_unconfirmed ambiguous project_mismatch project_not_ready edt_unavailable request_failed timeout api_unsupported unsupported_response api_limit check_stale launch_verified unknown_failure outcome_unknown cancelled runtime_busy authorization_denied connection_failed invalid_response remote_error rate_limited access_denied path_not_found output_limit configuration_invalid policy_denied".split(" "));
+const diagnosticComponents = new Set(["settings", "session-start", "guard", "cli", "edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa", "policy", "managed", "managed-code-index", "managed-bsl-ls", "index-daemon", "index-observer", "java-probe", "process-supervisor", "linux-daemon-guard"]);
+const uuid = value => typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value : undefined;
+// This is the persisted event contract, not a recursive redaction filter.
+// Unknown fields, upstream prose, command lines, paths and payloads are omitted.
+export function diagnostic_fields(detail = {}, { projected = false } = {}) {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return {};
+  const result = {};
+  for (const key of ["pid", "supervisorPid", "workerPid", "targetPid", "bytes", "exitCode", "durationMs", "callIndex", "count", "controlCount", "tools", "total", "completed", "versions", "index", "i"]) {
+    const value = detail[key]; if (Number.isSafeInteger(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER) result[key] = value;
+  }
+  for (const key of ["bound", "rootsPending", "rootsAdvertised", "isError", "rootLocked", "all", "cancelled", "configured", "connected", "ready", "toolsVerified", "truncated"]) if (typeof detail[key] === "boolean") result[key] = detail[key];
+  for (const key of ["id", "operationId", "owner", "reader", "connectionId"]) if (uuid(detail[key])) result[key] = detail[key];
+  for (const [key, target] of [["projectRoot", "projectId"], ["selectedDirectory", "selectedDirectoryId"], ["requestId", "requestId"], ["tool", "toolId"], ["executable", "executableId"]]) {
+    if (["string", "number"].includes(typeof detail[key])) result[target] = ["projectRoot", "selectedDirectory"].includes(key) ? diagnostic_project_id(String(detail[key])) : diagnostic_id(key === "requestId" ? typeof detail[key] + ":" + String(detail[key]) : String(detail[key]));
+  }
+  if (projected) {
+    for (const key of ["projectId", "selectedDirectoryId", "toolId", "executableId"]) if (typeof detail[key] === "string" && /^[a-f0-9]{24}$/.test(detail[key])) result[key] = detail[key];
+    if (typeof detail.requestId === "string" && /^[a-f0-9]{24}$/.test(detail.requestId)) result.requestId = detail.requestId;
+  }
+  if (diagnosticActions.has(detail.action)) result.action = detail.action;
+  if (diagnosticPhases.has(detail.phase)) result.phase = detail.phase;
+  if (diagnosticReasons.has(detail.reason)) result.reason = detail.reason;
+  if (diagnosticStates.has(detail.status)) result.status = detail.status;
+  if (diagnosticStates.has(detail.state)) result.state = detail.state;
+  if (["not_executed", "unknown", "response_received", "response_error", "response_ok"].includes(detail.outcome)) result.outcome = detail.outcome;
+  if (diagnosticReasonCodes.has(detail.reasonCode)) result.reasonCode = detail.reasonCode;
+  for (const key of ["startedAt", "checkedAt", "expiresAt"]) if (typeof detail[key] === "string" && Number.isFinite(Date.parse(detail[key]))) result[key] = new Date(detail[key]).toISOString();
+  for (const key of ["version", "node"]) {
+    const value = key === "version" ? detail.version || detail.server?.version : detail[key];
+    if (typeof value === "string" && /^v?\d{1,6}(?:\.\d{1,6}){0,3}(?:[-.]?(?:alpha|beta|rc|preview|dev)(?:[.-]?\d{1,6})?)?$/i.test(value)) result[key] = value;
+  }
+  if (typeof detail.protocol === "string" && /^\d{4}-\d{2}-\d{2}$/.test(detail.protocol)) result.protocol = detail.protocol;
+  if (diagnosticComponents.has(detail.component)) result.component = detail.component;
+  if (["knowledge_status", "knowledge_search", "knowledge_read", "settings.run_check", "settings.probe_connections", "settings.rebuild_index", "settings.restart_index", "settings.refresh_readiness", "settings.updates", "settings.update", "settings.export_diagnostics", "settings.export_log"].includes(detail.tool)) result.tool = detail.tool;
+  if (["profile.mjs", "runtime.mjs", "vanessa.mjs", "doctor.mjs", "prepare_install.mjs", "action_policy.mjs"].includes(detail.executable)) result.executable = detail.executable;
+  if (detail.error) result.failure = detail.error.diagnosticFailure && typeof detail.error.diagnosticFailure === "object"
+    ? diagnostic_fields({ failure: detail.error.diagnosticFailure }).failure || diagnostic_failure(detail.error, detail.phase)
+    : diagnostic_failure(detail.error, detail.phase);
+  if (detail.failure && typeof detail.failure === "object") {
+    const f = detail.failure;
+    if (["configuration", "transport", "authorization", "server_contract", "access_scope", "index", "connection", "timeout", "cancelled", "blocked", "outcome_unknown", "unknown", "permission", "contract", "remote_error", "resource_limit"].includes(f.category)) result.failure = { category: f.category,
+      ...(Number.isInteger(f.httpStatus) && f.httpStatus >= 100 && f.httpStatus <= 599 ? { httpStatus: f.httpStatus } : {}),
+      ...(Number.isSafeInteger(f.rpcCode) && Math.abs(f.rpcCode) <= 2147483648 ? { rpcCode: f.rpcCode } : {}),
+      ...(osCodes.has(f.osCode) ? { osCode: f.osCode } : {}), ...(localCodes.has(f.localCode) ? { localCode: f.localCode } : {}),
+      ...(["timeout", "connection"].includes(f.causeCategory) ? { causeCategory: f.causeCategory } : {}),
+      ...(diagnosticReasonCodes.has(f.reasonCode) ? { reasonCode: f.reasonCode } : {}) };
+  }
+  if (detail.binding && typeof detail.binding === "object") {
+    const b = detail.binding, id = projected && typeof b.projectId === "string" && /^[a-f0-9]{24}$/.test(b.projectId) ? b.projectId : diagnostic_project_id(b.projectRoot);
+    result.binding = { ...(id ? { projectId: id } : {}), ...(typeof b.connectionId === "string" && /^[a-f0-9]{32}$/.test(b.connectionId) ? { connectionId: b.connectionId } : {}), ...(uuid(b.connectionId) ? { connectionId: b.connectionId } : {}) };
+  }
+  return result;
+}
+const diagnosticEvents = new Set(`session_started uncaught_exception index_observer_cleanup_failed settings_unavailable backend_process_started backend_process_stopped backend_child_stopped backend_process_cleanup_failed backend_cleanup_unconfirmed
+operation_started operation_completed operation_failed operation_outcome_unknown operation_cleanup_failed operation_barrier_failed operation_rejected operation_phase component_observed component_observation_failed
+support_export_requested support_export_saved version_catalog_loaded request_started request_completed request_failed native_request_started native_request_completed native_request_failed dispatch_failed
+command_started command_completed command_failed profile_discovered discovery_failed request_denied guard_failed connected disconnected connection_failed host_initialized host_tools_list runtime_stderr
+process_started process_exited process_stopped process_shutdown_failed process_cleanup_failed launch_failed daemon_starting daemon_started daemon_start_rolled_back daemon_start_cleanup_failed daemon_start_unconfirmed daemon_start_barrier_retained daemon_start_barrier_failed daemon_stop_started daemon_stop_failed daemon_cleanup_failed daemon_stopped
+daemon_guard_stopping daemon_guard_stopped daemon_guard_barrier_failed daemon_guard_cleanup_failed daemon_guard_started daemon_guard_committed daemon_guard_monitor_failed daemon_guard_cleanup_unconfirmed
+index_output index_completed index_failed reader_copy_started reader_copy_stopped reader_copy_cleanup_failed reader_coordination_failed reader_stopped reader_files_removed reader_files_cleanup_failed reader_cleanup_failed reader_started session_cleanup_timeout session_cleanup_failed`.split(/\s+/));
+// Records are local, mutable input too. An old or forged event name must not
+// become a way to smuggle arbitrary text into an exported report.
+export function export_diagnostic_events(events) {
+  return events.map(event => ({ ...event,
+    component: diagnosticComponents.has(event.component) ? event.component : "unknown",
+    ...(diagnosticEvents.has(event.event) ? {} : { event: "unrecognized_event", eventId: diagnostic_id(event.event) }),
+    detail: diagnostic_fields(event.detail, { projected: true }),
+  }));
 }
 const secretKey = /password|passwd|pwd|secret|token|credential|authorization|api.?key|cookie|private.?key|binding.?key|connection.?string|строкасоединения|пароль|имяпользователя/i;
 const omittedKey = /^(?:env|environment|headers|args|arguments|command|text|content|sourceCode)$/i;
@@ -187,24 +300,52 @@ export function sanitize_diagnostics(value, depth = 0) {
   return null;
 }
 const logFiles = directory => Array.from({ length: LOG_POLICY.files }, (_, index) => path.join(directory, `events.${index}.jsonl`));
+const priorityFiles = directory => Array.from({ length: LOG_POLICY.priorityFiles }, (_, index) => path.join(directory, `important.${index}.jsonl`));
 function regular(file) {
   const stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Diagnostic path is not a regular file");
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1) throw new Error("Diagnostic path is not a private regular file");
   return stat;
 }
-function expire(directory, now) {
-  for (const file of logFiles(directory)) {
+function expire(files, now) {
+  for (const file of files) {
     try { if (regular(file).mtimeMs < now - LOG_POLICY.days * 86400000) fs.unlinkSync(file); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
   }
+}
+function append_record(files, limit, line) {
+  let size = 0;
+  try { size = regular(files[0]).size; } catch (error) { if (error.code !== "ENOENT") throw error; }
+  let discarded = false;
+  if (size + Buffer.byteLength(line) > limit) {
+    try { regular(files.at(-1)); discarded = true; } catch (error) { if (error.code !== "ENOENT") throw error; }
+    for (let index = files.length - 1; index >= 1; index--) {
+      try { regular(files[index]); fs.unlinkSync(files[index]); } catch (error) { if (error.code !== "ENOENT") throw error; }
+      try { regular(files[index - 1]); fs.renameSync(files[index - 1], files[index]); } catch (error) { if (error.code !== "ENOENT") throw error; }
+    }
+  }
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0);
+  const fd = fs.openSync(files[0], flags, 0o600);
+  try {
+    const opened = fs.fstatSync(fd), current = regular(files[0]);
+    if (!opened.isFile() || opened.nlink > 1 || opened.dev !== current.dev || opened.ino !== current.ino) throw new Error("Diagnostic file changed while opening");
+    fs.writeFileSync(fd, line);
+  } finally { fs.closeSync(fd); }
+  return discarded;
+}
+function will_discard(files, limit, bytes) {
+  try { if (regular(files[0]).size + bytes <= limit) return false; }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  try { regular(files.at(-1)); return true; }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
 }
 // Short cross-process lock protects whole NDJSON records and rotation. Logging
 // failure never changes the outcome of the user's operation.
 export function create_diagnostic_logger(component, state = diagnostic_state()) {
   const session = randomUUID(), directory = path.join(state, "diagnostics");
-  let dropped = 0, lastError = null;
+  let dropped = 0, priorityDropped = 0, lastError = null, sequence = 0;
   const event = (name, detail = {}, level = "info") => {
     const lock = path.join(directory, "writer.lock");
+    const eventSequence = ++sequence;
     let owned = false;
     try {
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -216,61 +357,94 @@ export function create_diagnostic_logger(component, state = diagnostic_state()) 
         catch (error) { if (error.code !== "EEXIST" || attempt === 4) throw error; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); }
       }
       const now = Date.now();
-      expire(directory, now);
-      const record = { formatVersion: LOG_FORMAT_VERSION, time: new Date(now).toISOString(), component: clean_text(component).slice(0, 80), session, pid: process.pid,
-        instance: clean_text(process.env.EDT_AI_INSTANCE || "default").slice(0, 64), event: clean_text(name).slice(0, 80), level: clean_text(level).slice(0, 20),
-        detail: sanitize_diagnostics(detail), ...(dropped ? { droppedBefore: dropped } : {}) };
+      expire(logFiles(directory), now);
+      let priorityUnavailable = false;
+      try { expire(priorityFiles(directory), now); } catch { priorityUnavailable = true; }
+      const record = { formatVersion: LOG_FORMAT_VERSION, recordId: randomUUID(), time: new Date(now).toISOString(), component: clean_text(component).slice(0, 80), session, sequence: eventSequence, pid: process.pid,
+        instanceId: diagnostic_id(process.env.EDT_AI_INSTANCE || "default"), event: clean_text(name).slice(0, 80), level: level === "warning" ? "warn" : ["info", "warn", "error", "debug"].includes(level) ? level : "info",
+        detail: diagnostic_fields({ ...(uuid(process.env.EDT_AI_OPERATION_ID) ? { operationId: process.env.EDT_AI_OPERATION_ID } : {}), ...detail }), ...(dropped ? { droppedBefore: dropped } : {}), ...(priorityDropped ? { priorityDroppedBefore: priorityDropped } : {}) };
       let line = JSON.stringify(record) + "\n";
-      if (Buffer.byteLength(line) > LOG_POLICY.eventBytes) { record.detail = { truncated: true, summary: clean_text(JSON.stringify(record.detail)).slice(0, 1000) }; line = JSON.stringify(record) + "\n"; }
-      const files = logFiles(directory);
-      let size = 0;
-      try { size = regular(files[0]).size; } catch (error) { if (error.code !== "ENOENT") throw error; }
-      if (size + Buffer.byteLength(line) > LOG_POLICY.fileBytes) {
-        for (let index = files.length - 1; index >= 1; index--) {
-          try { regular(files[index]); fs.unlinkSync(files[index]); } catch (error) { if (error.code !== "ENOENT") throw error; }
-          try { regular(files[index - 1]); fs.renameSync(files[index - 1], files[index]); } catch (error) { if (error.code !== "ENOENT") throw error; }
-        }
+      if (Buffer.byteLength(line) > LOG_POLICY.eventBytes) { record.detail = { truncated: true }; line = JSON.stringify(record) + "\n"; }
+      const important = record.level === "error" || record.level === "warn" || /^(?:connected|disconnected|connection_failed|operation_failed|operation_outcome_unknown|operation_rejected|component_observed|daemon_started|daemon_stopped)$/.test(name);
+      if (will_discard(logFiles(directory), LOG_POLICY.fileBytes, Buffer.byteLength(line))) record.rotatedBefore = true;
+      if (important && !priorityUnavailable) try {
+        if (will_discard(priorityFiles(directory), LOG_POLICY.priorityFileBytes, Buffer.byteLength(line))) record.priorityRotatedBefore = true;
+      } catch { priorityUnavailable = true; }
+      line = JSON.stringify(record) + "\n";
+      append_record(logFiles(directory), LOG_POLICY.fileBytes, line);
+      dropped = 0; priorityDropped = 0; lastError = null;
+      // A separate bounded retention lane inside the same journal prevents
+      // routine traffic from evicting errors and meaningful state transitions.
+      if (important) {
+        try {
+          if (priorityUnavailable) throw new Error("Priority diagnostic path unavailable");
+          append_record(priorityFiles(directory), LOG_POLICY.priorityFileBytes, line);
+        } catch (error) { priorityDropped++; lastError = error.code || "priority_write_failed"; }
       }
-      fs.appendFileSync(files[0], line, { mode: 0o600 });
-      dropped = 0; lastError = null;
       return true;
-    } catch (error) { dropped++; lastError = error.code || error.message; return false; }
+    } catch (error) { dropped++; lastError = error.code || "write_failed"; return false; }
     finally { if (owned) try { fs.unlinkSync(lock); } catch {} }
   };
-  return { event, session, status: () => ({ dropped, lastError }) };
+  return { event, session, status: () => ({ dropped, priorityDropped, lastError }) };
 }
 export function read_diagnostic_logs(state = diagnostic_state()) {
   const directory = path.join(state, "diagnostics"), events = [], issues = [];
-  if (!fs.existsSync(directory)) return { events, issues };
-  if (fs.lstatSync(directory).isSymbolicLink()) return { events, issues: ["Diagnostic directory is a symlink"] };
-  for (const file of logFiles(directory).reverse()) {
+  const stats = { expiredFiles: 0, expiredRecords: 0, invalidTimestamps: 0, invalidRecords: 0, unsupportedRecords: 0, truncatedFiles: 0 };
+  try {
+    const directoryStat = fs.lstatSync(directory);
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return { events, issues: ["Diagnostic directory is not a regular directory"], stats };
+  } catch (error) { return { events, issues: error.code === "ENOENT" ? issues : ["Diagnostic directory unavailable: " + (error.code || "read_failed")], stats }; }
+  const seen = new Map();
+  for (const file of [...logFiles(directory).reverse(), ...priorityFiles(directory).reverse()]) {
     let fd;
     try {
       const stat = regular(file);
-      if (stat.mtimeMs < Date.now() - LOG_POLICY.days * 86400000) continue;
-      fd = fs.openSync(file, "r");
-      const bytes = Buffer.alloc(Math.min(stat.size, LOG_POLICY.fileBytes));
-      fs.readSync(fd, bytes, 0, bytes.length, 0);
-      for (const line of bytes.toString("utf8").split("\n")) {
+      if (stat.mtimeMs < Date.now() - LOG_POLICY.days * 86400000) { stats.expiredFiles++; continue; }
+      const fileLimit = path.basename(file).startsWith("important.") ? LOG_POLICY.priorityFileBytes : LOG_POLICY.fileBytes;
+      if (stat.size > fileLimit) { stats.truncatedFiles++; issues.push(path.basename(file) + ": file size limit; remainder omitted"); }
+      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+      const opened = fs.fstatSync(fd);
+      if (!opened.isFile() || opened.nlink > 1 || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error("Diagnostic file changed while opening");
+      const bytes = Buffer.alloc(Math.min(stat.size, fileLimit));
+      let length = 0;
+      while (length < bytes.length) { const count = fs.readSync(fd, bytes, length, bytes.length - length, length); if (!count) break; length += count; }
+      if (length !== bytes.length) issues.push(path.basename(file) + ": file changed while reading");
+      for (const line of bytes.subarray(0, length).toString("utf8").split("\n")) {
         if (!line.trim()) continue;
         try {
           let event = JSON.parse(line);
           const timestamp = Date.parse(event.time);
-          if (!Number.isFinite(timestamp) || timestamp < Date.now() - LOG_POLICY.days * 86400000) continue;
-          if (event.formatVersion !== LOG_FORMAT_VERSION) {
+          if (!Number.isFinite(timestamp)) { stats.invalidTimestamps++; continue; }
+          if (timestamp < Date.now() - LOG_POLICY.days * 86400000) { stats.expiredRecords++; continue; }
+          if (![2, LOG_FORMAT_VERSION].includes(event.formatVersion)) {
+            stats.unsupportedRecords++;
             issues.push("Unsupported log format: record details omitted");
             continue;
           }
-          if (event.event === "runtime_stderr") event.detail = { content: "omitted", ...(Number.isSafeInteger(event.detail?.bytes) ? { bytes: event.detail.bytes } : {}) };
-          events.push(sanitize_diagnostics(event));
+          const recordId = uuid(event.recordId), duplicate = recordId && seen.get(recordId);
+          if (duplicate?.line === line.trim()) continue;
+          if (duplicate) issues.push("Conflicting duplicate log record");
+          const detail = diagnostic_fields(event.detail, { projected: event.formatVersion === LOG_FORMAT_VERSION });
+          const projected = { formatVersion: event.formatVersion, ...(recordId ? { recordId } : {}), time: new Date(timestamp).toISOString(),
+            component: typeof event.component === "string" && /^[a-z0-9-]{1,80}$/.test(event.component) ? event.component : "unknown",
+            ...(uuid(event.session) ? { session: event.session } : {}), ...(Number.isSafeInteger(event.pid) && event.pid > 0 ? { pid: event.pid } : {}),
+            ...(Number.isSafeInteger(event.sequence) && event.sequence > 0 ? { sequence: event.sequence } : {}),
+            instanceId: typeof event.instanceId === "string" && /^[a-f0-9]{24}$/.test(event.instanceId) ? event.instanceId : diagnostic_id(event.instance),
+            event: typeof event.event === "string" && /^[a-z0-9_-]{1,80}$/.test(event.event) ? event.event : "unknown",
+            level: event.formatVersion === 2 && ["runtime_stderr", "index_output"].includes(event.event) && ["warning", "warn"].includes(event.level) ? "info" : event.level === "warning" ? "warn" : ["info", "warn", "error", "debug"].includes(event.level) ? event.level : "info", detail,
+            ...(Number.isSafeInteger(event.droppedBefore) && event.droppedBefore > 0 ? { droppedBefore: event.droppedBefore } : {}),
+            ...(Number.isSafeInteger(event.priorityDroppedBefore) && event.priorityDroppedBefore > 0 ? { priorityDroppedBefore: event.priorityDroppedBefore } : {}),
+            ...(event.rotatedBefore === true ? { rotatedBefore: true } : {}), ...(event.priorityRotatedBefore === true ? { priorityRotatedBefore: true } : {}) };
+          if (!duplicate && recordId) seen.set(recordId, { index: events.length, line: line.trim() });
+          events.push(projected);
         }
-        catch { issues.push(path.basename(file) + ": incomplete or invalid record"); }
+        catch { stats.invalidRecords++; issues.push(path.basename(file) + ": incomplete or invalid record"); }
       }
     } catch (error) { if (error.code !== "ENOENT") issues.push(path.basename(file) + ": " + (error.code || error.message)); }
     finally { if (fd !== undefined) fs.closeSync(fd); }
   }
   // The ring bounds bytes; avoid an unbounded array in a malformed local file.
-  return { events: events.sort((a, b) => String(a.time).localeCompare(String(b.time))), issues: [...new Set(issues)] };
+  return { events: events.sort((a, b) => String(a.time).localeCompare(String(b.time)) || String(a.session || "").localeCompare(String(b.session || "")) || (a.sequence || 0) - (b.sequence || 0)), issues: [...new Set(issues)], stats };
 }
 
 // A lightweight, bounded window for the settings journal. This does not build
@@ -286,6 +460,6 @@ export function diagnostic_journal(state = diagnostic_state()) {
     if (bytes + size > byteLimit) break;
     events.push(event); bytes += size;
   }
-  return { events, issues: logs.issues, total: logs.events.length,
+  return { events, issues: logs.issues, stats: logs.stats, total: logs.events.length,
     truncated: events.length < logs.events.length, policy: LOG_POLICY };
 }

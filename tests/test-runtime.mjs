@@ -556,7 +556,10 @@ test("a noisy failed rebuild uses bounded diagnostics and restores its service w
     assert.ok(fs.statSync(file).size <= LOG_POLICY.fileBytes);
     assert.doesNotMatch(fs.readFileSync(file, "utf8"), /diagnostic-secret-fixture/);
   }
-  assert.ok(read_diagnostic_logs(f.state).events.some(event => event.component === "code-index" && event.event === "index_output"));
+  const events = read_diagnostic_logs(f.state).events;
+  const output = events.filter(event => event.component === "code-index" && event.event === "index_output");
+  assert.equal(output.length, 1); assert.equal(output[0].level, "info"); assert.ok(output[0].detail.bytes > 1024);
+  assert.ok(events.some(event => event.event === "index_failed" && event.level === "error" && event.detail.exitCode === 3));
 });
 
 test("an unconfirmed index writer retains maintenance and cannot restart the daemon over that writer", async t => {

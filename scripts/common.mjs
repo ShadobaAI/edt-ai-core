@@ -255,13 +255,14 @@ export const entrypoint = (url) =>
 export async function cli(main) {
   const { create_diagnostic_logger, safe_error_message } = await import("./diagnostics.mjs");
   const diagnostic = create_diagnostic_logger("cli");
-  const executable = path.basename(process.argv[1] || "");
-  diagnostic.event("command_started", { executable });
+  const executable = path.basename(process.argv[1] || ""), started = Date.now(), startedAt = new Date(started).toISOString();
+  const context = { executable, projectRoot: process.env.EDT_AI_PROJECT_ROOT || null };
+  diagnostic.event("command_started", { ...context, phase: "dispatch", startedAt });
   try {
     process.exitCode = (await main()) || 0;
-    diagnostic.event("command_completed", { executable, exitCode: process.exitCode });
+    diagnostic.event("command_completed", { ...context, phase: "completed", durationMs: Date.now() - started, exitCode: process.exitCode });
   } catch (error) {
-    diagnostic.event("command_failed", { executable, error }, "error");
+    diagnostic.event("command_failed", { ...context, phase: "dispatch", startedAt, durationMs: Date.now() - started, error }, "error");
     console.log(JSON.stringify({ status: "error", error: safe_error_message(error) }));
     process.exitCode = 1;
   }

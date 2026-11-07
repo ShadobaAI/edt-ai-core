@@ -136,7 +136,7 @@ function rollback_layer(target, previous, expected, wrote, ignorePlan, error, ba
   if (failed.length) throw new ConfigError("Не удалось восстановить файлы: " + failed.join(", ") + (backupPath ? ". Резервная копия: " + backupPath : ""));
   throw error;
 }
-import { environment_compatibility, safe_error_message, sanitize_setup_result } from "./diagnostics.mjs";
+import { diagnostic_failure, environment_compatibility, safe_error_message, sanitize_setup_result } from "./diagnostics.mjs";
 
 // Field edits operate on the supplied draft. Unrelated source is kept intact.
 // Shared aliases are detached when necessary so editing one field cannot
@@ -1852,7 +1852,7 @@ if (entrypoint(import.meta.url)) {
     });
     console.log(JSON.stringify({ ok: true, result }));
   } catch (error) {
-    console.log(JSON.stringify({ ok: false, error: safe_error_message(error), ...(error.code ? { errorCode: error.code } : {}), ...(Number.isSafeInteger(error.documentLine) ? { documentLine: error.documentLine } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
+    console.log(JSON.stringify({ ok: false, error: safe_error_message(error), diagnosticFailure: diagnostic_failure(error), ...(error.code ? { errorCode: error.code } : {}), ...(Number.isSafeInteger(error.documentLine) ? { documentLine: error.documentLine } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
     process.exitCode = 1;
   } finally {
     indexBridge?.close();

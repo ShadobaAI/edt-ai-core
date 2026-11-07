@@ -9,10 +9,10 @@ try {
   diagnostic = create_diagnostic_logger("guard");
   const input = JSON.parse(fs.readFileSync(0, "utf8")), result = guard(input);
   if (result.hookSpecificOutput?.permissionDecision === "deny") diagnostic.event("request_denied", {
-    tool: input.tool_name, projectRoot: input.cwd, reason: result.hookSpecificOutput.permissionDecisionReason }, "warning");
+    tool: input.tool_name, projectRoot: input.cwd, reasonCode: "policy_denied" }, "warning");
   console.log(JSON.stringify(result));
 } catch (error) {
-  diagnostic?.event("guard_failed", { name: error.name, code: error.code }, "error");
+  diagnostic?.event("guard_failed", { error }, "error");
   console.log(
     JSON.stringify({
       hookSpecificOutput: {

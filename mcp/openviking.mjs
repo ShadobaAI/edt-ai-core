@@ -12,15 +12,17 @@ import { launch_selection, explicit_selection, roots_selection } from "../script
 import { knowledge_status } from "../scripts/knowledge.mjs";
 import { core_version } from "../scripts/compatibility.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";
-import { safe_error_message } from "../scripts/diagnostics.mjs";
+import { create_diagnostic_logger, safe_error_message } from "../scripts/diagnostics.mjs";
 
 const state = state_root(), configuration = process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const sessionId = randomUUID();
+const diagnostic = create_diagnostic_logger("openviking", state);
 let selection = launch_selection(), rootsPending = null, rootsSequence = 0, selectionError = null, generation = 0, requestInitialRoots = false;
+if (selection.directory) diagnostic.event("session_started", { projectRoot: selection.directory, version: core_version, node: process.version });
 let rootsReady = Promise.resolve(), finishRoots = null;
 let adapter = null, connectingAdapter = null, binding = null, bindingContext = null;
-let bindingPromise = null, activeOperations = 0;
+let bindingPromise = null, activeOperations = 0, lastDiagnosticObservation = null;
 let closed = false;
 const emit = message => { if (!closed) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n"); };
 const rootProperty = { type: "string", minLength: 1 };
@@ -39,6 +41,7 @@ const validators = new Map(tools.map(tool => [tool.name, new Ajv2020({ strict: f
 function detach(advance = true) {
   if (advance) generation++;
   const previous = adapter, pending = connectingAdapter;
+  if (previous) diagnostic.event("disconnected", { projectRoot: bindingContext?.projectRoot, binding: bindingContext });
   adapter = null; connectingAdapter = null; binding = null; bindingContext = null;
   return Promise.all([previous?.close(), pending?.close()]);
 }
@@ -77,8 +80,9 @@ async function bind(context, refresh, epoch) {
       adapter = candidate;
       bindingContext = { projectRoot: context.root, instance: instance_name(), sessionId, connectionId: randomUUID(),
         revision: sha256(next), collections: [...context.profile.knowledge.collections] };
+      diagnostic.event("connected", { projectRoot: context.root, binding: bindingContext });
     }
-    catch (error) { await candidate.close(); throw error; }
+    catch (error) { diagnostic.event("connection_failed", { projectRoot: context.root, phase: "initialize", error }, "error"); await candidate.close(); throw error; }
     finally { if (connectingAdapter === candidate) connectingAdapter = null; }
   } else {
     const connected = adapter;
@@ -122,7 +126,9 @@ async function dispatch(message) {
     if (message.method === "notifications/roots/list_changed" && !process.env.EDT_AI_PROJECT_ROOT) requestRoots();
     return;
   }
-  let admitted = false;
+  let admitted = false, eventRoot = selection.directory, eventTool = message.params?.name;
+  const started = Date.now();
+  if (message.method === "tools/call") diagnostic.event("request_started", { requestId: message.id, tool: eventTool, projectRoot: eventRoot, phase: "dispatch" });
   try {
     let result;
     if (message.method === "initialize") {
@@ -145,6 +151,7 @@ async function dispatch(message) {
       }
       if (rootsPending) throw new Error("Ожидаются корни проекта этой сессии");
       const current = context(args), status = knowledge_status(current.profile, current.config);
+      eventRoot = current.root;
       const expected = fingerprint(current);
       let epoch = generation, operationAdapter = null, sourceBinding = null;
       if (status.state !== "not_verified") {
@@ -161,7 +168,10 @@ async function dispatch(message) {
             if (args.checkReadiness) await operationAdapter.verifyReadiness();
             Object.assign(data, operationAdapter.status());
           }
-          catch (error) { if (operationAdapter) Object.assign(data, operationAdapter.status()); data.detail = error.message; }
+          catch (error) {
+            if (operationAdapter) { diagnostic.event("component_observation_failed", { requestId: message.id, tool: eventTool, projectRoot: current.root, phase: "checking", error }, "error"); Object.assign(data, operationAdapter.status()); }
+            data.detail = error.message;
+          }
         }
       } else {
         const connected = await connect(current);
@@ -181,12 +191,24 @@ async function dispatch(message) {
       }
       assertCurrent(expected, epoch);
       if (operationAdapter && (adapter !== operationAdapter || sourceBinding !== bindingContext)) throw new Error("Привязка знаний изменилась при получении данных; отбросьте результат");
-      if (tool.name === "knowledge_status") data.binding = sourceBinding;
+      if (tool.name === "knowledge_status") {
+        data.binding = sourceBinding;
+        const observation = JSON.stringify([current.root, process.env.EDT_AI_INSTANCE || "default", data.state, data.connected, data.ready, sourceBinding?.connectionId]);
+        if (observation !== lastDiagnosticObservation) {
+          lastDiagnosticObservation = observation;
+          diagnostic.event("component_observed", { requestId: message.id, tool: eventTool, projectRoot: current.root, component: "openviking", state: data.state,
+            connected: data.connected, ready: data.ready, phase: "checking", durationMs: Date.now() - started });
+        }
+      }
       if (JSON.stringify(data).length > OPENVIKING_LIMITS.resultChars) throw new Error("Превышен допустимый размер результата знаний; сузьте запрошенный диапазон");
       result = { content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
     } else throw new Error("Неподдерживаемый метод MCP знаний");
+    if (message.method === "tools/call") diagnostic.event("request_completed", { requestId: message.id, tool: eventTool, projectRoot: eventRoot, phase: "completed", durationMs: Date.now() - started });
     emit({ id: message.id, result });
-  } catch (error) { emit({ id: message.id, error: { code: -32000, message: safe_error_message(error), data: { outcome: "error" } } }); }
+  } catch (error) {
+    if (message.method === "tools/call") diagnostic.event("request_failed", { requestId: message.id, tool: eventTool, projectRoot: eventRoot, phase: "dispatch", durationMs: Date.now() - started, error }, "error");
+    emit({ id: message.id, error: { code: -32000, message: safe_error_message(error), data: { outcome: "error" } } });
+  }
   finally { if (admitted) activeOperations--; }
 }
 const shutdown = () => {

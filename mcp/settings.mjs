@@ -18,7 +18,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const state = process.env.EDT_AI_STATE_DIR || path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "1c-ai-core");
 const configPath = process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");
 const diagnostic = create_diagnostic_logger("settings", state);
-diagnostic.event("session_started", { version: core_version, projectRoot: process.env.EDT_AI_PROJECT_ROOT || null, node: process.version });
 process.on("uncaughtExceptionMonitor", error => diagnostic.event("uncaught_exception", { error }, "error"));
 const resource = "ui://1c-ai-core/settings.html";
 const protocols = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -89,6 +88,7 @@ function useLaunchDirectory() {
   selectionError = null;
 }
 if (!selectedRoot) useLaunchDirectory();
+if (selectedRoot) diagnostic.event("session_started", { version: core_version, projectRoot: selectedRoot, node: process.version });
 const empty = { type: "object", properties: {}, additionalProperties: false };
 const preparationAuthorization = {
   type: "object", additionalProperties: false,
@@ -142,7 +142,6 @@ async function readValues(remember = false) {
   if (selectedRoot || fs.existsSync(configPath) || fs.existsSync(path.join(state, "projects"))) {
     try {
       const current = await backend("read", { remember });
-      diagnostic.event("settings_snapshot", { projectRoot: current.values?.projectRoot, values: current.values, profile: current.profile, connectionSources: current.connectionSources });
       return current;
     }
     catch (error) {
@@ -319,7 +318,8 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
         env: { ...process.env, EDT_AI_STATE_DIR: state, EDT_AI_SETTINGS: configPath,
           EDT_AI_PROJECT_ROOT: context.selectedDirectory || "", EDT_AI_SETTINGS_ROOT_LOCKED: context.rootLocked === false ? "0" : "1" },
       };
-    for (const name of Object.keys(options.env)) if (name.toUpperCase() === "EDT_AI_SETTINGS_PARENT_PID") delete options.env[name];
+    for (const name of Object.keys(options.env)) if (["EDT_AI_SETTINGS_PARENT_PID", "EDT_AI_OPERATION_ID"].includes(name.toUpperCase())) delete options.env[name];
+    if (context.operationId) options.env.EDT_AI_OPERATION_ID = context.operationId;
     if (process.platform === "linux" && process.arch === "x64" && createsDaemon) {
       // The backend can hand the project daemon to its own guard. Tie only
       // this backend to the MCP process, including an uncatchable owner exit.
@@ -328,12 +328,13 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
     }
     const command = [path.join(root, "scripts", "settings_backend.mjs")];
     const child = supervised ? launch(process.execPath, command, { ...options, readerJob: owner, forwardIpc }) : spawn(process.execPath, command, options);
-    diagnostic.event("backend_process_started", { owner, action, supervisorPid: child.pid });
+    const backgroundRead = ["read", "refresh_readiness"].includes(action);
+    if (!backgroundRead) diagnostic.event("backend_process_started", { owner, operationId: context.operationId, projectRoot: context.projectRoot, action, supervisorPid: child.pid });
     let cleanupPromise;
     const cleanup = reason => cleanupPromise ||= stop_child(child, 0).then(() => {
-      diagnostic.event(supervised ? "backend_process_stopped" : "backend_child_stopped", { owner, action, supervisorPid: child.pid, reason });
+      if (!backgroundRead) diagnostic.event(supervised ? "backend_process_stopped" : "backend_child_stopped", { owner, operationId: context.operationId, projectRoot: context.projectRoot, action, supervisorPid: child.pid, reason });
     }, error => {
-      diagnostic.event("backend_process_cleanup_failed", { owner, action, supervisorPid: child.pid, error }, "error");
+      diagnostic.event("backend_process_cleanup_failed", { owner, operationId: context.operationId, projectRoot: context.projectRoot, action, supervisorPid: child.pid, phase: "cleanup", error }, "error");
       throw error;
     }).finally(() => backendCleanups.delete(child));
     backendCleanups.set(child, cleanup);
@@ -354,7 +355,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
           throw Object.assign(new Error("Завершение ресурсов проверки не подтверждено."), { outcomeUnknown: true, cause: failure?.reason || indexObserverFailure });
       } catch (error) {
         backendCleanupFailure ||= error;
-        diagnostic.event("backend_cleanup_unconfirmed", { owner, action, reason, error }, "error");
+        diagnostic.event("backend_cleanup_unconfirmed", { owner, operationId: context.operationId, projectRoot: context.projectRoot, action, reason, phase: "cleanup", error }, "error");
         throw error;
       } finally { clearTimeout(waitTimer); }
     };
@@ -446,7 +447,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
         const error = new Error("Сервис настроек вернул некорректный ответ. Исход операции неизвестен; проверьте сохранённые настройки и состояние сервисов перед повтором.");
         error.outcomeUnknown = true; reject(error); return;
       }
-      if (data.ok !== true) { const error = new Error(safe_error_message({ message: data.error || "Сервис настроек сообщил об ошибке.", code: data.errorCode, documentLine: data.documentLine })); error.code = data.errorCode; error.documentLine = data.documentLine; error.outcomeUnknown = data.outcomeUnknown === true; reject(error); return; }
+      if (data.ok !== true) { const error = new Error(safe_error_message({ message: data.error || "Сервис настроек сообщил об ошибке.", code: data.errorCode, documentLine: data.documentLine })); error.code = data.errorCode; error.documentLine = data.documentLine; error.outcomeUnknown = data.outcomeUnknown === true; error.diagnosticFailure = data.diagnosticFailure; reject(error); return; }
       if (code !== 0) {
         const error = new Error("Сервис настроек вернул результат, но завершился с ошибкой. Проверьте сохранённые настройки и состояние сервисов перед повтором.");
         error.outcomeUnknown = true; reject(error); return;
@@ -606,11 +607,12 @@ async function call(name, args, meta = {}) {
     return result({ profileHistory: profile_history(state, selectedRoot), profileHistoryHidden: profile_hidden(state, args.projectRoot) });
   }
   if (name === "settings.diagnostics") {
-    const data = sanitize_diagnostics({ ...diagnostic_journal(state), observedAt: new Date().toISOString(),
+    const { events, ...journal } = diagnostic_journal(state);
+    const data = { ...sanitize_diagnostics({ ...journal, observedAt: new Date().toISOString(),
       runtime: { plugin: core_version, node: process.version, platform: process.platform, architecture: process.arch },
       session: { projectRoot: selectedRoot, instance: process.env.EDT_AI_INSTANCE || "default", locked: rootLocked,
         selectionError, pendingRoots: Boolean(pendingRoots), operation: operationSummary(), logger: diagnostic.status() },
-      paths: { state, settings: configPath } });
+      paths: { state, settings: configPath } }), events };
     return { content: [{ type: "text", text: "Журнал плагина прочитан." }], _meta: { data } };
   }
   if (name === "settings.export_diagnostics") {
@@ -618,8 +620,9 @@ async function call(name, args, meta = {}) {
     diagnostic.event("support_export_requested", { projectRoot: selectedRoot });
     const { support_bundle } = await import("../scripts/support_bundle.mjs");
     const context = { selectedDirectory: selectedRoot, rootLocked };
+    const operationsObservedAt = new Date().toISOString();
     const data = await support_bundle({ state, configPath, selectedRoot,
-      selection: { rootLocked, selectionError, pendingRoots }, operation: operations.status(), loggerStatus: diagnostic.status(),
+      selection: { rootLocked, selectionError, pendingRoots }, operation: operations.status(), operations: operations.retained(), operationsObservedAt, loggerStatus: diagnostic.status(),
       readCurrent: () => backend("read", {}, context, 8000) });
     if (exportContext.revision !== selectionRevision) throw new Error("Профиль изменился во время подготовки диагностики. Повторите операцию.");
     const saved = await exportDestination(data, exportContext, "Сохранить диагностику · 1C AI Core");
@@ -929,8 +932,15 @@ async function dispatch(message) {
     } else if (message.method === "ping") data = {};
     else if (message.method === "tools/list") data = { tools };
     else if (message.method === "tools/call") {
-      try { data = await call(message.params.name, message.params.arguments || {}, message.params._meta); }
-      catch (error) { diagnostic.event("request_failed", { tool: message.params?.name, projectRoot: selectedRoot, error }, "error"); data = { isError: true, content: [{ type: "text", text: safe_error_message(error) }] }; }
+      const started = Date.now(), tool = message.params?.name;
+      const quiet = ["settings.read", "settings.status", "settings.operation", "settings.diagnostics", "settings.refresh_readiness"].includes(tool);
+      if (!quiet) diagnostic.event("request_started", { requestId: message.id, tool, projectRoot: selectedRoot, phase: "dispatch" });
+      try {
+        data = await call(message.params.name, message.params.arguments || {}, message.params._meta);
+        if (!quiet) diagnostic.event("request_completed", { requestId: message.id, tool, projectRoot: selectedRoot, durationMs: Date.now() - started,
+          ...(data.structuredContent?.status === "running" ? { operationId: data.structuredContent.id } : {}), isError: Boolean(data.isError), phase: "completed" }, data.isError ? "error" : "info");
+      }
+      catch (error) { diagnostic.event("request_failed", { requestId: message.id, tool, projectRoot: selectedRoot, phase: "dispatch", durationMs: Date.now() - started, error }, "error"); data = { isError: true, content: [{ type: "text", text: safe_error_message(error) }] }; }
     } else if (message.method === "resources/list") {
       data = { resources: [{ uri: resource, name: "Настройки 1C AI Core", mimeType: "text/html;profile=mcp-app" }] };
     } else if (message.method === "resources/read" && message.params?.uri === resource) {

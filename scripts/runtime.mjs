@@ -1128,7 +1128,7 @@ async function maintain_index(state, config, root, data, repositories, io) {
       catch (error) { keepMaintenance = true; throw uncertain_update("Остановка индекса не подтверждена: " + safe_error_message(error)); }
       for (const repo of repositories) {
         current = repo; progress("indexing");
-        try { await (io.run || run_index)(exe, inside(root, repo.path), home, environment, state); completed++; }
+        try { await (io.run || run_index)(exe, inside(root, repo.path), home, environment, state, root); completed++; }
         catch (error) { if (error.outcomeUnknown) keepMaintenance = true; throw error; }
       }
       current = null; progress("restarting");
@@ -1151,18 +1151,23 @@ async function maintain_index(state, config, root, data, repositories, io) {
     }
   }, 180);
 }
-async function run_index(exe, directory, home, environment, state) {
-  // Unlike daemon run, the one-shot CLI only logs to stderr. Persist it once
-  // through the existing bounded diagnostic journal, not a separate rebuild.log.
+async function run_index(exe, directory, home, environment, state, projectRoot = directory) {
+  // Output streams are untrusted and stderr is not a severity indicator.
+  // Record only one aggregate after the process finishes.
   const diagnostic = create_diagnostic_logger("code-index", state);
-  let child;
+  let child, bytes = 0, chunks = 0;
+  const started = Date.now();
   try {
     child = launch(exe, ["index", directory, "--force"], { cwd: directory, env: { ...environment, CODE_INDEX_HOME: home },
       readerJob: randomUUID(), stdio: ["ignore", "pipe", "pipe"] });
-    for (const [stream, level] of [[child.stdout, "info"], [child.stderr, "warning"]])
-      stream.on("data", chunk => diagnostic.event("index_output", { projectRoot: directory, bytes: chunk.length, content: "omitted" }, level));
-    await new Promise((done, reject) => { child.once("error", reject); child.once("close", code => code === 0 ? done() : reject(new ConfigError("Пересоздание индекса завершилось с ошибкой; см. журнал поддержки компонента code-index (код " + code + ")."))); });
+    for (const stream of [child.stdout, child.stderr]) stream.on("data", chunk => { bytes += chunk.length; chunks++; });
+    await new Promise((done, reject) => { child.once("error", reject); child.once("close", code => code === 0 ? done() : reject(Object.assign(new ConfigError("Пересоздание индекса завершилось с ошибкой; см. журнал поддержки компонента code-index (код " + code + ")."), { exitCode: code }))); });
+    diagnostic.event("index_completed", { projectRoot, phase: "indexing", durationMs: Date.now() - started, exitCode: 0 });
+  } catch (error) {
+    diagnostic.event("index_failed", { projectRoot, phase: "indexing", durationMs: Date.now() - started, exitCode: error.exitCode, error }, "error");
+    throw error;
   } finally {
+    if (chunks) diagnostic.event("index_output", { projectRoot, bytes, count: chunks });
     if (child) await stop_child(child, 0);
   }
 }

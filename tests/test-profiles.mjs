@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { fixture, environment, node, success, ROOT } from "./helpers.mjs";
+import { diagnostic_id, diagnostic_project_id } from "../scripts/diagnostics.mjs";
 import {
   load,
   dump,
@@ -172,7 +173,7 @@ test("profile init/export/import/merge/no-clobber/backups preserve the full prof
     other = path.join(f.base, "destination"),
     output = path.join(f.base, "export.yaml");
   fs.mkdirSync(other);
-  success(node("scripts/profile.mjs", ["init", f.root]));
+  success(node("scripts/profile.mjs", ["init", f.root], { env: f.env }));
   f.profile.policy.exceptions = [
     {
       id: "format",
@@ -183,11 +184,11 @@ test("profile init/export/import/merge/no-clobber/backups preserve the full prof
     },
   ];
   f.save();
-  success(node("scripts/profile.mjs", ["export", f.root, "--output", output]));
-  success(node("scripts/profile.mjs", ["import", other, "--input", output]));
+  success(node("scripts/profile.mjs", ["export", f.root, "--output", output], { env: f.env }));
+  success(node("scripts/profile.mjs", ["import", other, "--input", output], { env: f.env }));
   assert.deepEqual(project_profile(other), f.profile);
   assert.notEqual(
-    node("scripts/profile.mjs", ["import", other, "--input", output]).status,
+    node("scripts/profile.mjs", ["import", other, "--input", output], { env: f.env }).status,
     0,
   );
   success(
@@ -197,7 +198,7 @@ test("profile init/export/import/merge/no-clobber/backups preserve the full prof
       "--input",
       output,
       "--merge",
-    ]),
+    ], { env: f.env }),
   );
   const backups = fs
     .readdirSync(path.join(other, ".ai"))
@@ -205,7 +206,7 @@ test("profile init/export/import/merge/no-clobber/backups preserve the full prof
   assert.equal(backups.length, 1);
   assert.deepEqual(load(path.join(other, ".ai", backups[0])), f.profile);
   assert.notEqual(
-    node("scripts/profile.mjs", ["export", other, "--output", output]).status,
+    node("scripts/profile.mjs", ["export", other, "--output", output], { env: f.env }).status,
     0,
   );
   success(
@@ -215,7 +216,7 @@ test("profile init/export/import/merge/no-clobber/backups preserve the full prof
       "--output",
       output,
       "--replace",
-    ]),
+    ], { env: f.env }),
   );
   assert.ok(fs.existsSync(path.join(f.root, "AGENTS.md")));
 });
@@ -306,7 +307,7 @@ for (const [name, change] of Object.entries(invalid))
         "--input",
         input,
         "--replace",
-      ]).status,
+      ], { env: f.env }).status,
       0,
     );
     assert.deepEqual(fs.readFileSync(target), before);
@@ -326,7 +327,7 @@ test("strict YAML, URL/settings types and generic-only presets", (t) => {
   assert.deepEqual(fs.readdirSync(path.join(ROOT, "profiles")), ["generic-1c"]);
   for (const preset of ["crm", "kafka"])
     assert.notEqual(
-      node("scripts/profile.mjs", ["init", f.root, "--profile", preset]).status,
+      node("scripts/profile.mjs", ["init", f.root, "--profile", preset], { env: f.env }).status,
       0,
     );
   for (const url of [
@@ -570,8 +571,8 @@ test("prepared hooks share their local settings and state while preserving expli
   assert.match(run("session-start", {}).hookSpecificOutput.additionalContext, /selected chat directory/);
   const events = fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   assert.deepEqual(new Set(events.map(item => item.component)), new Set(["guard", "session-start"]));
-  assert.ok(events.every(item => item.instance === "first"));
-  assert.equal(events.find(item => item.component === "session-start").detail.projectRoot, f.root);
+  assert.ok(events.every(item => item.instanceId === diagnostic_id("first")));
+  assert.equal(events.find(item => item.component === "session-start").detail.projectId, diagnostic_project_id(f.root));
   const overrideState = path.join(f.base, "override-state"), overrideSettings = path.join(f.base, "override-settings.json");
   dump(load(path.join(ROOT, "settings/defaults.json")), overrideSettings);
   const explicit = { EDT_AI_STATE_DIR: overrideState, EDT_AI_SETTINGS: overrideSettings };

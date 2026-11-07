@@ -29,7 +29,8 @@ export async function serve(component, selected, state, config) {
       readerJob: lease?.id || randomUUID(),
     }); } catch (error) { if (error.notSpawned) launching = false; throw error; }
     diagnostic.event("process_started", { projectRoot: root, supervisorPid: child.pid, executable: command[0] });
-    child.stderr.on("data", chunk => { diagnostic.event("runtime_stderr", { projectRoot: root, bytes: chunk.length, content: "omitted" }, "warning"); });
+    let stderrBytes = 0, stderrChunks = 0;
+    child.stderr.on("data", chunk => { stderrBytes += chunk.length; stderrChunks++; });
     let stopping;
     const reportShutdown = error => diagnostic.event("process_shutdown_failed", { projectRoot: root, error }, "error");
     const inputEnded = () => {
@@ -46,6 +47,7 @@ export async function serve(component, selected, state, config) {
     child.stdout.pipe(process.stdout, { end: false });
     try {
       const [code] = await once(child, "close");
+      if (stderrChunks) diagnostic.event("runtime_stderr", { projectRoot: root, bytes: stderrBytes, count: stderrChunks });
       diagnostic.event("process_exited", { projectRoot: root, exitCode: code }, code === 0 ? "info" : "error");
       return code ?? 1;
     } finally {

@@ -20,16 +20,22 @@ export class SettingsOperations {
     this.observerSession = randomUUID();
     this.closing = false;
     this.unconfirmed = false;
+    this.observedStates = new Map();
   }
 
   start(action, args, context) {
-    if (this.closing) throw new Error("Сеанс настроек завершён; новая операция не запущена.");
+    const reject = (message, properties = {}) => {
+      const error = Object.assign(new Error(message), properties);
+      this.observe("operation_rejected", { action, projectRoot: context.projectRoot, component: args.component, phase: "dispatch", error }, "error");
+      throw error;
+    };
+    if (this.closing) reject("Сеанс настроек завершён; новая операция не запущена.", { code: "RUNTIME_BUSY" });
     if (this.unconfirmed && ["probe", "check", "refresh_readiness"].includes(action))
-      throw Object.assign(new Error("Завершение предыдущей проверки не подтверждено; новая проверка заблокирована."), { outcomeUnknown: true });
+      reject("Завершение предыдущей проверки не подтверждено; новая проверка заблокирована.", { outcomeUnknown: true });
     const background = action === "refresh_readiness";
     const overlap = background && ["rebuild_index", "restart_index", "updates", "check"].includes(this.active?.action);
     if (this.active?.status === "running" && !overlap || (background && this.background?.status === "running")) {
-      throw new Error(`Операция ${this.current().id} ещё выполняется. Проверьте settings.operation; повтор не запущен.`);
+      reject(`Операция ${this.current().id} ещё выполняется. Проверьте settings.operation; повтор не запущен.`, { code: "RUNTIME_BUSY" });
     }
     // Signal an older background process synchronously, before dispatching a
     // foreground job. It checks this marker while holding the state lock, so
@@ -49,7 +55,8 @@ export class SettingsOperations {
     const observedFlights = background && scope ? capture_component_flights(this.stateDirectory, scope.root) : null;
     const foregroundLease = !background && scope && ["check", "probe"].includes(action)
       ? begin_foreground_readiness(this.stateDirectory, scope.root, scope.instance, job.id) : null;
-    this.observe("operation_started", { id: job.id, action, ...context });
+    const backgroundObservation = action === "refresh_readiness";
+    if (!backgroundObservation) this.observe("operation_started", { id: job.id, action, ...context, component: job.component, phase: "dispatch", startedAt: job.startedAt });
     if (background) this.background = job;
     else this.active = job;
     this.jobs.set(job.id, job);
@@ -63,8 +70,11 @@ export class SettingsOperations {
       if (job.status !== "running" || !["rebuild_index", "restart_index"].includes(action) || !value ||
           !["preparing", "waiting_lock", "waiting_readers", "stopping", "indexing", "restarting", "checking", "restoring"].includes(value.phase) ||
           !Number.isSafeInteger(value.total) || !Number.isSafeInteger(value.completed) || value.total < 0 || value.completed < 0 || value.completed > value.total) return;
+      const previous = job.progress;
       job.progress = { phase: value.phase, total: value.total, completed: value.completed, updatedAt: new Date().toISOString(),
         ...Object.fromEntries(["repository", "edtProject"].filter(key => typeof value[key] === "string").map(key => [key, value[key].slice(0, 512)])) };
+      if (!previous || previous.phase !== value.phase || previous.completed !== value.completed)
+        this.observe("operation_phase", { id: job.id, action, projectRoot: job.projectRoot, component: job.component, phase: value.phase, total: value.total, completed: value.completed });
     };
     // A full preparation owns its tickets until it completes. Parallel UI
     // refreshes are observations only, so they cannot supersede that result.
@@ -77,7 +87,7 @@ export class SettingsOperations {
         if (this.closing) throw new Error("Сеанс настроек завершён.");
         if (foregroundLease) foregroundOwner = await activate_foreground_readiness(this.stateDirectory, scope.root, scope.instance, foregroundLease, job.id);
         if (this.closing) throw new Error("Сеанс настроек завершён.");
-        result = await this.run(action, runArgs, context, progress);
+        result = await this.run(action, runArgs, { ...context, operationId: job.id }, progress);
       } catch (error) { failure = error; }
       let cleanupFailure;
       if (background && this.stateDirectory) try {
@@ -110,8 +120,24 @@ export class SettingsOperations {
         else if (typeof result?.projectRoot === "string") job.projectRoot = result.projectRoot;
         job.status = "completed"; job.result = result;
         job.completedAt = new Date().toISOString(); this.lastCompleted = job;
-        this.observe("operation_completed", { id: job.id, action, projectRoot: job.projectRoot, result: Object.fromEntries(
-          ["values", "profile", "managed", "external", "state", "release", "component"].filter(key => result && Object.hasOwn(result, key)).map(key => [key, result[key]])) });
+        const durationMs = Date.parse(job.completedAt) - Date.parse(job.startedAt);
+        if (!backgroundObservation) this.observe("operation_completed", { id: job.id, action, projectRoot: job.projectRoot, component: job.component,
+          phase: "completed", durationMs, status: result?.cancelled ? "cancelled" : "completed" });
+        for (const check of Array.isArray(result?.componentChecks) ? result.componentChecks : []) {
+          if (!check || !["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"].includes(check.id) || typeof check.state !== "string" || result.superseded || (Array.isArray(result.supersededComponents) && result.supersededComponents.includes(check.id))) continue;
+          const external = result.external?.[check.id], failure = check.failure || check.diagnostic?.failure || external?.failure;
+          const key = JSON.stringify([job.projectRoot, job.instance, check.id]);
+          const state = JSON.stringify([check.state, check.reasonCode, failure?.category, failure?.httpStatus, failure?.rpcCode,
+            external?.configured, external?.connected, external?.ready, external?.toolsVerified, external?.server?.version]
+            .map(value => typeof value === "string" ? value.slice(0, 128) : ["number", "boolean"].includes(typeof value) ? value : null));
+          if (this.observedStates.get(key) === state) continue;
+          this.observedStates.set(key, state);
+          while (this.observedStates.size > 256) this.observedStates.delete(this.observedStates.keys().next().value);
+          this.observe("component_observed", { operationId: job.id, action, projectRoot: job.projectRoot, component: check.id, state: check.state,
+            reasonCode: check.reasonCode, failure, checkedAt: check.checkedAt, expiresAt: check.expiresAt, durationMs,
+            configured: external?.configured, connected: external?.connected, ready: external?.ready, toolsVerified: external?.toolsVerified, version: external?.server?.version },
+            check.state === "error" ? "error" : "info");
+        }
       },
       error => {
         job.status = error.outcomeUnknown ? "outcome_unknown" : "failed";
@@ -122,7 +148,8 @@ export class SettingsOperations {
         }
         job.error = safe_error_message(error);
         job.completedAt = new Date().toISOString(); this.lastCompleted = job;
-        this.observe("operation_" + job.status, { id: job.id, action, projectRoot: job.projectRoot, error }, "error");
+        this.observe("operation_" + job.status, { id: job.id, action, projectRoot: job.projectRoot, component: job.component,
+          phase: job.progress?.phase || "dispatch", startedAt: job.startedAt, durationMs: Date.parse(job.completedAt) - Date.parse(job.startedAt), error }, "error");
       },
     );
     return job;
@@ -159,6 +186,10 @@ export class SettingsOperations {
     }
     const { finished, ...view } = job;
     return view;
+  }
+
+  retained() {
+    return [...this.jobs.values()].map(({ finished, result, error, ...job }) => job);
   }
 
   current() {
