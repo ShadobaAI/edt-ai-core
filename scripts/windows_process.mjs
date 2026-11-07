@@ -18,6 +18,7 @@ function windowsAPI() {
     ),
   );
   const kernel = koffi.load("kernel32.dll");
+  const iphelper = koffi.load("iphlpapi.dll");
   const startup = koffi.struct({
       cb: "uint32_t",
       lpReserved: "void *",
@@ -88,6 +89,9 @@ function windowsAPI() {
     ),
     times: kernel.func(
       "int __stdcall GetProcessTimes(void *handle, _Out_ uint64_t *created, _Out_ uint64_t *exited, _Out_ uint64_t *kernel, _Out_ uint64_t *user)",
+    ),
+    tcpTable: iphelper.func(
+      "uint32_t __stdcall GetExtendedTcpTable(void *table, _Inout_ uint32_t *size, int order, uint32_t family, uint32_t tableClass, uint32_t reserved)",
     ),
     createJob: kernel.func(
       "void * __stdcall CreateJobObjectW(void *security, const uint16_t *name)",
@@ -326,4 +330,62 @@ export function windows_process_identity(pid) {
 }
 export function same_creation(state, recorded) {
   return typeof recorded === "string" && recorded.startsWith("win32-filetime:") && state.created === recorded;
+}
+
+// A profile's stored PID and address can change without reconnecting. Use the
+// kernel's TCP owner table to associate the actual MCP listener and TestClient.
+export function windows_tcp_rows(family) {
+  if (![2, 23].includes(family)) throw new Error("Unsupported TCP address family");
+  const win = windowsAPI(), rowSize = family === 2 ? 24 : 56, size = [0];
+  let result = win.tcpTable(null, size, 0, family, 5, 0), buffer;
+  for (let attempt = 0; attempt < 3 && result === 122; attempt++) {
+    if (size[0] < 4 || size[0] > 8 * 1024 * 1024) throw new Error("Invalid TCP table size");
+    buffer = Buffer.alloc(size[0]);
+    result = win.tcpTable(buffer, size, 0, family, 5, 0);
+  }
+  if (result !== 0 || !buffer || size[0] > buffer.length) throw new Error("Cannot query TCP owner table");
+  const count = buffer.readUInt32LE(0);
+  if (count > Math.floor((buffer.length - 4) / rowSize)) throw new Error("Truncated TCP owner table");
+  const rows = [];
+  for (let i = 0; i < count; i++) {
+    const off = 4 + i * rowSize;
+    const v4 = family === 2;
+    const addr = (start, length) => buffer.subarray(off + start, off + start + length).toString("hex");
+    rows.push({ family, state: buffer.readUInt32LE(off + (v4 ? 0 : 48)), pid: buffer.readUInt32LE(off + (v4 ? 20 : 52)),
+      localAddress: addr(v4 ? 4 : 0, v4 ? 4 : 16), localScope: v4 ? 0 : buffer.readUInt32LE(off + 16),
+      localPort: buffer.readUInt16BE(off + (v4 ? 8 : 20)),
+      remoteAddress: addr(v4 ? 12 : 24, v4 ? 4 : 16), remoteScope: v4 ? 0 : buffer.readUInt32LE(off + 40),
+      remotePort: buffer.readUInt16BE(off + (v4 ? 16 : 44)) });
+  }
+  return rows;
+}
+
+export function match_testclient_binding(rows, mcpPort, clientPid, clientPort, callerPid = process.pid) {
+  if (![mcpPort, clientPort].every(port => Number.isInteger(port) && port > 0 && port <= 65535) ||
+      !Number.isInteger(clientPid) || clientPid <= 0 || !Number.isInteger(callerPid) || callerPid <= 0) return null;
+  const listeners = [...new Set(rows.filter(row => row.state === 2 && row.localPort === mcpPort).map(row => row.pid))];
+  if (listeners.length !== 1 || !listeners[0] || listeners[0] === clientPid) return null;
+  const managerPid = listeners[0];
+  const reciprocal = (left, right) => right.family === left.family && right.state === 5 &&
+    right.localPort === left.remotePort && right.remotePort === left.localPort && right.localAddress === left.remoteAddress &&
+    right.remoteAddress === left.localAddress && right.localScope === left.remoteScope && right.remoteScope === left.localScope;
+  // A replaced listener is not necessarily the server of an existing keep-alive
+  // connection. All of this process's live MCP connections must reach it.
+  const mcpConnections = rows.filter(row => row.state === 5 && row.pid === callerPid && row.remotePort === mcpPort);
+  if (!mcpConnections.length || mcpConnections.some(left => !rows.some(right => right.pid === managerPid && reciprocal(left, right)))) return null;
+  const managerConnections = rows.filter(row => row.state === 5 && row.pid === managerPid && row.remotePort === clientPort);
+  const matched = managerConnections.filter(left => rows.some(right => right.pid === clientPid && reciprocal(left, right)));
+  return matched.length > 0 && matched.length === managerConnections.length ? managerPid : null;
+}
+
+export function windows_testclient_binding(mcpPort, clientPid, clientPort, clientCreated) {
+  const snapshot = () => [...windows_tcp_rows(2), ...windows_tcp_rows(23)];
+  const managerPid = match_testclient_binding(snapshot(), mcpPort, clientPid, clientPort);
+  if (!managerPid) return null;
+  const manager = windows_process_identity(managerPid), client = windows_process_identity(clientPid);
+  if (!manager || !client || !/(?:^|[\\/])1cv8c?\.exe$/i.test(manager.executable) || client.created !== clientCreated) return null;
+  const next = match_testclient_binding(snapshot(), mcpPort, clientPid, clientPort);
+  const managerAfter = windows_process_identity(managerPid), clientAfter = windows_process_identity(clientPid);
+  if (next !== managerPid || !managerAfter || !clientAfter || manager.created !== managerAfter.created || client.created !== clientAfter.created) return null;
+  return { managerPid, managerCreated: manager.created };
 }

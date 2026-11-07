@@ -467,9 +467,10 @@ test("one global Settings app opens without a duplicate native section, chat or 
   assert.deepEqual(tools.filter(tool => tool._meta?.ui?.resourceUri).map(tool => tool.name).sort(),
     ["settings.export", "settings.import", "settings.open", "settings.profile"]);
   assert.match(tools.find(tool => tool.name === "settings.profile").description, /only on an explicit user request/);
-  const opened = (await client.call(action.name, {})).structuredContent;
+  const entry = await client.call(action.name, {}), opened = entry.structuredContent;
   assert.equal(opened.mode, "profile");
   assert.equal(opened.navigation, "profiles");
+  assert.equal(JSON.parse(entry.content[0].text).navigation, "profiles", "global navigation survives hosts that forward only text content");
   assert.equal((await client.call("settings.profile", {})).structuredContent.navigation, "project");
   const resource = await client.request("resources/read", { uri: action._meta.ui.resourceUri });
   assert.match(resource.contents[0].text, /id="editSettingsButton"/);

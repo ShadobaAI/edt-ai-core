@@ -70,6 +70,8 @@ export const profiles = response(`# Список профилей клиенто
 | PID | 0 |
 | Статус | ❌ не подключен |
 `);
+// Empty-list contract from Vanessa MCP's get_list implementation.
+export const emptyProfiles = response("# Список профилей клиентов тестирования\n\nПрофили не настроены. Добавьте профиль на вкладке 'Клиенты тестирования' в настройках VA.");
 export const editor = response(`# Состояние редактора
 
 ## Открытые вкладки

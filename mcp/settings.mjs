@@ -632,7 +632,8 @@ async function call(name, args, meta = {}) {
   }
   if (name === "settings.profile" || name === "settings.open") {
     const view = readSettings(await readValues(true));
-    return result({ ...view, mode: "profile", navigation: name === "settings.profile" ? "project" : "profiles" }, JSON.stringify({ profile: view.profile, directoryContext: view.directoryContext, projectRoot: view.values.projectRoot, instance: view.instance, projectSelection: view.projectSelection, sessionGuidance: view.sessionGuidance }));
+    const mode = "profile", navigation = name === "settings.profile" ? "project" : "profiles";
+    return result({ ...view, mode, navigation }, JSON.stringify({ mode, navigation, profile: view.profile, directoryContext: view.directoryContext, projectRoot: view.values.projectRoot, instance: view.instance, projectSelection: view.projectSelection, sessionGuidance: view.sessionGuidance }));
   }
   if (name === "settings.import" || name === "settings.export") {
     const actual = await readValues();

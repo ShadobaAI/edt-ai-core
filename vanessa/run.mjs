@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { digest, fail } from "./profile.mjs";
 import { callTool, checkArguments } from "./mcp.mjs";
-import { inspectSession } from "./readiness.mjs";
+import { inspectSession, confirmClientBinding } from "./readiness.mjs";
 import { runtimeContract, normalizeFeatureText } from "./runtime-contract.mjs";
 import { saveRunReceipt } from "./receipt.mjs";
 
@@ -30,7 +30,11 @@ export async function runFeature(profile, client, tools, { feature, scenario, be
   const baseline = await inspectSession(profile, client, tools, contract);
   if (baseline.status !== "ready") return { status: "error", stage: "readiness", reason: baseline.reason, readiness: baseline };
   const reports = {}, startedAt = new Date().toISOString();
-  if (beforeOpen) await beforeOpen();
+  if (beforeOpen) {
+    await beforeOpen();
+    const binding = await confirmClientBinding(profile, client, tools, baseline, contract);
+    if (binding.status !== "confirmed") return { status: "error", stage: "readiness", reason: binding.reason, readiness: binding };
+  }
   const invoke = async (name, args, mutation = false) => {
     let dispatched = false;
     try {
@@ -59,13 +63,17 @@ export async function runFeature(profile, client, tools, { feature, scenario, be
   const syntax = contract.syntax?.(await invoke("check_syntax", { filePath: file }));
   if (!syntax || normalized(syntax.file) !== normalized(file) || !syntax.valid || syntax.problemCount !== 0) return { status: "error", stage: "syntax", reason: syntax ? "syntax_invalid_or_wrong_file" : "syntax_response_contract_unverified", reports };
   const selected = await invoke("select_scenario", { name: scenario }, true);
-  const editor = await invoke("get_editor_state", { includeContent: true });
-  const selection = contract.selection?.(selected, editor);
-  if (!selection || normalized(selection.file) !== normalized(file) || selection.scenario !== scenario || selection.occurrences !== 1) return { status: "error", stage: "selection", reason: "selected_scenario_or_file_unverified", reports };
-  const content = contract.editorContent?.(editor);
+  // The editor's abbreviated state is never interpreted as idle/connected.
+  // Recheck the selected profile and live process after editor-only operations.
+  const binding = await confirmClientBinding(profile, client, tools, baseline, contract);
+  if (binding.status !== "confirmed") return { status: "error", stage: "client", reason: binding.reason, reports };
+  // The binding checks are separate MCP calls during which an external actor can
+  // change the selected tab or scenario. Verify the editor again immediately
+  // before dispatching the selected-scenario run.
+  const finalEditor = await invoke("get_editor_state", { includeContent: true });
+  const finalSelection = contract.selection?.(selected, finalEditor), content = contract.editorContent?.(finalEditor);
+  if (!finalSelection || normalized(finalSelection.file) !== normalized(file) || finalSelection.scenario !== scenario || finalSelection.occurrences !== 1) return { status: "error", stage: "selection", reason: "selected_scenario_or_file_unverified", reports };
   if (typeof content !== "string" || normalizeFeatureText(content) !== sourceText) return { status: "error", stage: "source", reason: "editor_content_does_not_match_feature_or_is_unverified", reports };
-  // This single control chain retains the full baseline through documented editor-only
-  // effects. The editor's abbreviated state is never interpreted as idle/connected.
   await invoke("run_scenario", { mode: "selected" }, true);
   await invoke("get_test_results", {});
   if (digest(fs.readFileSync(file)) !== sourceHash) return { status: "error", stage: "source", reason: "feature_changed_during_run", reports };

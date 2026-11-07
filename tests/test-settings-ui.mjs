@@ -181,7 +181,7 @@ test("the header beside the project shows profile facts and all seven canonical 
 });
 
 test("header component badges follow addressed results, in-progress checks and evidence expiry",async()=>{
-  const f=liveStatusScreen();await f.ui.flush();
+  const f=liveStatusScreen();await f.ui.flush();await f.ui.elements.get("headerRefresh").onclick();
   const badge=id=>f.ui.elements.get("headerComponentStatuses").children.find(item=>item.attributes["data-component"]===id);
   const v8=badge("v8std").textContent;
   f.ui.context.observeComponentResult({componentChecks:[{id:"edt",state:"error",detail:"Проверка EDT завершилась ошибкой"}]},
@@ -194,7 +194,7 @@ test("header component badges follow addressed results, in-progress checks and e
 });
 
 test("compact counters explain their composition and expose only relevant refresh and stale counts",async()=>{
-  const f=liveStatusScreen();await f.ui.flush();
+  const f=liveStatusScreen();await f.ui.flush();await f.ui.elements.get("headerRefresh").onclick();
   assert.equal(f.ui.elements.get("countAll").textContent,"7");assert.match(f.ui.elements.get("countAll").title,/EDT, v8std, OpenViking/);
   assert.equal(f.ui.elements.get("countCheckingGroup").hidden,true);assert.equal(f.ui.elements.get("countStaleGroup").hidden,true);
   vm.runInContext('activeOperation={action:"refresh_readiness",component:"edt",status:"running",projectRoot:currentData.values.projectRoot,instance:currentData.instance};componentObservations.get("v8std").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
@@ -224,6 +224,36 @@ test("durable BSL checks ignore setup expiry and unrelated revisions but respect
   ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(state(),"check_stale","newer full setup must not hide older independent BSL invalidation");
 });
 
+test("evidence expires on screen without probing, replacing drafts or expiring durable BSL",async()=>{
+  const f=liveStatusScreen(),now=Date.now();await f.ui.flush();
+  vm.runInContext(`Date.now=()=>${now}`,f.ui.context);
+  const checkedAt=new Date(now-5000).toISOString();
+  f.current.readiness={state:"ready",checkedAt,expiresAt:new Date(now+1000).toISOString(),checks:[{id:"edt",label:"EDT",state:"ready"}],
+    knowledge:{ready:true,readiness:{publication:{state:"verified",gitRevision:"expiry-revision",snapshot:"expiry-snapshot"}}}};
+  f.current.knowledge={mode:"transitional",provider:"openviking",collections:[],required:true};
+  f.current.componentChecks=[{id:"bsl-ls",state:"ready",checkedAt,validity:"inputs",expiresAt:new Date(now+1000).toISOString()}];
+  f.ui.context.renderCurrent(f.current,{preserveDraft:true});
+  const badge=id=>f.ui.elements.get("headerComponentStatuses").children.find(item=>item.attributes["data-component"]===id);
+  assert.equal(badge("edt").attributes["data-state"],"ready");assert.equal(badge("bsl-ls").attributes["data-state"],"ready");
+  assert.match(f.ui.elements.get("knowledgeDetails").textContent,/expiry-revision/);
+  const field=f.ui.elements.get("openvikingUrl");field.value="https://draft.example/mcp";field.events.input();await f.ui.flush();
+  const before=f.ui.calls.filter(call=>call.method==="tools/call").length;vm.runInContext(`Date.now=()=>${now+1000}`,f.ui.context);await f.ui.tick(1000);
+  assert.equal(f.ui.calls.filter(call=>call.method==="tools/call").length,before);assert.equal(f.requests.length,0);
+  assert.equal(badge("edt").attributes["data-state"],"check_stale");assert.equal(badge("bsl-ls").attributes["data-state"],"ready");
+  assert.match(f.ui.elements.get("readinessItems").children[0].textContent,/проверка устарела/);
+  assert.doesNotMatch(f.ui.elements.get("knowledgeDetails").textContent,/expiry-revision/);assert.equal(field.value,"https://draft.example/mcp");
+});
+
+test("returning to a hidden form locally marks expired evidence without starting a check",async()=>{
+  const f=liveStatusScreen(),now=Date.now();await f.ui.flush();vm.runInContext(`Date.now=()=>${now}`,f.ui.context);
+  f.current.readiness={state:"ready",checkedAt:new Date(now-5000).toISOString(),expiresAt:new Date(now+1000).toISOString(),checks:[{id:"edt",state:"ready"}]};
+  f.ui.context.renderCurrent(f.current,{preserveDraft:true});f.ui.document.hidden=true;f.ui.documentEvents.visibilitychange();
+  const before=f.ui.calls.length;vm.runInContext(`Date.now=()=>${now+2000}`,f.ui.context);
+  f.ui.document.hidden=false;f.ui.documentEvents.visibilitychange();await f.ui.flush();
+  const badge=f.ui.elements.get("headerComponentStatuses").children.find(item=>item.attributes["data-component"]==="edt");
+  assert.equal(badge.attributes["data-state"],"check_stale");assert.equal(f.ui.calls.length,before);assert.equal(f.requests.length,0);
+});
+
 test("compact component cards retain the full diagnostic in their tooltip and dialog",async()=>{
   const detail="Ошибка сервера компонента. ".repeat(30).trim(),current={...read,values:{...read.values,bslLsEnabled:true},
     summary:{components:[{id:"bsl-ls",status:"external",mode:"external"}]},componentChecks:[{id:"bsl-ls",state:"error",detail,checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()+60000).toISOString()}]};
@@ -247,29 +277,29 @@ test("header profile summary clears unavailable profile data and respects read-o
   }
 });
 
-test("profile loading, each minute and the refresh header perform fresh checks of all components",async()=>{
+test("component checks start only from the manual refresh button",async()=>{
   const f=liveStatusScreen();await f.ui.flush();
-  assert.equal(f.requests.length,1);assert.equal(f.requests[0].component,undefined);
+  assert.equal(f.requests.length,0);
+  assert.equal([...f.ui.timers.values()].filter(timer=>timer.ms===60000).length,0);
+  await f.ui.elements.get("headerRefresh").onclick();assert.equal(f.requests.length,1);assert.equal(f.requests[0].component,undefined);
   assert.equal(f.ui.context.catalogItems(f.current).filter(item=>["ready","configured"].includes(item.state)).length,7);
-  assert.equal([...f.ui.timers.values()].filter(timer=>timer.ms===60000).length,1);
-  await f.ui.tick(60000);assert.equal(f.requests.length,2);assert.equal(f.requests[1].component,undefined);
-  await f.ui.elements.get("headerRefresh").onclick();assert.equal(f.requests.length,3);assert.equal(f.requests[2].component,undefined);
-  assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id==="edt").detail,/проверка 3/);
+  await f.ui.elements.get("headerRefresh").onclick();assert.equal(f.requests.length,2);assert.equal(f.requests[1].component,undefined);
+  assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id==="edt").detail,/проверка 2/);
   f.current.values.projectRoot="C:/fixture/second";f.current.preparationScope="C:/fixture/second#default";
   f.ui.context.renderSelectedProfile(f.current);await f.ui.flush();
-  assert.equal(f.requests.length,4);assert.equal(f.requests[3].scope,"C:/fixture/second#default");
-  await f.ui.elements.get("headerRefresh").onclick();await f.ui.flush();assert.equal(f.requests.length,5);assert.equal(f.requests[4].component,undefined);
+  assert.equal(f.requests.length,2);
+  await f.ui.elements.get("headerRefresh").onclick();await f.ui.flush();assert.equal(f.requests.length,3);assert.equal(f.requests[2].scope,"C:/fixture/second#default");
 });
 
-for(const id of ["edt","v8std","openviking","code-index","bsl-ls","yaxunit","vanessa"])test(`opening ${id} refreshes only that component and its button can refresh again`,async()=>{
+for(const id of ["edt","v8std","openviking","code-index","bsl-ls","yaxunit","vanessa"])test(`opening ${id} is passive and its button checks only that component`,async()=>{
   const f=liveStatusScreen();await f.ui.flush();const item=f.ui.context.catalogItems(f.current).find(item=>item.id===id);
   const before=JSON.parse(JSON.stringify(f.ui.context.catalogItems(f.current).filter(item=>item.id!==id)));
   if(item.kind==="external")f.ui.context.openConnectionDialog(item,null);else if(item.kind==="managed")f.ui.context.openManagedDialog(item,null);else await f.ui.context.openTestingSettings(id,null);
-  await f.ui.flush();assert.equal(f.requests.length,2);assert.equal(f.requests[1].component,id);
+  await f.ui.flush();assert.equal(f.requests.length,0);
   assert.deepEqual(JSON.parse(JSON.stringify(f.ui.context.catalogItems(f.current).filter(item=>item.id!==id))),before);
   await f.ui.elements.get(item.kind==="external"?"probeButton":item.kind==="managed"?"managedProbeButton":"testingProbeButton").onclick();
-  assert.equal(f.requests.length,3);assert.equal(f.requests[2].component,id);
-  assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id===id).detail,/проверка 3/);
+  assert.equal(f.requests.length,1);assert.equal(f.requests[0].component,id);
+  assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id===id).detail,/проверка 1/);
   if(id==="code-index"){
     assert.equal(f.ui.elements.get("connections").hidden,true);
     assert.match(f.ui.elements.get("managedDialogCheckedAt").textContent,/Последняя проверка/);
@@ -286,45 +316,40 @@ for(const id of ["edt","v8std","openviking","code-index","bsl-ls","yaxunit","van
   }
 });
 
-test("an in-flight all-component refresh covers opened cards and is not duplicated",async()=>{
-  const f=liveStatusScreen({hold:true});await f.ui.flush();assert.equal(f.requests.length,1);
+test("an in-flight manual refresh is not duplicated by opening cards",async()=>{
+  const f=liveStatusScreen({hold:true});await f.ui.flush();const refresh=f.ui.elements.get("headerRefresh").onclick();await f.ui.flush();assert.equal(f.requests.length,1);
   f.ui.context.openConnectionDialog({id:"edt",name:"EDT"},null);await f.ui.flush();
-  await f.ui.context.refreshStatus();assert.equal(f.requests.length,1);
-  f.release();await f.ui.flush();assert.equal(f.requests.length,1);
+  const duplicate=f.ui.context.queueComponentRefresh();await f.ui.flush();assert.equal(f.requests.length,1);
+  f.release();await Promise.all([refresh,duplicate]);await f.ui.flush();assert.equal(f.requests.length,1);
   assert.match(f.ui.elements.get("probeResult").textContent,/edt · проверка 1/);
 });
 
-test("minute refresh preserves drafts and tab, pauses while hidden and stops on disposal",async()=>{
+test("manual refresh preserves drafts and returning to a visible form starts no check",async()=>{
   const f=liveStatusScreen();await f.ui.flush();
   f.ui.elements.get("edtUrl").value="http://draft";f.ui.elements.get("edtUrl").events.input();
   f.ui.elements.get("settingsText").value="draft YAML";f.ui.elements.get("settingsText").events.input();f.ui.context.show("editor");
-  await f.ui.tick(60000);assert.equal(f.requests.length,2);assert.equal(f.requests[1].connections,undefined);
+  await f.ui.elements.get("headerRefresh").onclick();assert.equal(f.requests.length,1);assert.equal(f.requests[0].connections,undefined);
   assert.equal(f.ui.elements.get("edtUrl").value,"http://draft");assert.equal(f.ui.elements.get("settingsText").value,"draft YAML");
   assert.equal(f.ui.elements.get("editorPanel").hidden,false);
   f.ui.document.hidden=true;f.ui.documentEvents.visibilitychange();assert.equal([...f.ui.timers.values()].filter(timer=>timer.ms===60000).length,0);
-  f.ui.document.hidden=false;f.ui.documentEvents.visibilitychange();await f.ui.flush();assert.equal(f.requests.length,3);
-  f.ui.lifecycle.pagehide();await f.ui.context.refreshStatus();assert.equal(f.requests.length,3);
+  f.ui.document.hidden=false;f.ui.documentEvents.visibilitychange();await f.ui.flush();assert.equal(f.requests.length,1);
+  f.ui.lifecycle.pagehide();await f.ui.context.refreshStatus();assert.equal(f.requests.length,1);
 });
 
-test("queued card refreshes remain addressed and a late old-profile result is discarded",async()=>{
-  const f=liveStatusScreen();await f.ui.flush();f.holdNext();
-  f.ui.context.openConnectionDialog({id:"edt",name:"EDT"},null);await f.ui.flush();
-  f.ui.elements.get("componentDialogClose").onclick();f.ui.context.openConnectionDialog({id:"v8std",name:"v8std"},null);await f.ui.flush();
-  assert.deepEqual(f.requests.map(item=>item.component),[undefined,"edt"]);
-  f.release();await f.ui.flush();assert.deepEqual(f.requests.map(item=>item.component),[undefined,"edt","v8std"]);
-  assert.match(f.ui.elements.get("probeResult").textContent,/v8std · проверка 3/);
-  f.holdNext();const pending=f.ui.context.queueComponentRefresh();await f.ui.flush();
+test("a queued manual refresh discards a late result from the previous profile",async()=>{
+  const f=liveStatusScreen();await f.ui.flush();f.holdNext();const pending=f.ui.context.queueComponentRefresh();await f.ui.flush();
   f.current.values.projectRoot="C:/fixture/new-profile";f.current.preparationScope="C:/fixture/new-profile#default";f.ui.context.renderSelectedProfile(f.current);
-  f.release();await pending;await f.ui.flush();
+  const next=f.ui.context.queueComponentRefresh();f.release();await Promise.all([pending,next]);await f.ui.flush();
   assert.equal(f.requests.at(-1).scope,"C:/fixture/new-profile#default");
-  assert.match(f.ui.elements.get("probeResult").textContent,/v8std · проверка 5/);
+  assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id==="edt").detail,/проверка 2/);
 });
 
-test("a failed status refresh is visible and a later minute retries without overlapping",async()=>{
+test("a failed status refresh is visible and retries only on request",async()=>{
   const f=liveStatusScreen();await f.ui.flush();f.fail("Сервер недоступен");
-  await f.ui.tick(60000);assert.ok(f.ui.context.catalogItems(f.current).every(item=>item.state==="error"));
-  f.fail(null);await f.ui.tick(60000);
-  assert.equal(f.requests.length,3);assert.ok(f.ui.context.catalogItems(f.current).every(item=>["ready","configured"].includes(item.state)));
+  await f.ui.elements.get("headerRefresh").onclick();assert.ok(f.ui.context.catalogItems(f.current).every(item=>item.state==="error"));
+  f.fail(null);assert.equal([...f.ui.timers.values()].some(timer=>timer.ms===60000),false);
+  await f.ui.elements.get("headerRefresh").onclick();
+  assert.equal(f.requests.length,2);assert.ok(f.ui.context.catalogItems(f.current).every(item=>["ready","configured"].includes(item.state)));
 });
 
 for(const status of ["missing","invalid","viewOnly"])test(`automatic component probes respect ${status} profile restrictions`,async()=>{
@@ -333,7 +358,7 @@ for(const status of ["missing","invalid","viewOnly"])test(`automatic component p
 });
 
 test("a background refresh resumes polling after another operation releases the poller",async()=>{
-  const f=liveStatusScreen();await f.ui.flush();f.holdNext();
+  const f=liveStatusScreen();await f.ui.flush();await f.ui.elements.get("headerRefresh").onclick();f.holdNext();
   const update=f.ui.context.queueComponentRefresh();await f.ui.flush();f.holdPoll();
   const foreground=f.ui.context.pollOperation("foreground");await f.ui.flush();f.release();await f.ui.flush();
   f.releasePoll();await foreground;await update;
@@ -343,9 +368,10 @@ test("a background refresh resumes polling after another operation releases the 
 
 test("a failed background poll preserves its diagnostic and waits for the next refresh",async()=>{
   const f=liveStatusScreen({running:true});f.failPoll(true);await f.ui.flush();
+  await f.ui.elements.get("headerRefresh").onclick();
   assert.equal(f.requests.length,1);assert.equal(f.ui.context.catalogItems(f.current).find(item=>item.id==="edt").state,"error");
   assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id==="edt").detail,/Не удалось получить результат/);
-  f.failPoll(false);await f.ui.tick(60000);assert.equal(f.requests.length,2);
+  f.failPoll(false);await f.ui.elements.get("headerRefresh").onclick();assert.equal(f.requests.length,2);
   assert.equal(f.ui.context.catalogItems(f.current).find(item=>item.id==="edt").state,"ready");
 });
 
@@ -376,6 +402,66 @@ test("history never autoselects a profile for a chat or an unresolved selection"
     const ui = screen(async name => { assert.equal(name, "settings.read"); return { ...read, values: { projectRoot: "" }, profile: { status: "unselected" }, projectSelection: selection, profileHistory: [{ projectRoot: "C:/history", status: "loaded" }] }; });
     await ui.flush(); assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, 0);
   }
+});
+
+for (const late of [false, true]) test(`global settings restore a sole profile when entry metadata is text-only (${late ? "late" : "early"})`, async () => {
+  let releaseRead;
+  const empty = { ...read, values: { projectRoot: "" }, profile: { status: "unselected" }, projectSelection: { locked: false },
+    profileHistory: [{ projectRoot: read.values.projectRoot, status: "loaded" }] };
+  const ui = screen(async (name, args) => {
+    if (name === "settings.read") return late ? empty : new Promise(resolve => { releaseRead = () => resolve(empty); });
+    if (name === "settings.select_profile") { assert.equal(args.projectRoot, read.values.projectRoot); return read; }
+    throw new Error(name);
+  }, { navigation: "project" });
+  await ui.flush();
+  ui.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: {
+    content: [{ type: "text", text: JSON.stringify({ mode: "profile", navigation: "profiles", projectRoot: "" }) }] } });
+  if (!late) releaseRead();
+  await ui.flush(); await ui.flush();
+  assert.equal(ui.elements.get("profileTitle").textContent, "Project");
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, 1);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.refresh_readiness").length, 0);
+});
+
+test("text-only chat entry never selects the only profile from history", async () => {
+  const ui = screen(async name => {
+    assert.equal(name, "settings.read");
+    return { ...read, values: { projectRoot: "" }, profile: { status: "unselected" }, projectSelection: { locked: false },
+      profileHistory: [{ projectRoot: read.values.projectRoot, status: "loaded" }] };
+  }, { navigation: "project" });
+  await ui.flush();
+  ui.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: {
+    content: [{ type: "text", text: JSON.stringify({ mode: "profile", navigation: "project", projectRoot: "" }) }] } });
+  await ui.flush();
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, 0);
+});
+
+test("global text-only entry selects the sole saved profile through MCP without selecting it in another chat", async t => {
+  const f = fixture(t); f.save();
+  assert.equal(remember_profile(f.state, f.root, profile_state(f.root)), true);
+  const env = { ...f.env, EDT_AI_PROJECT_ROOT: "" };
+  const app = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], ROOT, env, 10);
+  const chat = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], ROOT, env, 10);
+  f.clients.push(app, chat); app.roots = []; chat.roots = [];
+  await app.initialize(); await chat.initialize();
+  const entry = await app.call("settings.open", {});
+  const ui = screen((name, args, meta) => app.request("tools/call", { name, arguments: args, ...(meta ? { _meta: meta } : {}) }),
+    { navigation: "project", rawResults: true });
+  const deadline = Date.now() + 10000;
+  while (ui.elements.get("profileTitle").textContent !== "Профиль не выбран") {
+    if (Date.now() > deadline) throw new Error("Initial unselected settings view did not load");
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  ui.deliver({ jsonrpc: "2.0", method: "ui/notifications/tool-result", params: { content: entry.content } });
+  while (ui.elements.get("profileTitle").textContent !== f.profile.project.id) {
+    if (Date.now() > deadline) throw new Error("The sole profile was not restored through MCP");
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.select_profile").length, 1);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.refresh_readiness").length, 0);
+  const otherChat = (await chat.call("settings.read", {})).structuredContent;
+  assert.equal(otherChat.values.projectRoot, "");
+  assert.equal(otherChat.projectSelection.status, "unselected");
 });
 
 test("component evidence keeps success and errors until its inputs, lifetime or scope change", async () => {
@@ -826,7 +912,7 @@ test("knowledge UI shows scoped setup publication and drops stale readiness with
   current.knowledge = { mode: "transitional", provider: "openviking", collections: ["team", "api"], required: true,
     workflowScope: "dependent_actions", dependentActions: ["implementation"], state: "not_verified", detail: "Search not verified" };
   current.valueSources = { openvikingTimeout: "project_local", openvikingConnectionId: "connections_file" };
-  current.readiness = { state: "blocked", checks: [], knowledge: { ready: true,
+  current.readiness = { state: "blocked", checkedAt: new Date().toISOString(), checks: [], knowledge: { ready: true,
     readiness: { publication: { state: "verified", gitRevision: "revision-fixture", snapshot: "index-fixture" } } } };
   const ui = screen(async name => { if (["settings.read", "settings.status"].includes(name)) return current; throw new Error(name); });
   await ui.flush();
@@ -838,7 +924,7 @@ test("knowledge UI shows scoped setup publication and drops stale readiness with
   assert.match(ui.elements.get("openvikingTimeoutSource").textContent, /локальные настройки проекта/);
   const field = ui.elements.get("openvikingUrl"); field.value = "https://draft.example/mcp"; field.events.input();
   current.readiness.state = "stale"; current.readiness.reason = "Изменились полномочия";
-  await ui.tick(60000);
+  await ui.context.refreshStatus();
   assert.doesNotMatch(ui.elements.get("knowledgeDetails").textContent, /revision-fixture/);
   assert.match(ui.elements.get("knowledgeDetails").textContent, /Изменились полномочия/);
   assert.equal(field.value, "https://draft.example/mcp");
@@ -1370,13 +1456,13 @@ test("the searchable version picker keeps independent drafts without changing ru
   for(const id of ["codeIndexVersion","bslLsVersion","codeIndexAllowPrerelease","bslLsAllowPrerelease","saveVersionsButton"])assert.equal(ui.elements.has(id),false);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();await ui.elements.get("versionButton").onclick();
   assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя подходящая версия","v1.1.0-rc.7","v1.1.0-rc.4"]);
-  ui.elements.get("versionSearch").value="rc.7";ui.elements.get("versionSearch").events.input();await ui.tick(60000);
+  ui.elements.get("versionSearch").value="rc.7";ui.elements.get("versionSearch").events.input();await ui.context.refreshStatus();
   assert.equal(ui.elements.get("versionSearch").value,"rc.7");assert.equal(ui.elements.get("versionOptions").children.length,1);
   await ui.elements.get("versionOptions").children[0].onclick();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");assert.equal(ui.elements.get("versionPopup").hidden,true);
   ui.elements.get("updateComponent").value="code-index";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"Последняя стабильная версия");
   await ui.elements.get("versionButton").onclick();assert.deepEqual(ui.elements.get("versionOptions").children.map(option=>option.textContent),["Последняя стабильная версия","v1.14.1"]);
   ui.elements.get("updateComponent").value="bsl-ls";ui.elements.get("updateComponent").events.change();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
-  await ui.tick(60000);assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
+  await ui.context.refreshStatus();assert.equal(ui.elements.get("versionValue").textContent,"v1.1.0-rc.7");
   assert.equal(values.bslLsVersion,"latest");assert.equal(values.bslLsAllowPrerelease,true);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,0);
@@ -1472,7 +1558,7 @@ test("installation is disabled for the verified active version and latest resolv
     await choose("v1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
     await choose("1.0.7");assert.equal(ui.elements.get("installUpdateButton").disabled,true);
     await choose("v2.0.0-rc.1");assert.equal(ui.elements.get("installUpdateButton").disabled,false);
-    installed="v2.0.0-rc.1";await ui.tick(60000);
+    installed="v2.0.0-rc.1";await ui.context.refreshStatus();
     assert.equal(ui.elements.get("installUpdateButton").disabled,true);
     await ui.elements.get("installUpdateButton").onclick();
     assert.equal(ui.calls.filter(call=>call.params?.name==="settings.updates").length,0);
@@ -1926,7 +2012,7 @@ for (const delayed of [false, true]) test(`picking another project replaces the 
   assert.equal(ui.elements.get("createButton").disabled, false);
   assert.equal(ui.elements.get("profileBrowser").hidden, true);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.pick_directory").length, 1);
-  await ui.tick(60000);
+  await ui.context.refreshStatus();
   assert.equal(ui.elements.get("projectRoot").value, nextRoot);
   assert.doesNotMatch(ui.elements.get("headerRefresh").title, /Нет свежих данных/);
   assert.equal(ui.calls.filter(call => ["settings.create", "settings.run_check"].includes(call.params?.name)).length, 0);
@@ -1946,9 +2032,9 @@ test("a late observation of the previous profile cannot replace the completed fo
     throw new Error(name);
   });
   await ui.flush();await ui.elements.get("pickDirectoryButton").onclick();
-  await ui.tick(60000);assert.equal(typeof releaseStatus, "function");
+  const observing=ui.context.refreshStatus();await ui.flush();assert.equal(typeof releaseStatus, "function");
   await ui.tick();assert.equal(ui.elements.get("profilePath").textContent, nextRoot);
-  releaseStatus({ ...read, schema: {} });await ui.flush();
+  releaseStatus({ ...read, schema: {} });await observing;await ui.flush();
   assert.equal(ui.elements.get("profilePath").textContent, nextRoot);
   assert.equal(ui.elements.get("projectRoot").value, nextRoot);
 });
@@ -2282,12 +2368,12 @@ test("index maintenance keeps its selection while per-project diagnostics refres
   assert.ok(ui.elements.get("managedControls").contains(ui.elements.get("indexActions")));
   const select = ui.elements.get("indexRepository"); ui.elements.get("indexActions").append(select);
   ui.elements.get("managedDiagnostics").open = true; select.value = "ext"; const option = select.children[0]; select.focus();
-  stale = true; await ui.tick(60000);
+  stale = true; await ui.context.refreshStatus();
   assert.equal(box.hidden, true); assert.equal(ui.elements.get("managedDiagnostics").open, true);
   assert.deepEqual(projects.children.map(row=>row.textContent), ["Main: готов", "Extension: устарел · индекс на диске найден"]);
   assert.match(ui.elements.get("managedDialogStatus").textContent, /Обслуживание индекса/);
   assert.equal(select.value, "ext"); assert.equal(select.children[0], option); assert.equal(ui.document.activeElement, select);
-  stale = false; await ui.tick(60000);
+  stale = false; await ui.context.refreshStatus();
   assert.deepEqual(projects.children.map(row=>row.textContent), ["Main: готов", "Extension: готов · индекс на диске найден"]);
   assert.equal(ui.document.activeElement, select);
 });
@@ -2305,9 +2391,9 @@ test("index maintenance explains when an external or disabled component cannot b
   assert.equal(ui.elements.get("rebuildAllIndexesButton").disabled, true);
   assert.equal(ui.elements.get("restartIndexButton").disabled, true);
   assert.match(ui.elements.get("indexActionsHint").textContent, /Внешний code-index/);
-  state = "stale"; await ui.tick(60000);
+  state = "stale"; await ui.context.refreshStatus();
   assert.match(ui.elements.get("connections").children[0].textNode.textContent, /средствами внешнего сервиса/);
-  enabled = false; await ui.tick(60000);
+  enabled = false; await ui.context.refreshStatus();
   assert.match(ui.elements.get("indexActionsHint").textContent, /Компонент отключён/);
   assert.match(ui.elements.get("connections").children[0].textNode.textContent, /отключён/);
 });
@@ -2528,7 +2614,8 @@ test("opening, selecting and reloading a profile render its service status immed
   assert.equal(headerState(ui,"Code Index"),"Процесс работает");
   await ui.elements.get("headerRefresh").onclick();
   assert.equal(headerState(ui,"Code Index"),"Сервис недоступен");
-  assert.match(ui.elements.get("headerRefresh").title, /автообновление/);
+  assert.match(ui.elements.get("headerRefresh").title, /Обновить состояние/);
+  assert.doesNotMatch(ui.elements.get("headerRefresh").title, /автообновление/);
   assert.equal(ui.calls.filter(call => ["settings.run_check", "settings.probe_connections"].includes(call.params?.name)).length, 0);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.status").length, 1);
 });
@@ -2556,8 +2643,8 @@ test("opening and observing a profile keep managed status and service results co
   assert.match(contents(ui.elements.get("connections")), /API доступен/);
   assert.match(contents(ui.elements.get("connections")), /Product: готов/);
   const detail=ui.elements.get("connections").children[1];detail.open=true;
-  await ui.tick(60000);assert.equal(ui.elements.get("connections").children[1],detail);
-  stale = true; await ui.tick(60000);
+  await ui.context.refreshStatus();assert.equal(ui.elements.get("connections").children[1],detail);
+  stale = true; await ui.context.refreshStatus();
   assert.equal(headerState(ui,"Code Index"),"Сервис недоступен");
   assert.equal(headerState(ui,"BSL LS"),"Проверка устарела");
   assert.doesNotMatch(contents(ui.elements.get("connections")), /API доступен|Индекс актуален/);
@@ -2584,7 +2671,7 @@ test("opening, refreshing and switching projects only observe status, including 
   });
   await ui.flush();
   assert.match(ui.elements.get("readinessTitle").textContent, /устарел|провер/i);
-  await ui.tick(60000); await ui.tick(60000);
+  await ui.context.refreshStatus(); await ui.context.refreshStatus();
   await ui.elements.get("headerRefresh").onclick();
   await ui.context.selectProfile("C:/fixture/next");
   await ui.elements.get("headerRefresh").onclick();
@@ -2809,7 +2896,7 @@ test("a real operation entry matching the backend snapshot still opens its resul
   assert.match(ui.elements.get("status").textContent,/Профиль загружен/);
 });
 
-test("minute status refresh preserves drafts without preparation or foreground probes", async () => {
+test("manual status observation preserves drafts without preparation or foreground probes", async () => {
   let observations=0;
   const ui=screen(async name=>{
     if(name==="settings.read")return {...read,values:{...read.values,edtUrl:"inherited",codeIndexEnabled:true}};
@@ -2819,7 +2906,7 @@ test("minute status refresh preserves drafts without preparation or foreground p
   await ui.flush();
   ui.elements.get("edtUrl").value="draft";ui.elements.get("edtUrl").events.input();
   ui.elements.get("codeIndexEnabled").checked=false;ui.elements.get("codeIndexEnabled").events.change();
-  await ui.tick(60000);await ui.tick(60000);
+  await ui.context.refreshStatus();await ui.context.refreshStatus();
   assert.equal(observations,2);
   assert.equal(ui.elements.get("edtUrl").value,"draft");assert.equal(ui.elements.get("codeIndexEnabled").checked,false);
   assert.equal(headerState(ui,"Code Index"),"Процесс работает");
@@ -2828,13 +2915,15 @@ test("minute status refresh preserves drafts without preparation or foreground p
   assert.equal(ui.elements.get("edtUrl").value,"changed-on-disk");
 });
 
-test("observation pauses for hidden windows, ignores late closed responses and does not overlap", async () => {
+test("visibility does not start observation and a manual request does not overlap or update a closed form", async () => {
   let release;
   const ui=screen(async name=>name==="settings.read"?read:new Promise(resolve=>{release=resolve;}));
   await ui.flush();ui.document.hidden=true;ui.documentEvents.visibilitychange();
   assert.equal([...ui.timers.values()].filter(timer=>timer.ms===60000).length,0);
   ui.document.hidden=false;ui.documentEvents.visibilitychange();await ui.flush();
   assert.equal([...ui.timers.values()].filter(timer=>timer.ms===60000).length,0);
+  assert.equal(ui.calls.filter(call=>call.params?.name==="settings.status").length,0);
+  const observing=ui.context.refreshStatus();await ui.flush();
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.status").length,1);
   await ui.context.refreshStatus();
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.status").length,1);
@@ -2868,7 +2957,7 @@ test("history previews another profile read-only without selecting it for chat o
   ui.elements.get("editorTab").onclick();await ui.flush();
   assert.equal(ui.elements.get("settingsText").value,"history-profile-document");
   assert.equal(ui.elements.get("settingsText").disabled,false);
-  await ui.tick(60000);assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
+  await ui.context.refreshStatus();assert.equal(ui.calls.filter(call=>call.params?.name==="settings.update").length,0);
 });
 
 test("profile cards show EDT project counts instead of repository counts", async () => {
@@ -2990,12 +3079,12 @@ test("automatic selection after removal does not rebind a locked chat and report
   }
 });
 
-test("a failed automatic observation retries and keeps the last successful profile visible", async () => {
+test("a failed manual observation can be retried and keeps the last successful profile visible", async () => {
   let attempts=0;
   const ui=screen(async name=>{if(name==="settings.read")return read;if(name==="settings.status"&&++attempts===1)throw new Error("offline");return {...read,summary:{observedAt:"2026-10-21T12:00:00Z",components:[]}};});
-  await ui.flush();await ui.tick(60000);assert.match(ui.elements.get("headerRefresh").title,/Нет свежих данных/);
-  assert.equal(ui.elements.get("profileTitle").textContent,"Project");await ui.tick(60000);
-  assert.equal(attempts,2);assert.match(ui.elements.get("headerRefresh").title,/автообновление/);
+  await ui.flush();await ui.context.refreshStatus();assert.match(ui.elements.get("headerRefresh").title,/Нет свежих данных/);
+  assert.equal(ui.elements.get("profileTitle").textContent,"Project");await ui.context.refreshStatus();
+  assert.equal(attempts,2);assert.match(ui.elements.get("headerRefresh").title,/Обновить состояние/);
 });
 
 test("keyboard navigation skips unavailable profile tabs and dirty drafts guard the folder picker", async () => {
@@ -3573,7 +3662,7 @@ test("an external scope change retains a draft and blocks writes until it is dis
   const first = { ...read, values: { ...read.values, edtUrl: "http://old" } }; let status = first;
   const ui = screen(async name => { if (name === "settings.read") return first; if (name === "settings.status") return status; throw new Error(name); }); await ui.flush();
   ui.elements.get("edtUrl").value = "http://draft"; ui.elements.get("edtUrl").events.input(); status = next;
-  await ui.tick(60000);
+  await ui.context.refreshStatus();
   assert.equal(ui.elements.get("edtUrl").value, "http://draft"); assert.equal(ui.elements.get("profileTitle").textContent, "Project");
   assert.equal(ui.elements.get("saveButton").disabled, true); assert.match(ui.elements.get("status").textContent, /Черновик/);
   let prevented = false; ui.lifecycle.beforeunload({ preventDefault() { prevented = true; } }); assert.equal(prevented, true);
@@ -3590,7 +3679,7 @@ test("background refresh cannot replace the revision on which a settings draft w
   }); await ui.flush();
   const field = ui.elements.get("edtUrl"); field.value = "http://draft"; field.events.input();
   current = { ...current, settingsRevision: "after", values: { ...current.values, edtUrl: "http://external" } };
-  await ui.tick(60000); await ui.elements.get("saveButton").onclick();
+  await ui.context.refreshStatus(); await ui.elements.get("saveButton").onclick();
   assert.equal(requested.expectedRevision, "before"); assert.equal(field.value, "http://draft");
   assert.match(ui.elements.get("status").textContent, /изменились/);
 });
@@ -3644,7 +3733,7 @@ test("diagnostics show and filter safe text, stay available during an operation,
   ui.elements.get("logSearch").value="absent";ui.elements.get("logSearch").events.input();assert.match(ui.elements.get("diagnosticJournal").children[0].textContent,/Нет записей/);
   await ui.elements.get("diagnosticsRefreshButton").onclick();assert.equal(logs,2);
   await ui.tick(2000);assert.equal(logs,3);
-  ui.elements.get("checkTab").onclick();await ui.tick(60000);assert.equal(logs,3);
+  ui.elements.get("checkTab").onclick();await ui.context.refreshStatus();assert.equal(logs,3);
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,0);
 });
 
