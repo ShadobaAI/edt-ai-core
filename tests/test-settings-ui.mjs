@@ -4,13 +4,14 @@ import path from "node:path";
 import vm from "node:vm";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { fixture, session, ROOT } from "./helpers.mjs";
+import { fixture, environment, session, ROOT } from "./helpers.mjs";
 import { dump, load, parse } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { patch_yaml_draft, SettingsBackend } from "../scripts/settings_backend.mjs";
 import { yaxunit_result } from "../scripts/yaxunit_readiness.mjs";
+import { save_component_checks } from "../scripts/setup_readiness.mjs";
 
 const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
@@ -126,7 +127,7 @@ function screen(handler, options = {}) {
   return { context, elements, timers, calls, downloads, blobs, flush, document, lifecycle, documentEvents, media, resize: () => observedResize(),
     deliver(data) { message({ source: parent, origin: "https://fixture.invalid", data }); },
     flushCloseEvents() { for (const close of closeEvents.splice(0)) close(); },
-    async tick(ms = 1000) { const [id, timer] = [...timers].find(([, timer]) => timer.ms === ms) || []; assert.ok(timer); timers.delete(id); timer.fn(); await flush(); } };
+    async tick(ms = 1000) { const entries=[...timers];const [id, timer] = entries.find(([, timer]) => timer.ms === ms) || (ms===60000?entries.find(([, timer])=>timer.ms>59000&&timer.ms<60000):null) || []; assert.ok(timer); timers.delete(id); timer.fn(); await flush(); } };
 }
 
 const read = { values: { projectRoot: "C:/fixture/project" }, preparationScope: "C:/fixture/project#default",
@@ -173,7 +174,7 @@ test("the header beside the project shows profile facts and all seven canonical 
   for(const item of f.ui.context.catalogItems(f.current)){
     const badge=badges.children.find(badge=>badge.attributes["data-component"]===item.id);
     assert.equal(badge.attributes["data-state"],item.state);assert.ok(badge.textContent.startsWith(item.name+": "));
-    if(item.id==="yaxunit")assert.match(badge.textContent,/Настроен · не проверен/);
+    if(item.id==="yaxunit")assert.match(badge.textContent,/Требуется проверка настроек/);
     if(item.id==="vanessa")assert.match(badge.textContent,/Менеджер доступен/);
   }
   const requests=f.requests.length;
@@ -189,9 +190,20 @@ test("header component badges follow addressed results, in-progress checks and e
     {action:"probe",component:"edt",projectRoot:f.current.values.projectRoot,instance:f.current.instance});
   assert.equal(badge("edt").textContent,"EDT: Ошибка");assert.match(badge("edt").title,/Проверка EDT завершилась ошибкой/);assert.equal(badge("v8std").textContent,v8);
   vm.runInContext('activeOperation={action:"refresh_readiness",component:"code-index",status:"running",projectRoot:currentData.values.projectRoot,instance:currentData.instance}',f.ui.context);
-  f.ui.context.renderComponentCatalog(f.current);assert.equal(badge("code-index").attributes["data-state"],"checking");assert.equal(badge("v8std").textContent,v8);
+  f.ui.context.renderComponentCatalog(f.current);assert.equal(badge("code-index").attributes["data-state"],"ready");assert.equal(badge("v8std").textContent,v8);
   vm.runInContext('activeOperation.status="completed";componentObservations.get("v8std").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
   f.ui.context.renderComponentCatalog(f.current);assert.equal(badge("v8std").textContent,"v8std: Проверка устарела");
+});
+
+test("BSL status names the verified API and shows the limits of that observation", async () => {
+  const f = liveStatusScreen(), detail = "Проверены JAR, запуск выбранной Java и совместимость MCP API. Применение конфигурации и работа диагностик этой проверкой не подтверждаются.";
+  const checkedAt = new Date().toISOString();
+  f.current.componentStatuses = [{ id: "bsl-ls", state: "ready", apiCompatible: true, apiEvidenceVersion: 1, detail, checkedAt, expiresAt: new Date(Date.now() + 60000).toISOString() }];
+  await f.ui.flush();
+  const badge = f.ui.elements.get("headerComponentStatuses").children.find(item => item.attributes["data-component"] === "bsl-ls");
+  assert.match(badge.textContent, /Совместимость API проверена/); assert.match(badge.title, /работа диагностик.*не подтверждаются/);
+  const card = f.ui.elements.get("componentCatalog").children.flatMap(group => group.children[1].children).find(item => componentName(item) === "BSL LS");
+  assert.equal(card.catalogNodes.status.textContent, "Совместимость API проверена"); assert.match(card.catalogNodes.meta.textContent, /работа диагностик.*не подтверждаются/);
 });
 
 test("Vanessa status shows the observed manager and expires without probing",async()=>{
@@ -215,13 +227,87 @@ test("Vanessa status shows the observed manager and expires without probing",asy
   assert.equal(f.requests.length,count);
 });
 
+test("server component statuses outrank stale setup and refresh preserves card focus",async()=>{
+  const f=liveStatusScreen(),ids=["edt","v8std","openviking","code-index","bsl-ls","yaxunit","vanessa"];
+  f.ui.document.hidden=true;
+  const checkedAt=new Date().toISOString(),expiresAt=new Date(Date.now()+60000).toISOString();
+  f.current.componentStatuses=ids.map(id=>({id,state:"ready",detail:"Собственное наблюдение "+id,checkedAt,expiresAt,inputRevision:id,currentInputRevision:id}));
+  f.current.readiness={state:"stale",reason:"Изменился другой компонент",checks:ids.map(id=>({id,state:"error"}))};
+  await f.ui.flush();
+  assert.ok(f.ui.context.catalogItems(f.current).every(item=>item.state==="ready"));
+  const catalog=f.ui.elements.get("componentCatalog"),card=[...catalog.children].flatMap(group=>group.children[1].children).find(item=>item.attributes["aria-label"]==="EDT");
+  const button=card.catalogNodes.button;button.focus();
+  const observations=f.current.componentStatuses.map(item=>item.id==="edt"?{...item,state:"error",detail:"EDT недоступен",checkedAt:new Date(Date.now()+1).toISOString()}:item);
+  f.current.componentStatuses=observations;f.ui.context.renderComponentCatalog(f.current);
+  assert.equal(f.ui.document.activeElement,button);
+  assert.equal(card.catalogNodes.status.textContent,"Ошибка");
+  assert.equal(f.ui.context.catalogItems(f.current).find(item=>item.id==="vanessa").state,"ready");
+});
+
+test("real MCP read and status deliver component statuses to the renderer", async t => {
+  const f=fixture(t);environment(t,f.env);f.save();
+  const backend=new SettingsBackend(),config=backend.effective(backend.current());
+  save_component_checks(f.state,config,f.profile,[{id:"bsl-ls",state:"ready",inputRevision:"private-fixture-revision"}]);
+  const client=await session(t,"mcp/settings.mjs",[],f),response=await client.call("settings.read",{});
+  assert.doesNotMatch(JSON.stringify(response),/inputRevision|currentInputRevision|private-fixture-revision/);
+  const snapshot=response.structuredContent;
+  assert.equal(snapshot.componentStatuses.length,7);
+  const observed=(await client.call("settings.status",{})).structuredContent;
+  assert.deepEqual(observed.componentStatuses.map(item=>item.id),snapshot.componentStatuses.map(item=>item.id));
+  const ui=screen((name,args,meta)=>client.request("tools/call",{name,arguments:args,...(meta?{_meta:meta}:{})}),{navigation:"project",rawResults:true});
+  ui.document.hidden=true;
+  const end=Date.now()+10000;
+  while(!vm.runInContext("Boolean(currentData?.componentStatuses)",ui.context)){
+    assert.ok(Date.now()<end,ui.elements.get("status").textContent);
+    await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  const items=ui.context.catalogItems(vm.runInContext("currentData",ui.context));
+  for(const status of snapshot.componentStatuses)assert.equal(items.find(item=>item.id===status.id).state,status.state);
+  ui.lifecycle.pagehide();
+});
+
+test("a late observation is replaced by the server projection even when the settings revision is unchanged", async () => {
+  const f=liveStatusScreen({hold:true}),checkedAt=new Date().toISOString(),expiresAt=new Date(Date.now()+60000).toISOString();
+  const ids=["edt","v8std","openviking","code-index","bsl-ls","yaxunit","vanessa"];
+  f.current.componentStatuses=ids.map(id=>({id,state:"ready",checkedAt,expiresAt,detail:"Сохранённое наблюдение"}));
+  await f.ui.flush();const pending=f.ui.elements.get("headerRefresh").onclick();
+  f.current.componentStatuses=f.current.componentStatuses.map(item=>item.id==="edt"?{...item,state:"check_stale",detail:"Файл .project изменился."}:item);
+  f.release();await pending;await f.ui.flush();
+  const edt=f.ui.context.catalogItems(f.current).find(item=>item.id==="edt");
+  assert.equal(edt.state,"check_stale");assert.match(edt.detail,/\.project изменился/);
+});
+
+test("an older settings snapshot cannot overwrite a newer snapshot returned first", async () => {
+  const base={...read,instance:"default",settingsRevision:"same",values:{...read.values,edtUrl:"http://edt"},summary:{components:[]},
+    componentStatuses:[{id:"edt",state:"ready",detail:"Старые данные",checkedAt:new Date().toISOString()}]};
+  let delayed=false,release,entered;const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+  const ui=screen(async name=>{
+    if(name!=="settings.read")return base;
+    if(!delayed)return base;
+    if(delayed==="first"){delayed="second";entered();await gate;return base;}
+    return {...base,componentStatuses:[{id:"edt",state:"check_stale",detail:"Файл .project изменился.",checkedAt:new Date().toISOString()}]};
+  });ui.document.hidden=true;await ui.flush();delayed="first";
+  const old=ui.context.refresh();await started;await ui.context.refresh();release();await old;
+  const item=ui.context.catalogItems(vm.runInContext("currentData",ui.context)).find(item=>item.id==="edt");
+  assert.equal(item.state,"check_stale");assert.match(item.detail,/\.project изменился/);
+});
+
+test("a failed refresh does not invent a reliable time from an inconclusive attempt", async () => {
+  const f=liveStatusScreen(),checkedAt=new Date().toISOString();f.ui.document.hidden=true;
+  f.current.componentStatuses=[{id:"edt",state:"not_verified",checkedAt,detail:"EDT не предоставил данные."}];
+  await f.ui.flush();
+  f.ui.context.reportComponentRefreshFailure({component:"edt",projectRoot:f.current.values.projectRoot,instance:f.current.instance},"failure");
+  const item=f.ui.context.catalogItems(f.current).find(item=>item.id==="edt");
+  assert.equal(item.state,"not_verified");assert.equal(item.lastCheckedAt,undefined);
+});
+
 test("compact counters explain their composition and expose only relevant refresh and stale counts",async()=>{
   const f=liveStatusScreen();await f.ui.flush();await f.ui.elements.get("headerRefresh").onclick();
   assert.equal(f.ui.elements.get("countAll").textContent,"7");assert.match(f.ui.elements.get("countAll").title,/EDT, v8std, OpenViking/);
   assert.equal(f.ui.elements.get("countCheckingGroup").hidden,true);assert.equal(f.ui.elements.get("countStaleGroup").hidden,true);
   vm.runInContext('activeOperation={action:"refresh_readiness",component:"edt",status:"running",projectRoot:currentData.values.projectRoot,instance:currentData.instance};componentObservations.get("v8std").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
   f.ui.context.renderComponentCatalog(f.current);
-  assert.equal(f.ui.elements.get("countChecking").textContent,"1");assert.equal(f.ui.elements.get("countChecking").title,"EDT");assert.equal(f.ui.elements.get("countCheckingGroup").hidden,false);
+  assert.equal(f.ui.elements.get("countChecking").textContent,"0");assert.equal(f.ui.elements.get("countCheckingGroup").hidden,true);
   assert.equal(f.ui.elements.get("countStale").textContent,"1");assert.equal(f.ui.elements.get("countStale").title,"v8std");assert.equal(f.ui.elements.get("countStaleGroup").hidden,false);
   f.ui.elements.get("componentsIssues").onclick();assert.equal(f.ui.elements.get("countAll").textContent,"7");
   vm.runInContext('activeOperation.status="completed";componentObservations.get("v8std").check.expiresAt=new Date(Date.now()+60000).toISOString()',f.ui.context);
@@ -302,8 +388,8 @@ test("header profile summary clears unavailable profile data and respects read-o
 test("component checks refresh on load, every minute and on manual request",async()=>{
   const f=liveStatusScreen();await f.ui.flush();
   assert.equal(f.requests.length,1);assert.equal(f.requests[0].component,undefined);
-  assert.equal([...f.ui.timers.values()].filter(timer=>timer.ms===60000).length,1);
-  await f.ui.tick(60000);assert.equal(f.requests.length,2);assert.equal(f.requests[1].component,undefined);
+  const timer=[...f.ui.timers.values()].find(item=>item.ms>59000&&item.ms<=60000);assert.ok(timer);
+  await f.ui.tick(timer.ms);assert.equal(f.requests.length,2);assert.equal(f.requests[1].component,undefined);
   assert.equal(f.ui.context.catalogItems(f.current).filter(item=>["ready","configured"].includes(item.state)).length,7);
   await f.ui.elements.get("headerRefresh").onclick();assert.equal(f.requests.length,3);assert.equal(f.requests[2].component,undefined);
   assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id==="edt").detail,/проверка 3/);
@@ -311,6 +397,35 @@ test("component checks refresh on load, every minute and on manual request",asyn
   f.ui.context.renderSelectedProfile(f.current);await f.ui.flush();
   assert.equal(f.requests.length,4);assert.equal(f.requests[3].scope,"C:/fixture/second#default");
   await f.ui.elements.get("headerRefresh").onclick();await f.ui.flush();assert.equal(f.requests.length,5);assert.equal(f.requests[4].scope,"C:/fixture/second#default");
+});
+
+test("a shared near-expiry observation schedules the next refresh from its actual check time",async()=>{
+  const current={...read,instance:"default",settingsRevision:"saved",values:{...read.values,edtUrl:"http://edt"}};let attempts=0;
+  const ui=screen(async name=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.refresh_readiness"){
+      const checkedAt=new Date(Date.now()-(attempts++===0?59000:0)).toISOString();
+      return {id:"shared-"+attempts,action:"refresh_readiness",status:"completed",projectRoot:current.values.projectRoot,instance:current.instance,
+        result:{componentChecks:[{id:"edt",state:"ready",checkedAt,expiresAt:new Date(Date.parse(checkedAt)+60000).toISOString()}]}};
+    }
+    throw new Error(name);
+  },{liveRefresh:true});
+  await ui.flush();assert.equal(attempts,1);
+  const due=[...ui.timers.values()].find(timer=>timer.ms>=1000&&timer.ms<=1500);assert.ok(due,"next refresh is due near the original observation's deadline");
+  await ui.tick(due.ms);assert.equal(attempts,2);
+});
+
+test("an expired evidence deadline does not cause a rapid automatic refresh loop",async()=>{
+  const current={...read,instance:"default",settingsRevision:"saved"};
+  const ui=screen(async name=>{
+    if(["settings.read","settings.status"].includes(name))return current;
+    if(name==="settings.refresh_readiness")return {id:"job",action:"refresh_readiness",status:"completed",projectRoot:current.values.projectRoot,instance:current.instance,
+      result:{componentChecks:[{id:"openviking",state:"error",checkedAt:new Date().toISOString(),expiresAt:new Date(Date.now()-5000).toISOString()}]}};
+    throw new Error(name);
+  },{liveRefresh:true});
+  await ui.flush();
+  assert.ok([...ui.timers.values()].some(timer=>timer.ms>59000&&timer.ms<=60000));
+  assert.ok(![...ui.timers.values()].some(timer=>timer.ms===1000));
 });
 
 test("the minute refresh reads changed saved settings before probing and preserves a draft",async()=>{
@@ -397,7 +512,7 @@ test("Windows separator variants identify the same operation without crossing pr
   const ui=screen(async()=>current);await ui.flush();
   const op={action:"refresh_readiness",status:"running",projectRoot:"C:\\fixture\\project",instance:"default"};
   vm.runInContext('activeOperation={action:"refresh_readiness",status:"running",projectRoot:"C:\\\\fixture\\\\project",instance:"default"}',ui.context);
-  ui.context.renderComponentCatalog(current);assert.equal(ui.context.catalogItems(current).find(item=>item.id==="edt").state,"checking");
+  ui.context.renderComponentCatalog(current);assert.equal(ui.context.catalogItems(current).find(item=>item.id==="edt").state,"not_checked");
   ui.context.observeComponentResult({componentChecks:[{id:"edt",state:"error",checkedAt:new Date().toISOString()}]},{...op,status:"completed"});
   vm.runInContext('activeOperation.status="completed"',ui.context);
   assert.equal(ui.context.catalogItems(current).find(item=>item.id==="edt").state,"error");
@@ -500,7 +615,7 @@ for(const id of ["edt","v8std","openviking","code-index","bsl-ls","yaxunit","van
   assert.match(f.ui.context.catalogItems(f.current).find(item=>item.id===id).detail,/проверка 2/);
   if(id==="code-index"){
     assert.equal(f.ui.elements.get("connections").hidden,true);
-    assert.match(f.ui.elements.get("managedDialogCheckedAt").textContent,/Последняя проверка/);
+    assert.match(f.ui.elements.get("managedDialogCheckedAt").textContent,/Последняя попытка/);
     assert.deepEqual(f.ui.elements.get("managedProjectStates").children.map(row=>row.textContent),["Product: готов"]);
     assert.equal(f.ui.elements.get("managedProjectStates").hidden,false);
     vm.runInContext('componentObservations.get("code-index").check.expiresAt=new Date(Date.now()-1).toISOString()',f.ui.context);
@@ -553,7 +668,7 @@ test("a queued manual refresh discards a late result from the previous profile",
 
 test("a failed status refresh marks the components unverified and retries automatically",async()=>{
   const f=liveStatusScreen();await f.ui.flush();await f.ui.elements.get("headerRefresh").onclick();
-  assert.equal(headerState(f.ui,"Code Index"),"Готов");assert.equal(headerState(f.ui,"BSL LS"),"Готов");
+  assert.equal(headerState(f.ui,"Code Index"),"Готов");assert.equal(headerState(f.ui,"BSL LS"),"Совместимость API проверена");
   f.fail("Сервер недоступен");await f.ui.tick(60000);assert.match(f.ui.elements.get("headerRefresh").title,/Не удалось обновить состояние/);
   assert.ok(f.ui.context.catalogItems(f.current).every(item=>item.state==="not_verified"));
   f.fail(null);await f.ui.tick(60000);
@@ -748,7 +863,7 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
   assert.equal(ui.elements.get(prefix+"State").attributes["data-state"],id==="yaxunit"?"configured":"ready");
   assert.equal(ui.elements.get(prefix+"State").attributes["data-tone"],id==="yaxunit"?"warning":"good");
   const refresh=ui.elements.get(item.kind==="external"?"probeButton":item.kind==="managed"?"managedProbeButton":"testingProbeButton");
-  assert.equal(refresh.attributes["aria-label"],id==="yaxunit"?"Проверить настройки запуска YaXUnit":"Проверить "+item.name);assert.equal(refresh.attributes["aria-busy"],"false");
+  assert.equal(refresh.attributes["aria-label"],id==="yaxunit"?"Проверить настройки запуска YaXUnit":id==="vanessa"?"Проверить менеджер Vanessa":"Проверить "+item.name);assert.equal(refresh.attributes["aria-busy"],"false");
   assert.match(ui.elements.get(item.kind === "external" ? "probeResult" : item.kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent, /Проверен выбранный компонент/);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   assert.equal(ui.calls.filter(call => ["settings.update", "settings.run_check"].includes(call.params?.name)).length, 0);
@@ -1963,7 +2078,7 @@ test("EDT diagnostics show each project once and follow the current component ev
   const output = () => ui.elements.get("componentDialogDiagnostic").textContent + "\n" + ui.elements.get("probeResult").textContent;
   assert.equal(ui.elements.get("probeResult").textContent, detail);
   assert.equal(ui.elements.get("probeResult").hidden, false);
-  assert.match(ui.elements.get("componentDialogCheckedAt").textContent,/Последняя проверка/);
+  assert.match(ui.elements.get("componentDialogCheckedAt").textContent,/Последняя попытка/);
   assert.deepEqual(ui.elements.get("externalProjectStates").children.map(row=>row.textContent),["crm-production: Готов","crm-yaxunit: Не открыт"]);
   assert.equal(output().match(/crm-production:/g).length, 1);
   assert.equal(output().match(/crm-yaxunit:/g).length, 1);
@@ -2307,7 +2422,7 @@ test("a locked project remains locked and preparation polling does not restart i
   assert.match(ui.elements.get("status").textContent, /затем проверьте готовность/);
   const contents = element => [element.textContent, ...element.children.map(contents)].join(" ");
   const lines = contents(ui.elements.get("connections"));
-  assert.match(lines, /Подключение к BSL LS и работа с проектами доступны/);
+  assert.match(lines, /Совместимость API BSL LS подтверждена последней проверкой/);
   assert.match(lines, /тестовых данных/);
 });
 
@@ -2417,7 +2532,7 @@ test("the readiness summary checks once and retains a scoped result across refre
     if(name==="settings.run_check"){assert.equal(args.authorization.scope,read.preparationScope);return {id:"ready-check",status:"running"};}
     if(name==="settings.operation"){completed=true;return {id:"ready-check",status:"completed",action:"check",result:{managed:[],external:{},readiness}};}
     throw new Error(name);
-  });await ui.flush();assert.match(ui.elements.get("readinessTitle").textContent,/ещё не проверена/);
+  });await ui.flush();assert.match(ui.elements.get("readinessTitle").textContent,/не выполнялась/);
   await ui.elements.get("readinessButton").onclick();
   assert.equal(ui.calls.filter(call=>call.params?.name==="settings.run_check").length,1);
   assert.match(ui.elements.get("readinessTitle").textContent,/можно начинать работу/);
@@ -2445,7 +2560,7 @@ test("an unchecked connection is not reported as stale or disconnected", async (
   await ui.flush();
   const contents=node=>[node.textContent,...node.children.map(contents)].join(" ");
   const text=contents(ui.elements.get("connections"));
-  assert.match(text,/Не проверено/);assert.doesNotMatch(text,/Проверка устарела|Нет подключения/);
+  assert.match(text,/Нет данных подключения/);assert.doesNotMatch(text,/Проверка устарела|Нет подключения/);
 });
 
 test("EDT port suggestion is adjacent, explicit, and saves only the instance URL", async () => {
@@ -2846,21 +2961,21 @@ test("opening and observing a profile keep managed status and service results co
   const contents = node => [node.textContent, ...node.children.map(contents)].join(" ");
   await ui.flush();
   assert.equal(headerState(ui,"Code Index"),"Готов");
-  assert.equal(headerState(ui,"BSL LS"),"Готов");
+  assert.equal(headerState(ui,"BSL LS"),"Совместимость API проверена");
   assert.equal(ui.elements.get("connections").hidden, false);
-  assert.match(contents(ui.elements.get("connections")), /API доступен/);
+  assert.match(contents(ui.elements.get("connections")), /Совместимость API проверена/);
   assert.match(contents(ui.elements.get("connections")), /Product: готов/);
   const detail=ui.elements.get("connections").children[1];detail.open=true;
   await ui.context.refreshStatus();assert.equal(ui.elements.get("connections").children[1],detail);
   stale = true; await ui.context.refreshStatus();
   assert.equal(headerState(ui,"Code Index"),"Сервис недоступен");
   assert.equal(headerState(ui,"BSL LS"),"Проверка устарела");
-  assert.doesNotMatch(contents(ui.elements.get("connections")), /API доступен|Индекс актуален/);
+  assert.doesNotMatch(contents(ui.elements.get("connections")), /Совместимость API проверена|Индекс актуален/);
   assert.doesNotMatch(contents(ui.elements.get("connections")), /Product: готов/);
   assert.match(contents(ui.elements.get("connections")), /Проверка устарела/);
   assert.equal(ui.elements.get("connections").children[1].open,true);
   await ui.context.selectProfile("C:/fixture/other");
-  assert.equal(headerState(ui,"BSL LS"),"Готов");
+  assert.equal(headerState(ui,"BSL LS"),"Совместимость API проверена");
   assert.equal(ui.elements.get("connections").children[1].open,false);
   assert.equal(ui.calls.filter(call=>["settings.run_check","settings.probe_connections"].includes(call.params?.name)).length,0);
 });

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 
-const home = process.env.CODE_INDEX_HOME;
+const home = process.env.CODE_INDEX_FIXTURE_HOME || process.env.CODE_INDEX_HOME;
 let checks = 0;
 for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);

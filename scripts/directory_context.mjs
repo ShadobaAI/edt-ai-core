@@ -101,9 +101,8 @@ export function repository_projects(root, repositories, descriptors) {
 export function index_repositories(root, data, descriptors) {
   return repository_projects(root, data.repositories, descriptors).filter(item => item.projects.length).map(item => item.repository);
 }
-export function index_selection(root, data) {
+export function index_selection(root, data, found = repository_projects(root, data.repositories)) {
   const unbound = new Set(data.policy?.unbound_edt_repositories || []);
-  const found = repository_projects(root, data.repositories);
   return { repositories: found.filter(item => item.projects.length).map(item => item.repository),
     missingProjects: found.filter(({repository, projects}) => !unbound.has(repository.id) &&
       (repository.edt_project || (data.policy?.edt_repository_ids || []).includes(repository.id)) && projects.length !== 1)

@@ -31,13 +31,14 @@ async function managerFixture(t) {
     }
     if (message.method === "tools/list") return reply({ tools: mode === "missing-tool" ? [] : [{ name: "get_environment_data", inputSchema: { type: "object" } }] });
     if (message.method === "tools/call") {
-      if (mode === "hold") { entered(); await new Promise(resolve => { release = resolve; }); }
+      if (mode === "hold" || mode === "hold-file") { entered(); await new Promise(resolve => { release = resolve; }); }
       if (mode === "tool-error") return reply({ isError: true, content: [{ type: "text", text: "opaque-private-secret-592" }] });
       if (mode === "unrecognized") return reply(wire.response("unknown environment"));
       let text = wire.environment.content[0].text;
       if (mode === "mismatch") text = text.replace('Ref="ui-demo"', 'Ref="other"');
       if (mode === "server-alias") text = text.replace('Srvr="localhost"', 'Srvr="127.0.0.1"');
       if (mode === "file") text = text.replace('Srvr="localhost";Ref="ui-demo";', `File="${path.join(f.root, "base")}";`);
+      if (mode === "hold-file") text = text.replace('Srvr="localhost";Ref="ui-demo";', `File="${path.join(f.root, "base-link")}";`);
       text += '\n- Private: opaque-private-secret-592';
       return reply(wire.response(text));
     }
@@ -96,6 +97,16 @@ test("manager status follows loss of connection and later recovery", async t => 
   f.setMode("unavailable"); assert.equal((await f.probe()).componentChecks[0].state, "stopped");
   f.setMode("ready"); assert.equal((await f.backend.main({ action: "refresh_readiness", scope: f.root + "#first" })).componentChecks.find(item => item.id === "vanessa").state, "ready");
   assert.equal((await f.backend.main({ action: "read" })).componentChecks.find(item => item.id === "vanessa").state, "ready");
+});
+
+test("a manager timeout reports its cause without running TestClient or tests", async t => {
+  const f = await managerFixture(t), timeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (callback, ms, ...args) => timeout(callback, ms === 10000 ? 1500 : ms, ...args));
+  f.setMode("hold"); const entered = f.waitForCall(), pending = f.probe();
+  await entered; const result = await pending; f.release();
+  assert.equal(result.componentChecks[0].state, "error");
+  assert.match(result.componentChecks[0].detail, /превысила время ожидания/);
+  assert.ok(f.calls.every(call => !/TestClient|run_scenario|load_features/i.test(call)));
 });
 
 test("disabled and invalid runtime profiles do not contact the manager", async t => {
@@ -159,6 +170,41 @@ test("changes to the runtime profile invalidate only Vanessa's saved evidence", 
   const checks = (await f.backend.main({ action: "read" })).componentChecks;
   assert.equal(checks.find(item => item.id === "vanessa").state, "check_stale");
   assert.equal(checks.find(item => item.id === "v8std").state, other);
+});
+
+test("a runtime profile swapped and restored during a refresh cannot prove another manager ready", async t => {
+  const f = await managerFixture(t), reachable = JSON.stringify(f.runtime), original = structuredClone(f.runtime);
+  original.mcp.port = 1; original.mcp.url = "http://127.0.0.1:1/mcp";
+  const saved = JSON.stringify(original); fs.writeFileSync(f.file, saved);
+  const invoke = f.backend.main.bind(f.backend);
+  f.backend.main = async (request, progress, context) => {
+    if (request.action !== "probe" || request.component !== "vanessa") return invoke(request, progress, context);
+    fs.writeFileSync(f.file, reachable);
+    try { return await invoke(request, progress, context); }
+    finally { fs.writeFileSync(f.file, saved); }
+  };
+  const result = await f.backend.main({ action: "refresh_readiness", scope: f.root + "#first", component: "vanessa" });
+  assert.notEqual(result.componentChecks[0].state, "ready");
+  assert.equal(f.calls.length, 0, "a manager loaded from different bytes must never be contacted");
+  assert.notEqual((await f.backend.main({ action: "read" })).componentChecks.find(item => item.id === "vanessa")?.state, "ready");
+});
+
+test("a file-base link changed and restored during a manager probe cannot prove the replacement ready", async t => {
+  const f = await managerFixture(t), link = path.join(f.root, "base-link"), first = path.join(f.root, "base"), second = path.join(f.root, "other-base");
+  fs.mkdirSync(first); fs.mkdirSync(second);
+  const point = target => fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+  point(first); f.runtime.manager.infobase = { type: "file", path: "../base-link" }; f.saveRuntime(); f.setMode("hold-file");
+  const invoke = f.backend.main.bind(f.backend);
+  f.backend.main = async (request, progress, context) => {
+    if (request.action !== "probe" || request.component !== "vanessa") return invoke(request, progress, context);
+    try { return await invoke(request, progress, context); }
+    finally { fs.unlinkSync(link); point(first); }
+  };
+  const entered = f.waitForCall(), pending = f.backend.main({ action: "refresh_readiness", scope: f.root + "#first", component: "vanessa" });
+  await entered; fs.unlinkSync(link); point(second); f.release();
+  const result = await pending;
+  assert.equal(result.superseded, false); assert.equal(result.componentChecks[0].state, "not_verified");
+  assert.notEqual((await f.backend.main({ action: "read" })).componentChecks.find(item => item.id === "vanessa")?.state, "ready");
 });
 
 for (const action of ["probe", "refresh_readiness"]) test(`a runtime profile change during ${action} discards the old manager result`, async t => {

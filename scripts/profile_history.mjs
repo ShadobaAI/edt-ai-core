@@ -4,7 +4,7 @@ import { atomic_write } from "./common.mjs";
 import { profile_state } from "./profile.mjs";
 import { edt_project_count } from "./directory_context.mjs";
 import { is_dir, is_file, path_identity, project_directory, record_project_owner } from "./project_paths.mjs";
-import { read_component_checks } from "./setup_readiness.mjs";
+import { component_statuses } from "./setup_readiness.mjs";
 
 // User state survives plugin upgrades. Never scan unrelated project directories.
 export function remember_profile(state, root, profile) {
@@ -70,36 +70,14 @@ export function profile_history(state, selectedRoot = null) {
 }
 
 // Passive observation only: no installation, preparation, process launch or MCP probe.
-export async function profile_summary(state, config, profile, readiness = {}, knowledge = null) {
+export async function profile_summary(state, config, profile, readiness = {}, knowledge = null, componentStatuses = null) {
   const root = config.active_project, components = [];
-  const bsl = root && profile.status === "loaded" ? read_component_checks(state, config, profile).find(item => item.id === "bsl-ls" && item.validity === "inputs") : null;
+  const observations = componentStatuses || (root && profile.status === "loaded" ? component_statuses(state, config, profile) : []);
   for (const id of ["code-index", "bsl-ls"]) {
     const options = config.mcp.managed[id];
-    if (id === "bsl-ls" && bsl && options.enabled !== false && options.mode !== "external") {
-      components.push({ id, status: bsl.state, mode: options.mode || "auto", checkedAt: bsl.checkedAt, detail: bsl.detail });
-      continue;
-    }
-    let observationDetail;
-    let status = options.enabled === false ? "disabled" : options.mode === "external" ? "external" : "not_checked";
-    if (id === "code-index" && status === "not_checked" && root && profile.status === "loaded") {
-      const home = path.join(project_directory(state, root), "code-index");
-      try {
-        const { daemon_health } = await import("./runtime.mjs");
-        const health = await daemon_health(home);
-        status = health ? "running" : "not_checked";
-        if (!health) observationDetail = "Не удалось подтвердить доступность процесса индекса.";
-      } catch {
-        // Auxiliary runtime metadata must not block opening valid settings.
-        status = "not_checked";
-        observationDetail = "Не удалось подтвердить доступность процесса индекса.";
-      }
-    }
-    const check = readiness.checks?.find(item => item.id === id);
-    const checked = check && profile.status === "loaded" && status !== "disabled" &&
-      (check.state !== "ready" || id === "bsl-ls" || status === "running" || status === "external");
-    if (checked) status = ["ready", "blocked"].includes(readiness.state) ? check.state : readiness.state === "stale" ? "check_stale" : "not_checked";
-    components.push({ id, status, mode: options.mode || "auto", ...(checked ? { checkedAt: readiness.checkedAt,
-      detail: readiness.state === "stale" ? readiness.reason : check.detail } : observationDetail ? { detail: observationDetail } : {}) });
+    const observation = observations.find(item => item.id === id);
+    components.push({ id, status: observation?.state || "awaiting_observation", mode: options.mode || "auto",
+      ...(observation?.checkedAt ? { checkedAt: observation.checkedAt } : {}), ...(observation?.detail ? { detail: observation.detail } : {}) });
   }
   const observed = ["ready", "blocked"].includes(readiness.state) ? readiness.knowledge : null;
   return { observedAt: new Date().toISOString(), profile: profile.status, components,

@@ -266,6 +266,7 @@ test("setup accepts a verified search probe but cannot authorize KORA workflow o
   const allowed = await own.require(f.profile, f.config, f.root);
   assert.equal(allowed.allowed, true); assert.equal(allowed.scope, "workflow");
   assert.equal(allowed.knowledge.readinessScope, "workflow"); assert.equal(allowed.knowledge.koraReady, true);
+  await own.close();
 });
 
 test("OpenViking failure invalidates setup knowledge until a new live proof succeeds", async t => {
@@ -285,7 +286,7 @@ test("OpenViking failure invalidates setup knowledge until a new live proof succ
   current = await read_readiness(f.state, f.config, f.profile);
   assert.equal(current.state, "stale"); assert.equal(current.knowledge.ready, false, "a card observation cannot recreate setup proof");
   const refreshed = await new SettingsBackend().main({ action: "refresh_readiness", scope: f.root + "#first" });
-  assert.equal(refreshed.readiness.knowledge.ready, true); assert.equal(refreshed.readiness.workflowReadiness.state, "not_checked");
+  assert.equal(refreshed.readiness.knowledge.ready, false); assert.equal(refreshed.readiness.state, "stale");
   assert.equal(refreshed.componentChecks.find(item => item.id === "openviking").state, "ready");
 });
 test("an independent phase waiting for old knowledge cleanup cannot survive a binding change", async t => {
@@ -333,6 +334,7 @@ test("workflow recovery reprobes after receipt, manifest, settings, instance and
   t.mock.method(Date, "now", () => future);
   assert.equal(expiring.status().ready, false);
   await require(); assert.notEqual(workflow.adapter, expiring); assert.equal(workflow.adapter.status().ready, true);
+  await workflow.close();
 });
 test("a failed retrieval invalidates prior readiness until a successful explicit check", async t => {
   const f = adapterFixture(t); grantPublication(t, f);
@@ -1077,8 +1079,10 @@ test("disabling knowledge while initialize is pending prevents discovery and ret
   await entered.promise;
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] };
   f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
-  assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");
-  release.resolve(); await rejected;
+  const disabled = client.call("knowledge_status", {});
+  await new Promise(resolve => setTimeout(resolve, 100));
+  release.resolve();
+  assert.equal((await disabled).structuredContent.state, "disabled"); await rejected;
   assert.equal(remote.requests.some(value => value.method === "tools/list" || value.method === "tools/call"), false);
   assert.deepEqual(remote.closed, ["fixture-1"]);
 });

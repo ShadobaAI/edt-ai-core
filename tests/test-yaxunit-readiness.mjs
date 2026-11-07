@@ -41,6 +41,7 @@ async function fixture(t) {
     if (message.method === "tools/list") {
       if (req.url === "/index") return reply({ tools: [{ name: "health", inputSchema: schema() }] });
       if (req.url === "/bsl") return reply({ tools: [...["register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder"].map(name => ({ name, inputSchema: schema() })), { name: "analyze", inputSchema: schema({ workspaceFolder: { type: "string" } }, ["workspaceFolder"]) }] });
+      if (req.url === "/v8std") return reply({ tools: [{ name: "standards_search", inputSchema: schema({ query: { type: "string" } }, ["query"]) }, { name: "standards_read", inputSchema: schema({ id: { type: "string" } }, ["id"]) }, ...[["standards_snippet", "snippet", "string"], ["standards_context", "context", "string"], ["standards_diagnostics", "codes", "array"]].map(([name, field, type]) => ({ name, inputSchema: schema({ [field]: { type, ...(type === "array" ? { items: { type: "string" } } : {}) } }, [field]) }))] });
       return reply({ tools: data.tools });
     }
     const { name, arguments: args } = message.params;
@@ -50,6 +51,10 @@ async function fixture(t) {
     const result = name === "list_projects" ? { projects: data.projects } : name === "list_configurations" ? { configurations: data.configurations, count: data.configurations.length } : data.applications[args.projectName];
     reply(data.text ? { content: [{ type: "text", text: JSON.stringify(result) }] } : { structuredContent: result });
   });
+  // A slow mounted test workspace can stall this in-process HTTP fixture past
+  // Node's default keep-alive timeout; keep the fixture connection stable and
+  // close every socket explicitly in the teardown below.
+  server.keepAliveTimeout = 120000; server.headersTimeout = 125000;
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   t.after(() => { server.closeAllConnections(); return new Promise(done => server.close(done)); });
   const backend = new SettingsBackend();
@@ -155,6 +160,11 @@ test("YaXUnit requires every owner, framework and product EDT assignment even wh
 
 test("full setup preserves independent main, EDT and test readiness with an optional closed test project", async t => {
   const x = await fixture(t), directory = path.join(x.f.root, "Tests"); fs.mkdirSync(directory);
+  const fetch = globalThis.fetch, fetchFailures = [];
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    try { return await fetch(...args); }
+    catch (error) { fetchFailures.push({ code: error.code || null, cause: error.cause?.code || null }); throw error; }
+  });
   fs.writeFileSync(path.join(directory, ".project"), "<projectDescription><name>Tests</name></projectDescription>");
   x.f.profile.repositories.push({ id: "tests", path: "Tests", alias: "tests", edt_project: "Tests", edt_required: false });
   Object.assign(x.f.profile.testing.yaxunit_config, { repository_id: "tests", product_repository_ids: ["product"] }); x.f.save();
@@ -169,6 +179,7 @@ test("full setup preserves independent main, EDT and test readiness with an opti
   const closed = await check();
   assert.equal(closed.fullReadiness, "not_ready"); assert.equal(closed.readiness.state, "blocked");
   assert.deepEqual(closed.readiness.mainReadiness, { scope: "setup_main", state: "ready" });
+  assert.equal(closed.componentChecks.find(item => item.id === "bsl-ls").state, "ready");
   assert.equal(closed.readiness.workflowReadiness.state, "not_checked");
   assert.equal(closed.componentChecks.find(item => item.id === "edt").state, "ready");
   assert.equal(closed.componentChecks.find(item => item.id === "code-index").state, "ready", "closed projects remain in the independent index check");
@@ -180,20 +191,29 @@ test("full setup preserves independent main, EDT and test readiness with an opti
   await x.backend.main({ action: "refresh_readiness", component: "edt", scope: x.f.root + "#first" });
   const observed = (await x.backend.main({ action: "read" })).readiness;
   assert.equal(observed.state, "blocked"); assert.equal(observed.mainReadiness.state, "blocked");
-  assert.equal(observed.checks.find(item => item.id === "edt").state, "building");
+  const observedEdt = observed.checks.find(item => item.id === "edt");
+  assert.equal(observedEdt.state, "building", JSON.stringify({ observedEdt, fetchFailures }));
   assert.equal(observed.checkedAt, closed.readiness.checkedAt); assert.equal(observed.expiresAt, closed.readiness.expiresAt);
   const building = await check();
   assert.equal(building.componentChecks.find(item => item.id === "edt").state, "building");
   assert.equal(building.readiness.mainReadiness.state, "blocked");
   project.state = "ready";
   await x.probe();
-  assert.equal((await x.backend.main({ action: "read" })).readiness.mainReadiness.state, "blocked", "test readiness must not replace an unready EDT check");
+  const pendingEdt = (await x.backend.main({ action: "read" })).readiness;
+  assert.equal(pendingEdt.mainReadiness.state, "blocked");
+  assert.equal(pendingEdt.checks.find(item => item.id === "edt").state, "building", "test readiness must not replace an unready EDT check");
+  const pendingYaxunit = pendingEdt.checks.find(item => item.id === "yaxunit");
+  assert.equal(pendingYaxunit.state, "ready", JSON.stringify({ pendingYaxunit, fetchFailures }));
   await x.backend.main({ action: "refresh_readiness", component: "edt", scope: x.f.root + "#first" });
   const opened = (await x.backend.main({ action: "read" })).readiness;
   assert.equal(opened.state, "ready"); assert.equal(opened.mainReadiness.state, "ready");
+  assert.equal(opened.checks.find(item => item.id === "edt").state, "ready");
+  const openedYaxunit = opened.checks.find(item => item.id === "yaxunit");
+  assert.equal(openedYaxunit.state, "ready", JSON.stringify({ openedYaxunit, fetchFailures }));
   assert.equal(opened.expiresAt, building.readiness.expiresAt);
   const ready = await check();
   assert.equal(ready.fullReadiness, "verified"); assert.equal(ready.readiness.state, "ready"); assert.equal(ready.readiness.mainReadiness.state, "ready");
+  assert.equal(ready.componentChecks.find(item => item.id === "edt").state, "ready");
   assert.equal(ready.componentChecks.find(item => item.id === "yaxunit").state, "ready");
 });
 
@@ -332,7 +352,7 @@ test("a late all-component refresh cannot overwrite a newer addressed YaXUnit re
   const pending = x.backend.main({ action: "refresh_readiness", scope: x.f.root + "#first" }); await waiting;
   x.data.configurations = []; x.data.applications.Product = { project: "Product", applications: [] };
   const newer = (await x.probe()).componentChecks[0]; assert.equal(newer.reasonCode, "launch_required");
-  release(); assert.equal((await pending).superseded, true);
+  release(); const older = await pending; assert.equal(older.superseded, false); assert.ok(older.supersededComponents.includes("yaxunit"));
   const saved = (await x.backend.main({ action: "read" })).componentChecks.find(item => item.id === "yaxunit");
   assert.equal(saved.reasonCode, "launch_required"); assert.equal(saved.checkedAt, newer.checkedAt);
 });
@@ -351,7 +371,16 @@ for (const olderAction of ["probe", "refresh_readiness", "check"]) for (const ol
     olderAction === "probe" ? { component: "yaxunit" } : olderAction === "check" ? { authorization: { scope: x.f.root + "#first", effects: ["launch"], evidence: "isolated concurrency fixture" } } : { scope: x.f.root + "#first" })).structuredContent;
   await entered[0].promise;
   x.data.configurations = []; x.data.applications.Product = { project: "Product", applications: [], count: 0 };
-  const newer = (await b.call("settings.probe_connections", { component: "yaxunit" })).structuredContent; await entered[1].promise;
+  const newer = (await b.call("settings.probe_connections", { component: "yaxunit" })).structuredContent;
+  if (olderAction !== "refresh_readiness") {
+    const rejected = (await b.call("settings.operation", { operationId: newer.id, waitMs: 10000 })).structuredContent;
+    assert.equal(rejected.status, "failed"); assert.equal(count, 1, "a second foreground backend must not start");
+    gates[0].resolve();
+    const completed = (await a.call("settings.operation", { operationId: old.id, waitMs: 10000 })).structuredContent;
+    assert.equal(completed.status, "completed");
+    return;
+  }
+  await entered[1].promise;
   const complete = async (client, job, index) => {
     gates[index].resolve();
     const operation = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
@@ -360,12 +389,16 @@ for (const olderAction of ["probe", "refresh_readiness", "check"]) for (const ol
   let oldResult, newerResult, saved;
   if (olderFirst) { oldResult = await complete(a, old, 0); newerResult = await complete(b, newer, 1); }
   else { newerResult = await complete(b, newer, 1); saved = fs.readFileSync(x.receipt()); oldResult = await complete(a, old, 0); }
-  assert.equal(oldResult.superseded, true); assert.equal(newerResult.superseded, false);
+  if (olderAction === "refresh_readiness") {
+    assert.equal(oldResult.superseded, false); assert.ok(oldResult.supersededComponents.includes("yaxunit"));
+  } else assert.equal(oldResult.superseded, true);
+  assert.equal(newerResult.superseded, false);
   assert.equal(newerResult.componentChecks[0].reasonCode, "launch_required");
   const cached = (await x.backend.main({ action: "read" })).componentChecks.find(item => item.id === "yaxunit");
   assert.equal(cached.state, "not_verified"); assert.equal(cached.reasonCode, "launch_required");
   assert.equal(cached.checkedAt, newerResult.componentChecks[0].checkedAt);
-  if (saved) assert.deepEqual(fs.readFileSync(x.receipt()), saved, "late results must not replace or renew newer evidence");
+  if (saved && olderAction === "refresh_readiness") assert.deepEqual(JSON.parse(fs.readFileSync(x.receipt())).components.yaxunit, JSON.parse(saved).components.yaxunit, "independent components may merge without changing newer YaXUnit evidence");
+  else if (saved) assert.deepEqual(fs.readFileSync(x.receipt()), saved, "late results must not replace or renew newer evidence");
 });
 
 test("concurrent checks of different components merge without discarding either result", async t => {
@@ -394,7 +427,7 @@ for (const change of ["profile", "edt_required", "connection", "project", "insta
   if (change === "instance") process.env.EDT_AI_INSTANCE = "another";
   if (change === "receipt") { const receipt = JSON.parse(before); receipt.newerOperation = "retained"; fs.writeFileSync(x.receipt(), JSON.stringify(receipt)); }
   release(); const result = await pending;
-  assert.equal(result.superseded, true); assert.equal(result.instance, "first");
+  assert.equal(result.superseded, change !== "receipt"); assert.equal(result.instance, "first");
   if (change !== "receipt") assert.deepEqual(fs.readFileSync(x.receipt()), before);
   else assert.equal(JSON.parse(fs.readFileSync(x.receipt())).newerOperation, "retained");
 });
@@ -408,19 +441,24 @@ test("expiry and profile changes invalidate green evidence without renewing it",
   check = (await x.backend.main({ action: "read" })).componentChecks[0]; assert.equal(check.state, "check_stale"); assert.equal(check.target, undefined);
 });
 
-test("YaXUnit blocks full readiness until its addressed check succeeds, and partial checks preserve full receipt expiry", async t => {
-  const x = await fixture(t), config = x.backend.effective(x.backend.current());
+test("YaXUnit updates its own setup evidence while partial checks preserve receipt expiry", async t => {
+  const x = await fixture(t), selected = x.backend.current();
+  Object.assign(selected.mcp.managed["bsl-ls"], { mode: "external", url: "http://127.0.0.1:1" });
+  fs.writeFileSync(x.f.env.EDT_AI_SETTINGS, JSON.stringify(selected));
+  const config = x.backend.effective(x.backend.current());
   const managed = ["code-index", "bsl-ls", "policy"].map(name => ({ name, ready: true, state: "ready" }));
   const full = save_readiness(x.f.state, config, project_profile(x.f.root), managed, { edt: { ready: true }, v8std: { ready: true } });
   assert.equal(full.state, "blocked");
-  await x.probe(); let read = await x.backend.main({ action: "read" }); assert.equal(read.readiness.state, "ready"); assert.equal(read.readiness.expiresAt, full.expiresAt); assert.equal(read.readiness.checkedAt, full.checkedAt);
+  await x.probe(); let read = await x.backend.main({ action: "read" }); assert.equal(read.readiness.state, "blocked");
+  assert.equal(read.readiness.checks.find(item => item.id === "yaxunit").state, "ready"); assert.equal(read.readiness.expiresAt, full.expiresAt); assert.equal(read.readiness.checkedAt, full.checkedAt);
   x.data.configurations = []; x.data.applications.Product.applications = []; x.data.applications.Product.count = 0;
   await x.probe(); read = await x.backend.main({ action: "read" }); assert.equal(read.readiness.state, "blocked"); assert.equal(read.readiness.checks.find(item => item.id === "yaxunit").reasonCode, "launch_required");
   x.f.profile.testing.yaxunit = false; x.f.save();
-  assert.equal(save_readiness(x.f.state, x.backend.effective(x.backend.current()), project_profile(x.f.root), managed, { edt: { ready: true }, v8std: { ready: true } }).state, "ready");
+  const disabled = save_readiness(x.f.state, x.backend.effective(x.backend.current()), project_profile(x.f.root), managed, { edt: { ready: true }, v8std: { ready: true } });
+  assert.equal(disabled.state, "blocked"); assert.equal(disabled.checks.find(item => item.id === "yaxunit").state, "disabled");
 });
 
-test("the full setup operation includes YaXUnit and reaches ready without executing a test runner", async t => {
+test("the full setup operation checks YaXUnit without executing a test runner", async t => {
   const x = await fixture(t);
   const config = x.backend.current(), base = new URL(x.backend.effective(config).mcp.required.edt.url).origin;
   for (const [id, endpoint] of [["code-index", "/index"], ["bsl-ls", "/bsl"]]) Object.assign(config.mcp.managed[id], { enabled: true, mode: "external", url: base + endpoint });
@@ -428,6 +466,7 @@ test("the full setup operation includes YaXUnit and reaches ready without execut
   await x.backend.main({ action: "update", set: { codeIndexEnabled: true, bslLsEnabled: true, v8stdUrl: base + "/v8std" } });
   const result = await x.backend.main({ action: "check", authorization: { scope: x.f.root + "#first", effects: ["launch"], evidence: "isolated setup fixture" } });
   assert.equal(result.readiness.state, "ready"); assert.equal(result.componentChecks.find(item => item.id === "yaxunit").state, "ready");
+  assert.equal(result.componentChecks.find(item => item.id === "bsl-ls").state, "ready");
   assert.equal((await x.backend.main({ action: "read" })).readiness.state, "ready");
   assert.ok(x.calls.filter(item => item.method === "tools/call").every(item => ["list_projects", "list_configurations", "get_applications", "health"].includes(item.params.name)));
   assert.equal(x.calls.filter(item => item.method === "tools/call" && item.params.name === "list_projects").length, 1, "the full check must reuse EDT inventory");

@@ -71,11 +71,11 @@ test("addressed external probe contacts only its endpoint and preserves a full s
   const backend = new SettingsBackend(), config = backend.effective(backend.current());
   const setup = save_readiness(f.state, config, project_profile(f.root), [{ name: "bsl-ls", ready: false, state: "error", detail: "BSL error" }], {});
   const result = await backend.main({ action: "probe", component: "v8std" });
-  assert.equal(result.componentChecks[0].state, "ready", JSON.stringify(result));
+  assert.equal(result.componentChecks[0].state, "not_verified", JSON.stringify(result));
   assert.ok(requests.length > 0); assert.ok(requests.every(item => item.path === "/v8std"));
   let current = await backend.main({ action: "read" });
   assert.equal(current.readiness.state,setup.state);assert.equal(current.readiness.checkedAt,setup.checkedAt);assert.equal(current.readiness.expiresAt,setup.expiresAt);
-  assert.equal(current.componentChecks.find(item=>item.id==="v8std").state, "ready");
+  assert.equal(current.componentChecks.find(item=>item.id==="v8std").state, "not_verified");
   const saved = current.componentChecks.find(item=>item.id==="v8std");
   const draft = await backend.main({ action: "probe", component: "v8std", connections: { v8std: "" } });
   assert.equal(draft.draft, true); assert.equal(draft.componentChecks[0].state, "missing_config");
@@ -129,6 +129,7 @@ test("external managed probes use the existing smoke gate only for the selected 
     requests.length = 0;
     const result = await backend.main({ action: "probe", component });
     assert.deepEqual(result.componentChecks.map(item => [item.id, item.state]), [[component, "ready"]], JSON.stringify(result));
+    if (component === "bsl-ls") { assert.equal(result.componentChecks[0].apiEvidenceVersion, 1); assert.match(result.componentChecks[0].detail, /JAR, Java и применённая конфигурация удалённого сервера не проверялись/); }
     assert.ok(requests.length); assert.ok(requests.every(([url]) => url === "/" + component));
     assert.equal((await backend.main({ action: "read" })).componentChecks.find(item => item.id === component).state, "ready");
   }
@@ -141,8 +142,8 @@ test("local checks retain successful API evidence and do not treat an old error 
   for (const state of ["ready", "error"]) {
     const saved = save_component_checks(f.state, config, profile, [{ id: "bsl-ls", state, detail: "Последняя проверка", checkedAt: new Date(Date.now() - 1000).toISOString() }])[0];
     const checked = (await backend.main({ action: "probe", component: "bsl-ls" })).componentChecks[0];
-    assert.equal(checked.state, state === "ready" ? "ready" : "not_verified");
-    if (state === "ready") { assert.equal(checked.checkedAt, saved.checkedAt); assert.equal(checked.expiresAt, saved.expiresAt); }
+    assert.equal(checked.state, "not_verified");
+    if (state === "ready") { assert.notEqual(checked.apiCompatible, true); assert.equal(checked.apiEvidenceVersion, undefined); }
   }
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
 });
@@ -204,13 +205,13 @@ test("settings can be saved during background readiness without publishing the o
 test("an unavailable managed index does not make the saved check stale or claim readiness", async t => {
   const f=fixture(t);environment(t,f.env);f.save();
   const backend=new SettingsBackend(),config=backend.effective(backend.current());
+  config.mcp.managed["bsl-ls"].mode="external";
   const managed=[{name:"code-index",ready:true,state:"ready"},{name:"bsl-ls",ready:true,state:"ready"},{name:"policy",ready:true,state:"ready"}];
   const external={edt:{configured:true,connected:true,ready:true},v8std:{configured:true,connected:true,ready:true}};
-  assert.equal(save_readiness(f.state,config,f.profile,managed,external).state,"ready");
+  assert.equal(save_readiness(f.state,config,f.profile,managed,external).state,"blocked");
   const current=await backend.main({action:"status"});
-  assert.equal(current.readiness.state,"blocked");
-  assert.equal(current.readiness.checks.find(item=>item.id==="code-index").state,"not_checked");
-  assert.equal(current.summary.components.find(item=>item.id==="code-index").status,"not_checked");
+  assert.equal(current.summary.components.find(item=>item.id==="code-index").status,"awaiting_observation");
+  assert.equal(current.componentStatuses.find(item=>item.id==="code-index").state,"awaiting_observation");
 });
 
 test("profile status restores both managed checks and expires their scoped evidence", async t => {
@@ -230,24 +231,21 @@ test("profile status restores both managed checks and expires their scoped evide
   for (const action of ["read", "status"]) {
     const current = await backend.main({ action });
     assert.deepEqual(current.readiness.checks.find(item => item.id === "code-index").repositories, managed[0].repositories);
-    for (const id of ["code-index", "bsl-ls"]) {
-      const item = current.summary.components.find(item => item.id === id);
-      assert.equal(item.status, "ready");
-      assert.equal(item.checkedAt, saved.checkedAt);
-    }
+    assert.equal(current.summary.components.find(item => item.id === "code-index").status, "awaiting_observation");
+    assert.equal(current.summary.components.find(item => item.id === "bsl-ls").status, "missing");
   }
   process.env.EDT_AI_INSTANCE = "another";
   await backend.main({ action: "update", set: { bslLsEnabled: true } });
-  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "not_checked");
+  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "missing");
   process.env.EDT_AI_INSTANCE = f.env.EDT_AI_INSTANCE;
   fs.rmSync(metadata);
-  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "code-index").status, "not_checked");
+  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "code-index").status, "awaiting_observation");
   f.profile.project.id = "changed"; f.save();
-  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "ready");
+  assert.equal((await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls").status, "missing");
   managed[1] = { name: "bsl-ls", ready: false, state: "error", detail: "API unavailable" };
   save_readiness(f.state, config, project_profile(f.root), managed, {});
   const failed = (await backend.main({ action: "read" })).summary.components.find(item => item.id === "bsl-ls");
-  assert.equal(failed.status, "error"); assert.equal(failed.detail, "API unavailable");
+  assert.equal(failed.status, "missing"); assert.match(failed.detail, /JAR BSL LS отсутствует/);
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
 });
 
@@ -275,10 +273,10 @@ test("loading settings returns fresh service status without a separate status re
   const f = fixture(t); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
   const initial = (await client.call("settings.read", {})).structuredContent;
-  assert.equal(initial.summary?.components.find(item => item.id === "code-index")?.status, "not_checked");
+  assert.equal(initial.summary?.components.find(item => item.id === "code-index")?.status, "awaiting_observation");
   assert.equal(initial.values.codeIndexEnabled, true);
   assert.equal(initial.values.bslLsEnabled, true);
-  assert.equal(initial.summary.components.find(item => item.id === "bsl-ls").status, "not_checked");
+  assert.equal(initial.summary.components.find(item => item.id === "bsl-ls").status, "missing");
   assert.equal(fs.existsSync(path.join(f.state, "projects")), false);
   const requests = [];
   const server = createServer((req, res) => {
@@ -292,7 +290,7 @@ test("loading settings returns fresh service status without a separate status re
   fs.writeFileSync(path.join(home, "daemon.json"), JSON.stringify({ pid: process.pid, http_port: server.address().port }));
   for (const name of ["settings.read", "settings.open", "settings.profile"]) {
     const current = (await client.call(name, {})).structuredContent;
-    assert.equal(current.summary.components.find(item => item.id === "code-index").status, "running", name);
+    assert.equal(current.summary.components.find(item => item.id === "code-index").status, "awaiting_observation", name);
     assert.ok(Number.isFinite(Date.parse(current.summary.observedAt)));
     assert.equal(current.readiness.state, "not_checked");
     assert.equal(current.operation.status, "idle");
@@ -300,8 +298,8 @@ test("loading settings returns fresh service status without a separate status re
   await client.call("settings.load", {});
   fs.rmSync(path.join(home, "daemon.json"));
   const reloaded = (await client.call("settings.read", {})).structuredContent;
-  assert.equal(reloaded.summary.components.find(item => item.id === "code-index").status, "not_checked");
-  assert.deepEqual(requests, ["/health", "/health", "/health"]);
+  assert.equal(reloaded.summary.components.find(item => item.id === "code-index").status, "awaiting_observation");
+  assert.deepEqual(requests, []);
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
 });
 
@@ -318,7 +316,7 @@ test("unavailable daemon metadata does not prevent loading a valid profile or it
       assert.equal(current.profile.status, "loaded", name);
       assert.notEqual(current.configurationError, true);
       assert.equal(current.values.projectRoot, f.root);
-      assert.equal(current.summary?.components.find(item => item.id === "code-index")?.status, "not_checked");
+      assert.equal(current.summary?.components.find(item => item.id === "code-index")?.status, "awaiting_observation");
       assert.equal(current.operation.status, "idle");
     }
   }
@@ -360,12 +358,12 @@ test("history selection previews another project without rebinding the chat or l
   const client=await session(t,"mcp/settings.mjs",[],f);
   const preview=(await client.call("settings.select_profile",{projectRoot:other})).structuredContent;
   assert.equal(preview.viewOnly,true);assert.equal(preview.profile.projectId,"other");
-  assert.equal(preview.summary?.components.find(item=>item.id==="code-index")?.status,"not_checked");
+  assert.equal(preview.summary?.components.find(item=>item.id==="code-index")?.status,"awaiting_observation");
   assert.equal(preview.chatProjectRoot,f.root);
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   const status=(await client.call("settings.status",{projectRoot:other})).structuredContent;
   assert.equal(status.viewOnly,true);assert.equal(status.values.projectRoot,other);
-  assert.equal(status.summary.components.find(item=>item.id==="code-index").status,"not_checked");
+  assert.equal(status.summary.components.find(item=>item.id==="code-index").status,"awaiting_observation");
   const document=await client.call("settings.document",{projectRoot:other});
   assert.equal(document.structuredContent,undefined);
   assert.equal(parse(document._meta.data.text).project.id,"other");
@@ -432,7 +430,7 @@ test("an unbound settings window selects a profile explicitly and remembers it w
   f.clients.push(client);client.roots=[];await client.initialize();
   const selected=(await client.call("settings.select_profile",{projectRoot:f.root})).structuredContent;
   assert.equal(selected.viewOnly,false);assert.equal(selected.values.projectRoot,f.root);
-  assert.equal(selected.summary?.components.find(item=>item.id==="code-index")?.status,"not_checked");
+  assert.equal(selected.summary?.components.find(item=>item.id==="code-index")?.status,"awaiting_observation");
   assert.equal((await client.call("settings.read",{})).structuredContent.values.projectRoot,f.root);
   assert.equal(profile_history(f.state).length,1);
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS),false);

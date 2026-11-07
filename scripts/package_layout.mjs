@@ -29,6 +29,9 @@ export const FILES = [
   "vendor/NOTICE.txt",
   "vendor/native/win32_x64/koffi.node",
   "vendor/native/win32_arm64/koffi.node",
+  "vendor/native/linux_x64/koffi.node",
+  "vendor/native/musl_x64/koffi.node",
+  "vendor/native/darwin_arm64/koffi.node",
   ...[
     "README",
     "ARCHITECTURE",

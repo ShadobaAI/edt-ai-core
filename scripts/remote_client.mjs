@@ -1,5 +1,5 @@
 import { object } from "./common.mjs";
-import { json_message, response_json, DEFAULT_MAX_BYTES } from "./mcp_codec.mjs";
+import { json_message, response_json, DEFAULT_MAX_BYTES, wait_with_abort } from "./mcp_codec.mjs";
 import { core_version } from "./compatibility.mjs";
 export class RemoteRpcError extends Error {
   constructor(error) {
@@ -81,6 +81,9 @@ export class RemoteMcp {
     this.tool_headers = new Map();
     this.activeRequests = new Set();
     this.generation = 0;
+    this.closing = null;
+    this.accepting = true;
+    this.initializationUncertain = false;
   }
   result(message) {
     if (message.error) throw new RemoteRpcError(message.error);
@@ -99,6 +102,7 @@ export class RemoteMcp {
     }));
   }
   async send(payload, expect_reply = true, onDispatch) {
+    if (!this.accepting) throw new Error("MCP connection is closed; initialize a new connection before sending");
     this.options.beforeRequest?.(payload);
     const modern = this.protocol === RemoteMcp.MODERN_PROTOCOL;
     const headers = {
@@ -154,17 +158,24 @@ export class RemoteMcp {
     if (payload.method === "initialize") delete headers["MCP-Protocol-Version"];
     const body = JSON.stringify(wire);
     onDispatch?.();
+    if (!this.accepting) throw new Error("MCP connection is closed; request was not sent");
     const active = { controller: new AbortController(), method: payload.method, closeTimer: null };
     this.activeRequests.add(active);
-    return this.exchange(payload, body, headers, modern, expect_reply, active.controller)
+    const signal = AbortSignal.any([active.controller.signal, AbortSignal.timeout(this.timeout)]);
+    active.settled = this.exchange(payload, body, headers, modern, expect_reply, signal)
+      .catch(error => {
+        if (payload.method === "initialize" && !this.session) this.initializationUncertain = true;
+        throw error;
+      })
       .finally(() => { clearTimeout(active.closeTimer); this.activeRequests.delete(active); });
+    return active.settled;
   }
-  async exchange(payload, body, headers, modern, expect_reply, controller) {
+  async exchange(payload, body, headers, modern, expect_reply, signal) {
     const response = await fetch(this.url, {
       method: "POST",
       headers,
       body,
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(this.timeout)]),
+      signal,
       redirect: "error",
     });
     if (!response.ok) {
@@ -185,8 +196,10 @@ export class RemoteMcp {
       await response.body?.cancel();
       return {};
     }
-    if ([202, 204].includes(response.status))
+    if ([202, 204].includes(response.status)) {
+      await response.body?.cancel();
       throw new Error("MCP request received no result; outcome unknown");
+    }
     if (response.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "text/event-stream") {
       const message = await response_json(response, this.maxBytes);
       if (message.id !== payload.id)
@@ -228,9 +241,9 @@ export class RemoteMcp {
             if (message.method && Object.hasOwn(message, "id")) {
               if (!this.options.onRequest) throw new Error("This MCP endpoint requires unsupported client callbacks; outcome unknown");
               let reply;
-              try { reply = { result: await this.options.onRequest(message) }; }
+              try { reply = { result: await wait_with_abort(() => this.options.onRequest(message, { signal }), signal) }; }
               catch (error) { reply = { error: { code: error.code || -32603, message: error.message } }; }
-              controller.signal.throwIfAborted();
+              signal.throwIfAborted();
               await this.send({ jsonrpc: "2.0", id: message.id, ...reply }, false);
             } else if (message.method) this.options.onNotification?.(message);
           }
@@ -239,7 +252,7 @@ export class RemoteMcp {
       }
       throw new Error("MCP stream ended before the response; outcome unknown");
     } finally {
-      await reader.cancel().catch(() => {});
+      try { await reader.cancel(); } catch {} finally { reader.releaseLock(); }
     }
   }
   async request(method, params = {}, options = {}) {
@@ -277,6 +290,7 @@ export class RemoteMcp {
     const closing = this.close(), generation = this.generation;
     await closing;
     if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
+    this.accepting = true;
     this.protocol = RemoteMcp.MODERN_PROTOCOL;
     this.sequence = 0;
     try {
@@ -312,12 +326,12 @@ export class RemoteMcp {
         clientInfo: { name: "1c-ai-core", version: core_version },
         capabilities: this.options.capabilities || {},
       });
-      if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
       if (!RemoteMcp.LEGACY_PROTOCOLS.includes(result.protocolVersion))
         throw new RemoteContractError(
           "Invalid legacy MCP negotiated version",
         );
       this.protocol = result.protocolVersion;
+      if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
       await this.notify("notifications/initialized");
       if (generation !== this.generation) throw new Error("MCP connection closed during initialization");
       this.initialization = result;
@@ -327,15 +341,24 @@ export class RemoteMcp {
       throw error;
     }
   }
-  async close() {
+  close() {
     this.generation++;
-    const session = this.session;
-    this.session = null;
+    this.accepting = false;
+    if (this.closing) return this.closing;
+    const closing = this.closeTransport();
+    this.closing = closing;
+    // A failed cleanup is sticky: a second close must not silently report
+    // success or start a new session while the old outcome is unknown.
+    closing.then(() => { if (this.closing === closing) this.closing = null; }, () => {});
+    return closing;
+  }
+  async closeTransport() {
     this.initialization = {};
     this.tool_headers.clear();
     // Ending a local transport does not prove the remote operation was stopped.
     // Abort its HTTP resources while preserving the unknown-outcome semantics.
-    for (const active of this.activeRequests) {
+    const pending = [...this.activeRequests];
+    for (const active of pending) {
       const abort = () => active.controller.abort(Object.assign(new Error("MCP connection closed; pending operation outcome unknown"), { outcomeUnknown: true }));
       if (active.method === "initialize") {
         // A late initialize may establish a server session. Give its response
@@ -346,9 +369,16 @@ export class RemoteMcp {
         }
       } else abort();
     }
+    const results = await Promise.allSettled(pending.map(active => active.settled));
+    const session = this.session;
+    // An unanswered initialize may have created a session without returning
+    // its identifier. Closing the socket cannot prove remote cleanup.
+    if (!session && (this.initializationUncertain || pending.some((active, index) => active.method === "initialize" && results[index].status === "rejected")))
+      throw Object.assign(new Error("Завершение удалённой MCP-сессии не подтверждено после прерванной инициализации."), { outcomeUnknown: true, code: "MCP_CLEANUP_UNKNOWN" });
     if (!session) return;
+    let response;
     try {
-      const response = await fetch(this.url, {
+      response = await fetch(this.url, {
         method: "DELETE",
         headers: {
           ...this.credential_headers(),
@@ -359,6 +389,15 @@ export class RemoteMcp {
         redirect: "error",
       });
       await response.body?.cancel();
-    } catch {}
+      // A proxy or an unsupported DELETE route can also return 404; it does
+      // not by itself attest that this server-side session was destroyed.
+      if (!response.ok)
+        throw Object.assign(new Error("Удалённый MCP не подтвердил завершение сессии (HTTP " + response.status + ")."), { status: response.status });
+      this.session = null;
+    } catch (error) {
+      throw Object.assign(new Error(error.status === 405
+        ? "Удалённый MCP не поддерживает завершение сессии; её освобождение не подтверждено."
+        : "Завершение удалённой MCP-сессии не подтверждено."), { outcomeUnknown: true, code: "MCP_CLEANUP_UNKNOWN", ...(error.status ? { status: error.status } : {}) });
+    }
   }
 }

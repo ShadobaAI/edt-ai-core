@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { sanitize_setup_result, safe_error_message } from "../scripts/diagnostics.mjs";
 import { inside } from "../scripts/common.mjs";
-import { begin_foreground_readiness, activate_foreground_readiness, release_foreground_readiness, capture_readiness_priority } from "../scripts/setup_readiness.mjs";
+import { begin_foreground_readiness, activate_foreground_readiness, retain_foreground_readiness, retain_readiness_scope, release_foreground_readiness, assert_readiness_cleanup_known, capture_readiness_priority, capture_component_flights } from "../scripts/setup_readiness.mjs";
 import { path_identity } from "../scripts/project_paths.mjs";
 
 // A transport deadline is not cancellation. Keep ownership and the eventual
@@ -17,9 +17,15 @@ export class SettingsOperations {
     this.background = null;
     this.lastCompleted = null;
     this.stateDirectory = stateDirectory;
+    this.observerSession = randomUUID();
+    this.closing = false;
+    this.unconfirmed = false;
   }
 
   start(action, args, context) {
+    if (this.closing) throw new Error("Сеанс настроек завершён; новая операция не запущена.");
+    if (this.unconfirmed && ["probe", "check", "refresh_readiness"].includes(action))
+      throw Object.assign(new Error("Завершение предыдущей проверки не подтверждено; новая проверка заблокирована."), { outcomeUnknown: true });
     const background = action === "refresh_readiness";
     const overlap = background && ["rebuild_index", "restart_index", "updates", "check"].includes(this.active?.action);
     if (this.active?.status === "running" && !overlap || (background && this.background?.status === "running")) {
@@ -30,7 +36,7 @@ export class SettingsOperations {
     // process scheduling cannot let it steal the foreground's tickets.
     const sameBackgroundScope = !this.background?.projectRoot || !context.projectRoot || path_identity(this.background.projectRoot) === path_identity(context.projectRoot);
     const sameBackgroundInstance = !this.background?.instance || !context.instance || this.background.instance === context.instance;
-    if (!background && this.stateDirectory && this.background?.status === "running" && sameBackgroundScope && sameBackgroundInstance) {
+    if (!background && !(action === "probe" && args.component) && this.stateDirectory && this.background?.status === "running" && sameBackgroundScope && sameBackgroundInstance) {
       const marker = inside(this.stateDirectory, path.join(".settings-refresh-cancel", this.background.id));
       fs.mkdirSync(path.dirname(marker), { recursive: true });
       fs.writeFileSync(marker, "cancelled", { mode: 0o600 });
@@ -38,7 +44,9 @@ export class SettingsOperations {
     const job = { id: randomUUID(), action, ...context, ...(["probe", "refresh_readiness"].includes(action) && args.component ? { component: args.component } : {}),
       ...(["rebuild_index", "restart_index"].includes(action) ? { component: "code-index", ...(args.all === true ? { all: true } : {}) } : {}), status: "running", startedAt: new Date().toISOString() };
     const scope = this.stateDirectory && context.projectRoot && context.instance ? { root: path_identity(context.projectRoot), instance: context.instance } : null;
+    if (scope && ["probe", "check", "refresh_readiness"].includes(action)) assert_readiness_cleanup_known(this.stateDirectory, scope.root, scope.instance);
     const priority = background && scope ? { ...scope, ...capture_readiness_priority(this.stateDirectory, scope.root, scope.instance) } : null;
+    const observedFlights = background && scope ? capture_component_flights(this.stateDirectory, scope.root) : null;
     const foregroundLease = !background && scope && ["check", "probe"].includes(action)
       ? begin_foreground_readiness(this.stateDirectory, scope.root, scope.instance, job.id) : null;
     this.observe("operation_started", { id: job.id, action, ...context });
@@ -60,12 +68,41 @@ export class SettingsOperations {
     };
     // A full preparation owns its tickets until it completes. Parallel UI
     // refreshes are observations only, so they cannot supersede that result.
-    const runArgs = background ? { ...args, ...(this.stateDirectory ? { dispatchId: job.id } : {}), ...(priority ? { priority } : {}),
+    const runArgs = background ? { ...args, observedFlights: observedFlights || undefined, ...(this.stateDirectory ? { dispatchId: job.id, observerSession: this.observerSession } : {}), ...(priority ? { priority } : {}),
       ...(this.active?.status === "running" && this.active.action === "check" ? { transient: true } : {}) } : args;
     let foregroundOwner;
     job.finished = Promise.resolve().then(async () => {
-      if (foregroundLease) foregroundOwner = await activate_foreground_readiness(this.stateDirectory, scope.root, scope.instance, foregroundLease, job.id);
-      return this.run(action, runArgs, context, progress);
+      let result, failure;
+      try {
+        if (this.closing) throw new Error("Сеанс настроек завершён.");
+        if (foregroundLease) foregroundOwner = await activate_foreground_readiness(this.stateDirectory, scope.root, scope.instance, foregroundLease, job.id);
+        if (this.closing) throw new Error("Сеанс настроек завершён.");
+        result = await this.run(action, runArgs, context, progress);
+      } catch (error) { failure = error; }
+      let cleanupFailure;
+      if (background && this.stateDirectory) try {
+        const marker = inside(this.stateDirectory, path.join(".settings-refresh-cancel", job.id));
+        fs.rmSync(marker, { force: true });
+        try { fs.rmdirSync(path.dirname(marker)); } catch (error) { if (!["ENOENT", "ENOTEMPTY"].includes(error.code)) throw error; }
+      } catch (error) { cleanupFailure = error; }
+      if (foregroundLease) {
+        if (failure?.markerChanged && !foregroundOwner) cleanupFailure ||= new Error("Маркер проверки изменился; его очистка не подтверждена.");
+        else {
+          // Persist the barrier before closing the listener, so a lost callback
+          // cannot leave an inactive-looking marker in another session.
+          if (!retain_foreground_readiness(this.stateDirectory, foregroundLease, job.id))
+            cleanupFailure ||= new Error("Не удалось сохранить барьер незавершённой проверки.");
+          try { await foregroundOwner?.close(); } catch (error) { cleanupFailure ||= error; }
+          if (!cleanupFailure && !failure?.outcomeUnknown && !release_foreground_readiness(this.stateDirectory, foregroundLease))
+            cleanupFailure = new Error("Не удалось освободить маркер проверки готовности.");
+        }
+      }
+      if (cleanupFailure) {
+        this.observe("operation_cleanup_failed", { id: job.id, action, projectRoot: job.projectRoot, error: cleanupFailure }, "error");
+        throw Object.assign(new Error("Завершение ресурсов операции не подтверждено; проверьте состояние перед повтором."), { outcomeUnknown: true, cause: cleanupFailure });
+      }
+      if (failure) throw failure;
+      return result;
     }).then(
       result => {
         if (["probe", "check", "refresh_readiness"].includes(action)) result = sanitize_setup_result(result);
@@ -78,26 +115,32 @@ export class SettingsOperations {
       },
       error => {
         job.status = error.outcomeUnknown ? "outcome_unknown" : "failed";
+        if (error.outcomeUnknown) {
+          this.unconfirmed = true;
+          if (scope && !foregroundLease && !retain_readiness_scope(this.stateDirectory, scope.root, scope.instance, job.id))
+            this.observe("operation_barrier_failed", { id: job.id, action, projectRoot: job.projectRoot }, "error");
+        }
         job.error = safe_error_message(error);
         job.completedAt = new Date().toISOString(); this.lastCompleted = job;
         this.observe("operation_" + job.status, { id: job.id, action, projectRoot: job.projectRoot, error }, "error");
       },
-    ).finally(async () => {
-      if (background && this.stateDirectory) try { const marker = inside(this.stateDirectory, path.join(".settings-refresh-cancel", job.id)); fs.rmSync(marker, { force: true }); try { fs.rmdirSync(path.dirname(marker)); } catch {} } catch { /* The finished job must keep its result if cleanup fails. */ }
-      if (foregroundLease) {
-        try { await foregroundOwner?.close(); } catch { /* The completed operation no longer needs its listener. */ }
-        const release = () => { if (!release_foreground_readiness(this.stateDirectory, foregroundLease)) { const timer = setTimeout(release, 1000); timer.unref?.(); } };
-        release();
-      }
-    });
+    );
     return job;
   }
 
   async execute(action, args, context) {
     const job = this.start(action, args, context);
     await job.finished;
-    if (job.status !== "completed") throw new Error(job.error);
+    if (job.status !== "completed") throw Object.assign(new Error(job.error), { outcomeUnknown: job.status === "outcome_unknown" });
     return job.result;
+  }
+
+  async shutdown() {
+    this.closing = true;
+    const active = [this.active, this.background].filter(job => job?.status === "running");
+    await Promise.all(active.map(job => job.finished));
+    if (this.unconfirmed || active.some(job => job.status === "outcome_unknown"))
+      throw Object.assign(new Error("Завершение операции настроек не подтверждено."), { outcomeUnknown: true });
   }
 
   async wait(id, waitMs) {

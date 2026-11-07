@@ -79,11 +79,16 @@ function windowsAPI() {
     exitCode: kernel.func(
       "int __stdcall GetExitCodeProcess(void *handle, _Out_ uint32_t *code)",
     ),
+    waitSingle: kernel.func("uint32_t __stdcall WaitForSingleObject(void *handle, uint32_t milliseconds)"),
+    handleCount: kernel.func(
+      "int __stdcall GetProcessHandleCount(void *handle, _Out_ uint32_t *count)",
+    ),
     open: kernel.func(
       "void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)",
     ),
     close: kernel.func("int __stdcall CloseHandle(void *handle)"),
     error: kernel.func("uint32_t __stdcall GetLastError()"),
+    setError: kernel.func("void __stdcall SetLastError(uint32_t code)"),
     image: kernel.func(
       "int __stdcall QueryFullProcessImageNameW(void *handle, uint32_t flags, _Out_ uint16_t *buffer, _Inout_ uint32_t *size)",
     ),
@@ -102,8 +107,80 @@ function windowsAPI() {
     assignJob: kernel.func(
       "int __stdcall AssignProcessToJobObject(void *job, void *process)",
     ),
+    openJob: kernel.func(
+      "void * __stdcall OpenJobObjectW(uint32_t access, int inherit, const uint16_t *name)",
+    ),
+    queryJob: kernel.func(
+      "int __stdcall QueryInformationJobObject(void *job, int kind, _Out_ void *info, uint32_t size, void *returned)",
+    ),
+    terminateJob: kernel.func(
+      "int __stdcall TerminateJobObject(void *job, uint32_t exitCode)",
+    ),
   };
   return api;
+}
+
+function reader_job_name(id) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id || ""))
+    throw new Error("Invalid reader job identifier");
+  return "Local\\1c-ai-core-index-reader-" + id;
+}
+const wide = value => Buffer.from(value + "\0", "utf16le");
+
+// The controller remains outside the job. The supervisor joins it before
+// creating the native reader, so even its first instruction is contained.
+// A separately retained controller handle allows termination and accounting
+// to be checked instead of treating the supervisor's exit as tree completion.
+export function create_windows_reader_job(id) {
+  const win = windowsAPI(), name = reader_job_name(id);
+  win.setError(0);
+  const job = win.createJob(null, wide(name));
+  if (!job) throw new Error("Cannot create index reader job (" + win.error() + ")");
+  if (win.error() === 183) { win.close(job); throw new Error("Index reader job name already exists"); }
+  const limits = Buffer.alloc(144); limits.writeUInt32LE(0x2000, 16);
+  if (!win.setJob(job, 9, limits, limits.length)) { const error = win.error(); win.close(job); throw new Error("Cannot configure index reader job (" + error + ")"); }
+  let closed = false;
+  return {
+    name,
+    active() {
+      if (closed) throw new Error("Index reader job is closed");
+      const info = Buffer.alloc(48);
+      if (!win.queryJob(job, 1, info, info.length, null)) throw new Error("Cannot inspect index reader job (" + win.error() + ")");
+      return info.readUInt32LE(40);
+    },
+    terminate() {
+      if (closed) throw new Error("Index reader job is closed");
+      if (!win.terminateJob(job, 1)) throw new Error("Cannot terminate index reader job (" + win.error() + ")");
+    },
+    close() {
+      if (!closed) {
+        closed = true;
+        if (!win.close(job)) throw Object.assign(new Error("Cannot close owned process job handle"), { outcomeUnknown: true });
+      }
+    },
+  };
+}
+
+export function join_windows_reader_job(id, pid) {
+  const win = windowsAPI(), job = win.openJob(0x0001, 0, wide(reader_job_name(id)));
+  if (!job) throw new Error("Cannot open index reader job (" + win.error() + ")");
+  let processHandle;
+  try {
+    processHandle = win.open(0x0100 | 0x0001, 0, pid);
+    if (!processHandle || !win.assignJob(job, processHandle)) throw new Error("Cannot join index reader job (" + win.error() + ")");
+    let closed = false;
+    return { close() { if (!closed) { closed = true; if (!win.close(job)) throw Object.assign(new Error("Cannot close supervisor job handle"), { outcomeUnknown: true }); } } };
+  } catch (error) { win.close(job); throw error; }
+  finally { if (processHandle) win.close(processHandle); }
+}
+
+export function windows_handle_count(pid = process.pid) {
+  const win = windowsAPI(), handle = win.open(0x1000, 0, pid), count = [0];
+  if (!handle) throw new Error("Cannot inspect process handles (" + win.error() + ")");
+  try {
+    if (!win.handleCount(handle, count)) throw new Error("Cannot count process handles (" + win.error() + ")");
+    return count[0];
+  } finally { win.close(handle); }
 }
 export function own_windows_tree(pid) {
   const win = windowsAPI(),
@@ -139,7 +216,7 @@ export function own_windows_tree(pid) {
     close() {
       if (!closed) {
         closed = true;
-        win.close(job);
+        if (!win.close(job)) throw Object.assign(new Error("Cannot close owned process job handle"), { outcomeUnknown: true });
       }
     },
   };
@@ -159,11 +236,19 @@ export function spawn_detached_windows(command, args, options) {
     throw new Error("Detached Windows executable must be absolute");
   const win = windowsAPI(),
     handles = [],
+    retainedAttributes = [],
     info = {};
-  let attributes,
-    attributesReady = false;
+  const guarded = options.guardUntilCommit === true;
+  let attributes, startupJob = null, transferred = false, rollbackPromise = null,
+    attributesReady = false, committed = false, rolledBack = false;
   const fail = (action) => new Error(`${action} (${win.error()})`);
   try {
+    if (guarded) {
+      startupJob = win.createJob(null, null);
+      if (!startupJob) throw fail("Cannot create daemon startup job");
+      const limits = Buffer.alloc(144); limits.writeUInt32LE(0x2000, 16);
+      if (!win.setJob(startupJob, 9, limits, limits.length)) throw fail("Cannot guard daemon startup");
+    }
     const security = Buffer.alloc(24);
     security.writeUInt32LE(24, 0);
     security.writeUInt32LE(1, 16);
@@ -186,14 +271,15 @@ export function spawn_detached_windows(command, args, options) {
       output = open("NUL", 0x40000000, 3),
       error = open("NUL", 0x40000000, 3),
       size = [0n];
-    win.initAttributes(null, 1, 0, size);
+    win.initAttributes(null, guarded ? 2 : 1, 0, size);
     if (!Number(size[0]) || Number(size[0]) > 65536)
       throw fail("Cannot size daemon handle list");
     attributes = Buffer.alloc(Number(size[0]));
-    if (!win.initAttributes(attributes, 1, 0, size))
+    if (!win.initAttributes(attributes, guarded ? 2 : 1, 0, size))
       throw fail("Cannot create daemon handle list");
     attributesReady = true;
     const inherited = Buffer.alloc(24);
+    retainedAttributes.push(inherited);
     handles.forEach((handle, index) =>
       inherited.writeBigUInt64LE(win.address(handle), index * 8),
     );
@@ -210,6 +296,12 @@ export function spawn_detached_windows(command, args, options) {
       )
     )
       throw fail("Cannot restrict daemon handle inheritance");
+    if (guarded) {
+      const jobs = Buffer.alloc(8); jobs.writeBigUInt64LE(win.address(startupJob)); retainedAttributes.push(jobs);
+      // Assign the job during process creation, before the first instruction.
+      if (!win.updateAttribute(attributes, 0, 0x2000d, jobs, jobs.length, null, null))
+        throw fail("Cannot attach daemon startup job");
+    }
     const keys = Object.keys(options.env)
         .filter((key) => options.env[key] !== undefined)
         .sort(),
@@ -264,9 +356,10 @@ export function spawn_detached_windows(command, args, options) {
       )
     )
       throw fail("Cannot start shared daemon outside the session job");
-    win.close(info.hThread);
+    if (!win.close(info.hThread)) throw Object.assign(fail("Cannot close daemon thread handle"), { outcomeUnknown: true });
+    info.hThread = null;
     let released = false;
-    return {
+    const controller = {
       pid: info.dwProcessId,
       get exitCode() {
         const code = [0];
@@ -279,16 +372,65 @@ export function spawn_detached_windows(command, args, options) {
         return this;
       },
       unref() {},
+      ...(guarded ? {
+        commit() {
+          if (committed) return;
+          if (rollbackPromise) throw Object.assign(new Error("Daemon startup rollback has already begun"), { outcomeUnknown: true });
+          if (!startupJob) throw Object.assign(new Error("Daemon startup job is unavailable"), { outcomeUnknown: true });
+          // The daemon is now recorded and healthy; its intentional project
+          // lifetime may outlive the launching session.
+          if (!win.setJob(startupJob, 9, Buffer.alloc(144), 144)) throw fail("Cannot commit daemon ownership");
+          committed = true;
+          const job = startupJob; startupJob = null;
+          if (!win.close(job)) throw Object.assign(fail("Cannot close committed daemon job"), { outcomeUnknown: true });
+        },
+        rollback() {
+          if (rolledBack) return Promise.resolve();
+          return rollbackPromise ||= (async () => {
+          if (committed || !startupJob) throw Object.assign(new Error("Daemon startup cleanup is not confirmed"), { outcomeUnknown: true });
+          if (!win.terminateJob(startupJob, 1)) throw Object.assign(fail("Cannot terminate daemon startup job"), { outcomeUnknown: true });
+          const active = () => {
+            const counts = Buffer.alloc(48);
+            if (!win.queryJob(startupJob, 1, counts, counts.length, null)) throw Object.assign(fail("Cannot inspect daemon startup job"), { outcomeUnknown: true });
+            return counts.readUInt32LE(40);
+          };
+          const running = () => {
+            const result = win.waitSingle(info.hProcess, 0);
+            if (result === 0) return false;
+            if (result === 258) return true;
+            throw Object.assign(fail("Cannot confirm daemon startup exit"), { outcomeUnknown: true });
+          };
+          const deadline = performance.now() + 5000;
+          while ((active() || running()) && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+          if (active() || running()) throw Object.assign(new Error("Daemon startup termination is not confirmed"), { outcomeUnknown: true });
+          const job = startupJob; startupJob = null;
+          if (!win.close(job)) throw Object.assign(fail("Cannot close daemon startup job"), { outcomeUnknown: true });
+          rolledBack = true;
+          })();
+        },
+      } : {}),
       release() {
         if (!released) {
           released = true;
-          win.close(info.hProcess);
+          const job = startupJob; startupJob = null;
+          const jobClosed = !job || win.close(job);
+          const processClosed = win.close(info.hProcess);
+          if (!jobClosed || !processClosed || job && !committed)
+            throw Object.assign(new Error("Daemon startup or handle cleanup is not confirmed"), { outcomeUnknown: true });
         }
       },
     };
+    transferred = true;
+    return controller;
   } finally {
     if (attributesReady) win.deleteAttributes(attributes);
     for (const handle of handles) win.close(handle);
+    if (!transferred) {
+      if (startupJob) { if (info.hProcess) win.terminateJob(startupJob, 1); win.close(startupJob); }
+      if (info.hThread) win.close(info.hThread);
+      if (info.hProcess) win.close(info.hProcess);
+    }
+    retainedAttributes.length = 0;
   }
 }
 export function windows_process_identity(pid) {
@@ -327,6 +469,39 @@ export function windows_process_identity(pid) {
   } finally {
     win.close(handle);
   }
+}
+
+// Hold the exact process object across listener/connection verification. A PID
+// alone may be reused between verification and sending a control request.
+export function pin_windows_process(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) throw new Error("Invalid process PID");
+  const win = windowsAPI(), handle = win.open(0x1000 | 0x00100000, 0, pid);
+  if (!handle) throw new Error("Cannot pin daemon process (" + win.error() + ")");
+  try {
+    const created = [0n], exited = [0n], kernel = [0n], user = [0n];
+    if (!win.times(handle, created, exited, kernel, user) || BigInt(exited[0]) !== 0n) throw new Error("Cannot confirm daemon process creation");
+    let closed = false;
+    return {
+      created: "win32-filetime:" + BigInt(created[0]),
+      alive() {
+        if (closed) throw new Error("Daemon process handle is closed");
+        const status = win.waitSingle(handle, 0);
+        if (status === 258) return true;
+        if (status === 0) return false;
+        throw new Error("Cannot inspect daemon process handle");
+      },
+      close() { if (!closed) { closed = true; if (!win.close(handle)) throw Object.assign(new Error("Cannot close daemon process handle"), { outcomeUnknown: true }); } },
+    };
+  } catch (error) { win.close(handle); throw error; }
+}
+
+export function windows_has_tcp_peer(pid, serverPort, clientPort) {
+  const rows = windows_tcp_rows(2), loopback = "7f000001";
+  const local = rows.filter(row => row.state === 5 && row.pid === process.pid && row.localAddress === loopback &&
+    row.remoteAddress === loopback && row.localPort === clientPort && row.remotePort === serverPort);
+  const peer = rows.filter(row => row.state === 5 && row.pid === pid && row.localAddress === loopback &&
+    row.remoteAddress === loopback && row.localPort === serverPort && row.remotePort === clientPort);
+  return local.length === 1 && peer.length === 1;
 }
 export function same_creation(state, recorded) {
   return typeof recorded === "string" && recorded.startsWith("win32-filetime:") && state.created === recorded;

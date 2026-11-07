@@ -1,18 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixture, dialog_session, ROOT } from "./helpers.mjs";
-import { McpClient } from "../scripts/mcp_client.mjs";
+import { fixture, dialog_session } from "./helpers.mjs";
 import { save_export_to_path, state_export_path, save_state_export } from "../scripts/settings_export.mjs";
 import { parse } from "../scripts/common.mjs";
 
 async function platform_session(t, f, platform) {
-  const entry = path.join(f.base, "platform-entry.mjs");
-  fs.writeFileSync(entry, `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} }); await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "mcp/settings.mjs")).href)});`);
-  const client = new McpClient([process.execPath, entry], f.root, f.env, 10);
-  f.clients.push(client); await client.initialize(); return client;
+  return (await dialog_session(t, f, { platform })).client;
 }
 
 test("project export uses the chosen destination and keeps file contents app-only", async t => {

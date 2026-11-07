@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { path_identity } from "../scripts/project_paths.mjs";
+import { read_regular_file } from "../scripts/bounded_file.mjs";
 
 export const digest = value => createHash("sha256").update(value).digest("hex");
 export const fail = message => { throw new Error(message); };
@@ -13,10 +14,15 @@ const text = (value, label) => {
   if (typeof value !== "string" || !value.trim() || /[\x00-\x1f]/.test(value)) fail(`Некорректное поле ${label}`);
   return value;
 };
+function jsonBytes(file, maxBytes) {
+  const actual = path_identity(file);
+  if (fs.statSync(actual).size > maxBytes) fail("Файл JSON превышает допустимый размер");
+  const result = read_regular_file(actual, maxBytes);
+  if (!result) fail("Файл JSON недоступен");
+  return result.bytes;
+}
 export function readJson(file, maxBytes = 1024 * 1024, expectedHash) {
-  if (fs.statSync(file).size > maxBytes) fail("Файл JSON превышает допустимый размер");
-  const bytes = fs.readFileSync(file);
-  if (bytes.length > maxBytes) fail("Файл JSON превышает допустимый размер");
+  const bytes = jsonBytes(file, maxBytes);
   if (expectedHash !== undefined && (!/^[a-f0-9]{64}$/.test(expectedHash) || digest(bytes) !== expectedHash)) fail("Аргументы инструмента изменились после разрешения; опишите и проверьте новые данные");
   try { return JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); }
   catch { fail("Некорректный файл JSON"); }
@@ -43,9 +49,9 @@ function profileMcp(value) {
 
 // A manager availability check needs its endpoint and base, not a usable
 // TestClient or the rest of the test-runner configuration.
-export function loadManagerProfile(file) {
+export function loadManagerProfile(file, expectedHash) {
   file = path_identity(file);
-  const raw = readJson(file, 65536), base = path.dirname(file);
+  const raw = readJson(file, 65536, expectedHash), base = path.dirname(file);
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1) fail("Некорректная версия профиля запуска");
   if (!raw.manager || typeof raw.manager !== "object" || Array.isArray(raw.manager)) fail("Некорректное поле manager");
   return { projectRoot: path.resolve(base, text(raw.projectRoot, "project root")),
@@ -53,8 +59,7 @@ export function loadManagerProfile(file) {
 }
 export function loadProfile(file, expectedHash, clientName) {
   file = path_identity(file);
-  const bytes = fs.readFileSync(file);
-  if (bytes.length > 65536) fail("Файл JSON превышает допустимый размер");
+  const bytes = jsonBytes(file, 65536);
   if (expectedHash !== undefined && (!/^[a-f0-9]{64}$/.test(expectedHash) || digest(bytes) !== expectedHash)) fail("Профиль запуска изменился после разрешения; опишите и проверьте новую цель");
   let raw;
   try { raw = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); } catch { fail("Некорректный файл JSON"); }

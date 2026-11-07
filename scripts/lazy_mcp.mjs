@@ -161,13 +161,23 @@ async function refreshNotifiedTools() {
 let bindingPromise = null, generation = 0, hostCapabilities = {}, callbackSequence = 0;
 const callbacks = new Map(), requests = new Map();
 const requestKey = id => typeof id + ":" + id;
-function callback(message) {
+function callback(message, { signal } = {}) {
   if (closed) return Promise.reject(new Error("Host disconnected"));
+  if (signal?.aborted) return Promise.reject(signal.reason);
   const id = "core-callback-" + ++callbackSequence;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { callbacks.delete(id); reject(new Error("Host callback timed out")); }, 60000);
-    callbacks.set(id, reply => { clearTimeout(timer); reply.error ? reject(Object.assign(new Error(reply.error.message), { code: reply.error.code })) : resolve(reply.result); });
-    emit({ ...message, id });
+    let finished = false;
+    const finish = (error, value) => {
+      if (finished) return;
+      finished = true; clearTimeout(timer); callbacks.delete(id); signal?.removeEventListener("abort", aborted);
+      error ? reject(error) : resolve(value);
+    };
+    const aborted = () => finish(signal.reason || new Error("Connection closed"));
+    const timer = setTimeout(() => finish(new Error("Host callback timed out")), 60000);
+    callbacks.set(id, reply => reply.error ? finish(Object.assign(new Error(reply.error.message), { code: reply.error.code })) : finish(null, reply.result));
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) return aborted();
+    try { emit({ ...message, id }); } catch (error) { finish(error); }
   });
 }
 async function ensureBinding(refreshSurface = true, retryFailed = true, connect = true) {
@@ -199,7 +209,7 @@ async function bind(refreshSurface, retryFailed, connect) {
     currentRevision = revision;
     const epoch = generation;
     const transportOptions = { capabilities: { ...hostCapabilities, roots: { listChanged: false } },
-      onRequest: message => message.method === "roots/list" ? { roots: component === "v8std" ? [] : [{ uri: pathToFileURL(root).href, name: path.basename(root) }] } : callback(message),
+      onRequest: (message, context) => message.method === "roots/list" ? { roots: component === "v8std" ? [] : [{ uri: pathToFileURL(root).href, name: path.basename(root) }] } : callback(message, context),
       maxBytes: options.max_response_bytes,
       onStderr: chunk => diagnostic.event("runtime_stderr", { projectRoot: root, bytes: chunk.length, content: "omitted" }, "warning"),
       onNotification: message => {

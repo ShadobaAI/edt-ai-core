@@ -11,6 +11,8 @@ import { SettingsOperations } from "./settings-operations.mjs";
 import { plugin_icons, component_icons } from "../scripts/icons.mjs";
 import { folder_action } from "../scripts/settings_folder.mjs";
 import { create_diagnostic_logger, register_diagnostic_secrets, diagnostic_journal, sanitize_diagnostics, safe_error_message } from "../scripts/diagnostics.mjs";
+import { locate_project, path_identity } from "../scripts/project_paths.mjs";
+import { launch, stop_child } from "../scripts/processes.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const state = process.env.EDT_AI_STATE_DIR || path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "1c-ai-core");
@@ -29,10 +31,48 @@ let selectionRevision = 0;
 let pendingRoots = null, rootsSequence = 0, requestInitialRoots = false;
 let selectionError = null, rootReady = Promise.resolve(), finishRoots;
 let transferInFlight = null, deferredRoots = false;
+let indexObserverPromise = null, indexObserverCleanup = Promise.resolve(), indexObserverFailure = null;
+let sessionClosing = false, shutdownPromise = null;
+let backendCleanupFailure = null;
+const backendCleanups = new Map();
+function waitIndexObserverCleanup(reason) {
+  const pending = indexObserverCleanup;
+  let timer;
+  const failed = error => {
+    if (!indexObserverFailure) {
+      indexObserverFailure = error;
+      diagnostic.event("index_observer_cleanup_failed", { reason, error }, "error");
+    }
+    return Object.assign(new Error("Завершение предыдущего читателя индекса не подтверждено."), { outcomeUnknown: true, cause: indexObserverFailure });
+  };
+  if (indexObserverFailure) return Promise.reject(failed(indexObserverFailure));
+  return Promise.race([
+    pending,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Index observer cleanup timed out")), 12000); }),
+  ]).then(() => { if (indexObserverFailure) throw failed(indexObserverFailure); }, error => { throw failed(error); })
+    .finally(() => clearTimeout(timer));
+}
+function indexObserver() {
+  if (sessionClosing) throw Object.assign(new Error("Сеанс настроек закрывается."), { outcomeUnknown: true });
+  if (indexObserverFailure) throw Object.assign(new Error("Завершение предыдущего читателя индекса не подтверждено."), { outcomeUnknown: true });
+  return indexObserverPromise ||= waitIndexObserverCleanup("new_reader").then(() => {
+    if (sessionClosing) throw Object.assign(new Error("Сеанс настроек закрывается."), { outcomeUnknown: true });
+    if (indexObserverFailure) throw Object.assign(new Error("Завершение предыдущего читателя индекса не подтверждено."), { outcomeUnknown: true });
+    return import("../scripts/runtime.mjs").then(({ IndexObserver }) => new IndexObserver(state));
+  });
+}
+function dropIndexObserver(reason) {
+  const previous = indexObserverPromise; indexObserverPromise = null;
+  if (previous) indexObserverCleanup = indexObserverCleanup.then(() => previous).then(observer => observer.close()).catch(error => {
+    if (!indexObserverFailure) { indexObserverFailure = error; diagnostic.event("index_observer_cleanup_failed", { reason, error }, "error"); }
+  });
+  return waitIndexObserverCleanup(reason);
+}
 function requestRoots() {
   if (process.env.EDT_AI_PROJECT_ROOT) return;
   if (transferInFlight) { deferredRoots = true; return; }
   finishRoots?.();
+  void dropIndexObserver("roots_changed").catch(() => {});
   selectionRevision += 1;
   selectedRoot = null;
   rootLocked = false;
@@ -109,7 +149,7 @@ async function readValues(remember = false) {
       diagnostic.event("settings_unavailable", { error }, "error");
       const defaults = JSON.parse(fs.readFileSync(path.join(root, "settings", "defaults.json"), "utf8"));
       return { values: { ...values(defaults), projectRoot: selectedRoot || "" },
-        profile: { status: "invalid", detail: "Не удалось прочитать настройки. Скачайте диагностику для поддержки.", path: null },
+        profile: { status: "invalid", detail: error.code === "BACKEND_OUTPUT_LIMIT" ? "Ответ сервиса настроек превысил допустимый размер. Проверьте объём настроек и скачайте диагностику." : "Не удалось прочитать настройки. Скачайте диагностику для поддержки.", path: null },
         configurationError: true, instance: process.env.EDT_AI_INSTANCE || "default", preparationScope: null };
     }
   }
@@ -133,8 +173,9 @@ function readSettings(actual) {
     profile: actual.profile, directoryContext: actual.directoryContext, sessionGuidance: actual.sessionGuidance,
     profileDirectoryContext: actual.profileDirectoryContext,
     edtPortSuggestion: actual.edtPortSuggestion,
-    readiness: actual.readiness,
-    componentChecks: actual.componentChecks,
+    readiness: publicResult(actual.readiness),
+    componentChecks: publicResult(actual.componentChecks),
+    componentStatuses: publicResult(actual.componentStatuses),
     testing: actual.testing,
     knowledge: actual.knowledge,
     environmentCompatibility: actual.environmentCompatibility,
@@ -166,8 +207,8 @@ const tools = [
     inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.status", title: "Сводное состояние профиля", description: "Passive profile and local daemon observation. Does not launch services or repeat preparation or probes.",
     inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(), _meta: appOnly },
-  { name: "settings.refresh_readiness", title: "Обновить состояние компонентов", description: "Refresh component status for this exact project and instance. Checks all seven components, or only component when supplied. Local BSL LS evidence has no time limit: unchanged launch inputs reuse it; invalidated evidence is checked using a temporary JVM only with an existing project/instance preparation grant and installed JAR. The temporary process closes before completion, including failures. Never grants permission, downloads, installs, restarts a daemon or rebinds chat connections. Poll settings.operation with the returned id.",
-    inputSchema: { type: "object", properties: { scope: { type: "string", minLength: 1 }, component: { enum: ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"] } }, required: ["scope"], additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly },
+  { name: "settings.refresh_readiness", title: "Обновить состояние компонентов", description: "Refresh component status for this exact project and instance. Checks all seven components, or only component when supplied. Local BSL LS reuses its last API evidence while launch inputs remain unchanged; absent or changed evidence requires an explicit check. Observation never starts a JVM, grants permission, downloads, installs, restarts a daemon or rebinds chat connections. Poll settings.operation with the returned id.",
+    inputSchema: { type: "object", properties: { scope: { type: "string", minLength: 1 }, component: { enum: ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"] }, automatic: { type: "boolean" } }, required: ["scope"], additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly },
   { name: "settings.reset_connection", title: "Вернуть наследование подключения", description: "Remove the project-local URL override and inherit the next configured source.",
     inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std", "openviking"] }, expectedRevision: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.open", title: "Настройки", description: "Open the full settings workspace with the user's profile list from Open plugin or app navigation. Status observation is passive; preparation requires an explicit action.",
@@ -264,25 +305,127 @@ tools.push({ name: "settings.openviking_save", title: "Сохранить общ
 function backend(action, args, context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" }, readDeadline = 0, onProgress = null) {
   register_diagnostic_secrets(args);
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath,
-      [path.join(root, "scripts", "settings_backend.mjs")], {
-        cwd: root, windowsHide: true, stdio: ["pipe", "pipe", "pipe", ...(onProgress ? ["ipc"] : [])],
+    if (sessionClosing) return reject(new Error("Сеанс настроек завершён; новая операция не запущена."));
+    if (backendCleanupFailure) return reject(Object.assign(new Error("Завершение предыдущего процесса настроек не подтверждено; новая операция заблокирована."), { outcomeUnknown: true }));
+    const observerToken = action === "refresh_readiness" ? randomUUID() : null, revision = selectionRevision, requests = new Map();
+    const protectedRead = Boolean(readDeadline && action === "read"), owner = randomUUID();
+    // These operations may deliberately create a daemon that outlives this
+    // backend. A strict reader job cannot safely perform that handoff.
+    const createsDaemon = ["check", "updates", "restart_index", "rebuild_index"].includes(action);
+    const supervised = protectedRead || process.platform !== "darwin" && !createsDaemon;
+    const forwardIpc = Boolean(onProgress || observerToken);
+    const options = {
+        cwd: root, windowsHide: true, stdio: ["pipe", "pipe", "pipe", ...(!supervised && forwardIpc ? ["ipc"] : [])],
         env: { ...process.env, EDT_AI_STATE_DIR: state, EDT_AI_SETTINGS: configPath,
           EDT_AI_PROJECT_ROOT: context.selectedDirectory || "", EDT_AI_SETTINGS_ROOT_LOCKED: context.rootLocked === false ? "0" : "1" },
-      });
-    let output = "", errors = "";
-    // Only the support collector sets a deadline, and only for a read.
-    const timer = readDeadline && action === "read" ? setTimeout(() => {
-      child.kill(); reject(Object.assign(new Error("Истекло время чтения состояния для диагностики"), { code: "READ_TIMEOUT" }));
-    }, readDeadline) : null;
+      };
+    const command = [path.join(root, "scripts", "settings_backend.mjs")];
+    const child = supervised ? launch(process.execPath, command, { ...options, readerJob: owner, forwardIpc }) : spawn(process.execPath, command, options);
+    diagnostic.event("backend_process_started", { owner, action, supervisorPid: child.pid });
+    let cleanupPromise;
+    const cleanup = reason => cleanupPromise ||= stop_child(child, 0).then(() => {
+      diagnostic.event(supervised ? "backend_process_stopped" : "backend_child_stopped", { owner, action, supervisorPid: child.pid, reason });
+    }, error => {
+      diagnostic.event("backend_process_cleanup_failed", { owner, action, supervisorPid: child.pid, error }, "error");
+      throw error;
+    }).finally(() => backendCleanups.delete(child));
+    backendCleanups.set(child, cleanup);
+    let output = "", outputBytes = 0, errors = "", expired = false, failed = false, finishing = false, observerUsed = false;
+    const retireObserver = reason => { observerUsed = true; return dropIndexObserver(reason); };
+    const cleanupAll = async reason => {
+      // A previous cancel may already have started closing the observer even
+      // after its request left the map. Preserve and await that same cleanup.
+      const retiring = requests.size && observerUsed ? retireObserver(reason) : observerUsed ? waitIndexObserverCleanup(reason) : Promise.resolve();
+      let waitTimer;
+      try {
+        const results = await Promise.race([
+          Promise.allSettled([cleanup(reason), retiring]),
+          new Promise((_, fail) => { waitTimer = setTimeout(() => fail(Object.assign(new Error("Завершение ресурсов проверки не подтверждено."), { outcomeUnknown: true })), 12000); }),
+        ]);
+        const failure = results.find(result => result.status === "rejected");
+        if (failure || observerUsed && indexObserverFailure)
+          throw Object.assign(new Error("Завершение ресурсов проверки не подтверждено."), { outcomeUnknown: true, cause: failure?.reason || indexObserverFailure });
+      } catch (error) {
+        backendCleanupFailure ||= error;
+        diagnostic.event("backend_cleanup_unconfirmed", { owner, action, reason, error }, "error");
+        throw error;
+      } finally { clearTimeout(waitTimer); }
+    };
+    // Observation must eventually release its backend even if a filesystem or
+    // a native dependency stops responding. Mutations have separate lifetime
+    // semantics and must not be interrupted by an observation deadline.
+    const timeout = readDeadline && action === "read" ? readDeadline : ["probe", "refresh_readiness"].includes(action) ? 120000 : 0;
+    const timer = timeout ? setTimeout(() => {
+      expired = true;
+      void cleanupAll("timeout").then(() => reject(Object.assign(new Error(action === "read" ? "Истекло время чтения состояния для диагностики" : "Истекло время проверки состояния компонентов."),
+        { code: action === "read" ? "READ_TIMEOUT" : "ETIMEDOUT", ...(!supervised ? { outcomeUnknown: true } : {}) })), reject);
+    }, timeout) : null;
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", chunk => { output += chunk; });
-    if (onProgress) child.on("message", message => { if (message?.type === "progress") onProgress(message.progress); });
+    child.stdout.on("data", chunk => {
+      if (failed || expired) return;
+      outputBytes += Buffer.byteLength(chunk);
+      if (outputBytes <= 32 * 1024 * 1024) { output += chunk; return; }
+      failed = true; clearTimeout(timer); output = "";
+      const error = Object.assign(new Error("Ответ сервиса настроек превышает допустимый размер."), { code: "BACKEND_OUTPUT_LIMIT", outcomeUnknown: action !== "read" });
+      void cleanupAll("output_limit").then(() => reject(error), reject);
+    });
+    if (onProgress || observerToken) child.on("message", envelope => {
+      if (sessionClosing || expired || failed || finishing) return;
+      const message = supervised ? envelope?.relay : envelope;
+      if (message?.type === "progress") { onProgress?.(message.progress); return; }
+      if (!observerToken || message?.token !== observerToken || typeof message.id !== "string" || !/^[0-9a-f-]{36}$/.test(message.id)) return;
+      if (message.type === "index_observation_cancel") {
+        if (requests.has(message.id) && observerUsed) void retireObserver("backend_timeout").catch(() => {});
+        return;
+      }
+      if (message.type !== "index_observation" || requests.size || !message.config || !message.profile || !message.snapshot) return;
+      requests.set(message.id, null);
+      const request = (async () => {
+        let observer;
+        try {
+          if (sessionClosing || revision !== selectionRevision || !context.selectedDirectory || !selectedRoot || context.instance !== (process.env.EDT_AI_INSTANCE || "default") ||
+              path_identity(locate_project(context.selectedDirectory)) !== path_identity(message.root) ||
+              path_identity(message.config.active_project) !== path_identity(message.root))
+            throw Object.assign(new Error("Профиль изменился во время наблюдения индекса."), { inputsChanged: true });
+          observerUsed = true;
+          observer = await indexObserver();
+          if (sessionClosing || expired || failed) throw Object.assign(new Error("Сеанс наблюдения закрывается."), { outcomeUnknown: true });
+          const result = await observer.observe(message.config, message.root, message.profile, message.snapshot);
+          if (expired || failed) return;
+          if (revision !== selectionRevision) throw Object.assign(new Error("Профиль изменился во время наблюдения индекса."), { inputsChanged: true });
+          if (child.connected) child.send(supervised ? { relay: { type: "index_observation_result", token: observerToken, id: message.id, ok: true, result } } : { type: "index_observation_result", token: observerToken, id: message.id, ok: true, result }, () => {});
+        } catch (error) {
+          if (expired || failed) return;
+          if (error?.cleanupUnconfirmed || observer?.cleanupError) {
+            error = Object.assign(error instanceof Error ? error : new Error("Index reader cleanup failed"), { outcomeUnknown: true, cleanupUnconfirmed: true });
+            try { await retireObserver("observation_cleanup_failed"); } catch { /* The failure remains a session barrier. */ }
+          } else if (!(error instanceof Error)) error = new Error("Index observation failed");
+          if (expired || failed) return;
+          const failure = { type: "index_observation_result", token: observerToken, id: message.id, ok: false,
+            error: safe_error_message(error), ...(typeof error.code === "string" ? { code: error.code } : {}),
+            ...(error.inputsChanged ? { inputsChanged: true } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}),
+            ...(error.cleanupUnconfirmed ? { cleanupUnconfirmed: true } : {}), ...(error.remote ? { remote: true } : {}) };
+          if (child.connected) child.send(supervised ? { relay: failure } : failure, () => {});
+        } finally { requests.delete(message.id); }
+      })();
+      if (requests.has(message.id)) requests.set(message.id, request);
+    });
     child.stderr.on("data", () => { errors = "Содержимое stderr сервиса скрыто."; });
-    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("error", error => {
+      if (expired || failed) return;
+      failed = true; clearTimeout(timer);
+      void cleanupAll("error").then(() => {
+        if (action !== "read" && child.pid) error.outcomeUnknown = true;
+        reject(error);
+      }, reject);
+    });
     child.stdin.on("error", () => {}); // close/output below owns the operation outcome
-    child.once("close", code => {
+    child.once("close", async code => {
       clearTimeout(timer);
+      if (expired || failed) return;
+      finishing = true;
+      try { await cleanupAll("completed"); }
+      catch (error) { reject(error); return; }
       let data;
       try {
         data = JSON.parse(output);
@@ -304,7 +447,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
       register_diagnostic_secrets(data.result);
       resolve(data.result);
     });
-    child.stdin.end(JSON.stringify({ action, ...args }));
+    child.stdin.end(JSON.stringify({ action, ...args, ...(observerToken ? { _indexObserverToken: observerToken } : {}) }));
   });
 }
 const operations = new SettingsOperations(async (action, args, context, progress) => {
@@ -347,6 +490,7 @@ const operations = new SettingsOperations(async (action, args, context, progress
     const data = await backend("read", { remember: true }, { selectedDirectory: directory, rootLocked: false });
     while (transferInFlight) await transferInFlight;
   if (context.selectionRevision !== selectionRevision) throw new Error("Папка чата изменилась во время выбора. Откройте настройки заново.");
+  if (selectedRoot !== data.values.projectRoot) await dropIndexObserver("project_changed");
   selectedRoot = data.values.projectRoot;
   selectionRevision += 1;
   return data;
@@ -394,8 +538,14 @@ function operationSummary() {
   const { result, ...summary } = operations.status();
   return summary;
 }
-function result(data, text = JSON.stringify(data)) {
-  return { content: [{ type: "text", text }], structuredContent: data };
+function publicResult(value) {
+  if (Array.isArray(value)) return value.map(publicResult);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !["inputRevision", "currentInputRevision"].includes(key)).map(([key, item]) => [key, publicResult(item)]));
+  return value;
+}
+function result(data, text) {
+  return { content: [{ type: "text", text: text ?? JSON.stringify(data) }], structuredContent: data };
 }
 async function call(name, args, meta = {}) {
   // An import is committed for the reviewed project as one operation.
@@ -414,7 +564,8 @@ async function call(name, args, meta = {}) {
   if (name === "settings.operation") {
     await operations.wait(args.operationId, args.waitMs || 0);
     const operation = operations.status(args.operationId);
-    return result({ ...operation, mode: "operation", navigation: "project" }, `${operation.status}${operation.id ? " · " + operation.id : ""}${operation.error ? ": " + operation.error : ""}`);
+    const view = { ...operation, mode: "operation", navigation: "project" };
+    return result(["probe", "check", "refresh_readiness"].includes(operation.action) ? publicResult(view) : view, `${operation.status}${operation.id ? " · " + operation.id : ""}${operation.error ? ": " + operation.error : ""}`);
   }
   // App calls may use a fresh MCP connection with empty roots. Carry the
   // invoking chat's explicit scope, never a global last-used profile.
@@ -423,7 +574,7 @@ async function call(name, args, meta = {}) {
   if (requestedRoot !== undefined) {
     if (operations.status().status === "running" && !selectedRoot) throw new Error("Дождитесь завершения текущей операции перед привязкой проекта.");
     const selection = explicit_selection({ directory: selectedRoot }, requestedRoot, selectionError);
-    if (selection.directory !== selectedRoot) { selectedRoot = selection.directory; selectionRevision += 1; }
+    if (selection.directory !== selectedRoot) { await dropIndexObserver("project_changed"); selectedRoot = selection.directory; selectionRevision += 1; }
     rootLocked ||= ["settings.profile", "settings.import", "settings.export", "settings.check"].includes(name) || meta?.["1c-ai-core/navigation"] !== "profiles";
   }
   if (name === "settings.openviking_read" || name === "settings.openviking_save") {
@@ -522,7 +673,7 @@ async function call(name, args, meta = {}) {
     const viewOnly = Boolean(selectionError || (rootLocked && actual.values.projectRoot !== current.values.projectRoot));
     if (name === "settings.select_profile") {
       viewedRoot = actual.values.projectRoot;
-      if (!viewOnly) { selectedRoot = actual.values.projectRoot; selectionRevision += 1; }
+      if (!viewOnly) { if (selectedRoot !== actual.values.projectRoot) await dropIndexObserver("project_changed"); selectedRoot = actual.values.projectRoot; selectionRevision += 1; }
     }
     const view = readSettings(actual);
     view.viewOnly = viewOnly;
@@ -536,12 +687,12 @@ async function call(name, args, meta = {}) {
     if (operations.status().status === "running" && args.projectRoot !== undefined && !selectedRoot)
       throw new Error("Дождитесь завершения текущей операции перед выбором папки.");
     const selection = explicit_selection({ directory: selectedRoot }, args.projectRoot, selectionError);
-    if (selection.directory !== selectedRoot) { selectedRoot = selection.directory; selectionRevision += 1; }
+    if (selection.directory !== selectedRoot) { await dropIndexObserver("project_changed"); selectedRoot = selection.directory; selectionRevision += 1; }
     if (args.projectRoot !== undefined) rootLocked = true;
     const read = await readValues();
     const { setup_inspection } = await import("../scripts/setup_inspection.mjs");
     const snapshot = setup_inspection({ ...read, projectSelection: { status: selectionError ? (pendingRoots ? "pending" : "ambiguous") : selectedRoot ? "selected" : "unselected", locked: rootLocked, detail: selectionError }, operation: operationSummary() }, state);
-    return result(snapshot, `Профиль: ${snapshot.profile.status}. Следующие шаги: ${snapshot.nextSteps.join(", ") || "нет"}.`);
+    return result({ ...snapshot, readiness: publicResult(snapshot.readiness), componentChecks: publicResult(snapshot.componentChecks) }, `Профиль: ${snapshot.profile.status}. Следующие шаги: ${snapshot.nextSteps.join(", ") || "нет"}.`);
   }
   if (selectionError && !readOnlyEntry) throw new Error(selectionError);
   const duringRefresh = ["settings.edit", "settings.preview", "settings.import_file", "settings.update", "settings.reset_connection", "settings.rename_profile", "settings.create", "settings.load", "settings.apply", "settings.open_directory", "settings.run_check", "settings.probe_connections", "settings.rebuild_index", "settings.restart_index", "settings.updates"].includes(name);
@@ -629,7 +780,7 @@ async function call(name, args, meta = {}) {
     }
     if (rootLocked || selectionError) view.schema.properties.projectRoot = { ...primitive.projectRoot,
       readOnly: true, description: "Каталог текущей сессии. Чтобы выбрать другой профиль, смените каталог проекта в Codex." };
-    return result(view, JSON.stringify(view));
+    return result(view);
   }
   if (name === "settings.profile" || name === "settings.open") {
     const view = readSettings(await readValues(true));
@@ -662,6 +813,7 @@ async function call(name, args, meta = {}) {
   if (name === "settings.updates") return result(operations.status(operations.start("updates", args, context).id));
   const data = await (name === "settings.preview" ? backend(actions[name], args, context) : operations.execute(actions[name], args, context));
   if (revision === selectionRevision && !rootLocked && !selectionError && data.values && Object.hasOwn(data.values, "projectRoot")) {
+    if (selectedRoot !== (data.values.projectRoot || null)) await dropIndexObserver("project_changed");
     selectedRoot = data.values.projectRoot || null;
   }
   return result({ ...data, ...(["settings.create", "settings.load"].includes(name) ? { mode: "profile" } : {}) },
@@ -787,6 +939,24 @@ async function dispatch(message) {
     write({ id: message.id, result: data });
   } catch (error) { write({ id: message.id, error: { code: -32000, message: safe_error_message(error) } }); }
 }
+function shutdown(reason) {
+  if (shutdownPromise) return shutdownPromise;
+  sessionClosing = true;
+  // The MCP host must not be held open forever by a broken close operation.
+  // A forced exit is a failed cleanup, never confirmation that descendants
+  // or remote resources have stopped.
+  const deadline = setTimeout(() => {
+    diagnostic.event("session_cleanup_timeout", { reason }, "error");
+    process.exit(1);
+  }, 12000);
+  shutdownPromise = Promise.allSettled([dropIndexObserver(reason), operations.shutdown(), ...[...backendCleanups.values()].map(cleanup => cleanup(reason))]).then(async results => {
+    await dropIndexObserver(reason);
+    const failure = results.find(result => result.status === "rejected");
+    if (failure || indexObserverFailure) throw failure?.reason || indexObserverFailure;
+  }).catch(error => { diagnostic.event("session_cleanup_failed", { reason, error }, "error"); process.exit(1); })
+    .finally(() => clearTimeout(deadline));
+  return shutdownPromise;
+}
 read_frames(process.stdin, line => {
   try { const msg = JSON.parse(line); void dispatch(msg).catch(error => diagnostic.event("dispatch_failed", { error }, "error")); }
   catch { write({ id: null, error: { code: -32700, message: "Parse error" } }); }
@@ -794,5 +964,10 @@ read_frames(process.stdin, line => {
   write({ id: null, error: { code: -32600, message: "Сообщение MCP повреждено или превышает допустимый размер." } });
   process.exitCode = 1;
   process.stdin.destroy();
+});
+process.stdin.once("end", () => { void shutdown("session_closed"); });
+for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => {
+  process.stdin.destroy();
+  void shutdown("session_signal").finally(() => { process.exitCode = 1; });
 });
 

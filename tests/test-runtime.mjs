@@ -538,7 +538,7 @@ test("daemon launch leaves logging to the component without duplicate output fil
 
 test("a noisy failed rebuild uses bounded diagnostics and restores its service without a separate log", async t => {
   const f = fixture(t), calls = [];
-  fs.writeFileSync(path.join(f.root, "index"), `const chunk=Buffer.alloc(65536,'x');
+  fs.writeFileSync(path.join(f.root, "index"), `process.stderr.write('Picked up JAVA_TOOL_OPTIONS: -Dsession.passphrase=diagnostic-secret-fixture\\n'); const chunk=Buffer.alloc(65536,'x');
     for(let i=0;i<128;i++) { process.stdout.write(chunk); process.stderr.write(chunk); }
     process.exitCode=3;`);
   await assert.rejects(rebuild_index(f.state, settings(), f.root, f.profile, "product", {
@@ -551,7 +551,11 @@ test("a noisy failed rebuild uses bounded diagnostics and restores its service w
     assert.equal(fs.existsSync(path.join(home, name)), false);
   const files = fs.readdirSync(path.join(f.state, "diagnostics")).filter(name => name.endsWith(".jsonl"));
   assert.ok(files.length > 0 && files.length <= LOG_POLICY.files);
-  for (const name of files) assert.ok(fs.statSync(path.join(f.state, "diagnostics", name)).size <= LOG_POLICY.fileBytes);
+  for (const name of files) {
+    const file = path.join(f.state, "diagnostics", name);
+    assert.ok(fs.statSync(file).size <= LOG_POLICY.fileBytes);
+    assert.doesNotMatch(fs.readFileSync(file, "utf8"), /diagnostic-secret-fixture/);
+  }
   assert.ok(read_diagnostic_logs(f.state).events.some(event => event.component === "code-index" && event.event === "index_output"));
 });
 
@@ -622,20 +626,47 @@ test("parallel readers share exactly one owned daemon per profile and preserve u
   await assert.rejects(stop_daemon(f.state, f.root), /Владелец демона(?: проекта)? не совпадает/);
   assert.equal(alive(otherHealth.pid), true);
 });
-test("daemon stop waits for process exit after its HTTP listener closes", async t => {
+test("daemon stop refuses a forged owner and leaves the listening service alive", async t => {
   const f=fixture(t),home=path.join(project_home(f.state,f.root),"code-index"),hash=sha256(Buffer.from("fixture")),exe=path.join(f.state,"runtime/code-index/fixture",hash,"bsl-indexer.exe");
   fs.mkdirSync(path.dirname(exe),{recursive:true});fs.writeFileSync(exe,"fixture");
   const server=createServer((req,res)=>res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({pid:process.pid,status:"running",paths:[]})));
   server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>server.close());
-  save_json(path.join(home,"daemon.json"),{pid:process.pid,http_port:server.address().port});
+  save_json(path.join(home,"daemon.json"),{pid:process.pid,http_host:"127.0.0.1",http_port:server.address().port});
   save_json(path.join(home,"owner.json"),{pid:process.pid,project_root:f.root,executable:exe});
-  await assert.rejects(stop_daemon(f.state,f.root,{stop:async()=>{server.closeAllConnections();await new Promise(done=>server.close(done));}}),/Остановка демона не подтверждена/);
+  let invoked=false;
+  await assert.rejects(stop_daemon(f.state,f.root,{stop:async()=>{invoked=true;}}),/идентичность/);
+  assert.equal(invoked,false);assert.equal(server.listening,true);
+});
+
+test("daemon stop uses a verified loopback connection to its owned process", { timeout: 30000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t), digest = sha256(fs.readFileSync(process.execPath)), exe = path.join(f.state, "runtime/code-index/fixture", digest, "owned-node.exe");
+  fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.copyFileSync(process.execPath, exe);
+  const launchIo = { launch: (command, _args, options) => {
+    const child = launch(command, [path.join(ROOT, "tests/fixtures/index-daemon.mjs")], options);
+    f.clients.push({ close: () => stop_child(child, 0) }); return child;
+  } };
+  const home = await ensure_daemon(f.state, f.root, f.profile, exe, launchIo), ownerFile = path.join(home, "owner.json"), daemonFile = path.join(home, "daemon.json"),
+    owner = read_json(ownerFile), daemon = read_json(daemonFile);
+  assert.ok(owner.creation); assert.equal(alive(owner.pid), true);
+  save_json(daemonFile, { ...daemon, http_host: "203.0.113.1" });
+  await assert.rejects(stop_daemon(f.state, f.root), /идентичность/); assert.equal(alive(owner.pid), true);
+  save_json(daemonFile, daemon);
+  save_json(ownerFile, { ...owner, creation: owner.creation + "-replaced" });
+  await assert.rejects(stop_daemon(f.state, f.root), /идентичность/); assert.equal(alive(owner.pid), true);
+  const { creation, daemon_started_at, health_started_at, ...legacy } = owner;
+  save_json(ownerFile, legacy);
+  assert.equal(await ensure_daemon(f.state, f.root, f.profile, exe, launchIo), home, "a verified legacy daemon remains usable read-only");
+  await assert.rejects(stop_daemon(f.state, f.root), /идентичность/); assert.equal(alive(owner.pid), true);
+  save_json(ownerFile, owner);
+  await stop_daemon(f.state, f.root);
+  assert.equal(alive(owner.pid), false);
 });
 
 test("an unhealthy but live stale PID blocks competing daemon startup on every OS", async (t) => {
   const f = fixture(t),
     home = path.join(project_home(f.state, f.root), "code-index");
   save_json(path.join(home, "owner.json"), { pid: process.pid });
+  const config = path.join(home, "daemon.toml"); fs.writeFileSync(config, "# existing daemon configuration\n");
   await assert.rejects(
     ensure_daemon(f.state, f.root, f.profile, process.execPath, {
       launch: () => {
@@ -644,6 +675,7 @@ test("an unhealthy but live stale PID blocks competing daemon startup on every O
     }),
     /работает, но не отвечает/,
   );
+  assert.equal(fs.readFileSync(config, "utf8"), "# existing daemon configuration\n");
 });
 test("doctor separates configuration from live acceptance and does not make OpenViking a gate", async (t) => {
   const f = fixture(t);
