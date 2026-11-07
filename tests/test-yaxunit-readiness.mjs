@@ -59,6 +59,15 @@ async function fixture(t) {
   return { f, backend, data, calls, closed, probe, receipt, hook: value => { hook = value; } };
 }
 
+test("EDT observation time is not renewed by a slower YaXUnit launch check", async t => {
+  const x = await fixture(t);
+  x.hook(async name => { if (name === "list_configurations") await new Promise(resolve => setTimeout(resolve, 300)); return false; });
+  const result = await x.backend.main({ action: "refresh_readiness", scope: x.f.root + "#first" });
+  const edt = result.componentChecks.find(item => item.id === "edt"), yaxunit = result.componentChecks.find(item => item.id === "yaxunit");
+  assert.equal(edt.state, "ready"); assert.equal(yaxunit.state, "ready");
+  assert.ok(Date.parse(yaxunit.checkedAt) - Date.parse(edt.checkedAt) >= 100);
+});
+
 test("missing both launch routes explains the EDT setup action and caches evidence without changing settings", async t => {
   const x = await fixture(t); x.data.configurations = []; x.data.applications.Product = { project: "Product", applications: [], count: 0 };
   const profile = fs.readFileSync(path.join(x.f.root, ".ai/project.yaml")), settings = fs.readFileSync(path.join(x.f.root, ".ai/project.local.yaml"));

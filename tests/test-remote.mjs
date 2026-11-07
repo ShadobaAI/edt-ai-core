@@ -156,6 +156,21 @@ test("external code-index preparation checks scoped health without installing a 
   await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), error =>
     error.remote === true && /Проверка состояния code-index не удалась.*текст внешней ошибки скрыт/.test(error.message) && !error.message.includes("health unavailable"));
 });
+
+test("a component observation bounds the whole multi-request MCP probe", async t => {
+  const f = fixture(t), config = settings();
+  const e = await endpoint(t, async ({ res, message, reply }) => {
+    if (message.method === "server/discover") { await sleep(600); return reply({ supportedVersions: ["2026-07-28"], serverInfo: { name: "slow", version: "1" } }); }
+    if (message.method === "tools/list") { await sleep(600); return reply({ tools: [{ name: "health", inputSchema: { type: "object" } }] }); }
+    if (message.method?.startsWith("notifications/")) return res.writeHead(202).end();
+    return reply({});
+  });
+  Object.assign(config.mcp.managed["code-index"], { mode: "external", url: e.url, timeout_seconds: 5 });
+  const started = Date.now();
+  await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5, false, null, false, 1), /общее время проверки/);
+  assert.ok(Date.now() - started < 4000);
+  assert.ok(e.calls.some(call => call.message.method === "tools/list"));
+});
 test("environment credential references apply to authenticated calls and session cleanup",async t=>{
   const previous=process.env.CORE_TEST_AUTH_HEADER;process.env.CORE_TEST_AUTH_HEADER="Bearer fixture";
   t.after(()=>{if(previous===undefined)delete process.env.CORE_TEST_AUTH_HEADER;else process.env.CORE_TEST_AUTH_HEADER=previous;});

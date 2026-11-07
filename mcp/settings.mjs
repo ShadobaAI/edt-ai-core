@@ -350,7 +350,7 @@ const operations = new SettingsOperations(async (action, args, context, progress
   selectedRoot = data.values.projectRoot;
   selectionRevision += 1;
   return data;
-}, (name, detail, level) => diagnostic.event(name, detail, level));
+}, (name, detail, level) => diagnostic.event(name, detail, level), { stateDirectory: state });
 async function assertUserFileBoundary(selected, projectRoot, write = false, allowStateExport = false) {
   const { resolve, contained, configuration_root, ProfileAmbiguous } = await import("../scripts/project_paths.mjs");
   const destination = resolve(selected);
@@ -544,8 +544,9 @@ async function call(name, args, meta = {}) {
     return result(snapshot, `Профиль: ${snapshot.profile.status}. Следующие шаги: ${snapshot.nextSteps.join(", ") || "нет"}.`);
   }
   if (selectionError && !readOnlyEntry) throw new Error(selectionError);
-  const duringRefresh = ["settings.edit", "settings.preview", "settings.import_file", "settings.update", "settings.reset_connection", "settings.rename_profile", "settings.create", "settings.load", "settings.apply", "settings.open_directory"].includes(name);
-  if (operations.status().status === "running" && !readOnlyEntry && !(operations.status().action === "refresh_readiness" && duringRefresh)) throw new Error(
+  const duringRefresh = ["settings.edit", "settings.preview", "settings.import_file", "settings.update", "settings.reset_connection", "settings.rename_profile", "settings.create", "settings.load", "settings.apply", "settings.open_directory", "settings.run_check", "settings.probe_connections", "settings.rebuild_index", "settings.restart_index", "settings.updates"].includes(name);
+  const parallelObservation = name === "settings.refresh_readiness" && ["check", "rebuild_index", "restart_index", "updates"].includes(operations.status().action);
+  if (operations.status().status === "running" && !readOnlyEntry && !(operations.status().action === "refresh_readiness" && duringRefresh) && !parallelObservation) throw new Error(
     operations.status().action === "pick_directory"
       ? "Завершите или отмените выбор папки в системном окне."
       : "Операция ещё выполняется. Дождитесь её завершения.");

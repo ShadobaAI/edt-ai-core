@@ -21,6 +21,36 @@ export function readJson(file, maxBytes = 1024 * 1024, expectedHash) {
   try { return JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); }
   catch { fail("Некорректный файл JSON"); }
 }
+function profileInfobase(value, base) {
+  object(value, ["type", "path", "server", "database"], "infobase");
+  if (value.type === "file" && value.server === undefined && value.database === undefined) return { type: "file", path: path.resolve(base, text(value.path, "infobase path")) };
+  if (value.type === "server" && value.path === undefined) {
+    for (const key of ["server", "database"]) if (/[;"']/.test(text(value[key], key))) fail(`Некорректное поле информационной базы ${key}`);
+    return { type: "server", server: value.server, database: value.database };
+  }
+  fail("Некорректное указание информационной базы");
+}
+function profileMcp(value) {
+  object(value, ["serverName", "url", "port"], "mcp");
+  let url;
+  try { url = new URL(value.url); } catch { fail("Некорректный URL MCP"); }
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash ||
+      !Number.isInteger(value.port) || value.port < 1 || value.port > 65535 || Number(url.port || 80) !== value.port) fail("MCP требует локальный URL HTTP и совпадающий порт");
+  const serverName = value.serverName ?? "vanessa";
+  if (typeof serverName !== "string" || !/^[a-zA-Z0-9_-]+$/.test(serverName)) fail("Некорректное имя сервера MCP");
+  return { url: url.href, port: value.port, serverName };
+}
+
+// A manager availability check needs its endpoint and base, not a usable
+// TestClient or the rest of the test-runner configuration.
+export function loadManagerProfile(file) {
+  file = path_identity(file);
+  const raw = readJson(file, 65536), base = path.dirname(file);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1) fail("Некорректная версия профиля запуска");
+  if (!raw.manager || typeof raw.manager !== "object" || Array.isArray(raw.manager)) fail("Некорректное поле manager");
+  return { projectRoot: path.resolve(base, text(raw.projectRoot, "project root")),
+    manager: { infobase: profileInfobase(raw.manager.infobase, base) }, mcp: profileMcp(raw.mcp) };
+}
 export function loadProfile(file, expectedHash, clientName) {
   file = path_identity(file);
   const bytes = fs.readFileSync(file);
@@ -33,15 +63,7 @@ export function loadProfile(file, expectedHash, clientName) {
   if (raw.version !== 1) fail("Неподдерживаемая версия профиля");
   if (typeof raw.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(raw.id)) fail("Некорректный идентификатор профиля");
   const resolve = (value, label) => path.resolve(base, text(value, label));
-  const infobase = value => {
-    object(value, ["type", "path", "server", "database"], "infobase");
-    if (value.type === "file" && value.server === undefined && value.database === undefined) return { type: "file", path: resolve(value.path, "infobase path") };
-    if (value.type === "server" && value.path === undefined) {
-      for (const key of ["server", "database"]) if (/[;"']/.test(text(value[key], key))) fail(`Некорректное поле информационной базы ${key}`);
-      return { type: "server", server: value.server, database: value.database };
-    }
-    fail("Некорректное указание информационной базы");
-  };
+  const infobase = value => profileInfobase(value, base);
   object(raw.runtime, ["epf", "navigationUrl", "paramsFile", "manifest"], "runtime");
   if (Object.hasOwn(raw.runtime, "epf") === Object.hasOwn(raw.runtime, "navigationUrl") || (Object.hasOwn(raw.runtime, "navigationUrl") && Object.hasOwn(raw.runtime, "manifest"))) fail("Для запуска требуется ровно один вариант: EPF или встроенный navigationUrl");
   for (const key of ["epf", "navigationUrl", "paramsFile", "manifest"]) if (Object.hasOwn(raw.runtime, key)) text(raw.runtime[key], `runtime ${key}`);
@@ -67,13 +89,7 @@ export function loadProfile(file, expectedHash, clientName) {
   if (clients.some(client => baseKey(client.infobase) !== baseKey(clients[0].infobase))) fail("Дополнительные клиенты должны использовать ту же информационную базу, что и основной клиент");
   const selectedClient = clientName === undefined ? clients[0] : clients.find(client => client.name === clientName);
   if (!selectedClient) fail("Неизвестное имя клиента");
-  object(raw.mcp, ["serverName", "url", "port"], "mcp");
-  let url;
-  try { url = new URL(raw.mcp.url); } catch { fail("Некорректный URL MCP"); }
-  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash ||
-      !Number.isInteger(raw.mcp.port) || raw.mcp.port < 1 || raw.mcp.port > 65535 || Number(url.port || 80) !== raw.mcp.port) fail("MCP требует локальный URL HTTP и совпадающий порт");
-  const serverName = raw.mcp.serverName ?? "vanessa";
-  if (typeof serverName !== "string" || !/^[a-zA-Z0-9_-]+$/.test(serverName)) fail("Некорректное имя сервера MCP");
+  const mcp = profileMcp(raw.mcp);
   if (Object.hasOwn(raw, "limits")) object(raw.limits, ["timeoutMs", "maxBytes"], "limits");
   if (Object.hasOwn(raw, "stateDir")) text(raw.stateDir, "stateDir");
   const limits = { timeoutMs: 30000, maxBytes: 1024 * 1024, ...raw.limits };
@@ -84,7 +100,7 @@ export function loadProfile(file, expectedHash, clientName) {
     projectRoot: resolve(raw.projectRoot, "project root"), platform: resolve(raw.platform, "platform"),
     runtime: { ...(raw.runtime.epf ? { epf: resolve(raw.runtime.epf, "runtime epf") } : { navigationUrl: raw.runtime.navigationUrl }), ...(raw.runtime.paramsFile ? { paramsFile: resolve(raw.runtime.paramsFile, "runtime paramsFile") } : {}), ...(raw.runtime.manifest ? { manifest: resolve(raw.runtime.manifest, "runtime manifest") } : {}) },
     manager: { infobase: infobase(raw.manager.infobase), interface: "taxi" }, client: selectedClient, ...(raw.clients ? { ownerClient: clients[0] } : {}),
-    mcp: { url: url.href, port: raw.mcp.port, serverName }, features: resolve(raw.features, "features"), results: resolve(raw.results, "results"),
+    mcp, features: resolve(raw.features, "features"), results: resolve(raw.results, "results"),
     stateDir: raw.stateDir ? resolve(raw.stateDir, "stateDir") : path.join(base, ".vanessa", `${raw.id}-${identity.slice(0, 12)}`), limits };
 }
 

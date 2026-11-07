@@ -370,7 +370,7 @@ export function project(selected, config, requireRepositories = true) {
 export const path_key = path_identity;
 export const project_home = (state, root) =>
   project_directory(state, root);
-export const installed_runtime = (state, config, component, refresh = false, allow_install = true) =>
+export const installed_runtime = (state, config, component, refresh = false, allow_install = true, lock_timeout = 120) =>
   operation_lock(
     state,
     () => {
@@ -383,7 +383,7 @@ export const installed_runtime = (state, config, component, refresh = false, all
         throw new ConfigError("Компонент не установлен или повреждён. Нажмите «Подготовить и проверить» для подготовки runtime.");
       return ensure_installed(state, config, component, refresh);
     },
-    120,
+    lock_timeout,
   );
 const active_entry = ({ candidate, previous, ...entry } = {}) => entry;
 const runtimeOwner = randomUUID();
@@ -978,6 +978,20 @@ async function probe_client(client, component, root, data) {
   return result;
 }
 
+async function bounded_probe_client(client, component, root, data, timeoutMs) {
+  let timer, closing, expired = false;
+  const guard = {
+    initialize: (...args) => { if (expired) throw new ConfigError("Истекло общее время проверки компонента"); return client.initialize(...args); },
+    request: (...args) => { if (expired) throw new ConfigError("Истекло общее время проверки компонента"); return client.request(...args); },
+  };
+  const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+    expired = true; closing = client.close().catch(() => {});
+    reject(new ConfigError("Истекло общее время проверки компонента"));
+  }, timeoutMs); });
+  try { return await Promise.race([probe_client(guard, component, root, data), deadline]); }
+  finally { clearTimeout(timer); await closing; }
+}
+
 // Observe only the existing daemon through its immutable read-only client.
 // Do not use launch_command: it can prepare config and start a stopped daemon.
 export async function observe_index(state, config, root, data) {
@@ -997,7 +1011,7 @@ export async function observe_index(state, config, root, data) {
     const options = component_settings(config, "code-index");
     client = new McpClient([owner.executable, "serve", "--config", path.join(home, "daemon.toml")], home,
       { ...native_environment(config), CODE_INDEX_HOME: home }, options.timeout_seconds || 30, { maxBytes: options.max_response_bytes });
-    return await probe_client(client, "code-index", root, data);
+    return await bounded_probe_client(client, "code-index", root, data, Math.min(options.timeout_seconds || 30, 25) * 1000);
   } finally {
     try { await client?.close(); } finally { await lease.close(); }
   }
@@ -1013,6 +1027,7 @@ export async function smoke(
   refresh = false,
   selected_artifact = null,
   allow_install = true,
+  max_probe_seconds = null,
 ) {
   const options = component_settings(config, component);
   if (!component_enabled(config, component)) return { component, status: "disabled" };
@@ -1036,7 +1051,7 @@ export async function smoke(
     client = new McpClient(command, cwd, env, options.timeout_seconds || timeout, { maxBytes: options.max_response_bytes });
   }
   try {
-    return await probe_client(client, component, root, data);
+    return max_probe_seconds ? await bounded_probe_client(client, component, root, data, Math.min(options.timeout_seconds || timeout, max_probe_seconds) * 1000) : await probe_client(client, component, root, data);
   } finally {
     await client.close();
   }

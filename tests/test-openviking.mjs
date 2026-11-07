@@ -27,7 +27,8 @@ import { credential_binding, surface_fingerprint, operation_fingerprint, access_
 import { stable } from "../scripts/common.mjs";
 import { knowledge_gate } from "../scripts/knowledge.mjs";
 import { guard } from "../scripts/guard.mjs";
-import { save_readiness, read_readiness, readiness_fingerprint } from "../scripts/setup_readiness.mjs";
+import { save_readiness, read_readiness, readiness_fingerprint, save_component_checks } from "../scripts/setup_readiness.mjs";
+import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 import { inspect as doctor } from "../scripts/doctor.mjs";
 import { RemoteHttpError } from "../scripts/remote_client.mjs";
@@ -265,6 +266,27 @@ test("setup accepts a verified search probe but cannot authorize KORA workflow o
   const allowed = await own.require(f.profile, f.config, f.root);
   assert.equal(allowed.allowed, true); assert.equal(allowed.scope, "workflow");
   assert.equal(allowed.knowledge.readinessScope, "workflow"); assert.equal(allowed.knowledge.koraReady, true);
+});
+
+test("OpenViking failure invalidates setup knowledge until a new live proof succeeds", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);
+  f.config.active_project = f.root; f.config.mcp.optional.openviking.url = remote.url;
+  f.config.mcp.managed["code-index"].enabled = false; f.config.mcp.managed["bsl-ls"].enabled = false;
+  f.profile.knowledge.required = true; f.profile.knowledge.dependent_actions = ["implementation"];
+  f.save(); fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(f.config));
+  const probe = await probe_connections(f.config, f.root, f.profile);
+  const initial = save_readiness(f.state, f.config, f.profile, [], { ...probe.external, edt: { ready: true }, v8std: { ready: true } });
+  assert.equal(initial.knowledge.ready, true);
+  save_component_checks(f.state, f.config, f.profile, [{ id: "openviking", state: "error" }]);
+  let current = await read_readiness(f.state, f.config, f.profile);
+  assert.equal(current.state, "stale"); assert.equal(current.knowledge.ready, false);
+  assert.equal(current.checks.find(item => item.id === "knowledge").state, "not_verified");
+  save_component_checks(f.state, f.config, f.profile, [{ id: "openviking", state: "ready" }]);
+  current = await read_readiness(f.state, f.config, f.profile);
+  assert.equal(current.state, "stale"); assert.equal(current.knowledge.ready, false, "a card observation cannot recreate setup proof");
+  const refreshed = await new SettingsBackend().main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.equal(refreshed.readiness.knowledge.ready, true); assert.equal(refreshed.readiness.workflowReadiness.state, "not_checked");
+  assert.equal(refreshed.componentChecks.find(item => item.id === "openviking").state, "ready");
 });
 test("an independent phase waiting for old knowledge cleanup cannot survive a binding change", async t => {
   const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);

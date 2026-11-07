@@ -1,25 +1,46 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { sanitize_setup_result, safe_error_message } from "../scripts/diagnostics.mjs";
+import { inside } from "../scripts/common.mjs";
+import { begin_foreground_readiness, activate_foreground_readiness, release_foreground_readiness, capture_readiness_priority } from "../scripts/setup_readiness.mjs";
+import { path_identity } from "../scripts/project_paths.mjs";
 
 // A transport deadline is not cancellation. Keep ownership and the eventual
 // result of a running mutation; status polling never starts another backend.
 export class SettingsOperations {
-  constructor(run, observe = () => {}) {
+  constructor(run, observe = () => {}, { stateDirectory = null } = {}) {
     this.run = run;
     this.observe = observe;
     this.jobs = new Map();
     this.active = null;
     this.background = null;
     this.lastCompleted = null;
+    this.stateDirectory = stateDirectory;
   }
 
   start(action, args, context) {
     const background = action === "refresh_readiness";
-    if (this.active?.status === "running" || (background && this.background?.status === "running")) {
+    const overlap = background && ["rebuild_index", "restart_index", "updates", "check"].includes(this.active?.action);
+    if (this.active?.status === "running" && !overlap || (background && this.background?.status === "running")) {
       throw new Error(`Операция ${this.current().id} ещё выполняется. Проверьте settings.operation; повтор не запущен.`);
+    }
+    // Signal an older background process synchronously, before dispatching a
+    // foreground job. It checks this marker while holding the state lock, so
+    // process scheduling cannot let it steal the foreground's tickets.
+    const sameBackgroundScope = !this.background?.projectRoot || !context.projectRoot || path_identity(this.background.projectRoot) === path_identity(context.projectRoot);
+    const sameBackgroundInstance = !this.background?.instance || !context.instance || this.background.instance === context.instance;
+    if (!background && this.stateDirectory && this.background?.status === "running" && sameBackgroundScope && sameBackgroundInstance) {
+      const marker = inside(this.stateDirectory, path.join(".settings-refresh-cancel", this.background.id));
+      fs.mkdirSync(path.dirname(marker), { recursive: true });
+      fs.writeFileSync(marker, "cancelled", { mode: 0o600 });
     }
     const job = { id: randomUUID(), action, ...context, ...(["probe", "refresh_readiness"].includes(action) && args.component ? { component: args.component } : {}),
       ...(["rebuild_index", "restart_index"].includes(action) ? { component: "code-index", ...(args.all === true ? { all: true } : {}) } : {}), status: "running", startedAt: new Date().toISOString() };
+    const scope = this.stateDirectory && context.projectRoot && context.instance ? { root: path_identity(context.projectRoot), instance: context.instance } : null;
+    const priority = background && scope ? { ...scope, ...capture_readiness_priority(this.stateDirectory, scope.root, scope.instance) } : null;
+    const foregroundLease = !background && scope && ["check", "probe"].includes(action)
+      ? begin_foreground_readiness(this.stateDirectory, scope.root, scope.instance, job.id) : null;
     this.observe("operation_started", { id: job.id, action, ...context });
     if (background) this.background = job;
     else this.active = job;
@@ -37,7 +58,15 @@ export class SettingsOperations {
       job.progress = { phase: value.phase, total: value.total, completed: value.completed, updatedAt: new Date().toISOString(),
         ...Object.fromEntries(["repository", "edtProject"].filter(key => typeof value[key] === "string").map(key => [key, value[key].slice(0, 512)])) };
     };
-    job.finished = Promise.resolve().then(() => this.run(action, args, context, progress)).then(
+    // A full preparation owns its tickets until it completes. Parallel UI
+    // refreshes are observations only, so they cannot supersede that result.
+    const runArgs = background ? { ...args, ...(this.stateDirectory ? { dispatchId: job.id } : {}), ...(priority ? { priority } : {}),
+      ...(this.active?.status === "running" && this.active.action === "check" ? { transient: true } : {}) } : args;
+    let foregroundOwner;
+    job.finished = Promise.resolve().then(async () => {
+      if (foregroundLease) foregroundOwner = await activate_foreground_readiness(this.stateDirectory, scope.root, scope.instance, foregroundLease, job.id);
+      return this.run(action, runArgs, context, progress);
+    }).then(
       result => {
         if (["probe", "check", "refresh_readiness"].includes(action)) result = sanitize_setup_result(result);
         if (result?.values && Object.hasOwn(result.values, "projectRoot")) job.projectRoot = result.values.projectRoot || null;
@@ -53,7 +82,14 @@ export class SettingsOperations {
         job.completedAt = new Date().toISOString(); this.lastCompleted = job;
         this.observe("operation_" + job.status, { id: job.id, action, projectRoot: job.projectRoot, error }, "error");
       },
-    );
+    ).finally(async () => {
+      if (background && this.stateDirectory) try { const marker = inside(this.stateDirectory, path.join(".settings-refresh-cancel", job.id)); fs.rmSync(marker, { force: true }); try { fs.rmdirSync(path.dirname(marker)); } catch {} } catch { /* The finished job must keep its result if cleanup fails. */ }
+      if (foregroundLease) {
+        try { await foregroundOwner?.close(); } catch { /* The completed operation no longer needs its listener. */ }
+        const release = () => { if (!release_foreground_readiness(this.stateDirectory, foregroundLease)) { const timer = setTimeout(release, 1000); timer.unref?.(); } };
+        release();
+      }
+    });
     return job;
   }
 

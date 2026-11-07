@@ -3,50 +3,357 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { edt_fixture as fixture, environment } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { setup_assets, save_readiness, read_readiness, save_component_checks, read_component_checks } from "../scripts/setup_readiness.mjs";
+import { setup_assets, save_readiness, read_readiness, save_component_checks, read_component_checks, begin_foreground_readiness, activate_foreground_readiness, release_foreground_readiness, capture_readiness_priority, readiness_priority_current, foreground_readiness_active } from "../scripts/setup_readiness.mjs";
 import { instance_directory, project_directory, sha256 } from "../scripts/project_paths.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 import { zip } from "../scripts/archives.mjs";
 import { alive } from "../scripts/processes.mjs";
-import { index_config } from "../scripts/runtime.mjs";
+import { index_config, installed_runtime } from "../scripts/runtime.mjs";
 import { dump } from "../scripts/common.mjs";
 import { project_profile } from "../scripts/profile.mjs";
+import { SettingsOperations } from "../mcp/settings-operations.mjs";
 
 async function ready_fixture(t) {
-  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready";const paths=[];
+  const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready",delayV8=0,indexGate=null,indexStarted=null,edtObserved;const paths=[],requests=[];
+  const edtDone=new Promise(resolve=>{edtObserved=resolve;});
   const server=createServer(async(req,res)=>{
     let text="";for await(const part of req)text+=part;
-    if(!text){res.writeHead(202).end();return;}const message=JSON.parse(text);calls++;paths.push(req.url);
+    if(!text){res.writeHead(202).end();return;}const message=JSON.parse(text);calls++;paths.push(req.url);requests.push({url:req.url,method:message.method});
     const reply=result=>res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:message.id,result}));
+    if(req.url==="/index"&&message.method==="initialize"&&indexGate){const gate=indexGate;indexGate=null;indexStarted();await gate;}
     if (req.url === "/index" && indexFailure) return res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: indexFailure } }));
     if(message.method==="server/discover")return res.writeHead(200,{"Content-Type":"application/json"}).end(JSON.stringify({jsonrpc:"2.0",id:message.id,error:{code:-32601,message:"legacy"}}));
     if(message.method==="initialize")return reply({protocolVersion:"2025-11-25",serverInfo:{name:"fixture",version:"1"},capabilities:{tools:{}}});
     if(message.method.startsWith("notifications/"))return res.writeHead(202).end();
     if(message.method==="tools/list"){
+      if(req.url==="/v8std"&&delayV8)await new Promise(done=>setTimeout(done,delayV8));
       if(req.url==="/bsl")return reply({tools:[...(["register_workspace_folder","list_workspace_folders","unregister_workspace_folder"].map(name=>({name,inputSchema:{type:"object"}}))),{name:"analyze",inputSchema:{type:"object",properties:{workspaceFolder:{type:"string"}},required:["workspaceFolder"]}}]});
       if(req.url==="/index")return reply({tools:[{name:"health",inputSchema:{type:"object"}}]});
       return reply({tools:noTools&&req.url==="/v8std"?[]:[{name:"list_projects",inputSchema:{type:"object",properties:{format:{enum:["json"]}}}}]});
     }
     if(message.method==="tools/call"&&req.url==="/index")return reply({structuredContent:{mcp:{status:"ok"},daemon:{status:"online"},repos:[{repo:"product",root_path:f.root,path_status:{status:"ready"},data_version:settling&&++indexChecks===1?{}:{stale:false}}]}});
-    if(message.method==="tools/call")return reply({content:[{type:"text",text:JSON.stringify({projects:[{name:"Product",path:wrongPath?f.base:f.root,open:true,state:projectState,edtProject:true}]})}]});
+    if(message.method==="tools/call"){reply({content:[{type:"text",text:JSON.stringify({projects:[{name:"Product",path:wrongPath?f.base:f.root,open:true,state:projectState,edtProject:true}]})}]});if(req.url==="/edt")edtObserved();return;}
     reply({});
   });server.listen(0,"127.0.0.1");await once(server,"listening");t.after(()=>{server.closeAllConnections();return new Promise(done=>server.close(done));});
   const backend=new SettingsBackend(),url="http://127.0.0.1:"+server.address().port;
   await backend.main({action:"update",set:{codeIndexEnabled:false,bslLsEnabled:false,edtUrl:url+"/edt",v8stdUrl:url+"/v8std"}});
-  return {f,backend,url,paths,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;},setProjectState:state=>{projectState=state;}};
+  return {f,backend,url,paths,requests,edtDone,authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"},count:()=>calls,wrong:()=>{wrongPath=true;},noTools:()=>{noTools=true;},settle:()=>{settling=true;},indexChecks:()=>indexChecks,failIndex:message=>{indexFailure=message;},setProjectState:state=>{projectState=state;},delayV8:ms=>{delayV8=ms;},holdIndex:()=>{let release;indexGate=new Promise(done=>{release=done;});const started=new Promise(done=>{indexStarted=done;});return {started,release};}};
 }
 
-for (const layer of ["profile", "project_local"]) test(`changing edt_required in ${layer} invalidates dependent readiness within the directory and instance`, async t => {
+async function enable_external_index(f, backend, url) {
+  const config=backend.current();Object.assign(config.mcp.managed["code-index"],{enabled:true,mode:"external",url:url+"/index"});
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS,JSON.stringify(config));
+  await backend.main({action:"update",set:{codeIndexEnabled:true}});
+  fs.mkdirSync(path.join(f.root,".code-index"),{recursive:true});fs.writeFileSync(path.join(f.root,".code-index/index.db"),"existing");
+}
+
+test("component evidence expires only when that component's inputs change", async t => {
+  const {f,backend}=await ready_fixture(t), config=backend.effective(backend.current()), profile=project_profile(f.root);
+  profile.testing.yaxunit=true;profile.testing.yaxunit_config={repository_id:"product",runner:"edt",results:"results"};
+  profile.testing.vanessa=true;profile.testing.vanessa_config={repository_id:"product",runtime_profile:"vanessa.json",server_name:"vanessa",features:"features",results:"ui-results"};
+  const ids=["edt","v8std","code-index","yaxunit","vanessa"];
+  save_component_checks(f.state,config,profile,ids.map(id=>({id,state:"ready"})));
+  const states=(settings=config,data=profile)=>Object.fromEntries(read_component_checks(f.state,settings,data).map(item=>[item.id,item.state]));
+  const changedBsl=structuredClone(config);changedBsl.mcp.managed["bsl-ls"].java="another-java";
+  assert.deepEqual(states(changedBsl),Object.fromEntries(ids.map(id=>[id,"ready"])));
+  fs.writeFileSync(path.join(f.root,"AGENTS.md"),"Unrelated project instructions\n");
+  assert.deepEqual(states(),Object.fromEntries(ids.map(id=>[id,"ready"])));
+  const unrelatedTestPaths=structuredClone(profile);unrelatedTestPaths.testing.yaxunit_config.results="other-results";unrelatedTestPaths.testing.vanessa_config.features="other-features";
+  assert.deepEqual(states(config,unrelatedTestPaths),Object.fromEntries(ids.map(id=>[id,"ready"])));
+  const changedV8=structuredClone(config);changedV8.mcp.required.v8std.url+="/other";
+  assert.deepEqual(states(changedV8),{edt:"ready",v8std:"check_stale","code-index":"ready",yaxunit:"ready",vanessa:"ready"});
+  const changedTest=structuredClone(profile);changedTest.testing.yaxunit_config.launch_configuration="other";
+  assert.deepEqual(states(config,changedTest),{edt:"ready",v8std:"ready","code-index":"ready",yaxunit:"check_stale",vanessa:"ready"});
+  const changedEdt=structuredClone(config);changedEdt.mcp.required.edt.url+="/other";
+  assert.deepEqual(states(changedEdt),{edt:"check_stale",v8std:"ready","code-index":"ready",yaxunit:"check_stale",vanessa:"ready"});
+});
+
+test("remote credential changes invalidate only the observations that used them", async t => {
+  const {f,backend}=await ready_fixture(t),config=backend.effective(backend.current()),profile=project_profile(f.root);
+  config.mcp.required.edt.headers_env={Authorization:"EDT_REVIEW_TEST_TOKEN"};process.env.EDT_REVIEW_TEST_TOKEN="first";
+  t.after(()=>{delete process.env.EDT_REVIEW_TEST_TOKEN;});
+  save_component_checks(f.state,config,profile,[{id:"edt",state:"ready"},{id:"v8std",state:"ready"},{id:"yaxunit",state:"ready"}]);
+  process.env.EDT_REVIEW_TEST_TOKEN="second";
+  assert.deepEqual(Object.fromEntries(read_component_checks(f.state,config,profile).map(item=>[item.id,item.state])),
+    {edt:"check_stale",v8std:"ready",yaxunit:"check_stale"});
+  const receipt=fs.readFileSync(path.join(instance_directory(f.state,f.root),"first.readiness.json"),"utf8");
+  assert.doesNotMatch(receipt,/first|second/);
+});
+
+test("a foreground check invalidates an older background job before delayed backend dispatch", async t => {
+  const {f,backend,authorization}=await ready_fixture(t);let release;
+  const gate=new Promise(done=>{release=done;});
+  const operations=new SettingsOperations(async(action,args)=>{if(action==="refresh_readiness")await gate;return backend.main({action,...args});},()=>{},{stateDirectory:f.state});
+  const background=operations.start("refresh_readiness",{scope:f.root+"#first"},{});
+  const foreground=operations.start("check",{authorization},{});await foreground.finished;
+  assert.equal(foreground.status,"completed");assert.equal(foreground.result.superseded,undefined);
+  const before=fs.readFileSync(path.join(instance_directory(f.state,f.root),"first.readiness.json"),"utf8");
+  release();await background.finished;assert.equal(background.result.superseded,true);
+  assert.equal(fs.readFileSync(path.join(instance_directory(f.state,f.root),"first.readiness.json"),"utf8"),before);
+  assert.equal(fs.existsSync(path.join(f.state,".settings-refresh-cancel",background.id)),false);
+});
+
+test("a foreground check in another MCP session takes priority over an older background dispatch", async t => {
+  const {f,backend,authorization}=await ready_fixture(t),context={projectRoot:f.root,instance:"first"};let release;
+  const gate=new Promise(done=>{release=done;});
+  const first=new SettingsOperations(async(action,args)=>{await gate;return backend.main({action,...args});},()=>{},{stateDirectory:f.state});
+  const second=new SettingsOperations((action,args)=>backend.main({action,...args}),()=>{},{stateDirectory:f.state});
+  const background=first.start("refresh_readiness",{scope:f.root+"#first"},context);
+  const foreground=second.start("check",{authorization},context);await foreground.finished;
+  assert.equal(foreground.status,"completed");assert.notEqual(foreground.result.superseded,true);
+  release();await background.finished;assert.equal(background.status,"completed");assert.equal(background.result.superseded,true);
+});
+
+test("a different MCP session observes transiently while full preparation is running", async t => {
+  const {f,backend,authorization}=await ready_fixture(t),context={projectRoot:f.root,instance:"first"};let release;
+  const gate=new Promise(done=>{release=done;});
+  const first=new SettingsOperations(async(action,args)=>{await gate;return backend.main({action,...args});},()=>{},{stateDirectory:f.state});
+  const second=new SettingsOperations((action,args)=>backend.main({action,...args}),()=>{},{stateDirectory:f.state});
+  const foreground=first.start("check",{authorization},context),background=second.start("refresh_readiness",{scope:f.root+"#first"},context);
+  await background.finished;assert.equal(background.status,"completed");assert.equal(background.result.componentChecks.length,7);
+  assert.equal(fs.existsSync(path.join(instance_directory(f.state,f.root),"first.readiness.json")),false);
+  release();await foreground.finished;assert.equal(foreground.status,"completed");assert.notEqual(foreground.result.superseded,true);
+});
+
+test("readiness priority stays isolated by project and instance", async t => {
+  const {f}=await ready_fixture(t),other=path.join(f.base,"other-priority");fs.mkdirSync(other);
+  const first=capture_readiness_priority(f.state,f.root,"first"),otherProject=capture_readiness_priority(f.state,other,"first"),otherInstance=capture_readiness_priority(f.state,f.root,"second");
+  const id=randomUUID(),marker=begin_foreground_readiness(f.state,f.root,"first",id);
+  const owner=await activate_foreground_readiness(f.state,f.root,"first",marker,id);
+  assert.equal(readiness_priority_current(f.state,f.root,"first",first),false);
+  assert.equal(await foreground_readiness_active(f.state,f.root,"first"),true);
+  assert.equal(readiness_priority_current(f.state,other,"first",otherProject),true);
+  assert.equal(readiness_priority_current(f.state,f.root,"second",otherInstance),true);
+  assert.equal(await foreground_readiness_active(f.state,other,"first"),false);
+  assert.equal(await foreground_readiness_active(f.state,f.root,"second"),false);
+  await owner.close();release_foreground_readiness(f.state,marker);assert.equal(await foreground_readiness_active(f.state,f.root,"first"),false);
+});
+
+test("a temporary Windows-style lease unlink failure does not keep refresh transient", async t => {
+  const {f}=await ready_fixture(t),marker=begin_foreground_readiness(f.state,f.root,"first",randomUUID()),remove=fs.rmSync;let failed=false;
+  t.mock.method(fs,"rmSync",(file,options)=>{if(file===marker&&!failed){failed=true;throw Object.assign(new Error("busy"),{code:"EPERM"});}return remove(file,options);});
+  assert.equal(release_foreground_readiness(f.state,marker),true);assert.equal(failed,true);
+  assert.equal(JSON.parse(fs.readFileSync(marker,"utf8")).finished,true);assert.equal(await foreground_readiness_active(f.state,f.root,"first"),false);
+  assert.equal(release_foreground_readiness(f.state,marker),true);assert.equal(fs.existsSync(marker),false);
+});
+
+test("lease cleanup retries when both replacement and deletion are temporarily denied", async t => {
+  const {f}=await ready_fixture(t),rename=fs.renameSync,remove=fs.rmSync;let blocked=false,marker;
+  t.mock.method(fs,"renameSync",(from,to)=>{if(blocked&&to===marker)throw Object.assign(new Error("busy"),{code:"EPERM"});return rename(from,to);});
+  t.mock.method(fs,"rmSync",(file,options)=>{if(blocked&&file===marker)throw Object.assign(new Error("busy"),{code:"EBUSY"});return remove(file,options);});
+  const operations=new SettingsOperations(async()=>{blocked=true;return {};},()=>{},{stateDirectory:f.state});
+  const foreground=operations.start("check",{},{projectRoot:f.root,instance:"first"});
+  marker=path.join(project_directory(f.state,f.root),"coordination","first.readiness-active",foreground.id);
+  await foreground.finished;assert.equal(fs.existsSync(marker),true);blocked=false;
+  await new Promise(done=>setTimeout(done,1200));assert.equal(fs.existsSync(marker),false);
+});
+
+test("a stale foreground marker with a reused PID cannot keep refresh transient", async t => {
+  const {f,backend}=await ready_fixture(t),id=randomUUID(),marker=begin_foreground_readiness(f.state,f.root,"first",id);
+  fs.writeFileSync(marker,JSON.stringify({pid:process.pid,id,phase:"active"}));
+  assert.equal(await foreground_readiness_active(f.state,f.root,"first"),false);
+  const operations=new SettingsOperations((action,args)=>backend.main({action,...args}),()=>{},{stateDirectory:f.state});
+  const background=operations.start("refresh_readiness",{scope:f.root+"#first"},{projectRoot:f.root,instance:"first"});await background.finished;
+  assert.equal(background.status,"completed");assert.notEqual(background.result.superseded,true);
+  assert.equal(fs.existsSync(path.join(instance_directory(f.state,f.root),"first.readiness.json")),true);
+  release_foreground_readiness(f.state,marker);
+});
+
+test("an abandoned atomic-write temporary file cannot keep refresh transient", async t => {
+  const {f,backend}=await ready_fixture(t),id=randomUUID(),marker=begin_foreground_readiness(f.state,f.root,"first",id);
+  fs.rmSync(marker);fs.writeFileSync(path.join(path.dirname(marker),".core-abandoned.tmp"),JSON.stringify({id,pid:process.pid,phase:"active"}));
+  assert.equal(await foreground_readiness_active(f.state,f.root,"first"),false);
+  const operations=new SettingsOperations((action,args)=>backend.main({action,...args}),()=>{},{stateDirectory:f.state});
+  const background=operations.start("refresh_readiness",{scope:f.root+"#first"},{projectRoot:f.root,instance:"first"});await background.finished;
+  assert.equal(background.status,"completed");assert.equal(fs.existsSync(path.join(instance_directory(f.state,f.root),"first.readiness.json")),true);
+});
+
+test("an interrupted old foreground marker cannot keep refresh transient", async t => {
+  const {f,backend}=await ready_fixture(t),id=randomUUID(),marker=begin_foreground_readiness(f.state,f.root,"first",id);
+  fs.writeFileSync(marker,"");assert.equal(await foreground_readiness_active(f.state,f.root,"first"),false);
+  const operations=new SettingsOperations((action,args)=>backend.main({action,...args}),()=>{},{stateDirectory:f.state});
+  const background=operations.start("refresh_readiness",{scope:f.root+"#first"},{projectRoot:f.root,instance:"first"});await background.finished;
+  assert.equal(background.status,"completed");assert.equal(fs.existsSync(path.join(instance_directory(f.state,f.root),"first.readiness.json")),true);
+});
+
+test("a foreground check snapshots the receipt under lock after an older commit", async t => {
+  const {f,backend,authorization}=await ready_fixture(t),signal=new Int32Array(new SharedArrayBuffer(8));
+  const receipt=path.join(instance_directory(f.state,f.root),"first.readiness.json");let worker;
+  const workerSource=`
+    import fs from "node:fs";
+    import { parentPort, workerData } from "node:worker_threads";
+    const signal=new Int32Array(workerData.signal),rename=fs.renameSync;
+    fs.renameSync=(from,to)=>{if(String(to)===workerData.receipt&&Atomics.compareExchange(signal,0,0,1)===0){Atomics.notify(signal,0);Atomics.wait(signal,1,0,5000);}return rename(from,to);};
+    try { const {SettingsBackend}=await import(workerData.backendUrl);const result=await new SettingsBackend().main({action:"refresh_readiness",...workerData.args});parentPort.postMessage({result}); }
+    catch(error){parentPort.postMessage({error:error.stack||error.message});}
+  `;
+  t.after(async()=>{Atomics.store(signal,1,1);Atomics.notify(signal,1);await worker?.terminate();});
+  const operations=new SettingsOperations((action,args)=>{
+    if(action==="check")return backend.main({action,...args});
+    worker=new Worker(new URL("data:text/javascript,"+encodeURIComponent(workerSource)),{workerData:{signal:signal.buffer,receipt,args,backendUrl:pathToFileURL(path.join(path.dirname(fileURLToPath(import.meta.url)),"../scripts/settings_backend.mjs")).href}});
+    return new Promise((resolve,reject)=>{worker.once("message",message=>message.error?reject(new Error(message.error)):resolve(message.result));worker.once("error",reject);});
+  },()=>{},{stateDirectory:f.state});
+  const background=operations.start("refresh_readiness",{scope:f.root+"#first"},{});
+  const deadline=Date.now()+10000;while(!Atomics.load(signal,0)&&Date.now()<deadline)await new Promise(done=>setTimeout(done,10));
+  assert.equal(Atomics.load(signal,0),1,"background must pause inside its receipt commit");
+  const foreground=operations.start("check",{authorization},{});await new Promise(done=>setTimeout(done,250));
+  Atomics.store(signal,1,1);Atomics.notify(signal,1);await Promise.all([background.finished,foreground.finished]);
+  assert.equal(background.status,"completed");assert.equal(foreground.status,"completed");assert.notEqual(foreground.result.superseded,true);
+});
+
+test("a parallel refresh during full preparation observes without changing the receipt or tickets", async t => {
+  const {f,backend,authorization}=await ready_fixture(t);let release;
+  const gate=new Promise(done=>{release=done;});
+  const operations=new SettingsOperations(async(action,args)=>{if(action==="check")await gate;return backend.main({action,...args});},()=>{},{stateDirectory:f.state});
+  const foreground=operations.start("check",{authorization},{}), background=operations.start("refresh_readiness",{scope:f.root+"#first"},{});
+  await background.finished;assert.equal(background.status,"completed");assert.equal(background.result.componentChecks.length,7);
+  assert.equal(fs.existsSync(path.join(instance_directory(f.state,f.root),"first.readiness.json")),false);
+  assert.equal(fs.existsSync(path.join(instance_directory(f.state,f.root),"first.readiness-observations.json")),false);
+  assert.equal(operations.status().id,foreground.id);release();await foreground.finished;assert.equal(foreground.result.superseded,undefined);
+});
+
+test("a changed EDT project descriptor invalidates an in-flight full check", async t => {
+  const {f,backend,url,authorization,holdIndex,edtDone}=await ready_fixture(t);await enable_external_index(f,backend,url);
+  const delayed=holdIndex(),pending=backend.main({action:"check",authorization});await Promise.all([delayed.started,edtDone]);
+  fs.rmSync(path.join(f.root,".project"));delayed.release();const result=await pending;
+  assert.equal(result.superseded,true);assert.equal(result.fullReadiness,"not_verified");
+});
+
+test("a full check never renews evidence that expired while another component was running", async t => {
+  const {f,backend,url,authorization,holdIndex,edtDone}=await ready_fixture(t);await enable_external_index(f,backend,url);
+  const NativeDate=Date;let offset=0;class ClockDate extends NativeDate {constructor(...args){super(...(args.length?args:[NativeDate.now()+offset]));}static now(){return NativeDate.now()+offset;}}
+  t.mock.method(globalThis,"Date",ClockDate);
+  const delayed=holdIndex(),pending=backend.main({action:"check",authorization});await Promise.all([delayed.started,edtDone]);
+  offset=16*60000;delayed.release();const result=await pending;
+  assert.equal(result.fullReadiness,"not_ready");assert.equal(result.readiness.checks.find(item=>item.id==="edt").state,"not_verified");
+});
+
+test("parallel external checks retain their own observation times", async t => {
+  const { f, backend, delayV8 } = await ready_fixture(t); delayV8(300);
+  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  const edt = result.componentChecks.find(item => item.id === "edt"), v8 = result.componentChecks.find(item => item.id === "v8std");
+  assert.equal(edt.state, "ready"); assert.equal(v8.state, "ready");
+  assert.ok(Date.parse(v8.checkedAt) - Date.parse(edt.checkedAt) >= 100);
+});
+
+test("fresh component observations update overall setup without extending its lifetime", async t => {
   const { f, backend } = await ready_fixture(t), config = backend.effective(backend.current());
+  const managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
+  const setup = save_readiness(f.state, config, f.profile, managed, { edt: { ready: true }, v8std: { ready: true } });
+  const updated = state => save_component_checks(f.state, config, f.profile, [{ id: "v8std", state }]);
+  updated("error"); let read = await read_readiness(f.state, config, f.profile);
+  assert.equal(read.state, "blocked"); assert.equal(read.checks.find(item => item.id === "v8std").state, "error");
+  updated("ready"); read = await read_readiness(f.state, config, f.profile);
+  assert.equal(read.state, "ready"); assert.equal(read.expiresAt, setup.expiresAt); assert.equal(read.checkedAt, setup.checkedAt);
+});
+
+test("an expired setup is fully observed again without preparation or duplicate endpoint probes", async t => {
+  const { f, backend, url, requests } = await ready_fixture(t), selected = backend.current();
+  for (const id of ["code-index", "bsl-ls"]) Object.assign(selected.mcp.managed[id], { enabled: true, mode: "external", url: url + (id === "code-index" ? "/index" : "/bsl") });
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(selected));
+  await backend.main({ action: "update", set: { codeIndexEnabled: true, bslLsEnabled: true } });
+  const config = backend.effective(backend.current()), managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
+  save_readiness(f.state, config, f.profile, managed, { edt: { ready: true }, v8std: { ready: true } });
+  const file = path.join(instance_directory(f.state, f.root), "first.readiness.json"), receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+  receipt.result.checkedAt = new Date(Date.now() - 16 * 60000).toISOString(); receipt.result.expiresAt = new Date(Date.now() - 60000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(receipt)); assert.equal((await backend.main({ action: "read" })).readiness.state, "stale");
+  process.env.UNRELATED_COMPONENT_SECRET = "foreign-secret-fixture"; process.env.JAVA_TOOL_OPTIONS = "-Dpassword=java-secret-fixture";
+  const spawn = childProcess.spawn, policyLaunches = [];
+  t.mock.method(childProcess, "spawn", (command, args, options) => {
+    const child = spawn(command, args, options), send = child.send?.bind(child);
+    if (send) child.send = (message, ...rest) => {
+      if (message.args?.some(value => value.endsWith("policy/read-only-mcp.mjs") || value.endsWith("policy\\read-only-mcp.mjs"))) policyLaunches.push(message);
+      return send(message, ...rest);
+    };
+    return child;
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  requests.length = 0;
+  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.equal(result.readiness.state, "ready", JSON.stringify(result.readiness.checks)); assert.equal(result.readiness.workflowReadiness.state, "not_checked");
+  for (const urlPath of ["/edt", "/v8std"]) assert.equal(requests.filter(item => item.url === urlPath && item.method === "initialize").length, 1);
+  assert.equal(result.componentChecks.length, 7); assert.equal(fs.existsSync(path.join(instance_directory(f.state, f.root), "first.preparation.json")), false);
+  assert.equal(policyLaunches.length, 1); assert.equal(policyLaunches[0].command, process.execPath);
+  assert.equal(policyLaunches[0].env.UNRELATED_COMPONENT_SECRET, undefined); assert.equal(policyLaunches[0].env.JAVA_TOOL_OPTIONS, undefined);
+  assert.equal((await backend.main({ action: "read" })).readiness.state, "ready");
+});
+
+test("automatic setup never marks a different configured policy Node as verified", async t => {
+  const { f, backend } = await ready_fixture(t), selected = backend.current();
+  selected.mcp.managed["bsl-ls"].node = path.join(f.base, "missing-custom-node");
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(selected));
+  const config = backend.effective(backend.current());
+  save_readiness(f.state, config, f.profile, [{ name: "code-index", state: "ready", ready: true }, { name: "bsl-ls", state: "ready", ready: true }], { edt: { ready: true }, v8std: { ready: true } });
+  const file = path.join(instance_directory(f.state, f.root), "first.readiness.json"), receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+  receipt.result.checkedAt = new Date(Date.now() - 16 * 60000).toISOString(); receipt.result.expiresAt = new Date(Date.now() - 60000).toISOString(); fs.writeFileSync(file, JSON.stringify(receipt));
+  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.equal(result.readiness.state, "blocked");
+  assert.equal(result.readiness.checks.find(item => item.id === "policy").state, "not_verified");
+});
+
+test("automatic refresh recovers a previous policy error without waiting for setup expiry", async t => {
+  const { f, backend, url } = await ready_fixture(t), selected = backend.current();
+  for (const id of ["code-index", "bsl-ls"]) Object.assign(selected.mcp.managed[id], { enabled: true, mode: "external", url: url + (id === "code-index" ? "/index" : "/bsl") });
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(selected)); await backend.main({ action: "update", set: { codeIndexEnabled: true, bslLsEnabled: true } });
+  const config = backend.effective(backend.current()), managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
+  const setup = save_readiness(f.state, config, f.profile, [...managed, { name: "policy", state: "error", ready: false }], { edt: { ready: true }, v8std: { ready: true } });
+  assert.equal(setup.state, "blocked");
+  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.equal(result.readiness.checks.find(item => item.id === "policy").state, "ready"); assert.equal(result.readiness.state, "ready");
+});
+
+test("automatic setup does not claim policy readiness with unverified Node startup options", async t => {
+  const { f, backend } = await ready_fixture(t), config = backend.effective(backend.current());
+  save_readiness(f.state, config, f.profile, [{ name: "code-index", state: "ready", ready: true }, { name: "bsl-ls", state: "ready", ready: true }], { edt: { ready: true }, v8std: { ready: true } });
+  const file = path.join(instance_directory(f.state, f.root), "first.readiness.json"), receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+  receipt.result.checkedAt = new Date(Date.now() - 16 * 60000).toISOString(); receipt.result.expiresAt = new Date(Date.now() - 60000).toISOString(); fs.writeFileSync(file, JSON.stringify(receipt));
+  process.env.NODE_OPTIONS = "--no-such-flag";
+  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.equal(result.readiness.state, "blocked"); assert.equal(result.readiness.checks.find(item => item.id === "policy").state, "not_verified");
+});
+
+for (const expired of [false, true]) test(`overall setup respects ${expired ? "already expired" : "remaining"} component evidence`, async t => {
+  const { f, backend, url } = await ready_fixture(t), selected = backend.current();
+  for (const id of ["code-index", "bsl-ls"]) Object.assign(selected.mcp.managed[id], { enabled: true, mode: "external", url: url + (id === "code-index" ? "/index" : "/bsl") });
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(selected));
+  await backend.main({ action: "update", set: { codeIndexEnabled: true, bslLsEnabled: true } });
+  const config = backend.effective(backend.current()), managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
+  save_readiness(f.state, config, f.profile, managed, { edt: { ready: true }, v8std: { ready: true } });
+  const file = path.join(instance_directory(f.state, f.root), "first.readiness.json"), receipt = JSON.parse(fs.readFileSync(file, "utf8"));
+  receipt.result.checkedAt = new Date(Date.now() - 16 * 60000).toISOString(); receipt.result.expiresAt = new Date(Date.now() - 60000).toISOString(); fs.writeFileSync(file, JSON.stringify(receipt));
+  const expiresAt = new Date(Date.now() + (expired ? 200 : 60000)).toISOString(), observed = new Date(Date.now() - 14 * 60000).toISOString();
+  const main = backend.main.bind(backend);
+  t.mock.method(backend, "main", async (request, ...args) => {
+    if (request.action === "probe" && request.component === "code-index" && request.collectOnly)
+      return { componentChecks: [{ id: "code-index", state: "ready", checkedAt: observed, expiresAt }], managed: [], external: {} };
+    if (expired && request.action === "probe" && request.component === "bsl-ls" && request.collectOnly) await new Promise(resolve => setTimeout(resolve, 400));
+    return main(request, ...args);
+  });
+  const result = await main({ action: "refresh_readiness", scope: f.root + "#first" });
+  if (expired) {
+    assert.equal(result.componentChecks.find(item => item.id === "code-index").state, "not_verified");
+    assert.equal(result.readiness.state, "blocked");
+  } else {
+    assert.equal(result.readiness.state, "ready");
+    assert.ok(Date.parse(result.readiness.expiresAt) <= Date.parse(expiresAt));
+  }
+});
+
+for (const layer of ["profile", "project_local"]) test(`changing edt_required in ${layer} invalidates dependent readiness within the directory and instance`, async t => {
+  const { f, backend } = await ready_fixture(t);
+  f.profile.testing.yaxunit=true;f.profile.testing.yaxunit_config={repository_id:"product",runner:"edt",results:"results"};f.save();
+  const config = backend.effective(backend.current());
   const target = path.join(f.root, layer === "profile" ? ".ai/project.yaml" : ".ai/project.local.yaml");
   const profile = project_profile(f.root), managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
-  save_readiness(f.state, config, profile, managed, { edt: { ready: true }, v8std: { ready: true } });
+  save_readiness(f.state, config, profile, managed, { edt: { ready: true }, v8std: { ready: true } }, [{ id: "yaxunit", state: "ready" }]);
   save_component_checks(f.state, config, profile, [{ id: "edt", state: "ready" }, { id: "yaxunit", state: "ready", target: { projectName: "Product" } }]);
   assert.equal((await read_readiness(f.state, config, profile)).state, "ready");
   const receipt = path.join(instance_directory(f.state, f.root), "first.readiness.json"), before = fs.readFileSync(receipt);
@@ -223,6 +530,16 @@ test("status reads and missing prepared artifacts never probe Java or start loca
   assert.equal(execute.mock.callCount(),0);assert.equal(spawn.mock.callCount(),0);
 });
 
+test("a busy runtime lock does not stall automatic BSL observation", async t => {
+  const { f, backend } = await ready_fixture(t);
+  await backend.main({ action: "update", set: { bslLsEnabled: true } }); grant_preparation(f.state, f.root, ["bsl-ls"]);
+  const lock = path.join(f.state, "operation.lock"); fs.writeFileSync(lock, String(process.pid));
+  const started = Date.now();
+  await assert.rejects(installed_runtime(f.state, backend.effective(backend.current()), "bsl-ls", false, false, 1), error => error.code === "RUNTIME_BUSY");
+  assert.ok(Date.now() - started < 5000); fs.unlinkSync(lock);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
+
 test("local BSL compatibility survives setup expiry and unrelated changes without launching Java", async t => {
   const {f,backend,authorization}=await ready_fixture(t);
   await backend.main({action:"update",set:{bslLsEnabled:true}});
@@ -296,6 +613,10 @@ test("first BSL preparation accepts its own installation, reuses unchanged API e
   assert.equal(busy.componentChecks[0].state,"preparing");assert.equal(busy.componentChecks[0].validity,undefined);assert.equal(launches,4);
   const retry=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
   assert.equal(retry.componentChecks[0].state,"ready");assert.equal(launches,5,"temporary lock contention must allow the next refresh to retry");
+  save_component_checks(f.state,backend.effective(backend.current()),f.profile,[{id:"bsl-ls",state:"error",inputRevision:retry.componentChecks[0].inputRevision}]);
+  const recovered=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
+  assert.equal(recovered.componentChecks[0].state,"ready");assert.equal(launches,6,"a transient error must be retried using the existing grant");
+  await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});assert.equal(launches,6,"successful unchanged evidence must be reused");
   for(const file of pidFiles)assert.equal(alive(Number(fs.readFileSync(file,"utf8"))),false);
 });
 
@@ -318,8 +639,9 @@ test("local BSL evidence follows its launch inputs and a passive refresh cannot 
   const oldOptions=process.env.JAVA_TOOL_OPTIONS;process.env.JAVA_TOOL_OPTIONS="-Dfixture=changed";assert.equal(state(),"check_stale");
   if(oldOptions===undefined)delete process.env.JAVA_TOOL_OPTIONS;else process.env.JAVA_TOOL_OPTIONS=oldOptions;
   fs.writeFileSync(configuration,'{"changed":true}');
+  const receiptFile=path.join(instance_directory(f.state,f.root),"first.readiness.json"),before=fs.readFileSync(receiptFile,"utf8");
   const result=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component:"bsl-ls"});
-  assert.equal(result.componentChecks[0].state,"check_stale");assert.equal(result.componentChecks[0].checkedAt,proof.checkedAt);
+  assert.equal(result.componentChecks[0].state,"not_verified");assert.deepEqual(JSON.parse(fs.readFileSync(receiptFile,"utf8")).components["bsl-ls"],JSON.parse(before).components["bsl-ls"]);
   assert.equal(state(),"check_stale");fs.writeFileSync(configuration,"{}");assert.equal(state(),"ready");
   process.env.EDT_AI_INSTANCE="another";assert.deepEqual(read_component_checks(f.state,config,f.profile),[]);
 });
@@ -335,7 +657,7 @@ test("external BSL checks keep their time limit and local legacy evidence is not
   assert.equal(read_component_checks(f.state,config,f.profile)[0].state,"check_stale");
 });
 
-test("passive managed probes preserve index expiry and durable BSL evidence without launching services", async t => {
+test("managed refresh does not renew expired index proof or relaunch an unchanged BSL", async t => {
   const {f,backend}=await ready_fixture(t);
   await backend.main({action:"update",set:{codeIndexEnabled:true,bslLsEnabled:true}});
   const config=backend.effective(backend.current()),home=path.join(project_directory(f.state,f.root),"code-index");
@@ -353,8 +675,8 @@ test("passive managed probes preserve index expiry and durable BSL evidence with
   t.after(()=>{t.mock.restoreAll();syncBuiltinESMExports();});
   for(const component of ["code-index","bsl-ls"]){
     const result=await backend.main({action:"refresh_readiness",scope:f.root+"#first",component}),check=result.componentChecks[0];
-    assert.equal(check.state,component==="bsl-ls"?"ready":"check_stale");
-    if(component==="code-index"){assert.equal(check.checkedAt,checkedAt);assert.equal(check.expiresAt,expiresAt);assert.match(check.detail,/Подготовить и проверить/);}
+    assert.equal(check.state,component==="bsl-ls"?"ready":"not_verified");
+    if(component==="code-index"){assert.ok(Date.parse(check.checkedAt)>Date.parse(checkedAt));assert.match(check.detail,/актуальность индекса не подтверждена/);}
     else assert.equal(check.expiresAt,null);
     const saved=(await backend.main({action:"read"})).componentChecks.find(item=>item.id===component);
     assert.equal(saved.state,check.state);if(component==="code-index")assert.match(saved.detail,/Подготовить и проверить/);
@@ -409,6 +731,20 @@ async function live_index_fixture(t) {
   return { f, backend, home, exe, starts, health, setHealth, refresh };
 }
 
+test("a replacement index process cannot inherit the previous process API proof", async t => {
+  const {f,backend,home,refresh}=await live_index_fixture(t),config=backend.effective(backend.current());
+  save_component_checks(f.state,config,f.profile,[{id:"code-index",state:"ready"}]);
+  const unchanged=await refresh();assert.equal(unchanged.componentChecks[0].state,"not_verified","liveness cannot prove that a PID was not reused");
+  save_component_checks(f.state,config,f.profile,[{id:"code-index",state:"ready"}]);
+  const daemonFile=path.join(home,"daemon.json"),daemon=JSON.parse(fs.readFileSync(daemonFile,"utf8"));
+  daemon.pid+=1;fs.writeFileSync(daemonFile,JSON.stringify(daemon));
+  const fetch=globalThis.fetch;
+  t.mock.method(globalThis,"fetch",(url,options)=>String(url).endsWith("/health")
+    ? Promise.resolve(new Response(JSON.stringify({pid:daemon.pid,status:"running",paths:[{path:f.root,status:"ready"}]}),{status:200,headers:{"content-type":"application/json"}}))
+    : fetch(url,options));
+  const result=await refresh();assert.equal(result.componentChecks[0].state,"not_verified");assert.equal(result.managed[0].ready,false);
+});
+
 test("prepared index refresh replaces liveness and cached results with current read-only API evidence", async t => {
   const { f, backend, home, starts, health, setHealth, refresh } = await live_index_fixture(t);
   const config = backend.effective(backend.current()), files = ["daemon.json", "owner.json", "daemon.toml"];
@@ -456,9 +792,36 @@ test("index observation never launches an unapproved, stopped, foreign or modifi
   assert.match((await refresh()).managed[0].detail, /исполняемый файл/);
   fs.writeFileSync(path.join(home, "daemon.json"), "{}");
   const unavailable = (await refresh()).managed[0];
-  assert.equal(unavailable.state, "stopped"); assert.equal(starts.length, 0);
-  assert.match(unavailable.detail, /Сервис индекса недоступен.*Подготовить и проверить/);
+  assert.equal(unavailable.state, "not_verified"); assert.equal(starts.length, 0);
+  assert.match(unavailable.detail, /процесс может работать/);
   assert.doesNotMatch(unavailable.detail, /не запущен|разрешённую подготовку/);
+});
+
+test("a temporary invalid index health response does not claim the live daemon is stopped", async t => {
+  const { f, starts, health, setHealth, refresh } = await live_index_fixture(t);
+  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
+  assert.equal((await refresh()).managed[0].state, "ready");
+  const fetch = globalThis.fetch;
+  const broken = t.mock.method(globalThis, "fetch", (url, options) => String(url).endsWith("/health")
+    ? Promise.resolve(new Response("not JSON", { status: 200 })) : fetch(url, options));
+  const unavailable = (await refresh()).managed[0];
+  assert.equal(unavailable.state, "not_verified"); assert.match(unavailable.detail, /процесс может работать/);
+  broken.mock.restore();
+  assert.equal((await refresh()).managed[0].state, "ready"); assert.equal(starts.length, 2);
+});
+
+test("a failed component probe cannot replace other component results", async t => {
+  const { f, backend, url } = await ready_fixture(t), config = backend.current();
+  for (const id of ["code-index", "bsl-ls"]) Object.assign(config.mcp.managed[id], { enabled: true, mode: "external", url: url + (id === "code-index" ? "/index" : "/bsl") });
+  fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(config));
+  await backend.main({ action: "update", set: { codeIndexEnabled: true, bslLsEnabled: true } });
+  const main = backend.main.bind(backend);
+  t.mock.method(backend, "main", (request, ...args) => request.action === "probe" && request.component === "openviking" && request.collectOnly
+    ? Promise.reject(new Error("opaque-secret-from-broken-probe")) : main(request, ...args));
+  const result = await main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.equal(result.componentChecks.find(item => item.id === "openviking").state, "not_verified");
+  for (const id of ["code-index", "bsl-ls"]) assert.equal(result.componentChecks.find(item => item.id === id).state, "ready");
+  assert.equal(JSON.stringify(result).includes("opaque-secret-from-broken-probe"), false);
 });
 
 test("automatic readiness verifies live managed APIs instead of relying on saved BSL LS evidence",async t=>{

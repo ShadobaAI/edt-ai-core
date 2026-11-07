@@ -50,7 +50,7 @@ test("addressed probes preserve other results, do not prepare services and expir
   process.env.EDT_AI_INSTANCE = f.env.EDT_AI_INSTANCE;
   assert.deepEqual((await backend.main({ action: "read" })).componentChecks, before);
   f.profile.project.id = "changed-profile"; f.save();
-  assert.ok((await backend.main({ action: "read" })).componentChecks.every(item => item.state === "check_stale"));
+  assert.deepEqual((await backend.main({ action: "read" })).componentChecks, before, "renaming the project does not change any component probe inputs");
   await assert.rejects(backend.main({ action: "probe", component: "unknown" }), /компонент/);
   await assert.rejects(backend.main({ action: "probe", component: "edt", connections: { v8std: "" } }), /только выбранного/);
 });
@@ -74,7 +74,8 @@ test("addressed external probe contacts only its endpoint and preserves a full s
   assert.equal(result.componentChecks[0].state, "ready", JSON.stringify(result));
   assert.ok(requests.length > 0); assert.ok(requests.every(item => item.path === "/v8std"));
   let current = await backend.main({ action: "read" });
-  assert.deepEqual(current.readiness, setup); assert.equal(current.componentChecks.find(item=>item.id==="v8std").state, "ready");
+  assert.equal(current.readiness.state,setup.state);assert.equal(current.readiness.checkedAt,setup.checkedAt);assert.equal(current.readiness.expiresAt,setup.expiresAt);
+  assert.equal(current.componentChecks.find(item=>item.id==="v8std").state, "ready");
   const saved = current.componentChecks.find(item=>item.id==="v8std");
   const draft = await backend.main({ action: "probe", component: "v8std", connections: { v8std: "" } });
   assert.equal(draft.draft, true); assert.equal(draft.componentChecks[0].state, "missing_config");
@@ -84,7 +85,7 @@ test("addressed external probe contacts only its endpoint and preserves a full s
   assert.equal(read_component_checks(f.state, config, project_profile(f.root)).find(item=>item.id==="v8std").state, "check_stale");
 });
 
-test("YaXUnit requires EDT launch evidence while Vanessa retains its configured contour state", async t => {
+test("YaXUnit requires EDT launch evidence and Vanessa requires its runtime profile", async t => {
   const f = fixture(t); environment(t, f.env);
   f.profile.testing.yaxunit = true;
   f.profile.testing.yaxunit_config = { repository_id: "product", runner: "edt", results: "test-results" };
@@ -93,9 +94,9 @@ test("YaXUnit requires EDT launch evidence while Vanessa retains its configured 
   f.save(); const backend = new SettingsBackend();
   for (const component of ["yaxunit", "vanessa"]) {
     const result = await backend.main({ action: "probe", component });
-    assert.equal(result.componentChecks[0].state, component === "yaxunit" ? "error" : "configured");
+    assert.equal(result.componentChecks[0].state, component === "yaxunit" ? "error" : "missing_config");
     if (component === "yaxunit") assert.equal(result.componentChecks[0].reasonCode, "edt_unavailable");
-    else assert.match(result.componentChecks[0].detail, /не проверена/);
+    else assert.match(result.componentChecks[0].detail, /Не найден runtime-профиль/);
     assert.deepEqual(result.external, {});
   }
   assert.equal(fs.existsSync(f.env.EDT_AI_SETTINGS), false);
@@ -134,14 +135,14 @@ test("external managed probes use the existing smoke gate only for the selected 
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
 });
 
-test("local checks retain the last API result without extending its lifetime or hiding errors", async t => {
+test("local checks retain successful API evidence and do not treat an old error as current", async t => {
   const f = fixture(t); environment(t, f.env); f.save(); const backend = new SettingsBackend();
   const config = backend.effective(backend.current()), profile = project_profile(f.root);
   for (const state of ["ready", "error"]) {
     const saved = save_component_checks(f.state, config, profile, [{ id: "bsl-ls", state, detail: "Последняя проверка", checkedAt: new Date(Date.now() - 1000).toISOString() }])[0];
     const checked = (await backend.main({ action: "probe", component: "bsl-ls" })).componentChecks[0];
-    assert.equal(checked.state, state); assert.equal(checked.checkedAt, saved.checkedAt); assert.equal(checked.expiresAt, saved.expiresAt);
-    assert.deepEqual((await backend.main({ action: "probe", component: "bsl-ls" })).componentChecks[0], checked);
+    assert.equal(checked.state, state === "ready" ? "ready" : "not_verified");
+    if (state === "ready") { assert.equal(checked.checkedAt, saved.checkedAt); assert.equal(checked.expiresAt, saved.expiresAt); }
   }
   assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
 });
@@ -185,7 +186,10 @@ test("settings can be saved during background readiness without publishing the o
   const job=(await client.call("settings.refresh_readiness",{scope:f.root+"#first"})).structuredContent;await started;
   const saved=(await client.call("settings.update",{set:{edtUrl:""}})).structuredContent;
   assert.equal(saved.values.edtUrl,"");
-  await assert.rejects(client.call("settings.run_check",{authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"}}),/ещё выполняется/);
+  const foreground=(await client.call("settings.run_check",{authorization:{scope:f.root+"#first",effects:["launch"],evidence:"user requested setup check"}})).structuredContent;
+  assert.equal(foreground.action,"check");
+  const finished=(await client.call("settings.operation",{operationId:foreground.id,waitMs:10000})).structuredContent;
+  assert.equal(finished.status,"completed");assert.notEqual(finished.result.superseded,true);
   const other=path.join(f.base,"other");fs.mkdirSync(other);dump(f.profile,path.join(other,".ai/project.yaml"));
   const selected=(await client.call("settings.select_profile",{projectRoot:other})).structuredContent;
   assert.equal(selected.viewOnly,false);assert.equal(selected.values.projectRoot,other);

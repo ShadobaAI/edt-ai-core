@@ -58,31 +58,35 @@ export async function probe_connections(config, root, profile, state, component 
   const testingChecks = [];
   if (!component && knowledge.state !== "disabled") names.push("openviking");
   const external = Object.fromEntries(await Promise.all(names.map(async name => {
+    const finished = item => { item.checkedAt ||= new Date().toISOString(); return [name, item]; };
     if (name === "openviking" && ["invalid", "not_configured"].includes(knowledge.state))
-      return [name, { configured: false, connected: false, ready: false, state: knowledge.state, failure: { category: "configuration" }, detail: knowledge.detail }];
+      return finished({ configured: false, connected: false, ready: false, state: knowledge.state, failure: { category: "configuration" }, detail: knowledge.detail });
     const options = config.mcp.required[name] || config.mcp.optional[name];
-    if (!options?.url || options.enabled === false) return [name, { configured: false, connected: false, ready: false, failure: { category: "configuration" } }];
+    if (!options?.url || options.enabled === false) return finished({ configured: false, connected: false, ready: false, failure: { category: "configuration" } });
     if (name === "openviking") {
       const bounded = structuredClone(config);
       bounded.mcp.optional.openviking.timeout_seconds = Math.min(options.timeout_seconds || 20, 30);
       const adapter = new OpenVikingAdapter(profile, bounded, null, null, root, state);
       const result = { configured: true, connected: false, ready: false, access: "not_verified",
         searchReadiness: "not_verified", collections: knowledge.collections, detail: knowledge.detail };
+      let timedOut = false, deadlineClose = null;
+      const deadlineTimer = setTimeout(() => { timedOut = true; deadlineClose = adapter.close(); }, Math.min(options.timeout_seconds || 20, 25) * 1000);
       try {
         const evidence = knowledge_evidence_revision(config, root, profile, state);
         Object.assign(result, await adapter.connect()); Object.assign(result, await adapter.verifyReadiness());
+        if (timedOut) throw new Error("Истекло общее время проверки OpenViking.");
         if (evidence !== knowledge_evidence_revision(config, root, profile, state)) throw new Error("Подтверждения знаний изменились во время проверки настройки; повторите проверку готовности");
         observations.set(result, { key: observationKey, evidence, status: structuredClone(result) });
       }
       catch (error) { Object.assign(result, adapter.status(), { ready: false, lifecycle: adapter.connected ? "connected" : "configured",
         searchReadiness: "not_verified", readiness: { state: "not_verified" }, failure: connection_failure(error, adapter.connected ? "index" : "configuration"), detail: safe_error_message(error) }); }
-      finally { await adapter.close().catch(() => {}); }
-      return [name, result];
+      finally { clearTimeout(deadlineTimer); await deadlineClose?.catch(() => {}); await adapter.close().catch(() => {}); }
+      return finished(result);
     }
     const client = new RemoteMcp(options.url, Math.min(options.timeout_seconds || 20, 30), { headers_env: options.headers_env, maxBytes: options.max_response_bytes });
     const result = { configured: true, connected: false, ready: false, projectReadiness: "not_verified" };
     let deadlineClose = null, timedOut = false;
-    const deadlineTimer = name === "edt" && includeYaxunit ? setTimeout(() => { timedOut = true; deadlineClose = client.close(); }, Math.min(options.timeout_seconds || 20, 30) * 1000) : null;
+    const deadlineTimer = setTimeout(() => { timedOut = true; deadlineClose = client.close(); }, Math.min(options.timeout_seconds || 20, 25) * 1000);
     let phase = "authorization";
     try {
       client.credential_headers();
@@ -112,19 +116,24 @@ export async function probe_connections(config, root, profile, state, component 
             }
           }
         }
-        if (includeYaxunit) testingChecks.push(await probe_yaxunit(config, root, profile, { client, tools, projectResponse }));
+        result.ready = result.projectReadiness === "verified";
+        result.checkedAt = new Date().toISOString();
+        if (includeYaxunit) testingChecks.push({ ...(await probe_yaxunit(config, root, profile, { client, tools, projectResponse })), checkedAt: new Date().toISOString() });
       }
-      result.ready = name === "edt" ? result.projectReadiness === "verified" : true;
+      if (timedOut && !(name === "edt" && result.checkedAt)) throw new Error("Истекло общее время проверки подключения.");
+      if (timedOut && name === "edt" && includeYaxunit && profile.testing.yaxunit === true)
+        testingChecks.splice(0, testingChecks.length, { ...yaxunit_result("timeout"), checkedAt: new Date().toISOString() });
+      if (name !== "edt") result.ready = true;
       if (!result.ready && !result.failure && (!result.repositories || result.repositories.some(item => !item.matched))) result.failure = { category: "access_scope" };
     } catch (error) {
-      result.detail = safe_error_message(error); result.failure = connection_failure(error, phase);
-      if (name === "edt" && includeYaxunit && profile.testing.yaxunit === true && !testingChecks.length) testingChecks.push(yaxunit_result(timedOut ? "timeout" : error.code === -32601 ? "api_unsupported" : result.connected ? "request_failed" : "edt_unavailable", { diagnostic: { failure: result.failure, detail: result.detail } }));
+      if (!(name === "edt" && result.checkedAt && timedOut)) { result.detail = safe_error_message(error); result.failure = connection_failure(error, phase); }
+      if (name === "edt" && includeYaxunit && profile.testing.yaxunit === true && !testingChecks.length) testingChecks.push({ ...yaxunit_result(timedOut ? "timeout" : error.code === -32601 ? "api_unsupported" : result.connected ? "request_failed" : "edt_unavailable", { diagnostic: { failure: result.failure, detail: result.detail } }), checkedAt: new Date().toISOString() });
     }
     finally { clearTimeout(deadlineTimer); await deadlineClose; await client.close().catch(() => {}); }
-    return [name, result];
+    return finished(result);
   })));
   const status = setup_knowledge_status(profile, config, root, external.openviking, state);
-  if (includeYaxunit && !testingChecks.length) testingChecks.push(profile.testing.yaxunit === true ? yaxunit_result(external.edt?.connected ? "api_unsupported" : "edt_unavailable", { diagnostic: external.edt?.failure }) : yaxunit_unchecked(profile));
+  if (includeYaxunit && !testingChecks.length) testingChecks.push({ ...(profile.testing.yaxunit === true ? yaxunit_result(external.edt?.connected ? "api_unsupported" : "edt_unavailable", { diagnostic: external.edt?.failure }) : yaxunit_unchecked(profile)), checkedAt: new Date().toISOString() });
   return { projectRoot: root, external, ...(includeYaxunit ? { componentChecks: testingChecks } : {}), knowledge: status, verificationLimits: verification_limits(status.ready),
     scope: "setup_probe", fullReadiness: "not_verified", chatRelay: "not_verified",
     detail: "Проверено отдельное подключение к серверам; каталог инструментов и привязка relay текущего чата не проверены." };

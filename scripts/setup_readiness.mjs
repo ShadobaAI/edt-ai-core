@@ -9,6 +9,7 @@ import { knowledge_evidence_revision } from "./components.mjs";
 import { verification_limits, sanitize_setup_result, register_diagnostic_secrets } from "./diagnostics.mjs";
 import { project_profile } from "./profile.mjs";
 import { which } from "./processes.mjs";
+import { open_reader, reader_active } from "./reader_lease.mjs";
 import { yaxunit_result, yaxunit_unchecked } from "./yaxunit_readiness.mjs";
 
 const digest = file => is_file(file) ? sha256(fs.readFileSync(file)) : "missing";
@@ -16,6 +17,116 @@ const receipt_file = (state, root) => path.join(instance_directory(state, root),
 const observations_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".readiness-observations.json");
 const checked_components = ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"];
 const local_bsl = config => config.mcp.managed["bsl-ls"].mode !== "external";
+
+// Shared across settings MCP sessions for the same project and instance. The
+// generation prevents a delayed background child from starting after a newer
+// foreground check; active leases make later background observations transient.
+function priority_paths(state, root, instance) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(instance)) throw new ConfigError("Некорректный идентификатор экземпляра.");
+  const base = path.join(project_directory(state, root), "coordination");
+  return { generation: inside(state, path.relative(state, path.join(base, instance + ".readiness-priority"))),
+    active: inside(state, path.relative(state, path.join(base, instance + ".readiness-active"))) };
+}
+function priority_revision(file) {
+  try {
+    const value = fs.readFileSync(file, "utf8");
+    if (!/^[a-f0-9-]{36}$/.test(value)) throw new ConfigError("Некорректная ревизия проверки готовности.");
+    return value;
+  } catch (error) { if (error.code === "ENOENT") return ""; throw error; }
+}
+export function begin_foreground_readiness(state, root, instance, id) {
+  const paths = priority_paths(state, root, instance), marker = inside(state, path.relative(state, path.join(paths.active, id)));
+  fs.mkdirSync(paths.active, { recursive: true });
+  atomic_write(marker, JSON.stringify({ pid: process.pid, id, phase: "starting" }), false);
+  try { atomic_write(paths.generation, id); }
+  catch (error) { fs.rmSync(marker, { force: true }); throw error; }
+  return marker;
+}
+export async function activate_foreground_readiness(state, root, instance, marker, id) {
+  const lease = await open_reader(id);
+  try {
+    atomic_write(inside(state, path.relative(state, marker)), JSON.stringify({ pid: process.pid, id, phase: "active" }));
+    // Invalidates observations dispatched while the listener was starting.
+    atomic_write(priority_paths(state, root, instance).generation, randomUUID());
+    return lease;
+  } catch (error) { await lease.close().catch(() => {}); throw error; }
+}
+export async function foreground_readiness_active(state, root, instance) {
+  const paths = priority_paths(state, root, instance); let names;
+  try { names = fs.readdirSync(paths.active); }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
+  for (const name of names) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(name)) continue;
+    let record;
+    try { record = JSON.parse(fs.readFileSync(inside(state, path.relative(state, path.join(paths.active, name))), "utf8")); }
+    catch { /* An incomplete old record can still be identified by its endpoint. */ }
+    if (record?.finished === true || record?.phase === "starting") continue;
+    try { if (await reader_active(name)) return true; } catch { return true; }
+  }
+  return false;
+}
+export function release_foreground_readiness(state, marker) {
+  try {
+    marker = inside(state, path.relative(state, marker));
+    try { fs.lstatSync(marker); } catch (error) { if (error.code === "ENOENT") return true; throw error; }
+    let released = false;
+    // A completed record is sufficient even if Windows briefly denies unlink.
+    try { atomic_write(marker, JSON.stringify({ pid: process.pid, finished: true })); released = true; } catch {}
+    try { fs.rmSync(marker, { force: true }); released = true; } catch {}
+    if (released) try { fs.rmdirSync(path.dirname(marker)); } catch {}
+    return released;
+  } catch { return false; }
+}
+export function capture_readiness_priority(state, root, instance) {
+  return { revision: priority_revision(priority_paths(state, root, instance).generation) };
+}
+export function readiness_priority_current(state, root, instance, priority) {
+  return priority_revision(priority_paths(state, root, instance).generation) === priority.revision;
+}
+
+// Vanessa's endpoint and expected manager base are stored in a separate local
+// runtime file. Include its bounded contents in this component's evidence only.
+export function vanessa_readiness_fingerprint(state, config, profile, fingerprint = readiness_fingerprint(state, config, profile)) {
+  let runtime = "missing";
+  try {
+    const relative = profile.testing?.vanessa_config?.runtime_profile;
+    if (relative) {
+      const file = inside(config.active_project, relative);
+      if (!fs.statSync(file).isFile()) runtime = "not-a-file";
+      else {
+        const fd = fs.openSync(file, "r");
+        try {
+          if (!fs.fstatSync(fd).isFile()) runtime = "not-a-file";
+          else {
+            const bytes = Buffer.alloc(65537); let size = 0;
+            while (size < bytes.length) {
+              const count = fs.readSync(fd, bytes, size, bytes.length - size, size);
+              if (!count) break;
+              size += count;
+            }
+            if (size > 65536) runtime = "too-large";
+            else {
+              const content = bytes.subarray(0, size), fileIdentity = fs.realpathSync.native(file);
+              runtime = { digest: sha256(content), file: fileIdentity };
+              try {
+                const raw = JSON.parse(content.toString("utf8").replace(/^\uFEFF/, ""));
+                const base = raw?.manager?.infobase;
+                if (base?.type === "file" && typeof base.path === "string" && base.path) {
+                  const target = path.resolve(path.dirname(fileIdentity), base.path);
+                  try {
+                    const actual = fs.realpathSync.native(target), stat = fs.statSync(actual);
+                    runtime.managerBase = stat.isDirectory() ? { path: actual, device: stat.dev, inode: stat.ino } : "not-a-directory";
+                  } catch { runtime.managerBase = "unavailable"; }
+                }
+              } catch { /* Invalid runtime JSON cannot yield a confirmed manager. */ }
+            }
+          }
+        } finally { fs.closeSync(fd); }
+      }
+    }
+  } catch (error) { runtime = error.code === "ENOENT" ? "missing" : "unavailable"; }
+  return sha256(stable({ fingerprint, runtime }));
+}
 
 // Local API compatibility survives time passing and unrelated project changes.
 // Inspect launch inputs without executing Java or starting the language server.
@@ -45,9 +156,44 @@ function component_record(state, config, check, checkedAt, fingerprint) {
   const durable = check.id === "bsl-ls" && local_bsl(config) && ["ready", "error"].includes(check.state);
   const observedAt = check.checkedAt || checkedAt;
   const inputRevision = durable ? check.inputRevision || bsl_readiness_fingerprint(state, config) : null;
-  return { fingerprint: inputRevision || fingerprint, result: sanitize_setup_result({ ...result, checkedAt: observedAt,
+  return { fingerprint: inputRevision || fingerprint, fingerprintVersion: 2, result: sanitize_setup_result({ ...result, checkedAt: observedAt,
     ...(durable ? { validity: "inputs", inputRevision, expiresAt: null } : {
-      expiresAt: new Date(Math.min(Date.parse(observedAt) + 15 * 60 * 1000, Number.isFinite(Date.parse(check.expiresAt)) ? Date.parse(check.expiresAt) : Infinity)).toISOString() }) }) };
+      expiresAt: new Date(Math.min(Date.parse(observedAt) + (check.id === "vanessa" ? 60 * 1000 : 15 * 60 * 1000), Number.isFinite(Date.parse(check.expiresAt)) ? Date.parse(check.expiresAt) : Infinity)).toISOString() }) }) };
+}
+
+// Each observation is invalidated by the inputs its probe actually uses. The
+// full setup receipt remains tied to readiness_fingerprint, which intentionally
+// covers the whole environment. Never persist the header values themselves.
+function component_fingerprint(state, config, profile, id) {
+  const root = config.active_project, instance = instance_name();
+  const connection = options => ({ options, credentials: Object.fromEntries(Object.entries(options?.headers_env || {}).map(([header, name]) => [header, process.env[name] || null])) });
+  const policy = { edt_repository_ids: [...profile.policy?.edt_repository_ids || []].sort(), unbound_edt_repositories: [...profile.policy?.unbound_edt_repositories || []].sort() };
+  const repositories = items => repository_projects(root, items);
+  const edt = items => ({ connection: connection(config.mcp.required.edt), repositories: repositories(items), policy });
+  let inputs;
+  if (id === "edt") inputs = edt(profile.repositories.filter(item => !policy.unbound_edt_repositories?.includes(item.id)));
+  else if (id === "v8std") inputs = connection(config.mcp.required.v8std);
+  else if (id === "openviking") inputs = { options: config.mcp.optional.openviking, knowledge: profile.knowledge,
+    evidence: knowledge_evidence_revision(config, root, profile, state) };
+  else if (id === "yaxunit") {
+    const test = profile.testing?.yaxunit_config || {}, ids = new Set([test.repository_id, test.framework_repository_id, ...(test.product_repository_ids || [])]);
+    inputs = { connection: connection(config.mcp.required.edt), repositories: repositories(profile.repositories.filter(item => ids.has(item.id))),
+      unbound: policy.unbound_edt_repositories.filter(id => ids.has(id)), testing: { yaxunit: profile.testing?.yaxunit, configured: Boolean(profile.testing?.yaxunit_config),
+        repository_id: test.repository_id, framework_repository_id: test.framework_repository_id, product_repository_ids: [...test.product_repository_ids || []].sort(), launch_configuration: test.launch_configuration } };
+  }
+  else if (id === "vanessa") {
+    const test = profile.testing?.vanessa_config;
+    const relevant = sha256(stable({ root, instance, vanessa: profile.testing?.vanessa, configured: Boolean(test), runtime_profile: test?.runtime_profile, server_name: test?.server_name }));
+    return vanessa_readiness_fingerprint(state, config, profile, relevant);
+  } else if (id === "code-index") {
+    const home = path.join(project_directory(state, root), "code-index"), options = config.mcp.managed[id];
+    let runtime = null;
+    if (options.mode !== "external") try { runtime = JSON.parse(fs.readFileSync(path.join(state, "runtime-lock.json"), "utf8"))[id] || null; } catch {}
+    inputs = { connection: connection(options), repositories: repositories(profile.repositories), policy,
+      ...(options.mode !== "external" ? { runtime, daemon: ["daemon.json", "owner.json", "daemon.toml"].map(file => digest(path.join(home, file))) } : {}) };
+  } else if (id === "bsl-ls") inputs = connection(config.mcp.managed[id]);
+  else throw new ConfigError("Выберите компонент для проверки.");
+  return sha256(stable({ root, instance, id, inputs }));
 }
 export function readiness_receipt_revision(state, root, components = null) {
   const file = receipt_file(state, root);
@@ -137,16 +283,17 @@ export function setup_assets(pluginRoot = ROOT) {
   return { checks, fingerprint: sha256(Buffer.from(stable([...files].sort().map(name => [name, digest(inside(pluginRoot, name))])))) };
 }
 
-export function readiness_fingerprint(state, config, profile, assets = setup_assets(), { includeDaemonOwner = true } = {}) {
+export function readiness_fingerprint(state, config, profile, assets = setup_assets(), { includeDaemonOwner = true, includeRuntime = true, includeReconnect = true } = {}) {
   return sha256(Buffer.from(stable({ root: config.active_project, instance: instance_name(), config, profile, assets: assets.fingerprint,
-    runtime: digest(path.join(state, "runtime-lock.json")), edt: edt_connection(config.active_project), descriptors: repository_projects(config.active_project, profile.repositories), reconnect: digest(reconnect_file(state, config.active_project)),
-    ...(includeDaemonOwner ? { daemonOwner: digest(path.join(project_directory(state, config.active_project), "code-index/owner.json")) } : {}),
+    ...(includeRuntime ? { runtime: digest(path.join(state, "runtime-lock.json")) } : {}), edt: edt_connection(config.active_project), descriptors: repository_projects(config.active_project, profile.repositories),
+    ...(includeReconnect ? { reconnect: digest(reconnect_file(state, config.active_project)) } : {}),
+    ...(includeDaemonOwner ? { daemonOwner: digest(path.join(project_directory(state, config.active_project), "code-index/owner.json")), daemon: digest(path.join(project_directory(state, config.active_project), "code-index/daemon.json")) } : {}),
     instructions: ["AGENTS.md", ".ai/PROJECT.md"].map(name => digest(inside(config.active_project, name))),
     knowledge: knowledge_evidence_revision(config, config.active_project, profile, state),
   })));
 }
 
-export function save_readiness(state, config, profile, managed, external, testing = []) {
+export function save_readiness(state, config, profile, managed, external, testing = [], { componentChecks = null, maxExpiresAt = Infinity } = {}) {
   register_diagnostic_secrets(config);
   const assets = setup_assets();
   const knowledge = setup_knowledge_status(profile, config, config.active_project, external.openviking, state);
@@ -161,16 +308,21 @@ export function save_readiness(state, config, profile, managed, external, testin
     verificationLimits: verification_limits(knowledge.ready),
     workflowReadiness: { state: "not_checked", scope: "workflow", detail: "Проверка настройки не разрешает действия задачи и не подтверждает знания другой сессии." } };
   result.expiresAt = new Date(Math.min(Date.parse(result.checkedAt) + 15 * 60 * 1000,
-    knowledge.ready ? Date.parse(knowledge.readiness.expiresAt) : Infinity)).toISOString();
+    knowledge.ready ? Date.parse(knowledge.readiness.expiresAt) : Infinity, maxExpiresAt)).toISOString();
   const safe = sanitize_setup_result(result);
   const components = component_receipt(state, config.active_project).components || {};
-  for (const id of [...managed.map(item => item.name), ...Object.keys(external)]) delete components[id];
-  delete components.yaxunit;
-  const bsl = managed.find(item => item.name === "bsl-ls");
-  if (bsl && local_bsl(config) && ["ready", "error"].includes(bsl.state))
-    components["bsl-ls"] = component_record(state, config, { ...bsl, id: "bsl-ls" }, safe.checkedAt);
-  atomic_write(receipt_file(state, config.active_project), JSON.stringify({ version: 3, fingerprint: readiness_fingerprint(state, config, profile, assets), result: safe, components }));
-  return safe;
+  const fingerprint = readiness_fingerprint(state, config, profile, assets);
+  let savedChecks;
+  if (componentChecks) savedChecks = merge_component_checks(state, config, profile, components, componentChecks, safe.checkedAt);
+  else {
+    for (const id of [...managed.map(item => item.name), ...Object.keys(external)]) delete components[id];
+    delete components.yaxunit;
+    const bsl = managed.find(item => item.name === "bsl-ls");
+    if (bsl && local_bsl(config) && ["ready", "error"].includes(bsl.state))
+      components["bsl-ls"] = component_record(state, config, { ...bsl, id: "bsl-ls" }, safe.checkedAt);
+  }
+  atomic_write(receipt_file(state, config.active_project), JSON.stringify({ version: 3, fingerprint, result: safe, components }));
+  return componentChecks ? { readiness: safe, componentChecks: savedChecks } : safe;
 }
 
 function component_receipt(state, root) {
@@ -189,36 +341,52 @@ function component_receipt(state, root) {
 export function save_component_checks(state, config, profile, checks) {
   register_diagnostic_secrets(config);
   const receipt = component_receipt(state, config.active_project), checkedAt = new Date().toISOString();
-  const fingerprint = readiness_fingerprint(state, config, profile);
   receipt.version = 3; receipt.components ||= {};
-  for (const check of checks) {
-    if (check.id === "bsl-ls" && local_bsl(config) && check.validity === "inputs" && check.state === "check_stale") continue;
-    receipt.components[check.id] = component_record(state, config, check, checkedAt, fingerprint);
-  }
+  if (receipt.result?.knowledge?.ready === true && checks.some(check => check.id === "openviking" && check.state !== "ready")) receipt.knowledgeInvalidated = true;
+  const saved = merge_component_checks(state, config, profile, receipt.components, checks, checkedAt);
   atomic_write(receipt_file(state, config.active_project), JSON.stringify(receipt));
-  return checks.map(check => check.id === "bsl-ls" && local_bsl(config) && check.validity === "inputs" && check.state === "check_stale"
-    ? sanitize_setup_result(check) : receipt.components[check.id].result);
+  return saved;
+}
+function merge_component_checks(state, config, profile, components, checks, checkedAt) {
+  for (const check of checks) {
+    if (check.id === "bsl-ls" && local_bsl(config) && (check.validity === "inputs" && check.state === "check_stale" || check.preservePrevious === true && components["bsl-ls"]?.result?.validity === "inputs")) continue;
+    const inputs = component_fingerprint(state, config, profile, check.id);
+    components[check.id] = component_record(state, config, check, checkedAt, inputs);
+  }
+  return checks.map(check => {
+    if (check.id === "bsl-ls" && local_bsl(config) && (check.validity === "inputs" && check.state === "check_stale" || check.preservePrevious === true && components["bsl-ls"]?.result?.validity === "inputs")) {
+      const { preservePrevious, ...result } = check; return sanitize_setup_result(result);
+    }
+    return components[check.id].result;
+  });
 }
 
 export function read_component_checks(state, config, profile) {
   if (!config.active_project || profile.status && profile.status !== "loaded") return [];
   const entries = Object.values(component_receipt(state, config.active_project).components || {});
   if (!entries.length) return [];
-  const fingerprint = readiness_fingerprint(state, config, profile.status ? project_profile(config.active_project) : profile);
+  const data = profile.status ? project_profile(config.active_project) : profile;
+  let legacyFingerprint;
   const bslFingerprint = entries.some(entry => entry?.result?.id === "bsl-ls" && entry.result.validity === "inputs") && local_bsl(config)
     ? bsl_readiness_fingerprint(state, config) : null;
   return entries.flatMap(entry => {
     if (!entry || typeof entry !== "object") return [];
     const { fingerprint: saved, result } = entry;
-    if (!result || typeof result.id !== "string" || typeof result.state !== "string" || !Number.isFinite(Date.parse(result.checkedAt))) return [];
+    if (!result || !checked_components.includes(result.id) || typeof result.state !== "string" || !Number.isFinite(Date.parse(result.checkedAt))) return [];
     if (result.id === "bsl-ls" && result.validity === "inputs" && bslFingerprint) {
       const invalid = saved !== bslFingerprint || Date.now() < Date.parse(result.checkedAt);
       return [{ ...result, expiresAt: null, inputRevision: bslFingerprint, ...(invalid ? { state: "check_stale", lastState: result.state,
         detail: "Окружение или настройки BSL LS изменились. Повторите «Подготовить и проверить»." } : {}) }];
     }
     if (!Number.isFinite(Date.parse(result.expiresAt))) return [];
-    return [{ ...result, ...(saved !== fingerprint || Date.now() < Date.parse(result.checkedAt) || Date.now() - Date.parse(result.checkedAt) > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt)
-      ? { ...(result.id === "yaxunit" ? yaxunit_result("check_stale", { target: undefined }) : { state: "check_stale", detail: saved === fingerprint && result.state === "check_stale" && result.detail ? result.detail : "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." }), lastState: result.lastState || result.state } : {}) }];
+    let expected;
+    if (entry.fingerprintVersion === 2) expected = component_fingerprint(state, config, data, result.id);
+    else {
+      legacyFingerprint ||= readiness_fingerprint(state, config, data);
+      expected = result.id === "vanessa" ? vanessa_readiness_fingerprint(state, config, data, legacyFingerprint) : legacyFingerprint;
+    }
+    return [{ ...result, ...(saved !== expected || Date.now() < Date.parse(result.checkedAt) || Date.now() - Date.parse(result.checkedAt) > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt)
+      ? { ...(result.id === "yaxunit" ? yaxunit_result("check_stale", { target: undefined }) : { state: "check_stale", detail: saved === expected && result.state === "check_stale" && result.detail ? result.detail : "Настройки или файлы изменились либо проверка устарела. Повторите проверку компонента." }), lastState: result.lastState || result.state } : {}) }];
   });
 }
 
@@ -235,8 +403,10 @@ export async function read_readiness(state, config, profile) {
     const data = profile.status ? project_profile(config.active_project) : profile;
     if (!Number.isFinite(age) || age < 0 || typeof receipt.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(receipt.fingerprint))
       return { ...empty, reason: "Не удалось подтвердить сохранённую проверку готовности. Повторите проверку." };
-    if (age > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt) || receipt.fingerprint !== readiness_fingerprint(state, config, data))
-      return { ...result, state: "stale", mainReadiness: { scope: "setup_main", state: "stale" }, checks: result.checks.map(item => item.id === "yaxunit" ? { ...yaxunit_result("check_stale"), label: item.label, lastState: item.state, checkedAt: result.checkedAt, expiresAt: result.expiresAt } : item),
+    if (age > 15 * 60 * 1000 || Date.now() >= Date.parse(result.expiresAt) || receipt.knowledgeInvalidated || receipt.fingerprint !== readiness_fingerprint(state, config, data))
+      return { ...result, state: "stale", mainReadiness: { scope: "setup_main", state: "stale" },
+        ...(result.knowledge?.ready ? { knowledge: { ...result.knowledge, state: "not_verified", ready: false, koraReady: false, lifecycle: "configured", searchReadiness: "not_verified", readiness: { state: "not_verified" } } } : {}),
+        checks: result.checks.map(item => item.id === "yaxunit" ? { ...yaxunit_result("check_stale"), label: item.label, lastState: item.state, checkedAt: result.checkedAt, expiresAt: result.expiresAt } : item.id === "knowledge" && result.knowledge?.ready ? { ...item, state: "not_verified", detail: "Подтверждение поиска требует повторной проверки." } : item),
         verificationLimits: verification_limits(), reason: "Настройки или файлы изменились либо проверка устарела. Повторите проверку готовности." };
     if ((result.state === "ready") !== result.checks.every(item => passed(item, data)))
       return { ...empty, reason: "Сохранённый результат не соответствует обязательным компонентам. Повторите проверку готовности." };
@@ -247,8 +417,8 @@ export async function read_readiness(state, config, profile) {
     const previous = result.checks.find(item => item.id === "yaxunit");
     const yaxunit = data.testing?.yaxunit !== true ? yaxunit_unchecked(data) : saved && (!previous || Date.parse(saved.checkedAt) >= Date.parse(result.checkedAt)) ? saved : previous || yaxunit_unchecked(data);
     const replacement = { ...yaxunit, label: "YaXUnit" };
-    const edt = observations.find(item => item.id === "edt" && Date.parse(item.checkedAt) >= Date.parse(result.checkedAt));
-    const current = result.checks.map(item => item.id === "edt" && edt ? { ...edt, label: item.label } : item);
+    const projected = new Map(observations.filter(item => ["edt", "v8std", "openviking", "code-index", "bsl-ls"].includes(item.id) && Date.parse(item.checkedAt) >= Date.parse(result.checkedAt)).map(item => [item.id, item]));
+    const current = result.checks.map(item => projected.has(item.id) ? { ...projected.get(item.id), label: item.label } : item);
     const checks = previous ? current.map(item => item.id === "yaxunit" ? replacement : item) : [...current, replacement];
     return { ...result, checks, ...setup_states(checks, data), verificationLimits: verification_limits(result.knowledge?.ready === true) };
   } catch { return empty; }
