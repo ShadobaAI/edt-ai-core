@@ -21,6 +21,18 @@ import { dump } from "../scripts/common.mjs";
 import { project_profile } from "../scripts/profile.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
 
+async function with_clean_policy_environment(run) {
+  const isPolicyInput = name => !["NODE_TEST_CONTEXT", "NODE_TEST_WORKER_ID"].includes(name.toUpperCase()) &&
+    /^(?:NODE_|OPENSSL_|SSL_CERT_|LD_|DYLD_|UV_)/i.test(name);
+  const previous = Object.fromEntries(Object.entries(process.env).filter(([name]) => isPolicyInput(name)));
+  for (const name of Object.keys(previous)) delete process.env[name];
+  try { return await run(); }
+  finally {
+    for (const name of Object.keys(process.env)) if (isPolicyInput(name)) delete process.env[name];
+    Object.assign(process.env, previous);
+  }
+}
+
 async function ready_fixture(t) {
   const f=fixture(t);environment(t,f.env);f.save();let calls=0,wrongPath=false,noTools=false,indexChecks=0,settling=false,indexFailure=null,projectState="ready",delayV8=0,indexGate=null,indexStarted=null,edtObserved;const paths=[],requests=[];
   const edtDone=new Promise(resolve=>{edtObserved=resolve;});
@@ -277,12 +289,15 @@ test("an expired setup is fully observed again without preparation or duplicate 
   });
   syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   requests.length = 0;
-  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  // CI's no-shell preload is already installed in this process, but its
+  // NODE_OPTIONS must not make this clean-environment scenario fail closed.
+  const result = await with_clean_policy_environment(() => backend.main({ action: "refresh_readiness", scope: f.root + "#first" }));
   assert.equal(result.readiness.state, "ready", JSON.stringify(result.readiness.checks)); assert.equal(result.readiness.workflowReadiness.state, "not_checked");
   for (const urlPath of ["/edt", "/v8std"]) assert.equal(requests.filter(item => item.url === urlPath && item.method === "initialize").length, 1);
   assert.equal(result.componentChecks.length, 7); assert.equal(fs.existsSync(path.join(instance_directory(f.state, f.root), "first.preparation.json")), false);
   assert.equal(policyLaunches.length, 1); assert.equal(policyLaunches[0].command, process.execPath);
   assert.equal(policyLaunches[0].env.UNRELATED_COMPONENT_SECRET, undefined); assert.equal(policyLaunches[0].env.JAVA_TOOL_OPTIONS, undefined);
+  assert.equal(policyLaunches[0].env.NODE_OPTIONS, undefined);
   assert.equal((await backend.main({ action: "read" })).readiness.state, "ready");
 });
 
@@ -306,7 +321,7 @@ test("automatic refresh recovers a previous policy error without waiting for set
   const config = backend.effective(backend.current()), managed = ["code-index", "bsl-ls"].map(name => ({ name, state: "ready", ready: true }));
   const setup = save_readiness(f.state, config, f.profile, [...managed, { name: "policy", state: "error", ready: false }], { edt: { ready: true }, v8std: { ready: true } });
   assert.equal(setup.state, "blocked");
-  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  const result = await with_clean_policy_environment(() => backend.main({ action: "refresh_readiness", scope: f.root + "#first" }));
   assert.equal(result.readiness.checks.find(item => item.id === "policy").state, "ready"); assert.equal(result.readiness.state, "ready");
 });
 
@@ -315,9 +330,13 @@ test("automatic setup does not claim policy readiness with unverified Node start
   save_readiness(f.state, config, f.profile, [{ name: "code-index", state: "ready", ready: true }, { name: "bsl-ls", state: "ready", ready: true }], { edt: { ready: true }, v8std: { ready: true } });
   const file = path.join(instance_directory(f.state, f.root), "first.readiness.json"), receipt = JSON.parse(fs.readFileSync(file, "utf8"));
   receipt.result.checkedAt = new Date(Date.now() - 16 * 60000).toISOString(); receipt.result.expiresAt = new Date(Date.now() - 60000).toISOString(); fs.writeFileSync(file, JSON.stringify(receipt));
-  process.env.NODE_OPTIONS = "--no-such-flag";
-  const result = await backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
-  assert.equal(result.readiness.state, "blocked"); assert.equal(result.readiness.checks.find(item => item.id === "policy").state, "not_verified");
+  const result = await with_clean_policy_environment(() => {
+    process.env.NODE_OPTIONS = "--no-such-flag";
+    return backend.main({ action: "refresh_readiness", scope: f.root + "#first" });
+  });
+  const policy = result.readiness.checks.find(item => item.id === "policy");
+  assert.equal(result.readiness.state, "blocked"); assert.equal(policy.state, "not_verified");
+  assert.match(policy.detail, /Окружение запуска Node отличается/);
 });
 
 for (const expired of [false, true]) test(`overall setup respects ${expired ? "already expired" : "remaining"} component evidence`, async t => {
@@ -337,7 +356,7 @@ for (const expired of [false, true]) test(`overall setup respects ${expired ? "a
     if (expired && request.action === "probe" && request.component === "bsl-ls" && request.collectOnly) await new Promise(resolve => setTimeout(resolve, 400));
     return main(request, ...args);
   });
-  const result = await main({ action: "refresh_readiness", scope: f.root + "#first" });
+  const result = await with_clean_policy_environment(() => main({ action: "refresh_readiness", scope: f.root + "#first" }));
   if (expired) {
     assert.equal(result.componentChecks.find(item => item.id === "code-index").state, "not_verified");
     assert.equal(result.readiness.state, "blocked");
