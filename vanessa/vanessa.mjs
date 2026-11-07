@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { loadProfile, readJson, checkFiles, configSnippet, interactiveParameters, digest, fail } from "./profile.mjs";
 import { session, listTools, callTool, redact } from "./mcp.mjs";
 import { withProfileLock, checkOwner, managerAlive, start } from "./runtime.mjs";
-import { inspectSession, connectSession, setupSession } from "./readiness.mjs";
+import { inspectSession, connectSession, setupSession, runtimeContract } from "./readiness.mjs";
 import { ownRecording, recordOwnership, invalidateObservedIdle } from "./recording.mjs";
 import { runFeature } from "./run.mjs";
 import { awaitEditorTransition } from "./transition.mjs";
@@ -12,21 +12,21 @@ export { loadProfile } from "./profile.mjs";
 
 export const discoveryTools = new Set(["get_environment_data", "get_vanessa_automation_state", "get_editor_state", "get_test_results", "get_window_list_os", "get_extension_list", "get_process_list_os"]);
 const isDiscovery = (name, args) => discoveryTools.has(name) || (name === "manage_test_client_profiles" && args.action === "get_list");
-export async function probeReadiness(profile, client, tools) {
-  return inspectSession(profile, client, tools);
+export async function probeReadiness(profile, client, tools, contract = runtimeContract) {
+  return inspectSession(profile, client, tools, contract);
 }
 
-export async function doctor(profile) {
+export async function doctor(profile, contract = runtimeContract) {
   checkFiles(profile);
   return withProfileLock(profile, async () => {
     checkOwner(profile);
-    const result = await session(profile, async client => probeReadiness(profile, client, await listTools(client)));
+    const result = await session(profile, async client => probeReadiness(profile, client, await listTools(client), contract));
     if (result.status === "ready" && result.recording === false) invalidateObservedIdle(profile, result.runtimeVersion);
     return redact(result);
   });
 }
 
-export async function main(argv) {
+export async function main(argv, { contract = runtimeContract } = {}) {
   const command = argv.shift();
   if (!command || command === "help" || command === "--help") return { usage: "node vanessa.mjs <configure|start|setup|connect|doctor|list|call|run> --profile <file> [--client <name>] [--tool <actual-name> --arguments-file <json>] [--feature <file> --scenario <exact-name> --editor-transition]", note: "configure prints an MCP TOML snippet; no credentials or upstream checkout are used" };
   if (!["configure", "start", "setup", "connect", "doctor", "list", "call", "run"].includes(command)) fail("Неизвестная команда");
@@ -49,7 +49,7 @@ export async function main(argv) {
   const profile = loadProfile(opts["--profile"], opts["--expected-profile-sha256"], opts["--client"]);
   if (command === "configure") return { status: "configuration_only", serverName: profile.mcp.serverName, snippet: configSnippet(profile), interactiveParameters: interactiveParameters(profile), readiness: "unverified" };
   if (command === "start") return start(profile);
-  if (command === "doctor") return doctor(profile);
+  if (command === "doctor") return doctor(profile, contract);
   return withProfileLock(profile, async () => {
     const manager = checkOwner(profile);
     let managerToken = null, callStarted = false, discovery = false, recordingAction, readyVersion, workflowProgress;
@@ -58,11 +58,11 @@ export async function main(argv) {
       return await session(profile, async client => {
         const tools = await listTools(client);
         if (command === "list") return { status: "available", tools };
-        if (command === "connect") return connectSession(profile, client, tools);
-        if (command === "setup") return setupSession(profile, client, tools);
+        if (command === "connect") return connectSession(profile, client, tools, contract);
+        if (command === "setup") return setupSession(profile, client, tools, contract);
         if (command === "run") return runFeature(profile, client, tools, { feature: opts["--feature"], scenario: opts["--scenario"],
           onProgress: progress => { workflowProgress = progress; },
-          ...(opts["--editor-transition"] ? { beforeOpen: () => awaitEditorTransition({ managerPid: manager?.pid, timeoutMs: Math.min(60000, deadline - Date.now() - 1000) }) } : {}) });
+          ...(opts["--editor-transition"] ? { beforeOpen: () => awaitEditorTransition({ managerPid: manager?.pid, timeoutMs: Math.min(60000, deadline - Date.now() - 1000) }) } : {}) }, contract);
         if (!opts["--tool"]) fail("Требуется --tool");
         const name = opts["--tool"], args = opts["--arguments-file"] ? readJson(opts["--arguments-file"], 1024 * 1024, opts["--expected-arguments-sha256"]) : {};
         if (name === "run_scenario" && !Object.hasOwn(args, "mode")) fail("Для run_scenario нужен явный mode; all не используется в командной строке по умолчанию");
@@ -70,7 +70,7 @@ export async function main(argv) {
         if (!discovery) {
           if (manager?.pid && manager.created && managerAlive(profile, manager)) managerToken = digest(JSON.stringify([manager.pid, manager.created, manager.fingerprint]));
           let ownership = ownRecording(profile, managerToken);
-          const readiness = await inspectSession(profile, client, tools, undefined, { ownRecording: Boolean(ownership) });
+          const readiness = await inspectSession(profile, client, tools, contract, { ownRecording: Boolean(ownership) });
           if (readiness.status !== "ready") fail(`Готовность интерфейса: ${readiness.status}: ${readiness.reason}; зависимый вызов заблокирован`);
           readyVersion = readiness.runtimeVersion;
           if (ownership && readiness.recording === false) { invalidateObservedIdle(profile, readyVersion); ownership = null; }

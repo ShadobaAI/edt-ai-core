@@ -49,7 +49,8 @@ export function parseState(result) {
   const text = toolText(result);
   if (!text?.startsWith("# Состояние Vanessa Automation\n")) return null;
   const running = yesNo(scalar(text, "Выполнение сценариев"));
-  const connected = yesNo(scalar(text, "Клиент тестирования подключен"));
+  const connectionLines = text.split("\n").filter(line => /^- Клиент тестирования подключ[её]н: /.test(line));
+  const connected = connectionLines.length === 1 ? yesNo(connectionLines[0].slice(connectionLines[0].indexOf(": ") + 2).trim()) : null;
   const recording = yesNo(scalar(text, "Включена запись действий пользователя"));
   if ([running, connected, recording].some(value => value === null)) return null;
   const names = [...text.matchAll(/^  - Имя профиля клиента тестирования: (.+)$/gm)];
@@ -110,6 +111,7 @@ function propertyTable(text) {
 export function parseProfiles(result) {
   const text = toolText(result);
   if (!text?.startsWith("# Список профилей клиентов тестирования\n")) return null;
+  if (text.trimEnd() === "# Список профилей клиентов тестирования\n\nПрофили не настроены. Добавьте профиль на вкладке 'Клиенты тестирования' в настройках VA.") return [];
   const count = /^Найдено профилей: (\d+)$/m.exec(text);
   if (!count) return null;
   const sections = [...text.matchAll(/^## Профиль: (.+)\n([\s\S]*?)(?=^## Профиль: |$(?![\s\S]))/gm)];
@@ -121,8 +123,8 @@ export function parseProfiles(result) {
     const infobase = parseInfobase(fields["Строка подключения"]);
     if (!infobase) return null;
     profiles.push({ name: section[1], infobase, additionalParameters: fields["Дополнительные параметры"],
-      connected: fields["Статус"] === "❌ не подключен" ? false : fields["Статус"] === "✅ подключен" ? true : null,
-      computerName: fields["Имя компьютера"], pid: /^\d+$/.test(fields.PID ?? "") ? Number(fields.PID) : null });
+      connected: /^❌ не подключ[её]н$/.test(fields["Статус"]) ? false : /^✅ подключ[её]н$/.test(fields["Статус"]) ? true : null,
+      computerName: fields["Имя компьютера"], pid: /^(?:\d+|\d{1,3}(?:\u00a0\d{3})+)$/.test(fields.PID ?? "") ? Number(fields.PID.replaceAll("\u00a0", "")) : null });
   }
   return profiles;
 }
@@ -155,11 +157,15 @@ export function platformTokens(command) {
   if (token) tokens.push(token);
   return tokens;
 }
-export function parseClientLaunch(command) {
+// Extract only the fields needed to rule out another process. Its interface and
+// test port need not satisfy the requirements for the selected client.
+export function parseClientIdentity(command) {
   const tokens = platformTokens(command);
-  if (!tokens || !/(?:^|[\\/])1cv8c?\.exe$/i.test(tokens[0] ?? "") || !tokens.some(token => /^\/TESTCLIENT$/i.test(token))) return null;
-  if (!tokens.some(token => /^\/iTaxi$/i.test(token)) || tokens.some(token => /^\/itdi$/i.test(token))) return null;
-  const bases = [], users = [], ports = [];
+  // /@ replaces the command line with a file; /IBName and /WS select an
+  // infobase through mechanisms that this adapter cannot resolve safely.
+  if (!tokens || tokens.some(token => /^\/@|^\/(?:IBName|WS)/i.test(token)) ||
+      !/(?:^|[\\/])1cv8c?\.exe$/i.test(tokens[0] ?? "") || !tokens.some(token => /^\/TESTCLIENT$/i.test(token))) return null;
+  const bases = [], users = [];
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i];
     if (/^\/IBConnectionString$/i.test(token)) bases.push(parseInfobase(tokens[++i]));
@@ -168,20 +174,41 @@ export function parseClientLaunch(command) {
       bases.push(split > 0 && split < value.length - 1 ? { type: "server", server: value.slice(0, split), database: value.slice(split + 1) } : null);
     } else if (/^\/F/i.test(token)) bases.push({ type: "file", path: token.length === 2 ? tokens[++i] : token.slice(2) });
     else if (/^\/N/i.test(token)) users.push(token.length === 2 ? tokens[++i] : token.slice(2));
-    else if (/^-TPort$/i.test(token)) ports.push(Number(tokens[++i]));
   }
-  if (bases.length !== 1 || !bases[0] || users.length > 1 || ports.length !== 1 || !Number.isInteger(ports[0]) || ports[0] < 1 || ports[0] > 65535) return null;
-  return { infobase: bases[0], user: users[0] ?? null, testPort: ports[0], interface: "taxi" };
+  if (bases.length !== 1 || !bases[0] || users.length > 1 || users.some(user => !user || /^[/-]/.test(user))) return null;
+  return { infobase: bases[0], user: users[0] ?? null };
+}
+export function parseClientLaunch(command) {
+  const tokens = platformTokens(command), identity = parseClientIdentity(command);
+  if (!identity || !tokens.some(token => /^\/iTaxi$/i.test(token)) || tokens.some(token => /^\/itdi$/i.test(token))) return null;
+  const ports = [];
+  for (let i = 1; i < tokens.length; i++) {
+    if (/^-TPort/i.test(tokens[i]) && !/^-TPort\d*$/i.test(tokens[i])) return null;
+    const match = /^-TPort(\d*)$/i.exec(tokens[i]);
+    if (match) ports.push(Number(match[1] || tokens[++i]));
+  }
+  if (ports.length > 1 || ports.some(port => !Number.isInteger(port) || port < 1 || port > 65535)) return null;
+  return { ...identity, testPort: ports[0] ?? 1538, interface: "taxi" };
 }
 export function parseProcesses(result) {
   const text = toolText(result);
   if (!text?.startsWith("# Список процессов ОС\n") || !text.includes("Режим: только процессы 1С (only_1c=true).")) return null;
-  const count = /^Найдено по отбору: (\d+) из (\d+)\. Показано: (\d+)\.$/m.exec(text);
-  const filter = /^Отбор: (.+)\.$/m.exec(text)?.[1];
-  if (!count || !filter || Number(count[1]) !== Number(count[3])) return null;
-  const rows = [...text.matchAll(/^\| (\d+) \| (.*?) \| (.*?) \|$/gm)];
-  if (rows.length !== Number(count[3]) || new Set(rows.map(row => row[1])).size !== rows.length) return null;
-  return { filter, matchedCount: Number(count[1]), processes: rows.map(row => ({ pid: Number(row[1]), startedAt: row[2], launch: parseClientLaunch(row[3]) })) };
+  const all = /^Найдено: (\d+)\. Показано: (\d+)\.$/m.exec(text);
+  const filtered = /^Найдено по отбору: (\d+) из (\d+)\. Показано: (\d+)\.$/m.exec(text);
+  const filter = /^Отбор: (.+)\.$/m.exec(text)?.[1] ?? null;
+  if (Boolean(all) === Boolean(filtered) || Boolean(filtered) !== Boolean(filter)) return null;
+  const count = Number((all || filtered)[1]), shown = Number(all ? all[2] : filtered[3]);
+  if (count !== shown) return null;
+  const withStart = /^\| PID \| Запущен \| Командная строка \|$/m.test(text), withoutStart = /^\| PID \| Командная строка \|$/m.test(text);
+  if (count && withStart === withoutStart) return null;
+  const rows = [...text.matchAll(withStart ? /^\| (\d+) \| (.*?) \| (.*?) \|$/gm : /^\| (\d+) \| (.*?) \|$/gm)];
+  if (rows.length !== shown || new Set(rows.map(row => row[1])).size !== rows.length) return null;
+  return { filter, matchedCount: count, processes: rows.map(row => {
+    const command = withStart ? row[3] : row[2], tokens = platformTokens(command);
+    const kind = !tokens?.length || tokens.some(token => /^\/@/i.test(token)) ? "unknown" : tokens.some(token => /^\/TESTCLIENT$/i.test(token)) ? "test_client" : "other";
+    return { pid: Number(row[1]), startedAt: withStart ? row[2] || null : null, kind,
+      identity: kind === "test_client" ? parseClientIdentity(command) : null, launch: kind === "test_client" ? parseClientLaunch(command) : null };
+  }) };
 }
 export const runtimeContract = Object.freeze({ version: "vanessa-single-text-v1", environment: parseEnvironment,
   state: parseState, profiles: parseProfiles, editor: parseEditor, extensions: parseExtensions, processes: parseProcesses,

@@ -49,6 +49,17 @@ results retrieval. Timeout does not repeat mutation. Executed content is checked
 against file hash. Automatic receipts remain unverified until actual test-outcome
 assessment.
 
+The bundled connected-client verification currently requires Windows process
+identity and reciprocal TCP ownership for this MCP session, manager and
+TestClient. On Linux and macOS this CLI returns unverified for a connected
+client; this does not describe upstream Vanessa's platform support. It also
+blocks execution if a full idle/connection state is unavailable after the
+editor transition or immediately before running the selected scenario.
+If `manager.user`/`manager.userEnv` is set, the CLI blocks manager launch and
+dependent actions; if `client.user`/`client.userEnv` is set, it blocks client
+setup/connection, manager launch and dependent actions. The result is unverified: `/N` does
+not prove the authenticated 1C user. Do not infer it from the saved profile.
+
 The bundled wire adapter was initially verified on Vanessa Single 1.2.043.45 /
 MCP 1.31. Versions are retained as provenance. Compatibility depends on current
 tools, schemas and recognized response fields; tools/list alone is insufficient.

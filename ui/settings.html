@@ -144,7 +144,7 @@ dialog{color:var(--text);background:var(--bg);border:1px solid var(--line);borde
 <dialog id="testingDialog" class="component-dialog" aria-labelledby="testingDialogTitle"><div class="dialog-heading"><div class="component-heading"><span class="component-mark" aria-hidden="true"><svg class="icon"><use href="#i-shield"/></svg></span><div><span class="component-kicker">Тестирование</span><h2 id="testingDialogTitle"></h2></div></div><div id="testingDialogState" class="component-state"><span id="testingDialogDiagnostic" class="component-state-badge" role="status" aria-live="polite"></span><button id="testingProbeButton" class="primary" aria-describedby="testingDialogProbeHint"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Проверить профиль</button></div><button id="testingDialogClose" class="icon-button" aria-label="Закрыть настройки">×</button></div>
 <div id="testingLaunchSummary" hidden><pre id="testingLaunchText" class="component-state-detail" role="status" aria-live="polite"></pre></div><div id="testingDialogBody"></div><details id="testingDiagnostics" class="component-details"><summary>Диагностика и сведения</summary><div class="component-details-body"><p id="testingDialogCheckedAt" class="muted" hidden></p><pre id="testingDialogStatus" class="component-state-detail" role="status" aria-live="polite" hidden></pre><p id="testingDialogProbeHint" class="component-probe-hint">Проверяется сохранённый профиль, без запуска тестов. Перед сохранением проверяются все изменения.</p></div></details><div id="testingDialogNotice" class="notice-box dialog-notice" role="status" aria-live="polite" hidden></div></dialog>
 <dialog id="editorSwitchDialog" aria-labelledby="editorSwitchTitle"><h2 id="editorSwitchTitle">Есть несохранённые изменения</h2><p>Перед сменой профиля сохраните или отмените изменения текущего документа.</p><div class="actions"><button id="editorSwitchSave">Проверить и сохранить</button><button id="editorSwitchDiscard">Отменить изменения</button><button id="editorSwitchStay">Остаться</button></div></dialog>
-<div id="unsavedHint" class="notice-box" hidden>Есть несохранённые изменения. Автообновление не меняет введённые значения.<div class="actions"><button id="discardDraftButton"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Отменить изменения</button></div></div>
+<div id="unsavedHint" class="notice-box" hidden>Есть несохранённые изменения. Обновление состояния не меняет введённые значения.<div class="actions"><button id="discardDraftButton"><svg class="icon" aria-hidden="true"><use href="#i-refresh"/></svg>Отменить изменения</button></div></div>
 
 <div id="status" class="status" role="status" aria-live="polite">Подключаемся к плагину…</div>
 </div></div>
@@ -156,7 +156,7 @@ const waiting=new Map(),$=id=>document.getElementById(id),status=$("status");
 const standalone=window.parent===window;
 let initialData=null,lastPreview=null,fileText="",editBaseRevision=null,editLayerScope=null,editorLayerPath=null,editorDocument="profile",pendingEditorSwitch=null,editorYaml=false,editorRawOriginal="",editorLineEnding="\n",checkTimer=null,activeOperation=null,inputRevision=0,polling=false,currentData=null,lastHeight=0,resizeTimer=null,containerDimensions={},initializing=true,entryProjectRoot=null,interacted=false,busyActive=false,diagnosticsBusy=false;
 $("editorDocument").value=editorDocument;
-const dirtyFields=new Set(),pendingUnsets=new Set();let statusTimer=null,statusPolling=false,disposed=false,historySignature="",viewRevision=0,editorOriginal="",navigationMode="project",activeMode="profile",diagnosticsLoading=false,diagnosticsData=null,journalSignature="";const expandedLogs=new Set();let profilesOpen=false;
+const dirtyFields=new Set(),pendingUnsets=new Set();let statusPolling=false,disposed=false,historySignature="",viewRevision=0,editorOriginal="",navigationMode="project",activeMode="profile",diagnosticsLoading=false,diagnosticsData=null,journalSignature="";const expandedLogs=new Set();let profilesOpen=false;
 let journalTimer=null,journalFollowing=true,journalFollowEnabled=true,journalUnread=0,journalLastKeys=new Set();
 let renameDirty=false,pendingScope=null,settingsDraftRevision=null,renameBaseRevision=null,chatInputRevision=0,confirmedInputRevision=0,confirmedChatDirectory=null,viewPickerRevision=null;
 let transferReview=null,transferSelection=null,transferPickerScope=null,transferTrigger=null,transferInputRevision=0;
@@ -167,7 +167,7 @@ const treeErrors=new Map(),fieldOpen=new Map(),pendingFieldInputs=new Set();let 
 let editorSearchActive=false,editorSearchMatches=[],editorSearchIndex=-1;
 const updateResults=new Map();
 const componentObservations=new Map();
-let componentRefresh=null,componentRefreshQueue=[],loadedStatusScope=null;
+let componentRefresh=null,componentRefreshQueue=[],evidenceExpiryTimer=null;
 const selectedVersions=new Map();
 const versionCatalogs=new Map();let versionOpen=false,versionLimit=50,versionIndex=-1,visibleVersions=[];
 const versionField=component=>component==="bsl-ls"?"bslLsVersion":"codeIndexVersion";
@@ -375,7 +375,12 @@ function show(mode){
   resize();
 }
 function initial(result){
-  const data=result?.structuredContent||result;
+  let data=result?.structuredContent||result?._meta?.data||result;
+  // Some hosts forward only the entry tool's text content to the app. The
+  // compact entry envelope retains the navigation mode and chat root there.
+  if(!data?.mode&&result?.content?.length===1&&result.content[0]?.type==="text"){
+    try{const entry=JSON.parse(result.content[0].text);if(entry?.mode&&["project","profiles"].includes(entry.navigation))data={...entry,values:entry.values||(typeof entry.projectRoot==="string"?{projectRoot:entry.projectRoot}:undefined)};}catch{}
+  }
   // Entry results select the initial view once. App-originated tool results
   // may also be echoed by the host and must never navigate or restart polling.
   if(!data?.mode||initialData||(interacted&&(!data.navigation||!data.values)))return;initialData=data;if(data.navigation==="project"&&data.values?.projectRoot){entryProjectRoot=data.values.projectRoot;chatInputRevision++;}configureNavigation(data.navigation||"project");
@@ -484,8 +489,13 @@ function componentRequired(id,current){
   const knowledge=current?.knowledge||{};
   return id==="edt"||id==="v8std"||(id==="yaxunit"&&current?.profile?.testing?.yaxunit===true)||(id==="openviking"&&(knowledge.mode==="kora"||knowledge.provider==="openviking"&&knowledge.required===true))||(id==="code-index"&&current?.profile?.authorities?.code_index==="code-index")||(id==="bsl-ls"&&current?.profile?.authorities?.bsl_ls==="bsl-ls");
 }
+function readinessExpired(readiness){
+  if(!["ready","blocked"].includes(readiness?.state)||!readiness.expiresAt)return false;
+  const expiry=Date.parse(readiness.expiresAt);return !Number.isFinite(expiry)||Date.now()>=expiry;
+}
+function readinessFresh(readiness){return ["ready","blocked"].includes(readiness?.state)&&Number.isFinite(Date.parse(readiness?.checkedAt))&&!readinessExpired(readiness);}
 function catalogItems(current){
-  const loaded=current?.profile?.status==="loaded",fresh=["ready","blocked"].includes(current?.readiness?.state)&&Number.isFinite(Date.parse(current?.readiness?.checkedAt))&&(!current.readiness.expiresAt||Date.now()<Date.parse(current.readiness.expiresAt)),stale=current?.readiness?.state==="stale",checks=current?.readiness?.checks||[],checking=activeOperation?.status==="running"&&["check","refresh_readiness","probe"].includes(activeOperation.action)&&operationMatchesProfile(activeOperation);
+  const loaded=current?.profile?.status==="loaded",fresh=readinessFresh(current?.readiness),stale=current?.readiness?.state==="stale"||readinessExpired(current?.readiness),checks=current?.readiness?.checks||[],checking=activeOperation?.status==="running"&&["check","refresh_readiness","probe"].includes(activeOperation.action)&&operationMatchesProfile(activeOperation);
   return catalogDefinitions.map(item=>{
     let state="not_checked",detail="",version="",launch=null;
     const check=checks.find(entry=>entry.id===item.id),observed=current?.summary?.components?.find(entry=>entry.id===item.id);
@@ -504,7 +514,7 @@ function catalogItems(current){
     if(loaded&&observation&&Number.isFinite(Date.parse(observation.checkedAt))&&state!=="disabled"&&(durable||!(sameScope&&observation===local.check&&local.setup&&fresh&&check))&&(durable||!check||!fresh||Date.parse(observation.checkedAt)>=Date.parse(current.readiness.checkedAt))){
       const isLocal=observation===local?.check;
       const invalid=isLocal&&(durable?(saved?.validity==="inputs"?local.check.inputRevision!==saved.inputRevision:local.revision!==current.settingsRevision):local.revision!==current.settingsRevision||local.signature!==componentInputSignature(item.id)||local.setup&&stale);
-      state=invalid||observation.expiresAt&&Date.now()>=Date.parse(observation.expiresAt)?"check_stale":observation.state;detail=observation.detail||"";checkedAt=observation.checkedAt;repositories=observation.repositories||[];
+      state=invalid||!durable&&observation.expiresAt&&Date.now()>=Date.parse(observation.expiresAt)?"check_stale":observation.state;detail=observation.detail||"";checkedAt=observation.checkedAt;repositories=observation.repositories||[];
       if(item.id==="yaxunit")launch=observation;
       if(isLocal&&local.draft){detail="Проверены несохранённые значения. "+detail;if(state==="ready")state="draft_verified";}
     }
@@ -573,7 +583,7 @@ function renderHeaderProfile(current,items){
   root.replaceChildren(...(loaded?items.map(item=>{const badge=document.createElement("li"),label=item.title||catalogStateLabels[item.state]||"Требует внимания";badge.className="catalog-status header-component-state"+(item.issue?" issue":"")+(item.state==="ready"?" ready":item.state==="error"?" error":"");badge.setAttribute("data-component",item.id);badge.setAttribute("data-state",item.state);badge.textContent=item.name+": "+label;badge.title=badge.textContent+(item.detail?"\n"+userMessage(item.detail):"");return badge;}):[]));
 }
 function renderComponentCatalog(current){
-  const root=$("componentCatalog"),items=catalogItems(current),labels=catalogStateLabels;renderHeaderProfile(current,items);
+  const root=$("componentCatalog"),items=catalogItems(current),labels=catalogStateLabels;renderHeaderProfile(current,items);scheduleEvidenceExpiry();
   const counts={countAll:items,countReady:items.filter(item=>item.state==="ready"),countIssues:items.filter(item=>item.issue),countDisabled:items.filter(item=>item.state==="disabled"&&!item.issue),countChecking:items.filter(item=>item.state==="checking"),countStale:items.filter(item=>["check_stale","stale"].includes(item.state))};
   for(const [id,components]of Object.entries(counts)){$(id).textContent=String(components.length);$(id).title=components.map(item=>item.name).join(", ")||"Нет компонентов";}
   $("countCheckingGroup").hidden=!counts.countChecking.length;$("countStaleGroup").hidden=!counts.countStale.length;
@@ -593,9 +603,22 @@ function renderComponentCatalog(current){
     section.append(heading,grid);root.append(section);
   }
 }
+// Expiry only repaints already observed data; it never requests a new probe.
+function scheduleEvidenceExpiry(){
+  if(evidenceExpiryTimer)clearTimeout(evidenceExpiryTimer);evidenceExpiryTimer=null;
+  if(disposed||document.hidden||!currentData||currentData.profile?.status!=="loaded")return;
+  const local=[...componentObservations.values()].filter(item=>item.root===currentData.values?.projectRoot&&item.instance===currentData.instance).map(item=>item.check);
+  const records=[currentData.readiness,...(currentData.componentChecks||[]),...local];
+  const now=Date.now(),times=records.filter(item=>item&&!(item.id==="bsl-ls"&&item.validity==="inputs")).map(item=>Date.parse(item.expiresAt)).filter(time=>Number.isFinite(time)&&time>now);
+  if(times.length)evidenceExpiryTimer=setTimeout(()=>{evidenceExpiryTimer=null;renderTimeSensitiveStatus();},Math.min(2147483647,Math.max(1,Math.min(...times)-now)));
+}
+function renderTimeSensitiveStatus(){
+  if(disposed||document.hidden||!currentData)return;
+  renderServiceSnapshot(currentData);renderComponentCatalog(currentData);renderDialogStates();renderReadiness();renderKnowledge(currentData);syncControls();resize();
+}
 $("componentsAll").onclick=()=>{componentFilter="all";renderComponentCatalog(currentData);};
 $("componentsIssues").onclick=()=>{componentFilter="issues";renderComponentCatalog(currentData);};
-function openManagedDialog(item,trigger){if($("managedDialog").open)return;const otherFields=item.id==="code-index"?["bslLsEnabled","bslLsJava"]:["codeIndexEnabled"];if(otherFields.some(field=>dirtyFields.has(field))){notice("Сохраните или отмените черновик другого компонента перед открытием настроек.",true);return;}managedDialogTrigger=trigger;$("codeIndexChoice").hidden=item.id!=="code-index";$("bslLsChoice").hidden=item.id!=="bsl-ls";$("javaSettingsPanel").hidden=item.id!=="bsl-ls";$("managedDialogTitle").textContent=item.name;managedComponent=item.id;setDialogNotice("managedDialogNotice");defaultScopeContexts.delete("componentScope");defaultScopeContexts.delete("javaScope");renderCurrent(currentData,{preserveDraft:true});$("managedDialogBody").append($("managedControls"));if(item.id==="code-index")$("managedControls").insertBefore($("indexActions"),$("managedDiagnostics"));$("connections").snapshotSignature=null;renderServiceSnapshot(currentData);renderDialogStates();$("updateComponent").value=item.id;$("installedComponentVersion").textContent=currentData?.installedVersions?.[item.id]||"Не установлена";$("managedOptionsFiles").textContent=Object.values(currentData?.writePaths||{}).filter(Boolean).join("\n");renderVersion();renderUpdates();$("managedDialog").showModal();syncControls();$(item.id==="code-index"?"codeIndexEnabled":"bslLsEnabled").focus();queueComponentRefresh(item.id);if(connected&&!currentData?.viewOnly)loadVersions(item.id);}
+function openManagedDialog(item,trigger){if($("managedDialog").open)return;const otherFields=item.id==="code-index"?["bslLsEnabled","bslLsJava"]:["codeIndexEnabled"];if(otherFields.some(field=>dirtyFields.has(field))){notice("Сохраните или отмените черновик другого компонента перед открытием настроек.",true);return;}managedDialogTrigger=trigger;$("codeIndexChoice").hidden=item.id!=="code-index";$("bslLsChoice").hidden=item.id!=="bsl-ls";$("javaSettingsPanel").hidden=item.id!=="bsl-ls";$("managedDialogTitle").textContent=item.name;managedComponent=item.id;setDialogNotice("managedDialogNotice");defaultScopeContexts.delete("componentScope");defaultScopeContexts.delete("javaScope");renderCurrent(currentData,{preserveDraft:true});$("managedDialogBody").append($("managedControls"));if(item.id==="code-index")$("managedControls").insertBefore($("indexActions"),$("managedDiagnostics"));$("connections").snapshotSignature=null;renderServiceSnapshot(currentData);renderDialogStates();$("updateComponent").value=item.id;$("installedComponentVersion").textContent=currentData?.installedVersions?.[item.id]||"Не установлена";$("managedOptionsFiles").textContent=Object.values(currentData?.writePaths||{}).filter(Boolean).join("\n");renderVersion();renderUpdates();$("managedDialog").showModal();syncControls();$(item.id==="code-index"?"codeIndexEnabled":"bslLsEnabled").focus();if(connected&&!currentData?.viewOnly)loadVersions(item.id);}
 function requestManagedClose(){if(componentFields.some(field=>dirtyFields.has(field))||dirtyFields.has("bslLsJava")){$("managedCloseConfirm").showModal();return;}$("managedDialog").close();}
 $("managedDialogClose").onclick=requestManagedClose;$("managedDialog").addEventListener("cancel",event=>{event.preventDefault();requestManagedClose();});$("managedDialog").addEventListener("click",event=>{if(event.target!==$("managedDialog"))return;const box=$("managedDialog").getBoundingClientRect();if(event.clientX<box.left||event.clientX>box.right||event.clientY<box.top||event.clientY>box.bottom)requestManagedClose();});
 $("managedCloseStay").onclick=()=>$("managedCloseConfirm").close();$("managedCloseKeep").onclick=()=>{$("managedCloseConfirm").close();$("managedDialog").close();};
@@ -613,7 +636,6 @@ async function openTestingSettings(id,trigger){
   clearEditorSearch();
   testingComponent=id;setDialogNotice("testingDialogNotice");testingDialogTrigger=trigger;testingEditorMode=$("editorMode").value;pendingEditorTarget=id;defaultScopeContexts.delete("editorDocument");defaultEditorScope(currentData);fieldOpen.set("section:Тестирование",true);
   $("testingDialogTitle").textContent=id==="yaxunit"?"YaXUnit":"Vanessa";$("testingDialogBody").append($("editorControls"));$("testingDialog").showModal();renderDialogStates();
-  queueComponentRefresh(id);
   $("editorMode").value="tree";if(!$("settingsText").value)await loadEditor();else renderJsonEditor();syncControls();
 }
 $("testingDialogClose").onclick=()=>$("testingDialog").close();
@@ -625,7 +647,7 @@ function openConnectionDialog(item,trigger){
   for(const name of ["edt","v8std","openviking"])$(name+"Field").hidden=name!==item.id;
   $("openvikingAdvanced").hidden=item.id!=="openviking";$("knowledgeSummary").hidden=item.id!=="openviking"||!currentData?.knowledge;
   if(item.id==="openviking")$("externalUsageHolder").append($("openvikingUsage"));
-  $("componentDialogTitle").textContent=item.name;setDialogNotice("componentDialogStatus");renderDialogStates();$("componentDialogBody").append($("connectionSettings"));$("componentDialog").showModal();$(item.id+"Url").focus();queueComponentRefresh(item.id);
+  $("componentDialogTitle").textContent=item.name;setDialogNotice("componentDialogStatus");renderDialogStates();$("componentDialogBody").append($("connectionSettings"));$("componentDialog").showModal();$(item.id+"Url").focus();
 }
 function requestComponentClose(){if(connectionFields.some(field=>dirtyFields.has(field))||ovRecordDirty){$("componentCloseConfirm").showModal();return;}$("componentDialog").close();}
 $("componentDialogClose").onclick=requestComponentClose;
@@ -641,7 +663,7 @@ $("componentDiscard").onclick=()=>{
   syncControls();notice(pendingScope?"Черновик подключения отменён. Проект изменился; отмените остальные черновики перед переходом.":"Черновик подключения отменён.");
 };
 function renderReadiness(){
-  const current=currentData,result=current?.readiness,draft=Boolean(dirtyFields.size||hasProfileDraft()),checking=activeOperation?.status==="running"&&["check","refresh_readiness"].includes(activeOperation.action),loaded=current?.profile?.status==="loaded",requiredIssues=loaded?catalogItems(current).filter(item=>item.required&&item.issue):[],knownIssues=requiredIssues.filter(item=>item.id==="yaxunit"&&!["checking","check_stale"].includes(item.state)||["disabled","missing_config","error","missing","missing_project","mismatch","stopped","building"].includes(item.state)),fresh=loaded&&["ready","blocked"].includes(result?.state)&&Number.isFinite(Date.parse(result?.checkedAt))&&(!result.expiresAt||Date.now()<Date.parse(result.expiresAt)),otherIssues=fresh?(result.checks||[]).filter(item=>!["ready","disabled"].includes(item.state)&&!catalogDefinitions.some(component=>component.id===item.id)):[],state=draft?"draft":result?.state==="ready"&&!fresh?"not_checked":knownIssues.length||otherIssues.length?"blocked":checking?"checking":result?.state==="ready"&&requiredIssues.length?"blocked":result?.state||"not_checked";
+  const current=currentData,result=current?.readiness,draft=Boolean(dirtyFields.size||hasProfileDraft()),checking=activeOperation?.status==="running"&&["check","refresh_readiness"].includes(activeOperation.action),loaded=current?.profile?.status==="loaded",requiredIssues=loaded?catalogItems(current).filter(item=>item.required&&item.issue):[],knownIssues=requiredIssues.filter(item=>item.id==="yaxunit"&&!["checking","check_stale"].includes(item.state)||["disabled","missing_config","error","missing","missing_project","mismatch","stopped","building"].includes(item.state)),fresh=loaded&&readinessFresh(result),otherIssues=fresh?(result.checks||[]).filter(item=>!["ready","disabled"].includes(item.state)&&!catalogDefinitions.some(component=>component.id===item.id)):[],state=draft?"draft":readinessExpired(result)?"stale":result?.state==="ready"&&!fresh?"not_checked":knownIssues.length||otherIssues.length?"blocked":checking?"checking":result?.state==="ready"&&requiredIssues.length?"blocked":result?.state||"not_checked";
   const mainReady=fresh&&result?.mainReadiness?.state==="ready"&&!requiredIssues.some(item=>item.kind!=="testing")&&!otherIssues.length;
   $("readinessPanel").hidden=current?.profile?.status!=="loaded";
   $("readinessTitle").textContent=({ready:"Окружение готово — можно начинать работу",checking:"Обновляем готовность…",blocked:"Для работы требуется внимание",stale:"Нужно повторить проверку готовности",draft:"Есть несохранённые настройки",not_checked:"Готовность ещё не проверена"})[state]||"Готовность ещё не проверена";
@@ -657,7 +679,7 @@ function renderReadiness(){
     $("headerStatusReason").textContent="Основное окружение готово · "+causes.slice(0,2).join(" · ");
   }
   $("readinessChecks").hidden=!result?.checks?.length;
-  $("readinessItems").replaceChildren(...(result?.checks||[]).map(item=>{const row=document.createElement("li");row.textContent=item.label+": "+({ready:"готово",building:"идёт сборка проекта",disabled:"отключено",indexing:"индексируется",stale:"индекс устарел",missing:"индекс не найден",missing_project:"не найден проект EDT",not_checked:"не проверено",not_verified:"не подтверждено",mismatch:"не совпадают проекты",preparing:"подготовка",error:"ошибка"}[item.state]||"состояние не определено")+(item.detail?" — "+userMessage(item.detail):"");return row;}));
+  $("readinessItems").replaceChildren(...(result?.checks||[]).map(item=>{const row=document.createElement("li"),state=(result?.state==="stale"||readinessExpired(result))&&item.state==="ready"?"check_stale":item.state;row.textContent=item.label+": "+({ready:"готово",check_stale:"проверка устарела",building:"идёт сборка проекта",disabled:"отключено",indexing:"индексируется",stale:"индекс устарел",missing:"индекс не найден",missing_project:"не найден проект EDT",not_checked:"не проверено",not_verified:"не подтверждено",mismatch:"не совпадают проекты",preparing:"подготовка",error:"ошибка"}[state]||"состояние не определено")+(item.detail?" — "+userMessage(item.detail):"");return row;}));
 }
 function renderCurrent(current,{preserveDraft=false}={}){
   current.viewOnly=Boolean(current.viewOnly);
@@ -700,7 +722,7 @@ function renderCurrent(current,{preserveDraft=false}={}){
   $("profileTitle").textContent=loaded?(profile.projectId||profile.profileId):current.values?.projectRoot?"Профиль проекта":"Профиль не выбран";
   $("selectedProjectLabel").textContent=loaded?(profile.projectId||profile.profileId||"Проект"):"Выбрать проект";
   $("profileToggleButton").title=current.values?.projectRoot||"Выбрать проект";
-  $("headerRefresh").title="Обновить состояние · автообновление каждую минуту"+(current.summary?.observedAt?" · "+new Date(current.summary.observedAt).toLocaleTimeString("ru-RU"):"");
+  $("headerRefresh").title="Обновить состояние"+(current.summary?.observedAt?" · "+new Date(current.summary.observedAt).toLocaleTimeString("ru-RU"):"");
   $("profileState").textContent=loaded?"Загружен":profile.status==="ambiguous"?"Найдено несколько профилей":profile.status==="invalid"?"Ошибка профиля":profile.status==="unselected"?"Выберите папку":"Не создан";$("profileState").className=loaded?"good":"muted";
   $("profileDescription").hidden=loaded;$("profileDescription").textContent=loaded?"Профиль найден в .ai/project.yaml. EDT-проектов: "+(profileContext?.edt?.projectCount??"—")+".":profile.status==="ambiguous"?"Выберите папку конкретного проекта.":profile.status==="invalid"?"Исправьте профиль или импортируйте рабочую копию.":"Создайте профиль для этой папки или импортируйте готовый файл.";
   $("profileError").hidden=!["invalid","ambiguous"].includes(profile.status);$("profileErrorText").textContent=profile.detail?userMessage(profile.detail):"";
@@ -733,7 +755,6 @@ function renderCurrent(current,{preserveDraft=false}={}){
   if(!projects.length){const row=document.createElement("tr"),cell=document.createElement("td");cell.setAttribute("colspan","3");cell.textContent=profileContext?.edt?.projectCount===null?"Не удалось проверить файлы .project.":"EDT-проекты с файлом .project не найдены.";row.append(cell);$("profileEdtProjects").append(row);}
   $("profileGitRoot").textContent=profileContext?.git?.status==="detected"?"Git-репозиторий каталога профиля: "+profileContext.git.root:profileContext?.git?.status==="not_repository"?"Каталог профиля не находится в Git-репозитории.":"Git-репозиторий каталога профиля не определён. Подробнее — в сведениях об EDT и Git.";
   renderHistory(current);renderServiceSnapshot(current);renderComponentCatalog(current);renderSettingSources(current);renderDestinations();renderFieldOrigins();syncControls();renderDialogStates();maybeLoadOvRecord();
-  const statusScope=componentRefreshScope(current);if(statusScope!==loadedStatusScope){loadedStatusScope=statusScope;if(statusScope)queueComponentRefresh();}
 }
 const scopeNames={project_local:"локальных настройках проекта",profile:"профиле проекта",global:"общих настройках"};
 const scopeGenitive={project_local:"локальных настроек проекта",profile:"профиля проекта",global:"общих настроек"};
@@ -780,13 +801,13 @@ function renderDestinations(){
 }
 function renderKnowledge(current){
   const config=current.knowledge;$("knowledgeSummary").hidden=!config||Boolean($("componentDialog").open&&dialogComponent!=="openviking");if(!config)return;
-  const fresh=["ready","blocked"].includes(current.readiness?.state),setup=fresh?current.readiness.knowledge:null;
+  const fresh=readinessFresh(current.readiness),setup=fresh?current.readiness.knowledge:null;
   const publication=setup?.readiness?.publication,lines=["Режим знаний: "+knowledgeMode(config.mode)+" · "+knowledgeProvider(config.provider)+(config.required?" · обязательный источник":""),
     "Выбранные коллекции: "+(config.collections?.join(", ")||"нет"),
     "Покрытие: только выбранные коллекции; наличие API и полнота содержания не подтверждены.",
     "Редакция публикации: "+(publication?.state==="verified"?publication.gitRevision+" · индекс "+publication.snapshot:"не подтверждена"),
     "Готовность окружения: "+(setup?.ready?"подтверждена для выбранных коллекций; рабочие действия требуют проверки своей сессии":"не подтверждена")];
-  if(current.readiness?.state==="stale")lines.push(current.readiness.reason?userMessage(current.readiness.reason):"Проверка устарела.");
+  if(current.readiness?.state==="stale"||readinessExpired(current.readiness))lines.push(current.readiness.reason?userMessage(current.readiness.reason):"Проверка устарела.");
   const reasons=(fresh?current.readiness.checks||[]:[]).filter(item=>["knowledge","openviking"].includes(item.id)&&!["ready","disabled"].includes(item.state)).map(item=>item.detail);
   if(!setup?.ready)lines.push("Причина: "+(reasons.filter(Boolean).map(userMessage).join("; ")||(config.detail?userMessage(config.detail):"Требуется проверка готовности.")));
   lines.push("Область блокировки: "+(config.state==="disabled"?"нет":config.state==="invalid"||config.workflowScope==="all"?"все рабочие действия":config.required?config.dependentActions?.map(knowledgeAction).join(", "):"поиск знаний"));
@@ -801,7 +822,7 @@ async function selectProfile(projectRoot){
   return busy("Открываем профиль…",async()=>{const current=await openSelectedProfile(projectRoot);if(current.profile?.status!=="loaded"){notice((current.profile?.status==="missing"?"Профиль не найден в выбранном каталоге.":"Профиль требует исправления.")+(current.profile?.detail?" "+current.profile.detail:""),true);return;}notice(current.viewOnly?"Открыт просмотр профиля. Каталог текущего чата сохранён.":"Профиль выбран. Настройки относятся к этому каталогу и экземпляру.");}).catch(()=>{});
 }
 async function openSelectedProfile(projectRoot){viewRevision++;const revision=chatInputRevision,current=await tool("settings.select_profile",{projectRoot});if(navigationMode==="project"&&revision!==chatInputRevision)throw new Error("Каталог чата изменился. Выберите профиль заново.");renderSelectedProfile(current);return current;}
-function renderSelectedProfile(current){viewRevision++;dirtyFields.clear();invalidate();loadedStatusScope=null;renderCurrent(current);show(current.profile?.status==="loaded"?"check":"profile");if(!$("profileError").hidden)$("profileError").open=true;$("directoryChooser").open=false;if(profilesOpen)closeProfiles();scheduleStatus();}
+function renderSelectedProfile(current){viewRevision++;dirtyFields.clear();invalidate();renderCurrent(current);show(current.profile?.status==="loaded"?"check":"profile");if(!$("profileError").hidden)$("profileError").open=true;$("directoryChooser").open=false;if(profilesOpen)closeProfiles();}
 function operationMatchesProfile(operation){return operation.projectRoot===currentData?.values?.projectRoot&&operation.instance===currentData?.instance;}
 function isIndexMaintenance(operation){return ["rebuild_index","restart_index"].includes(operation?.action);}
 function indexMaintenanceStage(operation){
@@ -857,13 +878,12 @@ async function runComponentRefresh(){
   catch(error){failComponentRefresh(task,error);}
   finally{if(!disposed)syncControls();}
 }
-function scheduleStatus(){if(statusTimer)clearTimeout(statusTimer);statusTimer=null;if(!disposed&&connected&&!document.hidden)statusTimer=setTimeout(refreshStatus,60000);}
 async function refreshStatus(){
-  if(statusTimer)clearTimeout(statusTimer);statusTimer=null;if(disposed||document.hidden)return;if(statusPolling||busyActive||initializing){scheduleStatus();return;}
+  if(disposed||document.hidden||statusPolling||busyActive||initializing)return false;
   statusPolling=true;const revision=viewRevision;
-  try{if(navigationMode==="project"&&currentData?.viewOnly&&entryProjectRoot&&confirmedInputRevision!==chatInputRevision){const chat=await tool("settings.read");if(disposed||revision!==viewRevision||busyActive)return false;acceptChatSnapshot(chat);}const current=await tool("settings.status",currentData?.viewOnly?{projectRoot:currentData.values.projectRoot}:{});if(disposed||revision!==viewRevision||busyActive)return false;renderCurrent(current,{preserveDraft:true});queueComponentRefresh();if(current.operation?.status==="running"&&!polling&&!checkTimer)await pollOperation(current.operation.id);return true;}
-  catch{if(!disposed&&revision===viewRevision&&!busyActive)$("headerRefresh").title="Нет свежих данных · повторим автоматически";return false;}
-  finally{statusPolling=false;scheduleStatus();runComponentRefresh();}
+  try{if(navigationMode==="project"&&currentData?.viewOnly&&entryProjectRoot&&confirmedInputRevision!==chatInputRevision){const chat=await tool("settings.read");if(disposed||revision!==viewRevision||busyActive)return false;acceptChatSnapshot(chat);}const current=await tool("settings.status",currentData?.viewOnly?{projectRoot:currentData.values.projectRoot}:{});if(disposed||revision!==viewRevision||busyActive)return false;renderCurrent(current,{preserveDraft:true});if(current.operation?.status==="running"&&!polling&&!checkTimer)await pollOperation(current.operation.id);return true;}
+  catch{if(!disposed&&revision===viewRevision&&!busyActive)$("headerRefresh").title="Нет свежих данных · обновите состояние";return false;}
+  finally{statusPolling=false;runComponentRefresh();}
 }
 function syncControls(){
   if(standalone){for(const control of document.querySelectorAll("button,input,textarea,select"))control.disabled=!(control.id||"").endsWith("Tab")&&!control.versionOption&&!["componentsAll","componentsIssues","updateComponent","versionButton","versionSearch","moreVersionsButton"].includes(control.id);return;}
@@ -945,7 +965,7 @@ function syncControls(){
 async function busy(label,action,scope=null){
   if(pendingScope){notice("Отмените черновик перед переходом к изменившемуся профилю.",true);return;}if(busyActive||fieldsPatchPending)return;interacted=true;viewRevision++;busyActive=true;syncControls();notice(label,false,scope);
   try{return await action();}catch(error){if(scope?.action==="probe"&&scope.component)observeComponentResult({componentChecks:[{id:scope.component,state:"error",detail:error.message}]},scope);notice(error.message,true,scope);throw error;}
-  finally{busyActive=false;syncControls();scheduleStatus();runComponentRefresh();resize();}
+  finally{busyActive=false;syncControls();runComponentRefresh();resize();}
 }
 function invalidate(){inputRevision++;lastPreview=null;$("preview").hidden=true;}
 function editorChanged(){return fieldsPatchPending||Boolean(pendingFieldInputs.size)||Boolean(treeErrors.size)||$("settingsText").value!==editorOriginal;}
@@ -1364,7 +1384,7 @@ for(const key of tabs){
   });
 }
 $("createButton").onclick=()=>busy("Создаём профиль…",async()=>{
-  const result=await tool("settings.create",{projectRoot:$("projectRoot").value.trim()});await refresh();queueComponentRefresh();
+  const result=await tool("settings.create",{projectRoot:$("projectRoot").value.trim()});await refresh();
   const messages=["Профиль создан. Настройте репозитории в редакторе профиля."];
   const instructions=result.projectInstructions;
   if(instructions?.created?.length)messages.push("Созданы стартовые инструкции: "+instructions.created.join(", ")+".");
@@ -1645,7 +1665,7 @@ async function pollOperation(operationId,probeScope=null,initialOperation=null){
     }
     if(operation.action==="rebuild_index"){
       if(!operationMatchesProfile(operation)){notice("Индекс пересоздан для другого профиля; его результат здесь не отображается.");return;}
-      await refresh();notice((operation.result.all?"Индексы EDT-проектов пересозданы: "+(operation.result.rebuilt?.length||operation.progress?.total||0)+".":"Индекс проекта «"+(operation.result.edtProject||operation.result.repository)+"» пересоздан.")+" "+(operation.result.state==="ready"?"Готов к работе.":"Проверьте актуальное состояние сервисов."),false,operation);queueComponentRefresh("code-index");return;
+      await refresh();notice((operation.result.all?"Индексы EDT-проектов пересозданы: "+(operation.result.rebuilt?.length||operation.progress?.total||0)+".":"Индекс проекта «"+(operation.result.edtProject||operation.result.repository)+"» пересоздан.")+" "+(operation.result.state==="ready"?"Готов к работе.":"Проверьте актуальное состояние сервисов."),false,operation);return;
     }
     if(operation.action==="restart_index"){
       if(!operationMatchesProfile(operation)){notice("Состав проектов применён для другого профиля.");return;}
@@ -1668,7 +1688,7 @@ async function pollOperation(operationId,probeScope=null,initialOperation=null){
         renderSelectedProfile(await tool("settings.select_profile",{projectRoot}));
       }else{if(operation.action==="apply")invalidate();await refresh();}
       const text={load:"Профиль загружен.",create:"Профиль создан.",update:"Подключения сохранены.",apply:"Настройки импортированы.",pick_directory:"Папка выбрана."}[operation.action]||"Операция завершена.";
-      notice(text+" "+(operation.result?.sessionGuidance||currentData?.sessionGuidance||""));if(["load","create"].includes(operation.action))queueComponentRefresh();return;
+      notice(text+" "+(operation.result?.sessionGuidance||currentData?.sessionGuidance||""));return;
     }if(!operation.result?.superseded&&operationMatchesProfile(operation)){observeComponentResult(operation.result,operation);renderCheck(operation.result,operation);}await refresh();
   }catch(error){pollFailed=true;if(isIndexMaintenance(activeOperation)&&activeOperation.status==="running"){
     indexMaintenancePollError="Не удалось обновить состояние. Операция может продолжаться; повторим проверку через 5 секунд.";renderIndexMaintenance();notice(indexMaintenancePollError,true,activeOperation);scheduleOperationPoll(activeOperation,probeScope,5000);return;
@@ -1678,7 +1698,7 @@ function icon(id){const svg=document.createElementNS("http://www.w3.org/2000/svg
 function renderServiceSnapshot(current){
   if(current.profile?.status!=="loaded"){$("indexActionsHolding").append($("indexActions"));$("connections").hidden=true;$("connections").replaceChildren();$("connections").snapshotSignature=null;return;}
   if(!current.summary)return;
-  const readiness=current.readiness||{},checks=readiness.checks||[],fresh=["ready","blocked"].includes(readiness.state);
+  const readiness=current.readiness||{},checks=readiness.checks||[],fresh=readinessFresh(readiness);
   const catalog=catalogItems(current);
   const managed=current.summary.components.map(observed=>{
     const latest=catalog.find(item=>item.id===observed.id),item={...observed,status:latest?.state||observed.status,detail:latest?.detail||observed.detail};
@@ -1688,7 +1708,7 @@ function renderServiceSnapshot(current){
     return {name:item.id,state:item.status,ready:item.status==="ready"||item.status==="disabled",detail:item.detail||(item.id==="code-index"?codeIndexStateDetail(item.status):({not_checked:"Проверка компонента ещё не выполнена.",check_stale:"Повторите проверку готовности."}[item.status])),
       checkedAt,repositories:Array.isArray(repositories)?repositories.filter(repo=>repo&&typeof repo==="object"):undefined};
   });
-  const unchecked=readiness.state==="stale"?"check_stale":"not_checked";
+  const unchecked=readiness.state==="stale"||readinessExpired(readiness)?"check_stale":"not_checked";
   const policy=checks.find(item=>item.id==="policy");if(policy)managed.push({name:"policy",state:fresh?policy.state:unchecked,ready:fresh&&policy.state==="ready",detail:fresh?policy.detail:readiness.reason,checkedAt:readiness.checkedAt});
   const external=Object.fromEntries(checks.filter(item=>["edt","v8std","openviking"].includes(item.id)).map(item=>[item.id,{state:fresh?item.state:unchecked,ready:fresh&&item.state==="ready",configured:Boolean(current.values?.[item.id+"Url"]),connected:fresh&&["ready","not_verified","building"].includes(item.state),detail:fresh?item.detail:readiness.reason}]));
   const signature=JSON.stringify([current.values.projectRoot,current.instance,managed,external]);if($("connections").snapshotSignature===signature)return;
@@ -1754,8 +1774,8 @@ for(const [button,selected]of [["probeButton",()=>dialogComponent],["managedProb
   return busy("Проверяем компонент…",()=>probeComponent(component,scope),scope).catch(()=>{});
 };
 if(typeof ResizeObserver!=="undefined")new ResizeObserver(resize).observe(document.querySelector("main"));
-document.addEventListener("visibilitychange",()=>{if(document.hidden){if(statusTimer)clearTimeout(statusTimer);statusTimer=null;scheduleJournal();}else if(connected){refreshStatus();if(activeMode==="support")loadDiagnostics();}renderIndexMaintenance();});
-window.addEventListener("pagehide",()=>{disposed=true;if(statusTimer)clearTimeout(statusTimer);if(journalTimer)clearTimeout(journalTimer);if(checkTimer)clearTimeout(checkTimer);if(indexMaintenanceTimer)clearTimeout(indexMaintenanceTimer);for(const item of waiting.values())clearTimeout(item.timer);waiting.clear();for(const task of componentRefreshQueue)task.resolve(false);componentRefreshQueue=[];if(componentRefresh)finishComponentRefresh(false);});
+document.addEventListener("visibilitychange",()=>{if(document.hidden){if(evidenceExpiryTimer)clearTimeout(evidenceExpiryTimer);evidenceExpiryTimer=null;scheduleJournal();}else if(connected){renderTimeSensitiveStatus();runComponentRefresh();if(activeMode==="support")loadDiagnostics();}renderIndexMaintenance();});
+window.addEventListener("pagehide",()=>{disposed=true;if(evidenceExpiryTimer)clearTimeout(evidenceExpiryTimer);if(journalTimer)clearTimeout(journalTimer);if(checkTimer)clearTimeout(checkTimer);if(indexMaintenanceTimer)clearTimeout(indexMaintenanceTimer);for(const item of waiting.values())clearTimeout(item.timer);waiting.clear();for(const task of componentRefreshQueue)task.resolve(false);componentRefreshQueue=[];if(componentRefresh)finishComponentRefresh(false);});
 window.addEventListener("beforeunload",event=>{if(dirtyFields.size||hasProfileDraft()){event.preventDefault();event.returnValue="";}});
 (async()=>{
   if(standalone){
@@ -1776,7 +1796,6 @@ window.addEventListener("beforeunload",event=>{if(dirtyFields.size||hasProfileDr
     notice(current.configurationError?"Не удалось прочитать настройки. Скачайте диагностику для поддержки.":current.projectSelection?.detail||(current.profile?.status==="invalid"?"Профиль содержит ошибку. Можно импортировать рабочую копию.":current.profile?.status==="loaded"?"Профиль загружен автоматически для текущей папки.":"Создайте профиль или импортируйте его в выбранный каталог."),Boolean(current.projectSelection?.detail)||current.profile?.status==="invalid");
     initializing=false;
     await restoreRecentProfile();
-    scheduleStatus();
     runComponentRefresh();
     if(initialData)await openInitial();
     if(initialData?.mode!=="operation"&&current.operation?.status==="running")await pollOperation(current.operation.id);

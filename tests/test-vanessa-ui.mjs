@@ -9,7 +9,7 @@ import { loadProfile, checkFiles, startArguments, platformCommandLine, clientAdd
 import { listTools, checkArguments, redact } from "../vanessa/mcp.mjs";
 import { main, doctor } from "../vanessa/vanessa.mjs";
 import { withProfileLock, checkOwner, checkClaims, clientControlKey, registryDir, start } from "../vanessa/runtime.mjs";
-import { requiredTools, inspectSession, connectSession, setupSession, taxiCompatible, isLocalComputer } from "../vanessa/readiness.mjs";
+import { requiredTools, inspectSession, connectSession, setupSession, taxiCompatible, isLocalComputer, runtimeContract } from "../vanessa/readiness.mjs";
 import { ownRecording, recordOwnership, invalidateObservedIdle } from "../vanessa/recording.mjs";
 import { parseEnvironment, parseState, parseProfiles, parseEditor, parseInfobase, parseExtensions, parseProcesses, parseClientLaunch, parseSyntax, parseSelection, editorContent, normalizeFeatureText } from "../vanessa/runtime-contract.mjs";
 import * as wire from "./test-vanessa-ui-fixtures.mjs";
@@ -221,7 +221,7 @@ try {
   fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: "other-profile", pid: process.pid, status: "running", client: clientControlKey(profile), clientKeyVersion: 3 }));
   try { assert.throws(() => checkClaims(profile), /TestClient принадлежит/); } finally { fs.unlinkSync(foreignOwnerFile); }
   fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: "other" }));
-  try { assert.throws(() => checkOwner(profile), /другому профилю/); } finally { fs.unlinkSync(foreignOwnerFile); }
+  try { assert.throws(() => checkOwner(profile), /Запись владельца подключения принадлежит другому профилю.*может быть устаревшей/); } finally { fs.unlinkSync(foreignOwnerFile); }
   fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: process.pid, status: "running", clientKeyVersion: 3 }));
   try {
     const changedPort = { ...profile, mcp: { ...profile.mcp, port: port + 1 } };
@@ -279,20 +279,23 @@ try {
   } };
   const semanticContract = {
     version: "semantic-fixture-only",
+    processIdentity: pid => ({ pid, executable: "C:\\Fixture\\1cv8c.exe", created: "win32-filetime:123456" }),
+    processBinding: () => ({ managerPid: 99999, managerCreated: "win32-filetime:123400" }),
     environment: () => ({ managerInfobase: profile.manager.infobase, vanessaExt: true, runtimeVersion: "fixture" }),
     editor: () => ({ stateAvailable: true, errorCount: 0 }),
     profiles: () => [{ name: profile.client.name, infobase: profile.client.infobase, additionalParameters: "/iTaxi", computerName: profile.client.computerName, connected }],
     state: () => ({ connected, clientName: profile.client.name, clientInfobase: profile.client.infobase, running: false, recording: false }),
     extensions: () => [{ name: "VAExtension", active: true, version: "fixture" }],
-    processes: () => ({ filter: "/TESTCLIENT", matchedCount: 1, processes: [{ pid: 12345, startedAt: "fixture-session", launch: { infobase: profile.client.infobase, interface: "taxi", testPort: 48000 } }] }),
+    processes: () => ({ filter: null, matchedCount: 1, processes: [{ kind: "test_client", pid: 12345, startedAt: "fixture-session", launch: { infobase: profile.client.infobase, interface: "taxi", testPort: 48000 } }] }),
   };
-  for (const selected of [admin, restricted]) {
+  for (const source of [admin, restricted]) {
+    const selected = { ...source, manager: { ...source.manager, user: undefined } };
     let connectedClient = false, created = false;
     const user = selected.client.user;
     const testContract = { ...semanticContract,
       profiles: () => created ? [{ name: selected.client.name, infobase: selected.client.infobase, additionalParameters: clientAdditionalParameters(selected), computerName: "localhost", connected: connectedClient }] : [],
       state: () => ({ connected: connectedClient, clientName: selected.client.name, running: false, recording: false }),
-      processes: () => ({ filter: "/TESTCLIENT", matchedCount: 1, processes: [{ pid: 12345, startedAt: "fixture", launch: { infobase: selected.client.infobase, interface: "taxi", testPort: 48000, user } }] }),
+      processes: () => ({ filter: null, matchedCount: 1, processes: [{ kind: "test_client", pid: 12345, startedAt: "fixture", launch: { infobase: selected.client.infobase, interface: "taxi", testPort: 48000, user } }] }),
     };
     const testClient = { request: async (method, params) => {
       if (params.name === "manage_test_client_profiles" && params.arguments.action === "add") {
@@ -305,7 +308,27 @@ try {
       }
       return { content: [] };
     } };
-    assert.equal((await setupSession(selected, testClient, fixtureTools, testContract)).status, "ready");
+    assert.equal((await setupSession(selected, testClient, fixtureTools, testContract)).reason, "actual_test_client_user_unverified");
+    assert.equal(created, false, "explicit user blocks setup before creating or connecting the profile");
+    created = true; connectedClient = true;
+    const withoutUser = { ...selected, client: { ...selected.client, user: undefined } };
+    const secondProcess = { kind: "test_client", pid: 23456, startedAt: "other-session", launch: { infobase: { type: "file", path: profile.features }, interface: "taxi", testPort: 48001, user: "OtherUser" } };
+    const multi = { ...testContract,
+      profiles: () => [{ ...testContract.profiles()[0], pid: 12345 }],
+      processes: () => ({ filter: null, matchedCount: 2, processes: [testContract.processes().processes[0], secondProcess] }),
+    };
+    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, multi)).clientProcess.identitySource, "profile_pid_and_tcp_binding");
+    const stalePid = { ...multi, profiles: () => [{ ...multi.profiles()[0], pid: 23456 }] };
+    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, stalePid)).reason, "actual_test_client_launch_mismatch_or_unverified");
+    const duplicateUser = { ...multi, processes: () => ({ ...multi.processes(), processes: [multi.processes().processes[0], { ...secondProcess, launch: { ...secondProcess.launch, infobase: selected.client.infobase, user } }] }) };
+    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, duplicateUser)).status, "ready");
+    const otherUserSameBase = { ...multi, processes: () => ({ ...multi.processes(), processes: [multi.processes().processes[0], { ...secondProcess, launch: { ...secondProcess.launch, infobase: selected.client.infobase } }] }) };
+    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, otherUserSameBase)).status, "ready");
+    const unknownLaunch = { ...multi, processes: () => ({ ...multi.processes(), processes: [multi.processes().processes[0], { ...secondProcess, launch: null }] }) };
+    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, unknownLaunch)).status, "ready");
+    const duplicatePid = { ...multi, profiles: () => [...multi.profiles(), { name: "Other", connected: false, pid: 12345 }] };
+    assert.equal((await inspectSession(selected, testClient, fixtureTools, duplicatePid)).reason, "unique_actual_test_client_process_not_verified");
+    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, multi)).status, "ready");
     const wrongAuth = { ...testContract, profiles: () => [{ ...testContract.profiles()[0], additionalParameters: '/iTaxi /N"WrongUser"' }] };
     assert.equal((await inspectSession(selected, testClient, fixtureTools, wrongAuth)).reason, "client_authentication_profile_mismatch");
     const wrongProcess = { ...testContract, processes: () => ({ ...testContract.processes(), processes: [{ ...testContract.processes().processes[0], launch: { ...testContract.processes().processes[0].launch, user: "WrongUser" } }] }) };
@@ -323,7 +346,7 @@ try {
         processes: () => ({ ...semanticContract.processes(), processes: [{ ...semanticContract.processes().processes[0], launch: { ...semanticContract.processes().processes[0].launch, user: "LegacyUser" } }] }),
       };
       connected = true;
-      assert.equal((await inspectSession(legacy, fixtureClient, fixtureTools, legacyContract)).status, "ready");
+      assert.equal((await inspectSession(legacy, fixtureClient, fixtureTools, legacyContract)).reason, "actual_test_client_user_unverified");
       process.env[envKey] = "DifferentUser";
       assert.equal((await inspectSession(legacy, fixtureClient, fixtureTools, legacyContract)).reason, "client_authentication_profile_mismatch");
       delete process.env[envKey];
@@ -412,6 +435,14 @@ try {
   assert.equal(parseEditor(wire.response(wire.editor.content[0].text.replace("## Ошибки в редакторе", "## Unknown"))), null);
   assert.equal(parseProfiles(wire.response(wire.profiles.content[0].text.replace("Найдено профилей: 1", "Найдено профилей: 2"))), null);
   assert.deepEqual(parseState(wire.connectedState), { connected: true, running: false, recording: false, clientName: "TestClient" });
+  const stateYo = wire.connectedState.content[0].text.replace("подключен:", "подключён:");
+  assert.deepEqual(parseState(wire.response(stateYo)), { connected: true, running: false, recording: false, clientName: "TestClient" });
+  assert.equal(parseState(wire.response(stateYo + "\n- Клиент тестирования подключен: нет")), null, "conflicting spellings must remain ambiguous");
+  const profilesYo = wire.profiles.content[0].text.replace("не подключен", "не подключён");
+  assert.equal(parseProfiles(wire.response(profilesYo))[0].connected, false);
+  assert.equal(parseProfiles(wire.response(profilesYo.replace("❌ не подключён", "✅ подключён")))[0].connected, true);
+  assert.equal(parseProfiles(wire.response(profilesYo.replace("| PID | 0 |", "| PID | 19\u00a0368 |")))[0].pid, 19368);
+  assert.equal(parseProfiles(wire.response(profilesYo.replace("| PID | 0 |", "| PID | 1\u00a09368 |")))[0].pid, null);
   assert.equal(parseExtensions(wire.extensions).length, 7);
   assert.deepEqual(parseExtensions(wire.extensions).find(item => item.name === "VAExtension"), { name: "VAExtension", version: "1.41", active: true });
   assert.equal(parseExtensions(wire.response(wire.extensions.content[0].text.replace("Итого: 7", "Итого: 8"))), null);
@@ -462,7 +493,7 @@ try {
   assert.equal(completedWorkflow.status, "completed");
   assert.equal(completedWorkflow.featureSha256, digest(fs.readFileSync(feature)));
   assert.equal(completedWorkflow.editorContentSha256, digest(normalizeFeatureText(fs.readFileSync(feature, "utf8"))));
-  assert.deepEqual(workflowCalls.slice(-7), ["open_feature_file", "load_features", "check_syntax", "select_scenario", "get_editor_state", "run_scenario", "get_test_results"]);
+  assert.deepEqual(workflowCalls.slice(-11), ["open_feature_file", "load_features", "check_syntax", "select_scenario", "manage_test_client_profiles", "get_process_list_os", "manage_test_client_profiles", "get_vanessa_automation_state", "get_editor_state", "run_scenario", "get_test_results"]);
   assert.equal(editorContent(selectedEditor(scenario)).startsWith("\n#language"), true, "leading document blank is preserved");
   assert.equal(editorContent(selectedEditor(scenario, feature, "first\n```\nsecond")), null, "ambiguous embedded fences fail closed");
   for (const mode of ["unknownSyntax", "invalidSyntax", "unknownSelection", "wrongSelection", "staleBuffer"]) {
@@ -523,7 +554,7 @@ try {
       get_vanessa_automation_state: () => wire.connectedState,
       manage_test_client_profiles: () => rewrite(wire.profiles, text => text.replaceAll("ExistingClient", "TestClient").replace('/N"FixtureUser"', '/iTaxi /N"FixtureUser"').replace("❌ не подключен", "✅ подключен")),
       get_editor_state: () => args.includeContent ? selectedEditor(scenario) : wire.editor,
-      get_process_list_os: () => rewrite(wire.clientProcess, text => text.replace("Отбор: 19968.", "Отбор: /TESTCLIENT.")),
+      get_process_list_os: () => rewrite(wire.clientProcess, text => text.replace("Найдено по отбору: 1 из 2. Показано: 1.", "Найдено: 1. Показано: 1.").replace("Отбор: 19968.\n", "")),
       get_extension_list: () => wire.extensions,
       check_syntax: () => syntaxResult(true),
       select_scenario: () => selectionResult,
@@ -531,13 +562,22 @@ try {
     return responses[name]?.() ?? wire.response("synthetic operation/result");
   };
   const networkOptions = ["run", "--profile", profileFile, "--feature", feature, "--scenario", scenario];
-  const networkCompleted = await main([...networkOptions]);
+  const httpContract = { ...runtimeContract, processIdentity: semanticContract.processIdentity, processBinding: semanticContract.processBinding };
+  const networkCompleted = await main([...networkOptions], { contract: httpContract });
   assert.equal(networkCompleted.status, "completed", JSON.stringify(networkCompleted));
   assert.equal(JSON.parse(fs.readFileSync(networkCompleted.receipt)).status, "unverified", "raw result text never becomes a passing test");
+  const smallFeature = fs.readFileSync(feature);
+  try {
+    fs.writeFileSync(feature, Buffer.concat([smallFeature, Buffer.from("#" + "x".repeat(600 * 1024) + "\n")]));
+    calls = [];
+    const large = await main([...networkOptions], { contract: httpContract });
+    assert.equal(large.status, "completed", "a single editor snapshot fits the default cumulative MCP limit");
+    assert.equal(calls.filter(item => item.method === "tools/call" && item.params.name === "get_editor_state" && item.params.arguments.includeContent).length, 1);
+  } finally { fs.writeFileSync(feature, smallFeature); }
   for (const variant of ["timeoutRun", "timeoutResults", "toolErrorRun", "toolErrorResults"]) {
     httpMode = variant; calls = [];
     const responded = variant.startsWith("toolError"), tool = variant.endsWith("Results") ? "get_test_results" : "run_scenario";
-    await assert.rejects(main([...networkOptions]), error => {
+    await assert.rejects(main([...networkOptions], { contract: httpContract }), error => {
       assert.equal(error.detail.tool, tool);
       assert.equal(error.detail.classification, responded ? "tool_error" : "transport_or_protocol");
       assert.equal(error.detail.outcome, responded ? "responded" : tool === "run_scenario" ? "indeterminate" : "unverified");
