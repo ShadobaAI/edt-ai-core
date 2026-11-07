@@ -90,27 +90,12 @@
         "infobase": {
           "$ref": "#/$defs/infobase"
         },
-        "userEnv": {
-          "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-        },
         "interface": {
           "enum": [
             "taxi"
           ],
           "default": "taxi"
-        },
-        "user": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^(?=.*\\S)[^\\u0000-\\u001f]+$"
         }
-      },
-      "not": {
-        "required": [
-          "user",
-          "userEnv"
-        ]
       }
     },
     "client": {
@@ -242,26 +227,11 @@
           ],
           "default": "taxi"
         },
-        "userEnv": {
-          "type": "string",
-          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-        },
         "computerName": {
           "type": "string",
           "minLength": 1,
           "default": "localhost"
-        },
-        "user": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "^(?=.*\\S)[^\\u0000-\\u001f]+$"
         }
-      },
-      "not": {
-        "required": [
-          "user",
-          "userEnv"
-        ]
       }
     }
   }

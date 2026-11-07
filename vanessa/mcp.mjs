@@ -44,14 +44,18 @@ export async function callTool(client, tools, name, args, { onDispatch = () => {
   if (result.isError) {
     const error = new Error("Инструмент MCP вернул ошибку");
     error.code = "tool_error";
-    error.detail = { classification: "tool_error", outcome: "responded", tool: name, result: redact(result),
+    // Profile and connection errors may contain credentials in arbitrary
+    // formats that cannot be safely redacted by field or switch name.
+    const safeResult = name === "manage_test_client_profiles" || name === "manage_test_client"
+      ? { isError: true, content: [{ type: "text", text: "Ответ подключения скрыт: он может содержать учётные данные." }] } : redact(result);
+    error.detail = { classification: "tool_error", outcome: "responded", tool: name, result: safeResult,
       nextAction: "Проверьте причину отказа и фактическое состояние; не повторяйте те же аргументы без изменений." };
     throw error;
   }
   return result;
 }
 
-const sensitiveKey = /password|passwd|token|secret|credential|authorization|connectionstring|строкасоединения|пароль|username|user_name|имяпользователя/i;
+const sensitiveKey = /password|passwd|token|secret|credential|authorization|connectionstring|строкасоединения|пароль|логин|username|user_name|имяпользователя|^(?:user|usr|pwd)$/i;
 function schemaForOutput(value, sensitive = false) {
   if (Array.isArray(value)) return value.map(item => schemaForOutput(item, sensitive));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => {
@@ -61,13 +65,23 @@ function schemaForOutput(value, sensitive = false) {
   }));
   return typeof value === "string" ? redact(value) : value;
 }
-export function redact(value) {
-  if (Array.isArray(value)) return value.map(redact);
+export function redact(value, depth = 0) {
+  if (depth > 50) return "[redacted]";
+  if (Array.isArray(value)) return value.map(item => redact(item, depth + 1));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key,
-    ["inputSchema", "outputSchema"].includes(key) ? schemaForOutput(item) : sensitiveKey.test(key) ? "[redacted]" : redact(item)]));
-  if (typeof value === "string") return value
-    .replace(/(Pwd|Password|Token|Secret|Пароль|Usr|Username|User_name|ИмяПользователя)\s*[=:]\s*(?:"[^"]*"|'[^']*'|[^;\s]+)/gi, "$1=[redacted]")
+    ["inputSchema", "outputSchema"].includes(key) ? schemaForOutput(item) : sensitiveKey.test(key) ? "[redacted]" : redact(item, depth + 1)]));
+  if (typeof value === "string") {
+    // Some tools return JSON envelopes as MCP text; escaped credentials must
+    // be decoded before applying the same key and command-line protections.
+    if (/^\s*[\[{]/.test(value)) {
+      try { const decoded = JSON.parse(value); if (decoded && typeof decoded === "object") return JSON.stringify(redact(decoded, depth + 1)); }
+      catch { if (/password|passwd|pwd|token|secret|credential|authorization|пароль|логин|username|user_name|имяпользователя|\b(?:user|usr)\b|\/(?:N|P)/i.test(value)) return "[redacted]"; }
+    }
+    if (/\\["']/.test(value) && /password|passwd|pwd|token|secret|credential|authorization|пароль|логин|username|user_name|имяпользователя|\b(?:user|usr)\b|\/(?:N|P)/i.test(value)) return "[redacted]";
+    return value
+    .replace(/(Pwd|Password|Token|Secret|Пароль|Логин|Username|User_name|ИмяПользователя|Usr|(?<![A-Za-z0-9_])User)(["']?)\s*[=:]\s*(?:"(?:[^"]|"")*"|'(?:[^']|'')*'|[^;\r\n]+)/gi, "$1$2=[redacted]")
     .replace(/(^|[\s|;])\/([NP])\s*(?:"(?:[^"]|"")*"|[^\s|;]+)/gim, "$1/$2[redacted]")
     .replace(/(Bearer\s+)\S+/gi, "$1[redacted]");
+  }
   return value;
 }

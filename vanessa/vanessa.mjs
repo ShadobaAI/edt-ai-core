@@ -87,6 +87,12 @@ export async function main(argv, { contract = runtimeContract } = {}) {
           if (recordingAction === "start") recordOwnership(profile, "starting", readyVersion, managerToken);
         } });
         if (recordingAction) recordOwnership(profile, recordingAction === "start" ? "active" : "idle", readyVersion, managerToken);
+        if (name === "manage_test_client_profiles" && args.action === "get_list") {
+          const profiles = contract.profiles(result);
+          if (!Array.isArray(profiles)) return { status: "unverified", reason: "client_profiles_response_contract_unverified", tool: name };
+          return { status: "completed", tool: name, result: { profiles: profiles.map(({ name, synonym, infobase, connected, computerName, pid }) =>
+            ({ name, synonym, infobase, connected, computerName, pid })) } };
+        }
         return { status: "completed", tool: name, result };
       });
     } catch (error) {

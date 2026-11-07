@@ -46,20 +46,19 @@ export function loadProfile(file, expectedHash, clientName) {
   if (Object.hasOwn(raw.runtime, "epf") === Object.hasOwn(raw.runtime, "navigationUrl") || (Object.hasOwn(raw.runtime, "navigationUrl") && Object.hasOwn(raw.runtime, "manifest"))) fail("Для запуска требуется ровно один вариант: EPF или встроенный navigationUrl");
   for (const key of ["epf", "navigationUrl", "paramsFile", "manifest"]) if (Object.hasOwn(raw.runtime, key)) text(raw.runtime[key], `runtime ${key}`);
   if (raw.runtime.navigationUrl && !/^e1cib\/app\/[^\s;"\x00-\x1f]+$/i.test(raw.runtime.navigationUrl)) fail("Некорректный navigationUrl встроенного запуска");
-  object(raw.manager, ["infobase", "user", "userEnv", "interface"], "manager");
-  if (raw.manager.interface !== undefined && raw.manager.interface !== "taxi") fail("Неподдерживаемый интерфейс менеджера; требуется taxi");
-  const auth = (value, label) => {
-    if (Object.hasOwn(value, "user")) text(value.user, `${label} user`);
-    if (Object.hasOwn(value, "userEnv") && (typeof value.userEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value.userEnv))) fail(`Некорректная переменная окружения user для ${label}`);
-    if (Object.hasOwn(value, "user") && Object.hasOwn(value, "userEnv")) fail(`Для ${label} нельзя одновременно указывать user и userEnv`);
-    return { ...(value.user !== undefined ? { user: value.user } : {}), ...(value.userEnv !== undefined ? { userEnv: value.userEnv } : {}) };
+  const rejectCredentials = (value, label) => {
+    if (value && ["user", "userEnv", "password", "passwordEnv"].some(key => Object.hasOwn(value, key)))
+      fail(`Учётные данные в ${label} не поддерживаются: удалите их из профиля плагина и настройте в Vanessa`);
   };
-  const managerAuth = auth(raw.manager, "manager");
+  rejectCredentials(raw.manager, "manager");
+  object(raw.manager, ["infobase", "interface"], "manager");
+  if (raw.manager.interface !== undefined && raw.manager.interface !== "taxi") fail("Неподдерживаемый интерфейс менеджера; требуется taxi");
   const parseClient = value => {
-    object(value, ["name", "infobase", "interface", "user", "userEnv", "computerName"], "client");
+    rejectCredentials(value, "client");
+    object(value, ["name", "infobase", "interface", "computerName"], "client");
     if (Object.hasOwn(value, "computerName")) text(value.computerName, "client computer name");
     if (value.interface !== undefined && value.interface !== "taxi") fail("Неподдерживаемый интерфейс клиента; требуется taxi");
-    return { name: text(value.name, "client name"), infobase: infobase(value.infobase), interface: "taxi", ...auth(value, "client"), computerName: value.computerName ?? "localhost" };
+    return { name: text(value.name, "client name"), infobase: infobase(value.infobase), interface: "taxi", computerName: value.computerName ?? "localhost" };
   };
   if (raw.clients !== undefined && (!Array.isArray(raw.clients) || raw.clients.length === 0)) fail("Некорректный список дополнительных клиентов");
   const clients = [raw.client, ...(raw.clients ?? [])].map(parseClient);
@@ -84,7 +83,7 @@ export function loadProfile(file, expectedHash, clientName) {
   return { version: 1, id: raw.id, file, identity,
     projectRoot: resolve(raw.projectRoot, "project root"), platform: resolve(raw.platform, "platform"),
     runtime: { ...(raw.runtime.epf ? { epf: resolve(raw.runtime.epf, "runtime epf") } : { navigationUrl: raw.runtime.navigationUrl }), ...(raw.runtime.paramsFile ? { paramsFile: resolve(raw.runtime.paramsFile, "runtime paramsFile") } : {}), ...(raw.runtime.manifest ? { manifest: resolve(raw.runtime.manifest, "runtime manifest") } : {}) },
-    manager: { infobase: infobase(raw.manager.infobase), interface: "taxi", ...managerAuth }, client: selectedClient, ...(raw.clients ? { ownerClient: clients[0] } : {}),
+    manager: { infobase: infobase(raw.manager.infobase), interface: "taxi" }, client: selectedClient, ...(raw.clients ? { ownerClient: clients[0] } : {}),
     mcp: { url: url.href, port: raw.mcp.port, serverName }, features: resolve(raw.features, "features"), results: resolve(raw.results, "results"),
     stateDir: raw.stateDir ? resolve(raw.stateDir, "stateDir") : path.join(base, ".vanessa", `${raw.id}-${identity.slice(0, 12)}`), limits };
 }
@@ -96,24 +95,11 @@ export function connectionString(base) {
   }
   return `Srvr="${base.server}";Ref="${base.database}";`;
 }
-export function configuredUser(config, label, env = process.env) {
-  if (config.user !== undefined && config.userEnv !== undefined) fail(`Для ${label} нельзя одновременно указывать user и userEnv`);
-  if (config.user !== undefined) return text(config.user, `${label} user`);
-  return config.userEnv !== undefined ? text(env[config.userEnv], `значение переменной окружения user для ${label}`) : undefined;
-}
-export function clientAdditionalParameters(profile, env = process.env) {
-  const user = configuredUser(profile.client, "client", env);
-  if (user === undefined) return "/iTaxi";
-  return `/iTaxi /N"${user.replaceAll('"', '""')}"`;
-}
-export function startArguments(profile, env = process.env, { startupLog = path.join(profile.stateDir, `startup-${randomUUID()}.log`) } = {}) {
+export function startArguments(profile, _env = process.env, { startupLog = path.join(profile.stateDir, `startup-${randomUUID()}.log`) } = {}) {
   const paramsFile = path.join(profile.stateDir, "interactive.json");
   if ([paramsFile, profile.projectRoot].some(value => /[;"\r\n]/.test(value))) fail("Недопустимые символы в пути запуска");
   const command = ["runMcp", `mcpPort=${profile.mcp.port}`, "UseEditor", `WorkspaceRoot=${profile.projectRoot}`, `VAParams=${paramsFile}`];
-  const auth = [];
-  const user = configuredUser(profile.manager, "manager", env);
-  if (user !== undefined) auth.push("/N", user);
-  return ["ENTERPRISE", "/TESTMANAGER", "/iTaxi", "/IBConnectionString", connectionString(profile.manager.infobase), ...auth,
+  return ["ENTERPRISE", "/TESTMANAGER", "/iTaxi", "/IBConnectionString", connectionString(profile.manager.infobase),
     ...(profile.runtime.epf ? ["/Execute", profile.runtime.epf] : ["/URL", profile.runtime.navigationUrl]), "/Out", startupLog, "/C", command.join(";")];
 }
 
@@ -125,14 +111,26 @@ export function platformCommandLine(args) {
 
 export function interactiveParameters(profile, source = profile.runtime.paramsFile ? readJson(profile.runtime.paramsFile) : {}) {
   if (!source || typeof source !== "object" || Array.isArray(source)) fail("Некорректные параметры интерактивного запуска");
-  const check = value => {
-    if (Array.isArray(value)) return value.forEach(check);
+  const check = (value, field = "", depth = 0) => {
+    if (depth > 50) fail("Слишком глубокие параметры интерактивного запуска");
+    if (Array.isArray(value)) return value.forEach(item => check(item, field, depth + 1));
     if (value && typeof value === "object") {
       for (const [key, item] of Object.entries(value)) {
-        if (/password|passwd|token|secret|credential|authorization|пароль/i.test(key) && item !== "" && item !== null) fail("Учётные данные запрещены в сохранённых параметрах интерактивного запуска");
-        check(item);
+        if (/password|passwd|token|secret|credential|authorization|пароль|имяпользователя|логин|^(?:user|usr|pwd)$/i.test(key) && item !== "" && item !== null) fail("Учётные данные запрещены в сохранённых параметрах интерактивного запуска");
+        check(item, key, depth + 1);
       }
-    } else if (typeof value === "string" && /(Pwd|Password|Token|Secret|Пароль)\s*[=:]\s*\S/i.test(value)) fail("Учётные данные запрещены в сохранённых параметрах интерактивного запуска");
+    } else if (typeof value === "string") {
+      if (/^\s*[\[{]/.test(value)) {
+        let embedded;
+        try { embedded = JSON.parse(value); } catch {}
+        if (embedded && typeof embedded === "object") check(embedded, field, depth + 1);
+      }
+      const pathField = /path|dir|directory|folder|каталог|путь/i.test(field) && path.isAbsolute(value);
+      const embeddedSwitch = /[\s;|]\/(?:N|P)(?:\s+\S|"|[^\s/\\;|]+)/i.test(value);
+      if (/(Pwd|Password|Token|Secret|Пароль|Usr|Username|ИмяПользователя)["']?\s*[=:]\s*\S/i.test(value) || embeddedSwitch ||
+          !pathField && /(?:^|[\s;|])\/(?:N|P)(?:\s+\S|"|[^\s/\\;|]+)/i.test(value))
+        fail("Учётные данные запрещены в сохранённых параметрах интерактивного запуска");
+    }
   };
   check(source);
   for (const key of ["StartFeaturePlayer", "QuietInstallVanessaExt", "ТихаяУстановкаVanessaExt", "QuietInstallVanessaExtAndClose", "InstallVanessaExtOnFailOfQuietInstall", "InstallExtensionsAndClose", "УстановитьРасширенияИЗакрыть", "GenerateSmokeTest"]) {
