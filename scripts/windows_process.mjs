@@ -1,5 +1,6 @@
 // Windows process identity via a bundled Node N-API addon; no shell helper.
 import { createRequire } from "node:module";
+import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,6 +56,9 @@ function windowsAPI() {
     startupSize: koffi.sizeof(extended),
     createFile: kernel.func(
       "void * __stdcall CreateFileW(const char16_t *name, uint32_t access, uint32_t share, void *security, uint32_t creation, uint32_t attributes, void *templateFile)",
+    ),
+    fileInformation: kernel.func(
+      "int __stdcall GetFileInformationByHandle(void *handle, _Out_ void *information)",
     ),
     initAttributes: kernel.func(
       "int __stdcall InitializeProcThreadAttributeList(void *list, uint32_t count, uint32_t flags, _Inout_ size_t *size)",
@@ -130,6 +134,57 @@ function reader_job_name(id) {
   return "Local\\1c-ai-core-index-reader-" + id;
 }
 const wide = value => Buffer.from(value + "\0", "utf16le");
+
+// Pin the canonical path as well as the file. Omitting FILE_SHARE_WRITE and
+// FILE_SHARE_DELETE on the file prevents both in-place changes and replacement
+// (including through another hard link) until the returned handle is closed.
+// Directory handles allow ordinary file operations but prevent an ancestor
+// from being renamed or replaced. A pre-existing conflicting writer makes the
+// acquisition fail; it must never be treated as an immutable snapshot.
+export function pin_windows_readonly_file(file) {
+  if (!path.isAbsolute(file)) throw new Error("A pinned file path must be absolute");
+  const win = windowsAPI(), canonical = fs.realpathSync.native(file), root = path.parse(canonical).root;
+  const parts = path.relative(root, canonical).split(path.sep).filter(Boolean);
+  if (!parts.length) throw new Error("A pinned file must be a regular file");
+  const handles = [];
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    let failure;
+    for (const handle of handles.reverse()) if (!win.close(handle)) failure ||= win.error() || 1;
+    if (failure) throw Object.assign(new Error("Cannot release pinned file handles (" + failure + ")"), { outcomeUnknown: true, cleanupUnconfirmed: true });
+  };
+  try {
+    let current = root;
+    for (let index = -1; index < parts.length; index++) {
+      if (index >= 0) current = path.join(current, parts[index]);
+      const directory = index < parts.length - 1;
+      const before = fs.lstatSync(current, { bigint: true });
+      // Open the reparse point itself, not its target. Each already-pinned
+      // ancestor remains in place while the next component is opened.
+      const handle = win.createFile(current, directory ? 0x80 : 0x80000000,
+        directory ? 3 : 1, null, 3, directory ? 0x02200000 : 0x00200080, null);
+      if (!handle || BigInt.asIntN(64, win.address(handle)) === -1n)
+        throw new Error("Cannot pin file path (" + win.error() + "): " + current);
+      handles.push(handle);
+      const info = Buffer.alloc(52);
+      if (!win.fileInformation(handle, info)) throw new Error("Cannot inspect pinned file (" + win.error() + ")");
+      const attributes = info.readUInt32LE(0), volume = BigInt(info.readUInt32LE(28));
+      const identity = (BigInt(info.readUInt32LE(44)) << 32n) | BigInt(info.readUInt32LE(48));
+      const after = fs.lstatSync(current, { bigint: true });
+      if (attributes & 0x400 || Boolean(attributes & 0x10) !== directory ||
+          before.isSymbolicLink() || after.isSymbolicLink() ||
+          (directory ? !before.isDirectory() || !after.isDirectory() : !before.isFile() || !after.isFile()) ||
+          before.dev !== volume || before.ino !== identity || after.dev !== volume || after.ino !== identity)
+        throw new Error("Pinned file path identity is not confirmed: " + current);
+    }
+    return { path: canonical, close };
+  } catch (error) {
+    try { close(); } catch (cleanup) { error.outcomeUnknown = true; error.cleanupUnconfirmed = true; error.cause = cleanup; }
+    throw error;
+  }
+}
 
 export function windows_process_session(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) throw new Error("Invalid process PID");
@@ -480,14 +535,22 @@ export function windows_process_identity(pid) {
       exited = [0n],
       kernel = [0n],
       user = [0n];
-    if (
-      !win.image(handle, 0, buffer, size) ||
-      !win.times(handle, created, exited, kernel, user)
-    )
-      throw new Error(
-        "Cannot query Windows process identity (" + win.error() + ")",
-      );
-    if (BigInt(exited[0]) !== 0n) return null;
+    const hasExited = () => {
+      if (!win.times(handle, created, exited, kernel, user))
+        throw new Error("Cannot query Windows process identity (" + win.error() + ")");
+      return BigInt(exited[0]) !== 0n;
+    };
+    // Windows can retain an exited process object while another caller holds a
+    // handle, but its image name is no longer queryable. Test the exit time on
+    // this pinned object before and after querying the image, and only report
+    // an image-query error if the same process is still alive.
+    if (hasExited()) return null;
+    if (!win.image(handle, 0, buffer, size)) {
+      const error = win.error();
+      if (hasExited()) return null;
+      throw new Error("Cannot query Windows process identity (" + error + ")");
+    }
+    if (hasExited()) return null;
     const ticks = BigInt(created[0]);
     return {
       pid,

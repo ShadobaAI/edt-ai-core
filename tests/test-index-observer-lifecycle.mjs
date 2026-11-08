@@ -106,3 +106,50 @@ test("observation survives its session crash and releases the reader without sto
     assert.equal((await daemon_health(home)).pid, daemonBefore.pid);
   } finally { await cleanup(); }
 });
+
+test("unconfirmed Windows source-pin cleanup retains the reader barrier", { skip: process.platform !== "win32", timeout: 45000 }, async t => {
+  const f = fixture(t, { preserveOnCleanupFailure: true }); environment(t, f.env); f.save();
+  const backend = new SettingsBackend();
+  await backend.main({ action: "update", set: { codeIndexEnabled: true } });
+  grant_preparation(f.state, f.root, ["code-index"]);
+  const bytes = fs.readFileSync(process.execPath), exe = path.join(f.state, "runtime/code-index/fixture", sha256(bytes), "reader.exe");
+  fs.mkdirSync(path.dirname(exe), { recursive: true }); fs.writeFileSync(exe, bytes);
+  const daemonFixture = path.join(ROOT, "tests/fixtures/index-daemon.mjs");
+  let home, started = false, startupUnknown = false, child, childClosed;
+  f.clients.push({ close: async () => {
+    if (child?.pid && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (childClosed) await childClosed;
+  } });
+  f.clients.push({ close: async () => {
+    if (started) { await stop_daemon(f.state, f.root); started = false; }
+    if (startupUnknown) throw new Error("Daemon startup cleanup was not confirmed; fixture preserved at " + f.base);
+  } });
+  try {
+    home = await ensure_daemon(f.state, f.root, f.profile, exe,
+      { launch: (command, _args, options) => spawn_detached_windows(command, [daemonFixture], options) }, f.env);
+    started = true;
+  } catch (error) { startupUnknown = error.outcomeUnknown === true; throw error; }
+  const native = path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node");
+  const runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href;
+  const code = `import assert from 'node:assert/strict';import {createRequire} from 'node:module';
+    const k=createRequire(import.meta.url)(${JSON.stringify(native)}),load=k.load,raw=load('kernel32.dll');
+    const rawClose=raw.func('int __stdcall CloseHandle(void *handle)');let pinned=null;
+    k.load=name=>{const lib=load(name);if(name!=='kernel32.dll')return lib;return {func(...args){const fn=lib.func(...args),signature=typeof args[0]==='string'?args[0]:'';
+      if(signature.includes('CreateFileW'))return (...values)=>{const h=fn(...values);if(String(values[0]).toLowerCase()===${JSON.stringify(f.state.toLowerCase())})pinned=h;return h;};
+      if(signature.includes('GetFileInformationByHandle'))return (h,...rest)=>pinned&&k.address(h)===k.address(pinned)?0:fn(h,...rest);
+      if(signature.includes('CloseHandle'))return (h,...rest)=>pinned&&k.address(h)===k.address(pinned)?0:fn(h,...rest);return fn;}};};
+    const {IndexObserver,active_readers}=await import(${JSON.stringify(runtime)}),observer=new IndexObserver(${JSON.stringify(f.state)});
+    try {let failure;try{await observer.observe(${JSON.stringify(backend.effective(backend.current()))},${JSON.stringify(f.root)},${JSON.stringify(f.profile)});}catch(error){failure=error;}
+      const readers=await active_readers(${JSON.stringify(f.state)},${JSON.stringify(f.root)});
+      assert.equal(failure?.outcomeUnknown,true);assert.equal(failure?.cleanupUnconfirmed,true);
+      assert.equal(readers.length,1);assert.equal(readers[0].orphaned,true);process.stdout.write('barrier retained');
+    } finally {if(pinned)assert.ok(rawClose(pinned));await observer.close().catch(()=>{});}`;
+  child = spawn(process.execPath, ["--input-type=module", "-e", code], { cwd: f.root, env: f.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  childClosed = new Promise(resolve => child.once("close", resolve));
+  let output = "", errors = "", childError;
+  child.once("error", error => { childError = error; });
+  child.stdout?.on("data", chunk => { output += chunk; }); child.stderr?.on("data", chunk => { errors += chunk; });
+  const status = await childClosed;
+  assert.equal(childError, undefined);
+  assert.equal(status, 0, errors); assert.equal(output, "barrier retained");
+});

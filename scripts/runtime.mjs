@@ -47,7 +47,7 @@ import { all_pages } from "./mcp_pages.mjs";
 import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, preparation_granted, require_preparation, native_environment } from "./components.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { core_version } from "./compatibility.mjs";
-import { spawn_detached_windows, windows_process_identity, windows_process_session, windows_reader_job_absent, windows_tcp_rows, pin_windows_process, windows_has_tcp_peer } from "./windows_process.mjs";
+import { spawn_detached_windows, windows_process_identity, windows_process_session, windows_reader_job_absent, windows_tcp_rows, pin_windows_process, pin_windows_readonly_file, windows_has_tcp_peer } from "./windows_process.mjs";
 import { index_repositories, index_selection } from "./directory_context.mjs";
 import { capture_index_snapshot, snapshot_bytes } from "./index_snapshot.mjs";
 import { open_reader, reader_active, observe_reader } from "./reader_lease.mjs";
@@ -1622,9 +1622,13 @@ export class IndexObserver {
         checkAuthority();
         if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
         const destinationIdentity = process.platform === "win32" ? snapshotDirectory.createFile(readerName) : null;
-        launching = true;
-        const digest = await copy_index_runtime(config, home, target, reader, Math.min(component_settings(config, "code-index").timeout_seconds || 30, 25) * 1000,
-          diagnostic, lease.id, cancel => { this.cancelCopy = cancel; }, destinationIdentity);
+        const sourcePin = process.platform === "win32" ? pin_windows_readonly_file(target) : null;
+        let digest;
+        try {
+          launching = true;
+          digest = await copy_index_runtime(config, home, sourcePin?.path || target, reader, Math.min(component_settings(config, "code-index").timeout_seconds || 30, 25) * 1000,
+            diagnostic, lease.id, cancel => { this.cancelCopy = cancel; }, destinationIdentity);
+        } finally { sourcePin?.close(); }
         launching = false;
         if (digest !== expected)
           throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
