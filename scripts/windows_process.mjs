@@ -414,7 +414,8 @@ export function spawn_detached_windows(command, args, options) {
       "utf16le",
     );
     // Explicit breakaway, hidden console, Unicode env, new process group and
-    // extended startup attributes. A restrictive ancestor Job fails closed.
+    // extended startup attributes. A restrictive ancestor Job can still retain
+    // the child, even when CreateProcess succeeds and the startup Job commits.
     if (
       !win.createProcess(
         command,
