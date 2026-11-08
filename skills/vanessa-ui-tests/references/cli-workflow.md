@@ -32,10 +32,22 @@ authorization record; for other actions use
 Do not create it as a substitute for agreement or expand old permission.
 `configure` only displays settings; `start/setup/connect` may launch clients/
 manager and modify runtime, so require corresponding effects.
+`start` replaces a missing or reused non-1C PID after checking ownership, locks
+and the port. An existing 1C process is never adopted by PID alone. It waits up
+to five minutes for MCP and checks the actual connection, manager identity and
+infobase. A newly launched manager's PID is saved before the wait; timeout never
+triggers another launch. If the 1C process is not verified or MCP remains
+unavailable, ask the user whether to restart the manager or start MCP themselves.
+An unknown launch outcome or unverified ownership remains blocked.
 Select an initial TestClient with `--client NAME` on both `describe` and the
-action; without it the local profile's `client` is used. Additional named
-clients are in `clients` and share its infobase. Configure each client's login
-and password in its existing Vanessa profile before using `setup` or `connect`.
+action; without it the first entry in JavaScript property enumeration order is used
+(integer keys precede other keys in ascending order). All named users share the
+configured application `infobase`. `setup` creates or updates the selected
+Vanessa client profile using its stored credentials, then connects it; `connect`
+uses an existing profile. `setup` requires a manager owned by the local profile
+and verifies each MCP socket before sending credentials. It sets the client to
+thin; `connect` accepts thin or thick clients. The manager can use a different
+infobase.
 An already connected different client is not disconnected automatically.
 Scenario steps can switch between prepared Vanessa profile names; readiness
 checks the selected initial client, so inspect actual state again after a run.

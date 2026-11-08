@@ -30,11 +30,9 @@ function binding(t) {
     projectRoot: f.root,
     platform: path.join(f.root, "never-start.exe"),
     runtime: { epf: path.join(f.root, "fixture.epf") },
-    manager: { infobase: { type: "file", path: path.join(f.root, "manager") } },
-    client: {
-      name: "TestClient",
-      infobase: { type: "file", path: path.join(f.root, "client") },
-    },
+    manager: { infobase: { type: "file", path: path.join(f.root, "manager") }, user: { name: "Manager", password: "secret", interface: "taxi" } },
+    infobase: { type: "file", path: path.join(f.root, "client") },
+    users: { TestClient: { name: "Client", password: "secret", interface: "taxi" } },
     mcp: {
       serverName: "vanessa",
       url: "http://127.0.0.1:19876/mcp",
@@ -94,11 +92,12 @@ test("Vanessa describe preserves Unicode and binds exact canonical targets and r
 });
 test("Vanessa client selection is validated and bound to authorization scope", (t) => {
   const f = binding(t);
-  f.raw.clients = [{ ...f.raw.client, name: "RestrictedClient" }];
+  f.raw.users.RestrictedClient = { name: "Restricted", password: "secret", interface: "taxi" };
   f.save();
   const args = ["--for-action", "connect"];
   const normal = success(f.invoke("describe", args));
   const restricted = success(f.invoke("describe", [...args, "--client", "RestrictedClient"]));
+  assert.equal(JSON.stringify(normal).includes("secret"), false);
   assert.equal(JSON.parse(normal.scope).clientName, "TestClient");
   assert.equal(JSON.parse(restricted.scope).clientName, "RestrictedClient");
   assert.notEqual(normal.scope, restricted.scope);
@@ -113,9 +112,15 @@ test("Vanessa client selection is validated and bound to authorization scope", (
   const bad = f.invoke("describe", [...args, "--client", "missing"]);
   assert.notEqual(bad.status, 0);
   assert.match(bad.stdout + bad.stderr, /Неизвестное имя клиента/);
-  for (const [target, field] of [[f.raw.manager,"user"],[f.raw.manager,"userEnv"],[f.raw.client,"password"],[f.raw.clients[0],"userEnv"]]) {
+  for (const [target, field] of [[f.raw.manager,"userEnv"],[f.raw.users.TestClient,"userEnv"],[f.raw.users.RestrictedClient,"unexpected"]]) {
     target[field] = "fixture-secret"; f.save();
-    assert.throws(() => runtime_profile(f.root), /Учётные данные.*настройте в Vanessa/);
+    assert.throws(() => runtime_profile(f.root));
+    assert.throws(() => check_schema(f.raw, "vanessa-runtime.schema.json"));
+    delete target[field];
+  }
+  for (const [target, field, value] of [[f.raw, "client", {}], [f.raw, "clients", []], [f.raw.manager, "interface", "taxi"]]) {
+    target[field] = value; f.save();
+    assert.throws(() => runtime_profile(f.root));
     assert.throws(() => check_schema(f.raw, "vanessa-runtime.schema.json"));
     delete target[field];
   }
@@ -132,7 +137,14 @@ test("documented local Vanessa profile is valid and selects both clients", t => 
   fs.writeFileSync(f.file, JSON.stringify(example));
   assert.equal(loadProfile(f.file).client.name, "AdminClient");
   assert.equal(loadProfile(f.file, undefined, "RestrictedClient").client.name, "RestrictedClient");
-  assert.equal(loadProfile(f.file).manager.interface, "taxi");
+  assert.equal(loadProfile(f.file).manager.user.interface, "taxi");
+  assert.notEqual(loadProfile(f.file).manager.infobase.database, loadProfile(f.file).client.infobase.database);
+  assert.equal(loadProfile(f.file).client.user.name, example.users.AdminClient.name);
+  assert.equal(loadProfile(f.file, undefined, "RestrictedClient").client.user.password, example.users.RestrictedClient.password);
+  example.version = 2;
+  assert.throws(() => check_schema(example, "vanessa-runtime.schema.json"));
+  fs.writeFileSync(f.file, JSON.stringify(example));
+  assert.throws(() => loadProfile(f.file), /Неподдерживаемая версия/);
 });
 for (const feature of ["features/smoke.feature", ".local/repair.feature"])
   test(
@@ -168,7 +180,7 @@ test("Vanessa start requires actual agreement and changed targets invalidate old
   ];
   const approval = path.join(f.base, "approval.json");
   fs.writeFileSync(approval, JSON.stringify(request));
-  f.raw.client.infobase.path = path.join(f.root, "other-client");
+  f.raw.infobase.path = path.join(f.root, "other-client");
   f.save();
   const result = f.invoke("start", ["--authorization-file", approval]);
   assert.notEqual(result.status, 0);
@@ -241,7 +253,7 @@ test("identical relative runtime files in distinct clones cannot share authoriza
   f.raw.features = "../features";
   f.raw.results = "../results";
   f.raw.manager.infobase.path = "../manager";
-  f.raw.client.infobase.path = "../client";
+  f.raw.infobase.path = "../client";
   f.save();
   const request = success(f.invoke("describe", ["--for-action", "start"]));
   delete request.runtimeProfile;

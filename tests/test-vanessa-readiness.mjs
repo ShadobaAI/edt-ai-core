@@ -5,9 +5,10 @@ import test from "node:test";
 import { fixture } from "./helpers.mjs";
 import * as wire from "./test-vanessa-ui-fixtures.mjs";
 import { inspectSession, requiredTools, runtimeContract, setupSession, connectSession } from "../vanessa/readiness.mjs";
-import { parseClientIdentity, parseClientLaunch, parseProcesses, parseProfiles } from "../vanessa/runtime-contract.mjs";
+import { parseClientIdentity, parseClientLaunch, parseProcesses, parseProfiles, platformTokens } from "../vanessa/runtime-contract.mjs";
 import { runFeature } from "../vanessa/run.mjs";
 
+const trustedManager = { verifyManager: () => true };
 function runtime(t, { fileBase = false } = {}) {
   const f = fixture(t), basePath = path.join(f.root, "database"), alias = path.join(f.root, "database-alias");
   fs.mkdirSync(basePath);
@@ -275,14 +276,15 @@ test("an abbreviated editor state after selection blocks scenario execution", as
   assert.equal(result.reason,"session_state_response_contract_unverified");assert.equal(f.calls.includes("run_scenario"),false);
 });
 
-test("setup requires a profile configured in Vanessa before connecting", async t => {
+test("setup creates the selected profile before connecting", async t => {
   const f=runtime(t);let created=false,connected=false;const mutations=[];
+  f.profile.client.user = { name: "FixtureUser", password: "FixturePassword", interface: "taxi" };
   assert.deepEqual(parseProfiles(wire.emptyProfiles),[]);
   assert.equal(parseProfiles(wire.response(wire.emptyProfiles.content[0].text+"\n## Профиль: unexpected")),null);
   assert.equal(parseProfiles(wire.response("# Список профилей клиентов тестирования\n\nПрофили не настроены.")),null);
   const client={request:async(method,args)=>{
     if(args.name==="manage_test_client_profiles"){
-      if(args.arguments.action!=="get_list"){mutations.push(args);return wire.response("unexpected");}
+      if(args.arguments.action!=="get_list"){mutations.push(args.arguments);created=true;return wire.response("created");}
       if(!created)return wire.emptyProfiles;
       const selected=wire.profiles.content[0].text.replaceAll("ExistingClient","TestClient")
         .replace('/N"FixtureUser"','/iTaxi /N"FixtureUser" /P"FixturePassword"').replace("| PID | 0 |","| PID | 19968 |")
@@ -293,11 +295,114 @@ test("setup requires a profile configured in Vanessa before connecting", async t
     if(args.name==="manage_test_client"){mutations.push(args.arguments);connected=true;return wire.response("connected");}
     return f.client.request(method,args);
   }};
-  const missing=await setupSession(f.profile,client,f.tools,f.contract);
-  assert.equal(missing.reason,"client_profile_not_configured");assert.deepEqual(mutations,[]);assert.match(missing.nextAction,/логин и пароль/);
-  created=true;
-  const result=await setupSession(f.profile,client,f.tools,f.contract);
+  const result=await setupSession(f.profile,client,f.tools,f.contract,trustedManager);
   assert.equal(result.status,"ready");assert.equal(result.authenticatedUser,"unverified");
-  assert.deepEqual(mutations,[{action:"connect",profileName:"TestClient"}]);
+  assert.equal(mutations[0].action,"add"); assert.equal(mutations[0].name,"TestClient");
+  assert.equal(mutations[0].infobase_path, 'Srvr="localhost";Ref="ui-demo";');
+  assert.equal(mutations[0].additional_parameters, '/iTaxi /N"FixtureUser" /P"FixturePassword"');
+  assert.equal(mutations[0].client_type, "Тонкий");
+  assert.deepEqual(mutations[1],{action:"connect",profileName:"TestClient"});
   assert.equal(JSON.stringify(result).includes("FixturePassword"),false);
+});
+
+test("setup never sends credentials when manager ownership is absent or changes", async t => {
+  const f = runtime(t); let calls = 0, checks = 0, writes = 0;
+  f.profile.client.user = { name: "FixtureUser", password: "FixturePassword", interface: "taxi" };
+  const client = { request: async (method, args) => {
+    calls++;
+    if (args.name === "get_vanessa_automation_state") return wire.state;
+    if (args.name === "manage_test_client_profiles") {
+      if (args.arguments.action === "get_list") return wire.emptyProfiles;
+      writes++;
+    }
+    return f.client.request(method, args);
+  } };
+  assert.equal((await setupSession(f.profile, client, f.tools, f.contract)).reason, "manager_binding_unverified");
+  assert.equal(calls, 0);
+  const result = await setupSession(f.profile, client, f.tools, f.contract, { verifyManager: () => ++checks === 1 });
+  assert.equal(result.reason, "manager_binding_unverified"); assert.equal(writes, 0);
+});
+
+test("connect does not launch an existing web client profile", async t => {
+  const f = runtime(t); let connections = 0;
+  const webProfile = wire.response(wire.profiles.content[0].text.replaceAll("ExistingClient", "TestClient")
+    .replace('| Тип клиента | Тонкий |', '| Тип клиента | Web |').replace('/N"FixtureUser"', '/iTaxi /N"FixtureUser"'));
+  const client = { request: async (method, args) => {
+    if (args.name === "get_vanessa_automation_state") return wire.state;
+    if (args.name === "manage_test_client_profiles") return webProfile;
+    if (args.name === "manage_test_client") connections++;
+    return f.client.request(method, args);
+  } };
+  const result = await connectSession(f.profile, client, f.tools, f.contract);
+  assert.equal(result.reason, "client_type_mismatch_or_unverified"); assert.equal(connections, 0);
+});
+
+test("setup refuses a connected client and an ambiguous profile before writing", async t => {
+  const f = runtime(t), writes = [];
+  f.profile.client.user = { name: "FixtureUser", password: "FixturePassword", interface: "taxi" };
+  const connected = await setupSession(f.profile, { request: async (method, args) => {
+    if (args.name === "manage_test_client_profiles" && args.arguments.action !== "get_list") writes.push(args);
+    return f.client.request(method, args);
+  } }, f.tools, f.contract, trustedManager);
+  assert.equal(connected.reason, "client_profile_setup_state_unverified");
+  assert.deepEqual(writes, []);
+  const duplicate = wire.profiles.content[0].text.replaceAll("ExistingClient", "TestClient");
+  const duplicateList = wire.response(duplicate.replace("Найдено профилей: 1", "Найдено профилей: 2") + duplicate.slice(duplicate.indexOf("## Профиль:")));
+  const disconnected = { request: async (method, args) => {
+    if (args.name === "manage_test_client_profiles") {
+      if (args.arguments.action !== "get_list") writes.push(args);
+      return duplicateList;
+    }
+    if (args.name === "get_vanessa_automation_state") return wire.state;
+    return f.client.request(method, args);
+  } };
+  const result = await setupSession(f.profile, disconnected, f.tools, f.contract, trustedManager);
+  assert.equal(result.reason, "client_profile_setup_state_unverified");
+  assert.deepEqual(writes, []);
+});
+
+test("setup stops if the selected profile changes between observations", async t => {
+  const f = runtime(t); let reads = 0, writes = 0;
+  f.profile.client.user = { name: "FixtureUser", password: "FixturePassword", interface: "taxi" };
+  const client = { request: async (method, args) => {
+    if (args.name === "get_vanessa_automation_state") return wire.state;
+    if (args.name === "manage_test_client_profiles") {
+      if (args.arguments.action !== "get_list") { writes++; return wire.response("unexpected"); }
+      reads++;
+      return wire.response(wire.profiles.content[0].text.replaceAll("ExistingClient", "TestClient")
+        .replace('/N"FixtureUser"', reads === 1 ? '/iTaxi /N"First"' : '/iTaxi /N"Second"'));
+    }
+    return f.client.request(method, args);
+  } };
+  const result = await setupSession(f.profile, client, f.tools, f.contract, trustedManager);
+  assert.equal(result.reason, "client_profile_changed_during_setup");
+  assert.equal(writes, 0);
+  assert.equal(JSON.stringify(result).includes("FixturePassword"), false);
+});
+
+test("setup sends the selected application's base and escaped credentials without exposing tool errors", async t => {
+  const f = runtime(t), writes = [];
+  f.profile.client.infobase = { type: "server", server: "app-server", database: "app-base" };
+  f.profile.client.user = { name: 'User"Name', password: 'secret";value', interface: "taxi" };
+  const client = { request: async (method, args) => {
+    if (args.name === "get_vanessa_automation_state") return wire.state;
+    if (args.name === "manage_test_client_profiles") {
+      if (args.arguments.action === "get_list") return wire.emptyProfiles;
+      writes.push(args.arguments);
+      return { isError: true, content: [{ type: "text", text: 'secret";value' }] };
+    }
+    return f.client.request(method, args);
+  } };
+  await assert.rejects(setupSession(f.profile, client, f.tools, f.contract, trustedManager), failure =>
+    failure.code === "tool_error" && !JSON.stringify(failure.detail).includes('secret";value'));
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].infobase_path, 'Srvr="app-server";Ref="app-base";');
+  assert.equal(writes[0].additional_parameters, '/iTaxi /N"User""Name" /P"secret"";value"');
+  // Vanessa Single converts Srvr/Ref to /S and appends additional parameters
+  // to the command line. Credentials must not become part of the base name.
+  const baseArg = writes[0].infobase_path.replace("Srvr=", "/S").replace('";Ref="', "\\").replace(/;$/, "");
+  const command = `"C:\\App\\1cv8c.exe" ENTERPRISE ${baseArg} /TESTCLIENT -TPort 48001 ${writes[0].additional_parameters}`;
+  assert.deepEqual(parseClientLaunch(command), { infobase: f.profile.client.infobase, testPort: 48001, interface: "taxi" });
+  assert.ok(platformTokens(command).includes('/NUser"Name'));
+  assert.ok(platformTokens(command).includes('/Psecret";value'));
 });

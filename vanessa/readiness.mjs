@@ -7,6 +7,7 @@ import { windows_process_identity, windows_testclient_binding } from "../scripts
 import { callTool, redact } from "./mcp.mjs";
 import { invalidateObservedIdle } from "./recording.mjs";
 import { runtimeContract, platformTokens } from "./runtime-contract.mjs";
+import { connectionString, fail } from "./profile.mjs";
 export { runtimeContract } from "./runtime-contract.mjs";
 
 // Runtime-specific parsers are deliberately separate from orchestration. They must be
@@ -84,9 +85,9 @@ function processIdentity(pid, contract) {
     return { pid, created: state.created };
   } catch { return null; }
 }
-function processBinding(profile, process, identity, contract) {
+async function processBinding(profile, process, identity, contract) {
   try {
-    const binding = (contract.processBinding ?? windows_testclient_binding)(profile.mcp.port, process.pid, process.launch.testPort, identity.created);
+    const binding = await (contract.processBinding ?? windows_testclient_binding)(profile.mcp.port, process.pid, process.launch.testPort, identity.created);
     return Number.isInteger(binding?.managerPid) && binding.managerPid > 0 && binding.managerPid !== process.pid &&
       typeof binding.managerCreated === "string" && /^win32-filetime:\d+$/.test(binding.managerCreated) ? binding : null;
   } catch { return null; }
@@ -101,10 +102,10 @@ function sameConnectedProfile(profile, before, profiles, pid, requirePid) {
 function sameProfileConfiguration(profile, before, after) {
   return Boolean(before && after && after.name === before.name && after.synonym === before.synonym &&
     sameInfobase(profile.client.infobase, after.infobase) && after.connectionFingerprint === before.connectionFingerprint &&
-    after.additionalParameters === before.additionalParameters && after.computerName === before.computerName && after.pid === before.pid);
+    after.additionalParameters === before.additionalParameters && after.clientType === before.clientType && after.computerName === before.computerName && after.pid === before.pid);
 }
 
-export async function inspectSession(profile, client, tools, contract = runtimeContract, { connecting = false, allowMissingProfile = false, ownRecording = false } = {}) {
+export async function inspectSession(profile, client, tools, contract = runtimeContract, { connecting = false, ownRecording = false } = {}) {
   if (!isLocalComputer(profile.client.computerName)) return error("client_computer_is_not_verified_local");
   const missing = requiredTools.filter(name => !tools.some(tool => tool.name === name));
   if (missing.length) return { status: "error", reason: "required_tools_missing", missing };
@@ -130,10 +131,9 @@ export async function inspectSession(profile, client, tools, contract = runtimeC
   if (!state || typeof state.connected !== "boolean" || typeof state.running !== "boolean" || typeof state.recording !== "boolean") return unverified("session_state_response_contract_unverified", evidence);
   if (state.recording === false) invalidateObservedIdle(profile, environment.runtimeVersion);
   if (state.running || (state.recording && !ownRecording)) return error("session_busy_with_scenario_or_recording");
-  const matches = namedProfiles(profiles, profile.client.name), matchedProfile = uniqueNamedProfile(profiles, profile.client.name);
-  if (matches?.length === 0 && allowMissingProfile && !state.connected && !state.recording)
-    return { status: "profile_missing" };
+  const matchedProfile = uniqueNamedProfile(profiles, profile.client.name);
   if (!matchedProfile || !sameInfobase(profile.client.infobase, matchedProfile.infobase)) return error("client_profile_mismatch_or_ambiguous");
+  if (!["Тонкий", "Толстый"].includes(matchedProfile.clientType)) return error("client_type_mismatch_or_unverified");
   if (!taxiCompatible(matchedProfile.additionalParameters)) return error("client_interface_mismatch_or_unverified");
   if (matchedProfile.computerName !== profile.client.computerName) {
     return error("client_computer_name_mismatch_or_unverified");
@@ -158,7 +158,7 @@ export async function inspectSession(profile, client, tools, contract = runtimeC
   if (!clientProcess.launch || !Number.isInteger(clientProcess.pid) || clientProcess.pid < 1 || !sameInfobase(profile.client.infobase, clientProcess.launch.infobase) || clientProcess.launch.interface !== "taxi") return unverified("actual_test_client_launch_mismatch_or_unverified", evidence);
   const identity = processIdentity(clientProcess.pid, contract);
   if (!identity) return unverified("actual_test_client_process_identity_unverified", evidence);
-  const binding = processBinding(profile, clientProcess, identity, contract);
+  const binding = await processBinding(profile, clientProcess, identity, contract);
   if (!binding) return unverified("manager_test_client_connection_unverified", evidence);
   const extensionResponse = await callTool(client, tools, "get_extension_list", {});
   evidence.extensions = redact(extensionResponse);
@@ -177,7 +177,7 @@ export async function inspectSession(profile, client, tools, contract = runtimeC
       (finalState.clientName ?? profile.client.name) !== profile.client.name ||
       !sameConnectedProfile(profile, connectedProfiles[0], finalProfiles, clientProcess.pid, selected.requirePid) ||
       processIdentity(clientProcess.pid, contract)?.created !== identity.created ||
-      !sameBinding(binding, processBinding(profile, clientProcess, identity, contract))) return unverified("session_changed_during_readiness", evidence);
+      !sameBinding(binding, await processBinding(profile, clientProcess, identity, contract))) return unverified("session_changed_during_readiness", evidence);
   const result = { status: "ready", readinessScope: "environment_and_test_client", toolCount: tools.length, runtimeVersion: environment.runtimeVersion,
     runtime: { vanessa: environment.runtimeVersion, mcp: environment.mcpVersion ?? null, platform: environment.platformVersion ?? null },
     responseContract: contract.version, testClient: profile.client.name, authenticatedUser: "unverified", vaExtensionVersion: extension[0].version, recording: state.recording, editorErrorCount: editor.errorCount, editorEnabled: "unverified",
@@ -207,7 +207,7 @@ export async function confirmClientBinding(profile, client, tools, baseline, con
       !sameInfobase(profile.client.infobase, process.launch.infobase) || !taxiCompatible(before.additionalParameters) ||
       before.computerName !== profile.client.computerName || !baselineProfile ||
       !sameConnectedProfile(profile, baselineProfile, profiles, process.pid, selected.requirePid)) return unverified("client_binding_changed_or_unverified", evidence);
-  if (!sameBinding(baseline.managerProcess, processBinding(profile, process, identity, contract))) return unverified("manager_test_client_connection_unverified", evidence);
+  if (!sameBinding(baseline.managerProcess, await processBinding(profile, process, identity, contract))) return unverified("manager_test_client_connection_unverified", evidence);
   const finalProfilesResponse = await callTool(client, tools, "manage_test_client_profiles", { action: "get_list" });
   const finalProfiles = contract.profiles(finalProfilesResponse);
   evidence.finalProfiles = profileEvidence(finalProfiles);
@@ -219,15 +219,15 @@ export async function confirmClientBinding(profile, client, tools, baseline, con
   if (state.running || state.recording) return unverified("session_busy_with_scenario_or_recording", evidence);
   if (!state.connected || (state.clientName ?? profile.client.name) !== profile.client.name ||
       processIdentity(process.pid, contract)?.created !== baseline.clientProcess?.created ||
-      !sameBinding(baseline.managerProcess, processBinding(profile, process, identity, contract))) return unverified("client_binding_changed_or_unverified", evidence);
+      !sameBinding(baseline.managerProcess, await processBinding(profile, process, identity, contract))) return unverified("client_binding_changed_or_unverified", evidence);
   return { status: "confirmed" };
 }
 
-export async function connectSession(profile, client, tools, contract = runtimeContract) {
+export async function connectSession(profile, client, tools, contract = runtimeContract, { onMutation = () => {} } = {}) {
   const before = await inspectSession(profile, client, tools, contract, { connecting: true });
-  return connectVerified(profile, client, tools, contract, before);
+  return connectVerified(profile, client, tools, contract, before, onMutation);
 }
-async function connectVerified(profile, client, tools, contract, before) {
+async function connectVerified(profile, client, tools, contract, before, onMutation) {
   if (before.status !== "connectable") return before;
   const stateResponse = await callTool(client, tools, "get_vanessa_automation_state", {});
   const profileResponse = await callTool(client, tools, "manage_test_client_profiles", { action: "get_list" });
@@ -239,8 +239,10 @@ async function connectVerified(profile, client, tools, contract, before) {
   }
   let dispatched = false;
   try {
-    await callTool(client, tools, "manage_test_client", { action: "connect", profileName: profile.client.name }, { onDispatch: () => { dispatched = true; } });
+    await callTool(client, tools, "manage_test_client", { action: "connect", profileName: profile.client.name }, { onDispatch: () => { dispatched = true; onMutation("manage_test_client", true); } });
+    onMutation("manage_test_client", false);
   } catch (failure) {
+    if (failure.code === "tool_error") onMutation("manage_test_client", false);
     if (failure.code === "tool_error" || !dispatched) throw failure;
     const uncertain = new Error("Исход подключения TestClient неизвестен; перед повтором проверьте состояние");
     uncertain.code = "mutation_indeterminate";
@@ -250,11 +252,47 @@ async function connectVerified(profile, client, tools, contract, before) {
   return inspectSession(profile, client, tools, contract);
 }
 
-export async function setupSession(profile, client, tools, contract = runtimeContract) {
-  const before = await inspectSession(profile, client, tools, contract, { connecting: true, allowMissingProfile: true });
-  if (before.status === "profile_missing") {
-    return { status: "unverified", reason: "client_profile_not_configured",
-      nextAction: "Создайте профиль клиента в Vanessa и укажите в нём логин и пароль, затем повторите подключение." };
+export async function setupSession(profile, client, tools, contract = runtimeContract, { onMutation = () => {}, verifyManager = () => false } = {}) {
+  return setupManagedProfile(profile, client, tools, contract, onMutation, verifyManager);
+}
+
+async function setupManagedProfile(profile, client, tools, contract, onMutation, verifyManager) {
+  if (!isLocalComputer(profile.client.computerName)) return error("client_computer_is_not_verified_local");
+  if (requiredTools.some(name => !tools.some(tool => tool.name === name))) return error("required_tools_missing");
+  const managerVerified = async () => { try { return await verifyManager() === true; } catch { return false; } };
+  if (!await managerVerified()) return unverified("manager_binding_unverified");
+  const observe = async () => {
+    const environment = contract.environment(await callTool(client, tools, "get_environment_data", {}));
+    const state = contract.state(await callTool(client, tools, "get_vanessa_automation_state", {}));
+    const profiles = contract.profiles(await callTool(client, tools, "manage_test_client_profiles", { action: "get_list" }));
+    const editor = contract.editor?.(await callTool(client, tools, "get_editor_state", { includeContent: false }));
+    if (!environment || !sameInfobase(profile.manager.infobase, environment.managerInfobase) || environment.vanessaExt !== true || !environment.runtimeVersion ||
+        !state || state.connected !== false || state.running !== false || state.recording !== false || editor?.stateAvailable !== true ||
+        !Array.isArray(profiles) || profiles.some(item => item.connected !== false)) return null;
+    const matches = namedProfiles(profiles, profile.client.name);
+    if (!matches || matches.length > 1 || (matches.length === 1 && matches[0].name !== profile.client.name)) return null;
+    return matches.length ? { existing: true, snapshot: matches[0] } : { existing: false };
+  };
+  const first = await observe();
+  if (!first) return error("client_profile_setup_state_unverified");
+  const second = await observe();
+  if (!second || first.existing !== second.existing || JSON.stringify(first.snapshot) !== JSON.stringify(second.snapshot)) return unverified("client_profile_changed_during_setup");
+  const quote = value => '"' + value.replaceAll('"', '""') + '"';
+  const { user } = profile.client;
+  const clientInterface = user.interface === "taxi" ? "/iTaxi" : fail("Неподдерживаемый интерфейс клиента");
+  const args = { action: first.existing ? "edit" : "add", name: profile.client.name, infobase_path: connectionString(profile.client.infobase),
+    additional_parameters: `${clientInterface} /N${quote(user.name)} /P${quote(user.password)}`, client_type: "Тонкий", computer_name: profile.client.computerName };
+  if (!await managerVerified()) return unverified("manager_binding_unverified");
+  let dispatched = false;
+  try {
+    await callTool(client, tools, "manage_test_client_profiles", args, { onDispatch: () => { dispatched = true; onMutation("manage_test_client_profiles", true); } });
+    onMutation("manage_test_client_profiles", false);
+  } catch (failure) {
+    if (failure.code === "tool_error") onMutation("manage_test_client_profiles", false);
+    if (failure.code === "tool_error" || !dispatched) throw failure;
+    const uncertain = new Error("Исход изменения профиля клиента неизвестен; проверьте состояние Vanessa перед повтором");
+    uncertain.code = "mutation_indeterminate";
+    throw uncertain;
   }
-  return connectVerified(profile, client, tools, contract, before);
+  return connectSession(profile, client, tools, contract, { onMutation });
 }

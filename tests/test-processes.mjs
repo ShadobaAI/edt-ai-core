@@ -4,12 +4,74 @@ import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { launch, stop_child, alive } from "../scripts/processes.mjs";
-import { windows_handle_count, windows_process_identity, pin_windows_process, spawn_detached_windows } from "../scripts/windows_process.mjs";
+import { windows_handle_count, windows_process_identity, pin_windows_process, pin_windows_readonly_file, spawn_detached_windows } from "../scripts/windows_process.mjs";
 import { fixture, ROOT } from "./helpers.mjs";
+
+test("Windows file pins prevent writes, replacement and ancestor renames until release", { skip: process.platform !== "win32" }, t => {
+  const f = fixture(t), directory = path.join(f.base, "pinned"), file = path.join(directory, "source.bin");
+  fs.mkdirSync(directory); fs.writeFileSync(file, "original");
+  const link = path.join(f.base, "hard-link.bin"); fs.linkSync(file, link);
+  const writer = fs.openSync(file, "r+");
+  try { assert.throws(() => pin_windows_readonly_file(file), /Cannot pin file path/); }
+  finally { fs.closeSync(writer); }
+  const pin = pin_windows_readonly_file(file);
+  try {
+    assert.equal(fs.readFileSync(pin.path, "utf8"), "original");
+    assert.throws(() => fs.writeFileSync(file, "changed"));
+    assert.throws(() => fs.writeFileSync(link, "changed"));
+    assert.throws(() => fs.renameSync(file, file + ".old"));
+    assert.throws(() => fs.renameSync(directory, directory + ".old"));
+    assert.equal(fs.readFileSync(file, "utf8"), "original");
+  } finally { pin.close(); }
+  pin.close();
+  fs.writeFileSync(file, "after release");
+  assert.equal(fs.readFileSync(link, "utf8"), "after release");
+  fs.renameSync(directory, directory + ".old");
+});
+
+test("Windows file pins reject an existing writable mapping", { skip: process.platform !== "win32" }, t => {
+  const f = fixture(t), file = path.join(f.base, "mapped.bin"); fs.writeFileSync(file, "original");
+  const koffi = createRequire(import.meta.url)(path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node"));
+  const kernel = koffi.load("kernel32.dll");
+  const open = kernel.func("void * __stdcall CreateFileW(str16 name, uint32_t access, uint32_t share, void *security, uint32_t creation, uint32_t flags, void *templateFile)");
+  const map = kernel.func("void * __stdcall CreateFileMappingW(void *file, void *security, uint32_t protect, uint32_t high, uint32_t low, str16 name)");
+  const view = kernel.func("void * __stdcall MapViewOfFile(void *mapping, uint32_t access, uint32_t high, uint32_t low, size_t bytes)");
+  const unmap = kernel.func("int __stdcall UnmapViewOfFile(void *view)");
+  const close = kernel.func("int __stdcall CloseHandle(void *handle)");
+  let handle, mapping, mapped;
+  try {
+    handle = open(file, 0xc0000000, 7, null, 3, 0x80, null);
+    if (handle && BigInt.asIntN(64, koffi.address(handle)) === -1n) handle = null;
+    assert.ok(handle);
+    mapping = map(handle, null, 4, 0, 0, null); assert.ok(mapping);
+    mapped = view(mapping, 2, 0, 0, 0); assert.ok(mapped);
+    const opened = handle; handle = null;
+    assert.ok(close(opened));
+    assert.throws(() => pin_windows_readonly_file(file), /Cannot pin file path/);
+  } finally {
+    const results = [mapped ? unmap(mapped) : 1, mapping ? close(mapping) : 1, handle ? close(handle) : 1];
+    assert.ok(results.every(Boolean), "mapping handles must be released");
+  }
+  const pin = pin_windows_readonly_file(file); pin.close();
+});
+
+test("a terminated Windows process has no live identity even while its handle is pinned", { skip: process.platform !== "win32" }, async t => {
+  const f = fixture(t), child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: "ignore", windowsHide: true });
+  const closed = new Promise(resolve => child.once("close", resolve));
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await closed; });
+  await once(child, "spawn");
+  const pin = pin_windows_process(child.pid);
+  try {
+    child.kill("SIGKILL"); await closed;
+    assert.equal(pin.alive(), false);
+    assert.equal(windows_process_identity(child.pid), null);
+  } finally { pin.close(); }
+});
 
 test("concurrent shutdown callers share the owned child's termination", async t => {
   const f = fixture(t), child = launch(process.execPath, ["-e", "setInterval(()=>{},1000)"], { stdio: ["pipe", "ignore", "ignore"] });
@@ -344,7 +406,7 @@ test("Windows terminates the daemon startup job when its owner crashes", { skip:
 test("Windows commits an intentionally persistent daemon only after startup", { skip: process.platform !== "win32", timeout: 10000 }, async t => {
   const f = fixture(t), pidFile = path.join(f.base, "committed-daemon.pid"), readyFile = path.join(f.base, "committed.ready");
   const windows = pathToFileURL(path.join(ROOT, "scripts/windows_process.mjs")).href;
-  const target = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>process.exit(0),2000);`;
+  const target = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile + ".tmp")},String(process.pid));fs.renameSync(${JSON.stringify(pidFile + ".tmp")},${JSON.stringify(pidFile)});setTimeout(()=>process.exit(0),2000);`;
   const ownerCode = `import fs from 'node:fs';import {spawn_detached_windows} from ${JSON.stringify(windows)};
     const child=spawn_detached_windows(process.execPath,['-e',${JSON.stringify(target)}],{cwd:process.cwd(),env:process.env,guardUntilCommit:true});
     child.commit();child.release();fs.writeFileSync(${JSON.stringify(readyFile)},'committed');setInterval(()=>{},1000);`;

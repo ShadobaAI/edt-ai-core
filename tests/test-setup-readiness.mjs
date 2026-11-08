@@ -1543,6 +1543,21 @@ testProtected("concurrent local index observations share a single native client"
   assert.equal(starts.length, 1);
 });
 
+test("Windows observer cleans up when the source runtime already has a writer", { skip: process.platform !== "win32" }, async t => {
+  const { f, backend, home, exe, starts, copies, health, setHealth } = await live_index_fixture(t);
+  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
+  const observer = new IndexObserver(f.state), config = backend.effective(backend.current());
+  f.clients.push(observer);
+  const writer = fs.openSync(exe, "r+");
+  try { await assert.rejects(observer.observe(config, f.root, f.profile), /Cannot pin file path/); }
+  finally { fs.closeSync(writer); }
+  assert.deepEqual(await active_readers(f.state, f.root), []);
+  assert.deepEqual(fs.readdirSync(home).filter(name => name.startsWith(".observation-")), []);
+  assert.equal(starts.length, 0); assert.equal(copies.length, 0);
+  assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
+  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+});
+
 testProtected("a session reuses one verified native reader and rehashes only on a new launch", async t => {
   const { f, backend, home, starts, copies, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());

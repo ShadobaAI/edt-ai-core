@@ -33,7 +33,9 @@ export function checkArguments(schema, args) {
     if (types.length && !types.includes(actual) && !(Number.isInteger(value) && types.includes("integer"))) fail(`Некорректный тип аргумента: ${name}`);
   }
 }
-export const session = (profile, use) => withHttpMcp({ url: profile.mcp.url }, use, { timeout: profile.limits.timeoutMs, maxBytes: profile.limits.maxBytes });
+export const session = (profile, use, { transportFetch } = {}) => withHttpMcp({ url: profile.mcp.url }, use, {
+  timeout: profile.limits.timeoutMs, maxBytes: profile.limits.maxBytes, ...(transportFetch ? { transportFetch } : {}),
+});
 export async function callTool(client, tools, name, args, { onDispatch = () => {} } = {}) {
   const tool = tools.find(item => item.name === name);
   if (!tool) fail("Запрошенный инструмент недоступен");

@@ -52,7 +52,7 @@ async function managerFixture(t) {
   f.save();
   const base = { type: "server", server: "localhost", database: "ui-demo" };
   const runtime = { version: 1, id: "fixture", projectRoot: "..", platform: "../1cv8c", runtime: { epf: "../vanessa.epf" },
-    manager: { infobase: base }, client: { name: "TestClient", infobase: base }, mcp: { serverName: "vanessa", url: `http://127.0.0.1:${port}/mcp`, port },
+    manager: { infobase: base, user: { name: "Manager", password: "secret", interface: "taxi" } }, infobase: base, users: { TestClient: { name: "User", password: "secret", interface: "taxi" } }, mcp: { serverName: "vanessa", url: `http://127.0.0.1:${port}/mcp`, port },
     features: "../features", results: "../results", limits: { timeoutMs: 1000 } };
   const saveRuntime = () => fs.writeFileSync(file, JSON.stringify(runtime)); saveRuntime();
   const backend = new SettingsBackend();
@@ -122,11 +122,25 @@ test("disabled and invalid runtime profiles do not contact the manager", async t
 
 test("manager availability is independent of TestClient and unrelated launch settings", async t => {
   const f = await managerFixture(t);
-  delete f.runtime.client; delete f.runtime.platform; delete f.runtime.runtime;
-  f.runtime.clients = [{ userEnv: "private-username-variable" }, {}]; f.saveRuntime();
+  delete f.runtime.users; delete f.runtime.platform; delete f.runtime.runtime;
+  f.runtime.users = { invalid: { name: "private-username-variable" } }; f.saveRuntime();
   const result = await f.probe(); assert.equal(result.componentChecks[0].state, "ready");
   assert.match(result.componentChecks[0].detail, /Настройки запуска, TestClient/);
   assert.equal(JSON.stringify(result).includes("private-username-variable"), false);
+});
+
+test("manager availability rejects legacy profile fields without contacting MCP", async t => {
+  const f = await managerFixture(t);
+  for (const apply of [
+    runtime => { runtime.client = { name: "old" }; return () => { delete runtime.client; }; },
+    runtime => { runtime.clients = []; return () => { delete runtime.clients; }; },
+    runtime => { runtime.manager.interface = "taxi"; return () => { delete runtime.manager.interface; }; },
+  ]) {
+    const restore = apply(f.runtime); f.saveRuntime();
+    assert.equal((await f.probe()).componentChecks[0].state, "missing_config");
+    assert.equal(f.calls.length, 0);
+    restore();
+  }
 });
 
 test("a slow combined operation cannot renew a completed manager observation", async t => {
@@ -145,7 +159,7 @@ test("a slow combined operation cannot renew a completed manager observation", a
 test("manager file bases are compared by local filesystem identity", async t => {
   const f = await managerFixture(t); fs.mkdirSync(path.join(f.root, "base"));
   f.runtime.manager.infobase = { type: "file", path: "../base" };
-  f.runtime.client.infobase = { type: "file", path: "../base" }; f.saveRuntime(); f.setMode("file");
+  f.runtime.infobase = { type: "file", path: "../base" }; f.saveRuntime(); f.setMode("file");
   assert.equal((await f.probe()).componentChecks[0].state, "ready");
   f.runtime.manager.infobase.path = "../missing-base"; f.saveRuntime();
   assert.equal((await f.probe()).componentChecks[0].state, "not_verified");
@@ -156,7 +170,7 @@ test("repointing the configured file-base link invalidates the saved manager che
   fs.mkdirSync(first); fs.mkdirSync(second);
   fs.symlinkSync(first, link, process.platform === "win32" ? "junction" : "dir");
   f.runtime.manager.infobase = { type: "file", path: "../base-link" };
-  f.runtime.client.infobase = { type: "file", path: "../base-link" }; f.saveRuntime(); f.setMode("file");
+  f.runtime.infobase = { type: "file", path: "../base-link" }; f.saveRuntime(); f.setMode("file");
   assert.equal((await f.probe()).componentChecks[0].state, "ready");
   fs.unlinkSync(link); fs.symlinkSync(second, link, process.platform === "win32" ? "junction" : "dir");
   assert.equal((await f.backend.main({ action: "read" })).componentChecks.find(item => item.id === "vanessa").state, "check_stale");
