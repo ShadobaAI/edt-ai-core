@@ -27,7 +27,8 @@ import { credential_binding, surface_fingerprint, operation_fingerprint, access_
 import { stable } from "../scripts/common.mjs";
 import { knowledge_gate } from "../scripts/knowledge.mjs";
 import { guard } from "../scripts/guard.mjs";
-import { save_readiness, read_readiness, readiness_fingerprint } from "../scripts/setup_readiness.mjs";
+import { save_readiness, read_readiness, readiness_fingerprint, save_component_checks } from "../scripts/setup_readiness.mjs";
+import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { WORKFLOW_ACTIONS } from "../scripts/knowledge.mjs";
 import { inspect as doctor } from "../scripts/doctor.mjs";
 import { RemoteHttpError } from "../scripts/remote_client.mjs";
@@ -265,6 +266,28 @@ test("setup accepts a verified search probe but cannot authorize KORA workflow o
   const allowed = await own.require(f.profile, f.config, f.root);
   assert.equal(allowed.allowed, true); assert.equal(allowed.scope, "workflow");
   assert.equal(allowed.knowledge.readinessScope, "workflow"); assert.equal(allowed.knowledge.koraReady, true);
+  await own.close();
+});
+
+test("OpenViking failure invalidates setup knowledge until a new live proof succeeds", async t => {
+  const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);
+  f.config.active_project = f.root; f.config.mcp.optional.openviking.url = remote.url;
+  f.config.mcp.managed["code-index"].enabled = false; f.config.mcp.managed["bsl-ls"].enabled = false;
+  f.profile.knowledge.required = true; f.profile.knowledge.dependent_actions = ["implementation"];
+  f.save(); fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(f.config));
+  const probe = await probe_connections(f.config, f.root, f.profile);
+  const initial = save_readiness(f.state, f.config, f.profile, [], { ...probe.external, edt: { ready: true }, v8std: { ready: true } });
+  assert.equal(initial.knowledge.ready, true);
+  save_component_checks(f.state, f.config, f.profile, [{ id: "openviking", state: "error" }]);
+  let current = await read_readiness(f.state, f.config, f.profile);
+  assert.equal(current.state, "stale"); assert.equal(current.knowledge.ready, false);
+  assert.equal(current.checks.find(item => item.id === "knowledge").state, "not_verified");
+  save_component_checks(f.state, f.config, f.profile, [{ id: "openviking", state: "ready" }]);
+  current = await read_readiness(f.state, f.config, f.profile);
+  assert.equal(current.state, "stale"); assert.equal(current.knowledge.ready, false, "a card observation cannot recreate setup proof");
+  const refreshed = await new SettingsBackend().main({ action: "refresh_readiness", scope: f.root + "#first" });
+  assert.equal(refreshed.readiness.knowledge.ready, false); assert.equal(refreshed.readiness.state, "stale");
+  assert.equal(refreshed.componentChecks.find(item => item.id === "openviking").state, "ready");
 });
 test("an independent phase waiting for old knowledge cleanup cannot survive a binding change", async t => {
   const f = adapterFixture(t), remote = await upstream(t, f); grantPublication(t, f, remote.url);
@@ -311,6 +334,7 @@ test("workflow recovery reprobes after receipt, manifest, settings, instance and
   t.mock.method(Date, "now", () => future);
   assert.equal(expiring.status().ready, false);
   await require(); assert.notEqual(workflow.adapter, expiring); assert.equal(workflow.adapter.status().ready, true);
+  await workflow.close();
 });
 test("a failed retrieval invalidates prior readiness until a successful explicit check", async t => {
   const f = adapterFixture(t); grantPublication(t, f);
@@ -1055,8 +1079,10 @@ test("disabling knowledge while initialize is pending prevents discovery and ret
   await entered.promise;
   f.profile.knowledge = { provider: "none", mode: "disabled", manifest: null, collections: [], required: false, dependent_actions: [] };
   f.profile.connections.openviking.enabled = false; f.profile.connections.openviking.url = ""; f.save();
-  assert.equal((await client.call("knowledge_status", {})).structuredContent.state, "disabled");
-  release.resolve(); await rejected;
+  const disabled = client.call("knowledge_status", {});
+  await new Promise(resolve => setTimeout(resolve, 100));
+  release.resolve();
+  assert.equal((await disabled).structuredContent.state, "disabled"); await rejected;
   assert.equal(remote.requests.some(value => value.method === "tools/list" || value.method === "tools/call"), false);
   assert.deepEqual(remote.closed, ["fixture-1"]);
 });

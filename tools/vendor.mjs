@@ -40,12 +40,12 @@ fs.writeFileSync(
     })
     .join("\n\n----------------\n\n"),
 );
-// Include both Windows addons even when packaging on Linux/macOS. Each npm
-// tarball is verified against the SHA-512 integrity pinned in package-lock.json.
+// Include the addons needed by supported managed runtimes on every build host.
+// Each npm tarball is verified against the SHA-512 pinned in package-lock.json.
 const { extract_binary } = await import("../scripts/archives.mjs");
 const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
-for (const arch of ["x64", "arm64"]) {
-  const entry = lock.packages["node_modules/@koromix/koffi-win32-" + arch];
+for (const [platform, arch] of [["win32", "x64"], ["win32", "arm64"], ["linux", "x64"], ["darwin", "arm64"]]) {
+  const entry = lock.packages[`node_modules/@koromix/koffi-${platform}-${arch}`];
   if (
     !entry ||
     !/^sha512-[A-Za-z0-9+/]+=*$/.test(entry.integrity) ||
@@ -72,10 +72,13 @@ for (const arch of ["x64", "arm64"]) {
     throw new Error("Koffi integrity mismatch");
   fs.mkdirSync(path.dirname(cache), { recursive: true });
   fs.writeFileSync(cache, data);
-  const dir = path.join("vendor/native", "win32_" + arch);
+  const dir = path.join("vendor/native", platform + "_" + arch);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, "koffi.node"),
-    extract_binary(data, "tar.gz", "koffi.node"),
-  );
+  fs.writeFileSync(path.join(dir, "koffi.node"), extract_binary(data, "tar.gz",
+    platform === "linux" ? `package/linux_${arch}/koffi.node` : "koffi.node"));
+  if (platform === "linux") {
+    const musl = path.join("vendor/native", "musl_" + arch);
+    fs.mkdirSync(musl, { recursive: true });
+    fs.writeFileSync(path.join(musl, "koffi.node"), extract_binary(data, "tar.gz", `package/musl_${arch}/koffi.node`));
+  }
 }

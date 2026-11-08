@@ -65,6 +65,7 @@ export function resolved_settings(
   local_candidate = null,
   state = null,
   local_override = null,
+  external_inputs = null,
 ) {
   assert_settings_paths(config, root, data, state);
   let overrides = { connections: data?.connections || {}, components: data?.components || {} };
@@ -106,7 +107,7 @@ export function resolved_settings(
   for (const [name, entry] of Object.entries(local.connections || {}))
     if (Object.hasOwn(entry, "url")) sources[name] = "project_local";
   for (const file of external_override_files()) {
-    const extra = load(file);
+    const extra = external_inputs?.has(file) ? external_inputs.get(file) : load(file);
     if (extra !== null) {
       check_external_override(extra);
       merge_overrides(extra);

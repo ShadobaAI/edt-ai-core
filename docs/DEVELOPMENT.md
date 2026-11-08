@@ -18,7 +18,7 @@ node tools/vendor.mjs
 ```
 
 `vendor.mjs` собирает runtime-библиотеки из lockfile в `vendor/deps.mjs`,
-копирует готовые Windows-модули Koffi и формирует `vendor/NOTICE.txt`.
+копирует готовые модули Koffi для поддерживаемых платформ и формирует `vendor/NOTICE.txt`.
 Каталог `vendor/` генерируется и не хранится в Git. Изменяя зависимости,
 обновляйте `package.json`, lockfile и проверяйте сведения о лицензиях.
 

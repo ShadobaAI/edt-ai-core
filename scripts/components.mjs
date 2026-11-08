@@ -6,6 +6,7 @@ import fs from "node:fs";
 import { access_revision, persisted_access_revision, access_receipt_epoch } from "./openviking_access.mjs";
 import { publication_revision, publication_receipt_epoch } from "./openviking_publication.mjs";
 import { index_repositories } from "./directory_context.mjs";
+import { read_regular_file } from "./bounded_file.mjs";
 // Native runtimes need system and JVM configuration, not the host's arbitrary
 // environment. A denylist alone misses credentials from another project or an
 // earlier binding after the selected header variable changes.
@@ -50,14 +51,31 @@ export function knowledge_evidence_revision(config, root, profile, state = state
     persisted_access_revision(options, state), access_receipt_epoch(options, Date.now(), state), publication_revision(options, state), publication_receipt_epoch(options, Date.now(), state)]));
 }
 const preparation_file = (state, root) => path.join(instance_directory(state, root), instance_name() + ".preparation.json");
+function preparation_record(file) {
+  const value = read_regular_file(file, 64 * 1024);
+  return value ? JSON.parse(value.bytes.toString("utf8")) : {};
+}
 export function grant_preparation(state, root, components) {
   record_project_owner(state, root);
   const file = preparation_file(state, root);
-  const old = exists(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-  atomic_write(file, JSON.stringify({ root: resolve(root), components: [...new Set([...(old.root === resolve(root) ? old.components || [] : []), ...components])] }));
+  const old = preparation_record(file);
+  const projectRoot = resolve(root), prior = old.root === projectRoot && Array.isArray(old.components) ? old.components : [];
+  const next = [...new Set([...prior, ...components])];
+  if (old.root === projectRoot && prior.length === next.length && prior.every(component => next.includes(component))) return;
+  atomic_write(file, JSON.stringify({ root: projectRoot, components: next }));
+}
+export function preparation_granted(state, root, component) {
+  const record = preparation_record(preparation_file(state, root));
+  return record.root === resolve(root) && Array.isArray(record.components) && record.components.includes(component);
+}
+export function preparation_identity(state, root) {
+  try {
+    const stat = fs.lstatSync(preparation_file(state, root), { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64n * 1024n) return "invalid";
+    return stable([stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String));
+  } catch (error) { if (error.code === "ENOENT") return "missing"; throw error; }
 }
 export function require_preparation(state, root, component) {
-  const file = preparation_file(state, root), record = exists(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
-  if (record.root !== resolve(root) || !record.components?.includes(component))
+  if (!preparation_granted(state, root, component))
     throw new ConfigError("Компонент не подготовлен. Один раз выполните «Подготовить и проверить» в настройках для этой папки и экземпляра.");
 }

@@ -7,7 +7,7 @@ import { once } from "node:events";
 import { windows_process_identity, same_creation } from "../scripts/windows_process.mjs";
 import { randomUUID } from "node:crypto";
 import { path_identity } from "../scripts/project_paths.mjs";
-import { digest, fail, readJson, startArguments, platformCommandLine, checkFiles, interactiveParameters, configuredUser } from "./profile.mjs";
+import { digest, fail, readJson, startArguments, platformCommandLine, checkFiles, interactiveParameters } from "./profile.mjs";
 
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== "ESRCH"; } };
 const endpointKey = profile => `endpoint-${profile.mcp.port}`;
@@ -88,11 +88,6 @@ export const portAvailable = profile => new Promise((resolve, reject) => {
 });
 
 export async function start(profile) {
-  if (configuredUser(profile.manager, "manager") !== undefined) return { status: "unverified", reason: "manager_session_user_unverified" };
-  // The primary owner remains part of the launch even when --client selects
-  // another entry. Do not bypass the identity guard through that selection.
-  if ([profile.client, profile.ownerClient].filter(Boolean).some(client => configuredUser(client, "client") !== undefined))
-    return { status: "unverified", reason: "actual_test_client_user_unverified" };
   if (process.platform !== "win32") fail("Запуск менеджера требует Windows");
   checkFiles(profile);
   return withProfileLock(profile, async () => {

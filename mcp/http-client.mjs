@@ -1,7 +1,7 @@
 // Bounded Streamable HTTP only: no redirects, reconnects, or legacy SSE fallback.
 import { core_version } from "../scripts/compatibility.mjs";
 export async function withHttpMcp(config, use, {
-  env = process.env, timeout = 10000, maxBytes = 1024 * 1024,
+  env = process.env, timeout = 10000, maxBytes = 1024 * 1024, onResponse = () => {},
 } = {}) {
   let url, headers;
   try {
@@ -34,7 +34,11 @@ export async function withHttpMcp(config, use, {
   const version = "2025-03-26";
   const timedOut = () => new Error("Истекло время сессии HTTP MCP");
   const fetchSafe = async (options) => {
-    try { return await fetch(url, { redirect: "error", ...options }); }
+    try {
+      const response = await fetch(url, { redirect: "error", ...options });
+      if (options.method !== "DELETE") onResponse();
+      return response;
+    }
     catch { throw controller.signal.aborted ? timedOut() : new Error("Ошибка транспорта HTTP MCP"); }
   };
   const parse = (text) => {

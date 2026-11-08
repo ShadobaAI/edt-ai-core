@@ -7,7 +7,21 @@ import { fileURLToPath } from "node:url";
 import { setTimeout } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { fixture } from "./helpers.mjs";
-import { folder_action, windows_folder_api, activate_folder_window } from "../scripts/settings_folder.mjs";
+import { folder_action, folder_actions_supported, windows_folder_api, activate_folder_window, folder_error_details, folder_error_from_details } from "../scripts/settings_folder.mjs";
+
+test("folder capability agrees with the action's platform guard", async () => {
+  const supported = folder_actions_supported();
+  assert.equal(supported, process.platform === "win32");
+  await assert.rejects(folder_action("unknown"), supported ? /Неизвестное действие/ : /доступен только в Windows/);
+});
+
+test("native worker errors retain their codes and stack across the worker boundary", () => {
+  const original = Object.assign(new Error("Save As failed"), { code: "EACCES", errno: -1, hresult: -2147024891 });
+  const restored = folder_error_from_details(folder_error_details(original));
+  assert.equal(restored.message, original.message); assert.equal(restored.code, "EACCES");
+  assert.equal(restored.errno, -1); assert.equal(restored.hresult, -2147024891); assert.equal(restored.stack, original.stack);
+  assert.equal(folder_error_from_details("legacy error").message, "legacy error");
+});
 
 test("Explorer activation waits for the exact folder window and restores it before focusing", async () => {
   const calls=[];let found=0,current=0;

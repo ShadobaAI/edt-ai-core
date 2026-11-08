@@ -5,10 +5,10 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
 import { PassThrough } from "node:stream";
-import { loadProfile, checkFiles, startArguments, platformCommandLine, clientAdditionalParameters, configSnippet, digest, interactiveParameters } from "../vanessa/profile.mjs";
+import { loadProfile, checkFiles, startArguments, platformCommandLine, configSnippet, digest, interactiveParameters } from "../vanessa/profile.mjs";
 import { listTools, checkArguments, redact } from "../vanessa/mcp.mjs";
 import { main, doctor } from "../vanessa/vanessa.mjs";
-import { withProfileLock, checkOwner, checkClaims, clientControlKey, registryDir, start } from "../vanessa/runtime.mjs";
+import { withProfileLock, checkOwner, checkClaims, clientControlKey, registryDir } from "../vanessa/runtime.mjs";
 import { requiredTools, inspectSession, connectSession, setupSession, taxiCompatible, isLocalComputer, runtimeContract } from "../vanessa/readiness.mjs";
 import { ownRecording, recordOwnership, invalidateObservedIdle } from "../vanessa/recording.mjs";
 import { parseEnvironment, parseState, parseProfiles, parseEditor, parseInfobase, parseExtensions, parseProcesses, parseClientLaunch, parseSyntax, parseSelection, editorContent, normalizeFeatureText } from "../vanessa/runtime-contract.mjs";
@@ -77,16 +77,10 @@ try {
   assert.equal(profile.manager.interface, "taxi"); assert.equal(profile.client.interface, "taxi");
   for (const host of ["localhost", "127.0.0.1", "::1", os.hostname()]) assert.equal(isLocalComputer(host), true);
   assert.equal(isLocalComputer("remote-test-host.invalid"), false);
-  assert.equal(clientAdditionalParameters({ ...profile, client: { ...profile.client, userEnv: "UI_FIXTURE_USER" } }, { UI_FIXTURE_USER: "FixtureUser" }), '/iTaxi /N"FixtureUser"');
-  assert.throws(() => clientAdditionalParameters({ ...profile, client: { ...profile.client, userEnv: "UI_FIXTURE_USER" } }, {}), /значение переменной окружения/);
-  const multiple = { ...raw, manager: { ...raw.manager, user: "АдминистраторТакси" }, client: { ...raw.client, user: "АдминистраторKafka" },
-    clients: [{ ...raw.client, name: "RestrictedClient", user: "ПользовательKafka" }] };
+  const multiple = { ...raw, clients: [{ ...raw.client, name: "RestrictedClient" }] };
   write(multiple);
   const admin = loadProfile(profileFile), restricted = loadProfile(profileFile, undefined, "RestrictedClient");
-  assert.equal(startArguments(admin, {}).includes("АдминистраторТакси"), true);
-  assert.equal(clientAdditionalParameters(admin, {}), '/iTaxi /N"АдминистраторKafka"');
-  assert.equal(clientAdditionalParameters(restricted, {}), '/iTaxi /N"ПользовательKafka"');
-  assert.equal(clientAdditionalParameters({ ...admin, client: { ...admin.client, user: 'A "quoted" user' } }, {}), '/iTaxi /N"A ""quoted"" user"');
+  assert.equal(startArguments(admin, {}).includes("/N"), false);
   assert.equal((await main(["configure", "--profile", profileFile, "--client", "RestrictedClient"])).status, "configuration_only");
   await assert.rejects(main(["configure", "--profile", profileFile, "--client", "unknown"]), /Неизвестное имя клиента/);
   assert.equal(clientControlKey(admin), clientControlKey(restricted));
@@ -109,7 +103,7 @@ try {
   for (const broken of [
     { ...multiple, manager: { ...multiple.manager, userEnv: "UI_USER" } },
     { ...multiple, client: { ...multiple.client, userEnv: "UI_USER" } },
-    { ...multiple, client: { ...multiple.client, user: " " } },
+    { ...multiple, client: { ...multiple.client, user: "LegacyUser" } },
     { ...multiple, clients: [{ ...multiple.client }] },
     { ...multiple, clients: [{ ...multiple.clients[0], infobase: { type: "file", path: "../other" } }] },
     { ...multiple, clients: [] },
@@ -117,11 +111,22 @@ try {
   write(raw);
   assert.equal(taxiCompatible("/iTaxi"), true); assert.equal(taxiCompatible("/N fixture /ITAXI"), true);
   assert.equal(taxiCompatible("/iTaxi /itdi"), false); assert.equal(taxiCompatible("/itdi"), false);
+  assert.equal(taxiCompatible('/N"some /iTaxi value" /P"secret"'), false);
+  assert.equal(taxiCompatible('/iTaxi /N"some /iTDI value"'), true);
   assert.equal(taxiCompatible(""), false); assert.equal(taxiCompatible(undefined), false);
   assert.equal(startArguments(profile).some(arg => /StartFeaturePlayer|all/.test(arg)), false);
   assert.match(startArguments(profile).at(-1), /UseEditor/);
   assert.equal(interactiveParameters(profile)["КаталогФич"], profile.features);
   assert.equal(interactiveParameters(profile)["ВыполнитьСценарии"], false);
+  for (const unsafe of [
+    { ИмяПользователя: "private-user" },
+    { nested: { ДопПараметрыКлиентаТестирования: '/iTaxi /N"private-user" /P"private password"' } },
+    { nested: { args: ["/iTaxi", "/Nprivate-user", "/Pprivate-password"] } },
+    { nested: { args: "/N private-user /P private-password" } },
+    { ПутьКИнфобазе: root + ' /N"private-user" /P"private-password"' },
+    { settings: JSON.stringify({ password: "private-password" }) },
+  ]) assert.throws(() => interactiveParameters(profile, unsafe), /Учётные данные запрещены/);
+  assert.doesNotThrow(() => interactiveParameters(profile, { КаталогСценариев: path.join(root, "Projects") }));
   assert.equal(platformCommandLine(["/IBConnectionString", 'Srvr="localhost";Ref="example";']), '/IBConnectionString "Srvr=""localhost"";Ref=""example"";"');
   assert.equal(startArguments(profile).includes("/Out"), true);
   const firstLaunchArgs = startArguments(profile), secondLaunchArgs = startArguments(profile);
@@ -145,27 +150,11 @@ try {
     { ...raw, client: { ...raw.client, interface: "itdi" } },
   ]) { write(broken); assert.throws(() => loadProfile(profileFile)); }
   write(raw);
-  write({ ...raw, runtime: { navigationUrl: "e1cib/app/Обработка.TestRuntime" }, manager: { ...raw.manager, userEnv: "VANESSA_UI_FIXTURE_USER" } });
+  write({ ...raw, runtime: { navigationUrl: "e1cib/app/Обработка.TestRuntime" } });
   const embedded = loadProfile(profileFile); checkFiles(embedded);
-  assert.equal(startArguments(embedded, { VANESSA_UI_FIXTURE_USER: "fixture-user" }).includes("/URL"), true);
-  assert.equal(startArguments(embedded, { VANESSA_UI_FIXTURE_USER: "fixture-user" }).includes("/Execute"), false);
-  assert.equal(startArguments(embedded, { VANESSA_UI_FIXTURE_USER: "fixture-user" }).includes("fixture-user"), true);
-  assert.throws(() => startArguments(embedded, {}), /значение переменной окружения/);
-  assert.ok(!JSON.stringify(embedded).includes("fixture-user"));
-  if (process.platform === "win32") {
-    const reserved = createServer();
-    await new Promise(resolve => reserved.listen(0, "127.0.0.1", resolve));
-    const freePort = reserved.address().port;
-    await new Promise(resolve => reserved.close(resolve));
-    const missingEnv = "VANESSA_TEST_ABSENT_START_USER", prior = process.env[missingEnv];
-    delete process.env[missingEnv];
-    const invalidStart = { ...embedded, manager: { ...embedded.manager, userEnv: missingEnv }, mcp: { ...embedded.mcp, port: freePort, url: `http://127.0.0.1:${freePort}/mcp` } };
-    try {
-      await assert.rejects(start(invalidStart), /значение переменной окружения/);
-      assert.equal(fs.existsSync(path.join(registryDir(), `endpoint-${freePort}.owner.json`)), false);
-      assert.equal(fs.existsSync(invalidStart.stateDir), false);
-    } finally { if (prior !== undefined) process.env[missingEnv] = prior; }
-  }
+  assert.equal(startArguments(embedded).includes("/URL"), true);
+  assert.equal(startArguments(embedded).includes("/Execute"), false);
+  assert.equal(startArguments(embedded).includes("/N"), false);
   write(raw);
   const paramsFile = path.join(root, "config", "params.json");
   fs.writeFileSync(paramsFile, JSON.stringify({ "ВыполнитьСценарии": true }));
@@ -261,6 +250,19 @@ try {
   assert.throws(() => checkArguments({ additionalProperties: false }, { guessed: 1 }), /Неизвестный/);
   assert.deepEqual(redact({ password: "private", nested: ["Pwd=private; Token=private"] }), { password: "[redacted]", nested: ["Pwd=[redacted]; Token=[redacted]"] });
   assert.equal(redact('/iTaxi /N"FixtureUser"'), "/iTaxi /N[redacted]");
+  assert.equal(redact('Usr="name";Pwd="a""secret";'), 'Usr=[redacted];Pwd=[redacted];');
+  assert.equal(redact('Usr=private user;Pwd=secret with spaces;'), 'Usr=[redacted];Pwd=[redacted];');
+  for (const input of [{message:'connection Pwd="first;second";'}, {message:'params /N"first user" /P"some pass";'}, {password:"secret"}, {Pwd:"secret",Usr:"private"}]) {
+    const output=redact(JSON.stringify(input));
+    for(const secret of ["first","second","user","some pass","secret","private"])assert.equal(output.includes(secret),false, output);
+  }
+  assert.equal(redact('{"password":"private-value"'), "[redacted]");
+  assert.equal(redact(JSON.stringify({message:'params /N"first user" /P"some pass";'}).slice(0,-1)), "[redacted]");
+  assert.equal(redact(JSON.stringify({message:'Usr="first;second";'}).slice(0,-1)), "[redacted]");
+  assert.equal(redact('Error: {"password":"private-value"').includes("private-value"), false);
+  assert.equal(redact('Error: '+JSON.stringify({message:'Pwd="first;second";'}).slice(0,-1)).includes("second"), false);
+  assert.equal(redact('Error: {"user":"private-value"}').includes("private-value"), false);
+  assert.equal(redact('Error: User=private-value;').includes("private-value"), false);
   assert.deepEqual(redact({ inputSchema: { type: "object", properties: { password: { type: "string", default: "private" }, selected: { type: "string", enum: ["one", "two"] } } } }),
     { inputSchema: { type: "object", properties: { password: { type: "string", default: "[redacted]" }, selected: { type: "string", enum: ["one", "two"] } } } });
 
@@ -288,70 +290,38 @@ try {
     extensions: () => [{ name: "VAExtension", active: true, version: "fixture" }],
     processes: () => ({ filter: null, matchedCount: 1, processes: [{ kind: "test_client", pid: 12345, startedAt: "fixture-session", launch: { infobase: profile.client.infobase, interface: "taxi", testPort: 48000 } }] }),
   };
-  for (const source of [admin, restricted]) {
-    const selected = { ...source, manager: { ...source.manager, user: undefined } };
-    let connectedClient = false, created = false;
-    const user = selected.client.user;
+  for (const selected of [admin, restricted]) {
+    let connectedClient = false, connects = 0;
     const testContract = { ...semanticContract,
-      profiles: () => created ? [{ name: selected.client.name, infobase: selected.client.infobase, additionalParameters: clientAdditionalParameters(selected), computerName: "localhost", connected: connectedClient }] : [],
+      profiles: () => [{ name: selected.client.name, infobase: selected.client.infobase, additionalParameters: '/iTaxi /N"FixtureUser" /P"FixturePassword"', computerName: "localhost", connected: connectedClient }],
       state: () => ({ connected: connectedClient, clientName: selected.client.name, running: false, recording: false }),
-      processes: () => ({ filter: null, matchedCount: 1, processes: [{ kind: "test_client", pid: 12345, startedAt: "fixture", launch: { infobase: selected.client.infobase, interface: "taxi", testPort: 48000, user } }] }),
+      processes: () => ({ filter: null, matchedCount: 1, processes: [{ kind: "test_client", pid: 12345, startedAt: "fixture", launch: { infobase: selected.client.infobase, interface: "taxi", testPort: 48000 } }] }),
     };
     const testClient = { request: async (method, params) => {
-      if (params.name === "manage_test_client_profiles" && params.arguments.action === "add") {
-        assert.equal(params.arguments.name, selected.client.name);
-        assert.equal(params.arguments.additional_parameters, `/iTaxi /N"${user}"`);
-        created = true;
-      }
       if (params.name === "manage_test_client") {
-        assert.deepEqual(params.arguments, { action: "connect", profileName: selected.client.name }); connectedClient = true;
+        assert.deepEqual(params.arguments, { action: "connect", profileName: selected.client.name }); connectedClient = true; connects++;
       }
       return { content: [] };
     } };
-    assert.equal((await setupSession(selected, testClient, fixtureTools, testContract)).reason, "actual_test_client_user_unverified");
-    assert.equal(created, false, "explicit user blocks setup before creating or connecting the profile");
-    created = true; connectedClient = true;
-    const withoutUser = { ...selected, client: { ...selected.client, user: undefined } };
+    const prepared = await setupSession(selected, testClient, fixtureTools, testContract);
+    assert.equal(prepared.status, "ready");assert.equal(prepared.authenticatedUser, "unverified");assert.equal(connects, 1);
     const secondProcess = { kind: "test_client", pid: 23456, startedAt: "other-session", launch: { infobase: { type: "file", path: profile.features }, interface: "taxi", testPort: 48001, user: "OtherUser" } };
     const multi = { ...testContract,
       profiles: () => [{ ...testContract.profiles()[0], pid: 12345 }],
       processes: () => ({ filter: null, matchedCount: 2, processes: [testContract.processes().processes[0], secondProcess] }),
     };
-    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, multi)).clientProcess.identitySource, "profile_pid_and_tcp_binding");
+    assert.equal((await inspectSession(selected, testClient, fixtureTools, multi)).clientProcess.identitySource, "profile_pid_and_tcp_binding");
     const stalePid = { ...multi, profiles: () => [{ ...multi.profiles()[0], pid: 23456 }] };
-    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, stalePid)).reason, "actual_test_client_launch_mismatch_or_unverified");
-    const duplicateUser = { ...multi, processes: () => ({ ...multi.processes(), processes: [multi.processes().processes[0], { ...secondProcess, launch: { ...secondProcess.launch, infobase: selected.client.infobase, user } }] }) };
-    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, duplicateUser)).status, "ready");
+    assert.equal((await inspectSession(selected, testClient, fixtureTools, stalePid)).reason, "actual_test_client_launch_mismatch_or_unverified");
+    const duplicateUser = { ...multi, processes: () => ({ ...multi.processes(), processes: [multi.processes().processes[0], { ...secondProcess, launch: { ...secondProcess.launch, infobase: selected.client.infobase } }] }) };
+    assert.equal((await inspectSession(selected, testClient, fixtureTools, duplicateUser)).status, "ready");
     const otherUserSameBase = { ...multi, processes: () => ({ ...multi.processes(), processes: [multi.processes().processes[0], { ...secondProcess, launch: { ...secondProcess.launch, infobase: selected.client.infobase } }] }) };
-    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, otherUserSameBase)).status, "ready");
+    assert.equal((await inspectSession(selected, testClient, fixtureTools, otherUserSameBase)).status, "ready");
     const unknownLaunch = { ...multi, processes: () => ({ ...multi.processes(), processes: [multi.processes().processes[0], { ...secondProcess, launch: null }] }) };
-    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, unknownLaunch)).status, "ready");
+    assert.equal((await inspectSession(selected, testClient, fixtureTools, unknownLaunch)).status, "ready");
     const duplicatePid = { ...multi, profiles: () => [...multi.profiles(), { name: "Other", connected: false, pid: 12345 }] };
     assert.equal((await inspectSession(selected, testClient, fixtureTools, duplicatePid)).reason, "unique_actual_test_client_process_not_verified");
-    assert.equal((await inspectSession(withoutUser, testClient, fixtureTools, multi)).status, "ready");
-    const wrongAuth = { ...testContract, profiles: () => [{ ...testContract.profiles()[0], additionalParameters: '/iTaxi /N"WrongUser"' }] };
-    assert.equal((await inspectSession(selected, testClient, fixtureTools, wrongAuth)).reason, "client_authentication_profile_mismatch");
-    const wrongProcess = { ...testContract, processes: () => ({ ...testContract.processes(), processes: [{ ...testContract.processes().processes[0], launch: { ...testContract.processes().processes[0].launch, user: "WrongUser" } }] }) };
-    assert.equal((await inspectSession(selected, testClient, fixtureTools, wrongProcess)).reason, "actual_test_client_user_mismatch");
-    const duplicateAuth = { ...testContract, profiles: () => [{ ...testContract.profiles()[0], additionalParameters: clientAdditionalParameters(selected) + ' /N"WrongUser"' }] };
-    assert.equal((await inspectSession(selected, testClient, fixtureTools, duplicateAuth)).reason, "client_authentication_profile_mismatch");
-  }
-  {
-    const envKey = "VANESSA_UI_TEST_CLIENT_USER", old = process.env[envKey];
-    process.env[envKey] = "LegacyUser";
-    try {
-      const legacy = { ...profile, client: { ...profile.client, userEnv: envKey } };
-      const legacyContract = { ...semanticContract,
-        profiles: () => [{ ...semanticContract.profiles()[0], additionalParameters: '/iTaxi /N"LegacyUser"' }],
-        processes: () => ({ ...semanticContract.processes(), processes: [{ ...semanticContract.processes().processes[0], launch: { ...semanticContract.processes().processes[0].launch, user: "LegacyUser" } }] }),
-      };
-      connected = true;
-      assert.equal((await inspectSession(legacy, fixtureClient, fixtureTools, legacyContract)).reason, "actual_test_client_user_unverified");
-      process.env[envKey] = "DifferentUser";
-      assert.equal((await inspectSession(legacy, fixtureClient, fixtureTools, legacyContract)).reason, "client_authentication_profile_mismatch");
-      delete process.env[envKey];
-      await assert.rejects(inspectSession(legacy, fixtureClient, fixtureTools, legacyContract), /значение переменной окружения/);
-    } finally { if (old === undefined) delete process.env[envKey]; else process.env[envKey] = old; connected = false; }
+    assert.equal((await inspectSession(selected, testClient, fixtureTools, multi)).status, "ready");
   }
   const remoteProfile = { ...profile, client: { ...profile.client, computerName: "remote-test-host.invalid" } };
   const remoteResult = await inspectSession(remoteProfile, { request: () => assert.fail("remote client cannot reach mutation or discovery stages") }, fixtureTools, semanticContract);
@@ -383,19 +353,16 @@ try {
   const setupContract = { ...semanticContract, profiles: () => profilePresent ? semanticContract.profiles() : [] };
   const setupClient = { request: async (method, params) => {
     if (params.name === "manage_test_client_profiles" && params.arguments.action === "add") {
-      adds++; profilePresent = true;
-      assert.equal(params.arguments.name, profile.client.name);
-      assert.equal(params.arguments.infobase_path, `File="${profile.client.infobase.path}";`);
-      assert.equal(params.arguments.additional_parameters, "/iTaxi");
-      assert.equal(params.arguments.computer_name, "localhost");
+      adds++;
       return { content: [] };
     }
     return fixtureClient.request(method, params);
   } };
+  assert.equal((await setupSession(profile, setupClient, fixtureTools, setupContract)).reason, "client_profile_not_configured");
+  assert.equal(adds, 0);
+  profilePresent = true;
   assert.equal((await setupSession(profile, setupClient, fixtureTools, setupContract)).status, "ready");
-  assert.equal(adds, 1);
-  assert.equal((await setupSession(profile, setupClient, fixtureTools, setupContract)).status, "ready");
-  assert.equal(adds, 1, "setup never duplicates an existing exact profile");
+  assert.equal(adds, 0, "setup uses the profile configured in Vanessa");
   let computerFixed = false, edits = 0;
   const computerContract = { ...semanticContract, profiles: () => [{ ...semanticContract.profiles()[0], computerName: computerFixed ? "localhost" : "" }] };
   const editClient = { request: async (method, params) => {
@@ -405,10 +372,11 @@ try {
     }
     return fixtureClient.request(method, params);
   } };
+  assert.equal((await setupSession(profile, editClient, fixtureTools, computerContract)).reason, "client_computer_name_mismatch_or_unverified");
+  assert.equal(edits, 0, "the plugin never edits a Vanessa-owned profile");
+  computerFixed = true;
   assert.equal((await setupSession(profile, editClient, fixtureTools, computerContract)).status, "ready");
-  assert.equal(edits, 1);
-  assert.equal((await setupSession(profile, editClient, fixtureTools, computerContract)).status, "ready");
-  assert.equal(edits, 1, "computer-name repair neither reconnects nor repeats the edit");
+  assert.equal(edits, 0);
   recordOwnership(profile, "active", "fixture-version", "manager-session-1");
   assert.equal(ownRecording(profile, "manager-session-1").status, "active");
   assert.throws(() => ownRecording(profile, "manager-session-2"), /Сессия менеджера записи изменилась/);
@@ -425,7 +393,7 @@ try {
   assert.deepEqual(parseState(wire.state), { connected: false, running: false, recording: false });
   assert.deepEqual(parseEditor(wire.editor), { stateAvailable: true, tabCount: 1, errorCount: 0 });
   assert.equal((await inspectSession(profile, fixtureClient, fixtureTools, semanticContract)).editorEnabled, "unverified", "a cached editor snapshot never proves enabled state");
-  assert.deepEqual(parseProfiles(wire.profiles), [{ name: "ExistingClient", infobase: { type: "server", server: "localhost", database: "ui-demo" }, additionalParameters: '/N"FixtureUser"', connected: false, pid: 0, computerName: "localhost" }]);
+  assert.deepEqual(parseProfiles(wire.profiles), [{ name: "ExistingClient", synonym: "", infobase: { type: "server", server: "localhost", database: "ui-demo" }, connectionFingerprint: digest('Srvr="localhost";Ref="ui-demo";'), additionalParameters: '/N"FixtureUser"', connected: false, pid: 0, computerName: "localhost" }]);
   assert.equal(parseInfobase('Srvr="localhost";Ref="one";Ref="two";'), null);
   assert.equal(parseInfobase('File="C:\\Demo";Srvr="localhost";Ref="one";'), null);
   assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("1.31", "9.99"))).mcpVersion, "9.99");
@@ -448,7 +416,7 @@ try {
   assert.equal(parseExtensions(wire.response(wire.extensions.content[0].text.replace("Итого: 7", "Итого: 8"))), null);
   const inventory = parseProcesses(wire.clientProcess);
   assert.equal(inventory.filter, "19968"); assert.equal(inventory.matchedCount, 1);
-  assert.deepEqual(inventory.processes[0].launch, { infobase: { type: "server", server: "localhost", database: "ui-demo" }, user: "FixtureUser", testPort: 48000, interface: "taxi" });
+  assert.deepEqual(inventory.processes[0].launch, { infobase: { type: "server", server: "localhost", database: "ui-demo" }, testPort: 48000, interface: "taxi" });
   assert.equal(parseProcesses(wire.response(wire.clientProcess.content[0].text.replace("1 из 2. Показано: 1", "2 из 3. Показано: 1"))), null, "partial process inventory is never complete");
   assert.equal(parseClientLaunch('"C:\\App\\1cv8c.exe" ENTERPRISE /S"localhost\\ui-demo" /TESTCLIENT -TPort 48000 /iTaxi /itdi'), null);
   const wrongProcess = { ...semanticContract, processes: () => ({ ...semanticContract.processes(), processes: [{ ...semanticContract.processes().processes[0], launch: { ...semanticContract.processes().processes[0].launch, infobase: { type: "file", path: root } } }] }) };
@@ -563,6 +531,19 @@ try {
   };
   const networkOptions = ["run", "--profile", profileFile, "--feature", feature, "--scenario", scenario];
   const httpContract = { ...runtimeContract, processIdentity: semanticContract.processIdentity, processBinding: semanticContract.processBinding };
+  const profileListArgs = path.join(root, "profile-list-args.json");
+  fs.writeFileSync(profileListArgs, JSON.stringify({ action: "get_list" }));
+  const originalNetworkCall = networkCall;
+  networkCall = (name, args) => {
+    const result = originalNetworkCall(name, args);
+    return name === "manage_test_client_profiles" && args.action === "get_list"
+      ? rewrite(result, text => text.replace('| Синоним |  |', '| Синоним |  |\n| Секретное поле | opaque-private-value |').replace('/N"FixtureUser"', '/N"FixtureUser" /P"FixturePassword"'))
+      : result;
+  };
+  const safeProfiles = await main(["call", "--profile", profileFile, "--tool", "manage_test_client_profiles", "--arguments-file", profileListArgs], { contract: httpContract });
+  assert.equal(safeProfiles.status, "completed");assert.equal(safeProfiles.result.profiles[0].name, "TestClient");
+  for (const secret of ["FixtureUser", "FixturePassword", "opaque-private-value"]) assert.equal(JSON.stringify(safeProfiles).includes(secret), false);
+  networkCall = originalNetworkCall;
   const networkCompleted = await main([...networkOptions], { contract: httpContract });
   assert.equal(networkCompleted.status, "completed", JSON.stringify(networkCompleted));
   assert.equal(JSON.parse(fs.readFileSync(networkCompleted.receipt)).status, "unverified", "raw result text never becomes a passing test");

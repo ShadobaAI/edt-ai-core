@@ -8,6 +8,19 @@ import { Worker, isMainThread, parentPort, workerData } from "node:worker_thread
 import { windows_process_identity } from "./windows_process.mjs";
 
 let modalActive = false;
+export function folder_actions_supported() {
+  return process.platform === "win32";
+}
+export function folder_error_details(error) {
+  return { message: String(error?.message || error), name: error?.name || "Error",
+    ...Object.fromEntries(["code", "errno", "syscall", "hresult", "stack"].filter(key => error?.[key] !== undefined).map(key => [key, error[key]])) };
+}
+export function folder_error_from_details(details) {
+  if (typeof details === "string") return new Error(details);
+  const error = new Error(details?.message || "Не удалось открыть системный диалог.");
+  for (const key of ["name", "code", "errno", "syscall", "hresult", "stack"]) if (details?.[key] !== undefined) error[key] = details[key];
+  return error;
+}
 export async function activate_folder_window(api, { attempts = 60, pause = ms => new Promise(done => setTimeout(done, ms)) } = {}) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     const window = api.find();
@@ -27,7 +40,7 @@ export async function activate_folder_window(api, { attempts = 60, pause = ms =>
   throw new Error("Папка открыта, но не удалось найти её окно Проводника для активации.");
 }
 export function folder_action(action, directory = "", options = {}) {
-  if (process.platform !== "win32") return Promise.reject(new Error("Системный диалог доступен только в Windows в этой версии плагина."));
+  if (!folder_actions_supported()) return Promise.reject(new Error("Системный диалог доступен только в Windows в этой версии плагина."));
   if (!["pick", "open", "save", "file"].includes(action)) return Promise.reject(new Error("Неизвестное действие с папкой."));
   if (action !== "open" && modalActive) return Promise.reject(new Error("Завершите текущий системный диалог."));
   // Reject invalid input before starting a native worker. Keep the worker-side
@@ -42,7 +55,7 @@ export function folder_action(action, directory = "", options = {}) {
   return new Promise((resolve, reject) => {
     let replied = false;
     const worker = new Worker(new URL(import.meta.url), { workerData: { settingsFolder: true, action, directory, options } });
-    worker.once("message", message => { replied = true; message.error ? reject(new Error(message.error)) : resolve(message.directory); });
+    worker.once("message", message => { replied = true; message.error ? reject(folder_error_from_details(message.error)) : resolve(message.directory); });
     worker.once("error", reject);
     worker.once("exit", () => { if (!replied) reject(new Error("Не удалось открыть окно выбора папки.")); });
     // Closing the MCP session must not leave it alive just for a modal window.
@@ -89,7 +102,7 @@ export function windows_folder_api() {
     const table = koffi.decode(object, "void *"), pointer = koffi.decode(table, slot * koffi.sizeof("void *"), "void *");
     return koffi.call(pointer, signatures.get(key), object, ...args);
   }
-  const checked = code => { if (code < 0) throw new Error(`Ошибка Windows (0x${(code >>> 0).toString(16)}).`); };
+  const checked = code => { if (code < 0) throw Object.assign(new Error(`Ошибка Windows (0x${(code >>> 0).toString(16)}).`), { hresult: code }); };
   const release = object => { if (object) method(object, 2, "uint32_t", []); };
   function shellItem(directory) {
     const item = [null]; checked(itemFromPath(directory, null, shellIID, item)); return item[0];
@@ -187,5 +200,5 @@ if (!isMainThread && workerData?.settingsFolder) {
       try { parentPort.postMessage({ directory: dialog.show() }); }
       finally { dialog.dispose(); }
     }
-  } catch (error) { parentPort.postMessage({ error: error.message }); }
+  } catch (error) { parentPort.postMessage({ error: folder_error_details(error) }); }
 }

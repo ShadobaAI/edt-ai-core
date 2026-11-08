@@ -11,6 +11,7 @@ import { McpClient } from "../scripts/mcp_client.mjs";
 import { parse } from "../scripts/common.mjs";
 import { core_version } from "../scripts/compatibility.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
+import { alive } from "../scripts/processes.mjs";
 
 test("background readiness and foreground saves retain independent operation results", async () => {
   let release;
@@ -22,6 +23,309 @@ test("background readiness and foreground saves retain independent operation res
   release(); await operations.wait(background.id, 10000);
   assert.equal(operations.status().id, background.id);
   assert.equal(operations.status().status, "completed");
+});
+
+test("daemon maintenance forwards direct backend progress to its operation", async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "progress-backend.mjs"), preload = path.join(f.base, "progress-preload.mjs");
+  fs.writeFileSync(fake, `process.stdin.resume(); process.stdin.on('end',()=>{
+    process.send({type:'progress',progress:{phase:'indexing',total:1,completed:0}});
+    setTimeout(()=>{console.log(JSON.stringify({ok:true,result:{state:'ready'}}));process.disconnect();},800);
+  });`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    const spawn=cp.spawn; cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='settings_backend.mjs'
+      ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options); syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(client); await client.initialize();
+  const authorization = { scope: f.root + "#first", effects: ["launch"], evidence: "fixture authorization" };
+  const job = (await client.call("settings.restart_index", { authorization })).structuredContent;
+  let progress;
+  for (let i = 0; i < 40 && !progress; i++) {
+    const current = (await client.call("settings.operation", { operationId: job.id, waitMs: 50 })).structuredContent;
+    progress = current.progress; if (current.status !== "running") break;
+  }
+  assert.equal(progress?.phase, "indexing");
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 5000 })).structuredContent;
+  assert.equal(done.status, "completed");
+});
+
+test("a direct backend receives the index observation response", { timeout: 15000 }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "direct-observer-backend.mjs"), preload = path.join(f.base, "direct-observer-preload.mjs");
+  fs.writeFileSync(fake, `import {randomUUID} from 'node:crypto'; let text='';
+    process.stdin.on('data', chunk=>text+=chunk); process.stdin.on('end',()=>{const input=JSON.parse(text),root=process.env.EDT_AI_PROJECT_ROOT;
+      process.on('message',message=>{if(message.type!=='index_observation_result')return; console.log(JSON.stringify({ok:true,result:{projectRoot:root,componentChecks:[],managed:[],external:{},ipcResponse:message.ok===false}}));process.disconnect();});
+      process.send({type:'index_observation',token:input._indexObserverToken,id:randomUUID(),root,config:{active_project:root},profile:{},snapshot:{}});
+    });`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs') { Object.defineProperty(process,'platform',{value:'darwin'});
+      const {IndexObserverProxy}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
+      IndexObserverProxy.prototype.observe=async()=>{throw new Error('invalid observation fixture');}; IndexObserverProxy.prototype.close=async()=>{}; }
+    const spawn=cp.spawn; cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='settings_backend.mjs'
+      ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options); syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(client); await client.initialize();
+  const job = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "completed", JSON.stringify(done)); assert.equal(done.result.ipcResponse, true);
+});
+
+test("an oversized settings backend response is stopped and not copied into the error", { timeout: 20000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "oversized-backend.mjs"), preload = path.join(f.base, "oversized-preload.mjs");
+  fs.writeFileSync(fake, `process.stdin.resume(); process.stdin.on('end',()=>{const chunk='synthetic-private-output-'+'x'.repeat(1024*1024);
+    for(let i=0;i<33;i++)process.stdout.write(chunk); process.stdout.end();});`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    const spawn=cp.spawn; cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);
+    syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(client); await client.initialize();
+  const result = await client.call("settings.read", {});
+  assert.equal(result.structuredContent.profile.status, "invalid");
+  assert.match(result.structuredContent.profile.detail, /превысил допустимый размер/);
+  const log = fs.readFileSync(path.join(f.state, "diagnostics", "events.0.jsonl"), "utf8");
+  assert.match(log, /output_limit/); assert.doesNotMatch(log + JSON.stringify(result), /synthetic-private-output/);
+});
+
+test("observation timeouts stop an unresponsive backend and its detached child", { timeout: 30000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "hung-observation-backend.mjs"), preload = path.join(f.base, "hung-observation-preload.mjs");
+  fs.writeFileSync(fake, `import fs from 'node:fs'; import path from 'node:path'; import {spawn} from 'node:child_process'; let text='';
+    process.stdin.on('data',part=>text+=part); process.stdin.on('end',()=>{const action=JSON.parse(text).action;
+      const child=spawn(process.execPath,['-e','process.on("SIGTERM",()=>{});process.send("ready");setTimeout(()=>process.exit(0),20000);setInterval(()=>{},1000)'],
+        {detached:true,stdio:['ignore','ignore','ignore','ipc'],windowsHide:true});
+      child.once('message',()=>fs.writeFileSync(path.join(${JSON.stringify(f.base)},action+'.json'),JSON.stringify([process.pid,child.pid])));
+    }); process.on('SIGTERM',()=>{}); setTimeout(()=>process.exit(0),20000); setInterval(()=>{},1000);`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const original=setTimeout;globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms===120000?3000:ms,...args);}
+    const spawn=cp.spawn; cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);
+    syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 15);
+  f.clients.push(client); await client.initialize();
+  for (const [tool, action, args] of [
+    ["settings.refresh_readiness", "refresh_readiness", { scope: f.root + "#first", component: "bsl-ls" }],
+    ["settings.probe_connections", "probe", { component: "bsl-ls" }],
+  ]) {
+    const job = (await client.call(tool, args)).structuredContent, pidFile = path.join(f.base, action + ".json");
+    for (let i = 0; i < 250 && !fs.existsSync(pidFile); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(fs.existsSync(pidFile), "the backend and detached child must both have started");
+    const pids = JSON.parse(fs.readFileSync(pidFile, "utf8")); assert.ok(pids.every(alive));
+    const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+    assert.equal(done.status, "failed", JSON.stringify(done)); assert.match(done.error, /Истекло время проверки/);
+    assert.ok(pids.every(pid => !alive(pid)), "timed-out owned processes must be gone before the operation finishes");
+  }
+});
+
+test("an observation timeout reports unconfirmed backend cleanup", { timeout: 15000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "unresponsive-supervisor.mjs"), preload = path.join(f.base, "unresponsive-supervisor-preload.mjs");
+  const pidFile = path.join(f.base, "unresponsive-supervisor.pid");
+  // This deliberately ignores stop requests and exits on its own, so the test
+  // can verify the failure path without leaving a process behind.
+  fs.writeFileSync(fake, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));
+    process.stdin.resume(); process.on('message',()=>{}); setTimeout(()=>process.exit(0),8500);`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const original=setTimeout;globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms===120000?1000:ms,...args);}
+    const spawn=cp.spawn; cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options); syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 12);
+  f.clients.push(client); await client.initialize();
+  const job = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "bsl-ls" })).structuredContent;
+  for (let i = 0; i < 200 && !fs.existsSync(pidFile); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(fs.existsSync(pidFile)); const pid = Number(fs.readFileSync(pidFile, "utf8"));
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "outcome_unknown", JSON.stringify(done)); assert.match(done.error, /Завершение ресурсов проверки не подтверждено/);
+  for (let i = 0; i < 10; i++)
+    await assert.rejects(client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "bsl-ls" }), /предыдущей проверки не подтверждено/i);
+  const other = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(other); await other.initialize();
+  for (let i = 0; i < 10; i++)
+    await assert.rejects(other.call("settings.refresh_readiness", { scope: f.root + "#first", component: "bsl-ls" }), /предыдущей проверки готовности.*заблокирована/i);
+  assert.equal(Number(fs.readFileSync(pidFile, "utf8")), pid, "retries must not start another supervisor");
+  const log = fs.readFileSync(path.join(f.state, "diagnostics", "events.0.jsonl"), "utf8");
+  assert.match(log, /backend_process_cleanup_failed/);
+  for (let i = 0; i < 500 && alive(pid); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(alive(pid), false);
+});
+
+test("a rejected observation does not block a later request from the same backend", { timeout: 12000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "retry-observer-backend.mjs"), preload = path.join(f.base, "retry-observer-preload.mjs");
+  fs.writeFileSync(fake, `import path from 'node:path'; import {randomUUID} from 'node:crypto'; let input='';
+    process.stdin.on('data',part=>input+=part); process.stdin.on('end',()=>{const token=JSON.parse(input)._indexObserverToken,root=process.env.EDT_AI_PROJECT_ROOT;
+      const first=randomUUID(),second=randomUUID(), send=(id,r)=>process.send({type:'index_observation',token,id,root:r,config:{active_project:r},profile:{},snapshot:{}});
+      let finished=false; const done=ok=>{if(finished)return;finished=true;console.log(JSON.stringify({ok:true,result:{projectRoot:root,componentChecks:[],managed:[],external:{},secondResponse:ok}}));process.disconnect();};
+      process.on('message',m=>{if(m.id===first)send(second,root);else if(m.id===second)done(m.ok===true);});
+      send(first,path.join(root,'wrong-project'));setTimeout(()=>done(false),2500).unref();});`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});IndexObserver.prototype.observe=async()=>({ok:true});}
+    const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(client); await client.initialize();
+  const job = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "completed", JSON.stringify(done)); assert.equal(done.result.secondResponse, true);
+});
+
+test("an observation cancellation waits for observer cleanup and reports its failure", { timeout: 12000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "cancel-observer-backend.mjs"), preload = path.join(f.base, "cancel-observer-preload.mjs"), started = path.join(f.base, "observer-started");
+  fs.writeFileSync(fake, `import fs from 'node:fs'; import {randomUUID} from 'node:crypto'; let input='';
+    process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>{const token=JSON.parse(input)._indexObserverToken,root=process.env.EDT_AI_PROJECT_ROOT,id=randomUUID();
+      process.on('message',m=>{if(m.id!==id)return;console.log(JSON.stringify({ok:true,result:{projectRoot:root,componentChecks:[],managed:[],external:{}}}));process.disconnect();});
+      process.send({type:'index_observation',token,id,root,config:{active_project:root},profile:{},snapshot:{}});
+      const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(started)}))return;clearInterval(poll);process.send({type:'index_observation_cancel',token,id});},20);
+      setTimeout(()=>process.exit(2),8000).unref();});`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});let fail;
+      IndexObserver.prototype.observe=()=>new Promise((_,reject)=>{fail=reject;fs.writeFileSync(${JSON.stringify(started)},'started');});
+      IndexObserver.prototype.close=()=>{fail(new Error('observation cancelled'));return new Promise((_,reject)=>setTimeout(()=>reject(new Error('forced observer cleanup failure')),1000));};}
+    const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(client); await client.initialize();
+  const job = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "outcome_unknown", JSON.stringify(done)); assert.match(done.error, /Завершение ресурсов проверки не подтверждено/);
+  const log = fs.readFileSync(path.join(f.state, "diagnostics", "events.0.jsonl"), "utf8");
+  assert.match(log, /index_observer_cleanup_failed/); assert.match(log, /backend_cleanup_unconfirmed/);
+});
+
+test("a reader cleanup failure cannot become a completed observation", { timeout: 10000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "failed-reader-backend.mjs"), preload = path.join(f.base, "failed-reader-preload.mjs");
+  fs.writeFileSync(fake, `import {randomUUID} from 'node:crypto';let text='';process.stdin.on('data',part=>text+=part);process.stdin.on('end',()=>{
+    const token=JSON.parse(text)._indexObserverToken,root=process.env.EDT_AI_PROJECT_ROOT,id=randomUUID();
+    process.on('message',m=>{if(m.id!==id)return;console.log(JSON.stringify({ok:true,result:{projectRoot:root,componentChecks:[],managed:[],external:{}}}));process.disconnect();});
+    process.send({type:'index_observation',token,id,root,config:{active_project:root},profile:{},snapshot:{}});});`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process';import path from 'node:path';import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
+      IndexObserver.prototype.observe=async function(){this.cleanupError=Object.assign(new Error('fixture reader cleanup failure'),{outcomeUnknown:true});throw this.cleanupError;};
+      IndexObserver.prototype.close=async function(){throw this.cleanupError;};}
+    const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(client); await client.initialize();
+  const job = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "outcome_unknown", JSON.stringify(done));
+  const log = fs.readFileSync(path.join(f.state, "diagnostics", "events.0.jsonl"), "utf8");
+  assert.match(log, /index_observer_cleanup_failed/); assert.match(log, /backend_cleanup_unconfirmed/);
+});
+
+test("an unresponsive observer bounds both operation and session shutdown", { timeout: 12000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "hanging-observer-backend.mjs"), preload = path.join(f.base, "hanging-observer-preload.mjs"), started = path.join(f.base, "hanging-observer-started");
+  fs.writeFileSync(fake, `import fs from 'node:fs'; import {randomUUID} from 'node:crypto'; let input='';
+    process.stdin.on('data',part=>input+=part);process.stdin.on('end',()=>{const token=JSON.parse(input)._indexObserverToken,root=process.env.EDT_AI_PROJECT_ROOT,id=randomUUID();
+      process.send({type:'index_observation',token,id,root,config:{active_project:root},profile:{},snapshot:{}});
+      const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(started)}))return;clearInterval(poll);
+        console.log(JSON.stringify({ok:true,result:{projectRoot:root,componentChecks:[],managed:[],external:{}}}));process.disconnect();},20);
+      setTimeout(()=>process.exit(2),8000).unref();});`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const original=setTimeout;globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms===12000?1200:ms,...args);
+      const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
+      IndexObserver.prototype.observe=()=>{fs.writeFileSync(${JSON.stringify(started)},'started');return new Promise(()=>{});};
+      IndexObserver.prototype.close=()=>{setInterval(()=>{},1000);return new Promise(()=>{});};}
+    const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(client); await client.initialize();
+  const job = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "outcome_unknown", JSON.stringify(done)); assert.match(done.error, /Завершение ресурсов проверки не подтверждено/);
+  await client.close({ grace: 4000 });
+  assert.equal(client.process.exitCode, 1, "the settings supervisor must report failed session cleanup");
+  const log = fs.readFileSync(path.join(f.state, "diagnostics", "events.0.jsonl"), "utf8");
+  assert.match(log, /index_observer_cleanup_failed/); assert.match(log, /session_cleanup_failed|session_cleanup_timeout/);
+});
+
+test("switching projects bounds observer cleanup and keeps the reader barrier", { timeout: 12000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t); f.save();
+  const other = path.join(f.base, "Other"); fs.mkdirSync(other);
+  const fake = path.join(f.base, "project-switch-backend.mjs"), preload = path.join(f.base, "project-switch-preload.mjs");
+  fs.writeFileSync(fake, `import {randomUUID} from 'node:crypto';let text='';process.stdin.on('data',part=>text+=part);process.stdin.on('end',()=>{
+    const input=JSON.parse(text),root=process.env.EDT_AI_PROJECT_ROOT;
+    if(input.action==='read'){console.log(JSON.stringify({ok:true,result:{values:{projectRoot:root},profile:{status:'loaded'}}}));return;}
+    const token=input._indexObserverToken,id=randomUUID();process.on('message',m=>{if(m.id!==id)return;
+      console.log(JSON.stringify({ok:true,result:{projectRoot:root,componentChecks:[],managed:[],external:{}}}));process.disconnect();});
+    process.send({type:'index_observation',token,id,root,config:{active_project:root},profile:{},snapshot:{}});});`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process';import path from 'node:path';import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const original=setTimeout;globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms===12000?1200:ms,...args);
+      const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
+      IndexObserver.prototype.observe=async()=>({ok:true});IndexObserver.prototype.close=()=>{setInterval(()=>{},1000);return new Promise(()=>{});};}
+    const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);syncBuiltinESMExports();`);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, EDT_AI_PROJECT_ROOT: "", NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  const send = client.send.bind(client); let fallbackRoots = true;
+  client.send = message => send(fallbackRoots && message.result?.roots ? { id: message.id, error: { code: -32601, message: "fixture" } } : message);
+  f.clients.push(client); await client.initialize();
+  const job = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "completed", JSON.stringify(done));
+  fallbackRoots = false; client.roots = []; client.notify("notifications/roots/list_changed");
+  await assert.rejects(client.call("settings.inspect", { projectRoot: other }), /Завершение предыдущего читателя индекса не подтверждено/);
+  await assert.rejects(client.call("settings.inspect", { projectRoot: other }), /Завершение предыдущего читателя индекса не подтверждено/);
+  await client.close({ grace: 4000 }); assert.equal(client.process.exitCode, 1);
+});
+
+async function foregroundCloseFixture(t) {
+  const f = fixture(t); f.save();
+  const fake = path.join(f.base, "foreground-backend.mjs"), preload = path.join(f.base, "foreground-preload.mjs"), closing = path.join(f.base, "foreground-closing");
+  fs.writeFileSync(fake, `process.stdin.resume();process.stdin.on('end',()=>console.log(JSON.stringify({ok:true,result:{projectRoot:process.env.EDT_AI_PROJECT_ROOT,componentChecks:[],managed:[],external:{}}})));`);
+  fs.writeFileSync(preload, `import cp from 'node:child_process';import path from 'node:path';import fs from 'node:fs';import net from 'node:net';import {syncBuiltinESMExports} from 'node:module';
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const original=setTimeout;globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms===5000?500:ms,...args);
+      const close=net.Server.prototype.close;net.Server.prototype.close=function(callback){const address=String(this.address());
+        if(address.includes('1c-ai-core-reader-')&&!address.includes('-observe')){fs.writeFileSync(${JSON.stringify(closing)},'closing');return close.call(this,()=>{});}return close.call(this,callback);};}
+    const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
+      ? spawn(command,['--import',import.meta.url,...args],options)
+      : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);syncBuiltinESMExports();`);
+  const env = { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href };
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root, env, 10);
+  f.clients.push(client); await client.initialize();
+  return { f, client, env, closing };
+}
+
+test("an unconfirmed foreground lease blocks checks in this and another session", { timeout: 10000, skip: process.platform === "darwin" }, async t => {
+  const { f, client, env } = await foregroundCloseFixture(t);
+  const job = (await client.call("settings.probe_connections", { component: "v8std" })).structuredContent;
+  const done = (await client.call("settings.operation", { operationId: job.id, waitMs: 10000 })).structuredContent;
+  assert.equal(done.status, "outcome_unknown", JSON.stringify(done));
+  await assert.rejects(client.call("settings.probe_connections", { component: "v8std" }), /предыдущей проверки не подтверждено/i);
+  const other = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root, env, 10);
+  f.clients.push(other); await other.initialize();
+  await assert.rejects(other.call("settings.refresh_readiness", { scope: f.root + "#first", component: "bsl-ls" }), /предыдущей проверки готовности.*заблокирована/i);
+  const log = fs.readFileSync(path.join(f.state, "diagnostics", "events.0.jsonl"), "utf8"); assert.match(log, /operation_cleanup_failed/);
+  await client.close({ grace: 4000 }); assert.equal(client.process.exitCode, 1);
+});
+
+test("session shutdown waits for an active foreground lease and reports cleanup failure", { timeout: 10000, skip: process.platform === "darwin" }, async t => {
+  const { client, closing } = await foregroundCloseFixture(t);
+  await client.call("settings.probe_connections", { component: "v8std" });
+  for (let i = 0; i < 300 && !fs.existsSync(closing); i++) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(fs.existsSync(closing), "foreground cleanup must be in progress");
+  await client.close({ grace: 4000 }); assert.equal(client.process.exitCode, 1);
 });
 import { dump, sleep } from "../scripts/common.mjs";
 import { grant_preparation } from "../scripts/components.mjs";

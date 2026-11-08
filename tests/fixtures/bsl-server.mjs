@@ -51,5 +51,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   }
 }).on("close", () => {
   if (process.env.BSL_TEST_HANG) setInterval(() => {}, 1000);
-  else process.exit(0);
+  else {
+    if (process.env.BSL_TEST_PID_FILE) fs.writeFileSync(process.env.BSL_TEST_PID_FILE + ".closed", "closed");
+    process.exit(0);
+  }
 });

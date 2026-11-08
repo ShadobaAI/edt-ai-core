@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 // Verified wire format: Vanessa Automation Single 1.2.043.45 / MCP 1.31.
 // Patterns come from live get_environment_data, get_vanessa_automation_state,
 // manage_test_client_profiles and get_editor_state responses captured 2026-10-15.
@@ -119,10 +121,13 @@ export function parseProfiles(result) {
   const profiles = [];
   for (const section of sections) {
     const fields = propertyTable(section[2]);
-    if (!fields || fields["Имя"] !== section[1] || typeof fields["Дополнительные параметры"] !== "string") return null;
+    if (!fields || fields["Имя"] !== section[1] || typeof fields["Синоним"] !== "string" || typeof fields["Дополнительные параметры"] !== "string") return null;
     const infobase = parseInfobase(fields["Строка подключения"]);
     if (!infobase) return null;
-    profiles.push({ name: section[1], infobase, additionalParameters: fields["Дополнительные параметры"],
+    // Keep the exact connection settings comparable without returning the
+    // username/password in the parsed structure.
+    const connectionFingerprint = createHash("sha256").update(fields["Строка подключения"]).digest("hex");
+    profiles.push({ name: section[1], synonym: fields["Синоним"], infobase, connectionFingerprint, additionalParameters: fields["Дополнительные параметры"],
       connected: /^❌ не подключ[её]н$/.test(fields["Статус"]) ? false : /^✅ подключ[её]н$/.test(fields["Статус"]) ? true : null,
       computerName: fields["Имя компьютера"], pid: /^(?:\d+|\d{1,3}(?:\u00a0\d{3})+)$/.test(fields.PID ?? "") ? Number(fields.PID.replaceAll("\u00a0", "")) : null });
   }
@@ -165,7 +170,7 @@ export function parseClientIdentity(command) {
   // infobase through mechanisms that this adapter cannot resolve safely.
   if (!tokens || tokens.some(token => /^\/@|^\/(?:IBName|WS)/i.test(token)) ||
       !/(?:^|[\\/])1cv8c?\.exe$/i.test(tokens[0] ?? "") || !tokens.some(token => /^\/TESTCLIENT$/i.test(token))) return null;
-  const bases = [], users = [];
+  const bases = []; let hasUser = false;
   for (let i = 1; i < tokens.length; i++) {
     const token = tokens[i];
     if (/^\/IBConnectionString$/i.test(token)) bases.push(parseInfobase(tokens[++i]));
@@ -173,10 +178,14 @@ export function parseClientIdentity(command) {
       const value = token.length === 2 ? tokens[++i] : token.slice(2), split = value?.lastIndexOf("\\") ?? -1;
       bases.push(split > 0 && split < value.length - 1 ? { type: "server", server: value.slice(0, split), database: value.slice(split + 1) } : null);
     } else if (/^\/F/i.test(token)) bases.push({ type: "file", path: token.length === 2 ? tokens[++i] : token.slice(2) });
-    else if (/^\/N/i.test(token)) users.push(token.length === 2 ? tokens[++i] : token.slice(2));
+    else if (/^\/N/i.test(token)) {
+      const user = token.length === 2 ? tokens[++i] : token.slice(2);
+      if (hasUser || !user || /^[/-]/.test(user)) return null;
+      hasUser = true;
+    }
   }
-  if (bases.length !== 1 || !bases[0] || users.length > 1 || users.some(user => !user || /^[/-]/.test(user))) return null;
-  return { infobase: bases[0], user: users[0] ?? null };
+  if (bases.length !== 1 || !bases[0]) return null;
+  return { infobase: bases[0] };
 }
 export function parseClientLaunch(command) {
   const tokens = platformTokens(command), identity = parseClientIdentity(command);

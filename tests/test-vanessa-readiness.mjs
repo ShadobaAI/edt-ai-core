@@ -4,10 +4,9 @@ import path from "node:path";
 import test from "node:test";
 import { fixture } from "./helpers.mjs";
 import * as wire from "./test-vanessa-ui-fixtures.mjs";
-import { inspectSession, requiredTools, runtimeContract, setupSession } from "../vanessa/readiness.mjs";
+import { inspectSession, requiredTools, runtimeContract, setupSession, connectSession } from "../vanessa/readiness.mjs";
 import { parseClientIdentity, parseClientLaunch, parseProcesses, parseProfiles } from "../vanessa/runtime-contract.mjs";
 import { runFeature } from "../vanessa/run.mjs";
-import { start } from "../vanessa/runtime.mjs";
 
 function runtime(t, { fileBase = false } = {}) {
   const f = fixture(t), basePath = path.join(f.root, "database"), alias = path.join(f.root, "database-alias");
@@ -23,7 +22,7 @@ function runtime(t, { fileBase = false } = {}) {
   const profileText = wire.profiles.content[0].text.replaceAll("ExistingClient", "TestClient")
     .replace('/N"FixtureUser"', '/iTaxi /N"FixtureUser"').replace("| PID | 0 |", "| PID | 19968 |")
     .replace("❌ не подключен", "✅ подключен");
-  const selectedProfile = fileBase ? profileText.replace('Srvr="localhost";Ref="ui-demo";', `File="${basePath}";`) : profileText;
+  let selectedProfile = fileBase ? profileText.replace('Srvr="localhost";Ref="ui-demo";', `File="${basePath}";`) : profileText;
   const otherProfile = selectedProfile.replaceAll("TestClient", "OtherClient").replaceAll("FixtureUser", "OtherUser").replace("| PID | 19968 |", "| PID | 20001 |");
   let processes = wire.clientProcess.content[0].text.replace("Найдено по отбору: 1 из 2. Показано: 1.", "Найдено: 2. Показано: 2.").replace("Отбор: 19968.\n", "");
   if (fileBase) processes = processes.replace('/S"localhost\\ui-demo"', `/F"${basePath}"`);
@@ -54,7 +53,7 @@ function runtime(t, { fileBase = false } = {}) {
   const feature = path.join(f.root, "example.feature"), content = "Feature: Example\nScenario: Example\n  Given example\n";
   fs.writeFileSync(feature, content);
   return { profile, tools, client, calls, requests, contract, feature, alias, second,
-    changeProcesses: fn => { processes = fn(processes); }, switchClient: () => { switched = true; },
+    changeProcesses: fn => { processes = fn(processes); }, changeProfile: fn => { selectedProfile = fn(selectedProfile); }, switchClient: () => { switched = true; },
     onProcess: fn => { onProcess = fn; }, onEditorContent: fn => { onEditorContent = fn; },
     setScenario: value => { editorScenario = value; }, setState: value => { stateOverride = value; },
     changeIdentity: value => { created = value; }, changeBinding: value => { binding = value; } };
@@ -79,7 +78,7 @@ test("an unrelated client need not use the selected client's launch options", as
   const f = runtime(t);
   f.changeProcesses(text => text.replace(" -TPort 48001 /iTaxi", " /iTDI"));
   assert.equal((await inspectSession(f.profile, f.client, f.tools, f.contract)).status, "ready");
-  assert.equal(parseClientIdentity('"C:\\App\\1cv8c.exe" ENTERPRISE /S"localhost\\other" /TESTCLIENT /iTDI /N"Other"').user, "Other");
+  assert.deepEqual(parseClientIdentity('"C:\\App\\1cv8c.exe" ENTERPRISE /S"localhost\\other" /TESTCLIENT /iTDI /N"Other"'), {infobase:{type:"server",server:"localhost",database:"other"}});
   assert.equal(parseClientLaunch('"C:\\App\\1cv8c.exe" ENTERPRISE /S"localhost\\other" /TESTCLIENT /iTaxi /N"Other"').testPort, 1538);
   assert.equal(parseClientLaunch('"C:\\App\\1cv8c.exe" ENTERPRISE /S"localhost\\other" /TESTCLIENT -TPort48001 /iTaxi /N"Other"').testPort, 48001);
   assert.equal(parseClientLaunch('"C:\\App\\1cv8c.exe" ENTERPRISE /S"localhost\\other" /TESTCLIENT -TPortbad /iTaxi /N"Other"'), null);
@@ -182,71 +181,91 @@ test("missing or replaced process or TCP proof blocks mutation", async t => {
   assert.equal(result.reason,"manager_test_client_connection_unverified");assert.equal(f.calls.includes("open_feature_file"),false);
 });
 
-test("a launch user does not prove the authenticated user or authorize a scenario", async t => {
-  const f=runtime(t),profile={...f.profile,client:{...f.profile.client,user:"FixtureUser"}};
-  const result=await runFeature(profile,f.client,f.tools,{feature:f.feature,scenario:"Example"},f.contract);
-  assert.equal(result.stage,"readiness");assert.equal(result.reason,"actual_test_client_user_unverified");
-  assert.equal(f.calls.includes("open_feature_file"),false);assert.equal(f.calls.includes("run_scenario"),false);
+test("Vanessa-owned credentials are never included in readiness evidence", async t => {
+  const f=runtime(t), user="private-fixture-user", password="private-fixture-password";
+  f.changeProfile(text=>text.replace('/iTaxi /N"FixtureUser"',`/iTaxi /N"${user}" /P"${password}"`)
+    .replace('Ref="ui-demo";',`Ref="ui-demo";Usr="${user}";Pwd="${password}";`)
+    .replace("| Синоним |  |", "| Синоним |  |\n| Дополнительное секретное поле | opaque-secret-value |"));
+  f.changeBinding(null);
+  const result=await inspectSession(f.profile,f.client,f.tools,f.contract),output=JSON.stringify(result);
+  assert.equal(result.reason,"manager_test_client_connection_unverified");
+  assert.equal(output.includes(user),false);assert.equal(output.includes(password),false);assert.equal(output.includes("opaque-secret-value"),false);
+  f.changeProfile(text=>text.replace(`Usr="${user}";Pwd="${password}";`,`Usr=${user} secret-name;Pwd=${password} secret-words;`));
+  const unquoted=JSON.stringify(await inspectSession(f.profile,f.client,f.tools,f.contract));
+  for(const value of [user,password,"secret-name","secret-words"])assert.equal(unquoted.includes(value),false);
 });
 
-test("an unverified configured client user blocks setup before profile creation or connection", async t => {
-  const f=runtime(t),profile={...f.profile,client:{...f.profile.client,user:"FixtureUser"}};
-  assert.equal((await start(profile)).reason,"actual_test_client_user_unverified");
-  const mutations=[];f.setState(wire.state);
-  const client={request:async(method,args)=>{
-    if(args.name==="manage_test_client_profiles" && args.arguments.action==="get_list")return wire.emptyProfiles;
-    if(args.name==="manage_test_client_profiles" || args.name==="manage_test_client")mutations.push(args);
-    return f.client.request(method,args);
-  }};
-  const result=await setupSession(profile,client,f.tools,f.contract);
-  assert.equal(result.reason,"actual_test_client_user_unverified");assert.deepEqual(mutations,[]);
+test("a profile-list tool error never exposes its arbitrary response", async t => {
+  const f=runtime(t), sentinel="opaque-private-value";
+  const client={request:async(method,args)=>args.name==="manage_test_client_profiles"
+    ?{isError:true,content:[{type:"text",text:sentinel}]}:f.client.request(method,args)};
+  await assert.rejects(inspectSession(f.profile,client,f.tools,f.contract),error=>{
+    assert.equal(error.code,"tool_error");assert.equal(JSON.stringify(error.detail).includes(sentinel),false);return true;
+  });
 });
 
-test("an unverified client user blocks the computer-name repair mutation", async t => {
-  const f=runtime(t),profile={...f.profile,client:{...f.profile.client,user:"FixtureUser"}};
-  const mutations=[];f.setState(wire.state);
-  const client={request:async(method,args)=>{
-    if(args.name==="manage_test_client_profiles" && args.arguments.action!=="get_list")mutations.push(args);
-    const result=await f.client.request(method,args);
-    return args.name==="manage_test_client_profiles" && args.arguments.action==="get_list"
-      ?wire.response(result.content[0].text.replace("| Имя компьютера | localhost |","| Имя компьютера | stalehost |")):result;
-  }};
-  const result=await setupSession(profile,client,f.tools,f.contract);
-  assert.equal(result.reason,"actual_test_client_user_unverified");assert.deepEqual(mutations,[]);
+test("a connection tool error never exposes its arbitrary response", async t => {
+  const f=runtime(t), sentinel="opaque-connect-secret";f.setState(wire.state);
+  f.changeProfile(text=>text.replace("✅ подключен","❌ не подключен"));
+  const client={request:async(method,args)=>args.name==="manage_test_client"
+    ?{isError:true,content:[{type:"text",text:sentinel}]}:f.client.request(method,args)};
+  await assert.rejects(connectSession(f.profile,client,f.tools,f.contract),error=>{
+    assert.equal(error.code,"tool_error");assert.equal(JSON.stringify(error.detail).includes(sentinel),false);return true;
+  });
 });
 
-test("an unverified manager user blocks launch and all dependent mutations", async t => {
-  const f=runtime(t),profile={...f.profile,manager:{...f.profile.manager,user:"ManagerUser"}};
-  assert.equal((await start(profile)).reason,"manager_session_user_unverified");
-  assert.equal((await setupSession(profile,f.client,f.tools,f.contract)).reason,"manager_session_user_unverified");
-  assert.equal((await runFeature(profile,f.client,f.tools,{feature:f.feature,scenario:"Example"},f.contract)).reason,"manager_session_user_unverified");
-  assert.equal(f.requests.some(item=>item.name==="manage_test_client" || item.name==="manage_test_client_profiles" && item.arguments.action!=="get_list"),false);
-  assert.equal(f.calls.includes("open_feature_file"),false);
+test("changing Vanessa connection credentials during discovery invalidates readiness", async t => {
+  const f=runtime(t);
+  f.changeProfile(text=>text.replace('Ref="ui-demo";','Ref="ui-demo";Usr="example";Pwd="before";'));
+  f.onProcess(()=>f.changeProfile(text=>text.replace('Pwd="before"','Pwd="after"')));
+  const result=await inspectSession(f.profile,f.client,f.tools,f.contract);
+  assert.equal(result.reason,"session_changed_during_readiness");assert.equal(JSON.stringify(result).includes('before'),false);assert.equal(JSON.stringify(result).includes('after'),false);
 });
 
-test("launch also blocks an unverified primary user when another client is selected", async t => {
-  const f=runtime(t),profile={...f.profile,client:{...f.profile.client,name:"Other"},ownerClient:{...f.profile.client,user:"PrimaryUser"}};
-  assert.equal((await start(profile)).reason,"actual_test_client_user_unverified");
+test("changing a Vanessa profile during the handoff blocks the first mutation", async t => {
+  const f=runtime(t);
+  f.changeProfile(text=>text.replace('Ref="ui-demo";','Ref="ui-demo";Usr="old-login";Pwd="old-secret";'));
+  const result=await runFeature(f.profile,f.client,f.tools,{feature:f.feature,scenario:"Example",
+    beforeOpen:()=>f.changeProfile(text=>text.replace('Usr="old-login";Pwd="old-secret";','Usr="new-login";Pwd="new-secret";'))},f.contract);
+  assert.equal(result.reason,"client_binding_changed_or_unverified");assert.equal(f.calls.includes("open_feature_file"),false);
+  for(const value of ["old-login","old-secret","new-login","new-secret"])assert.equal(JSON.stringify(result).includes(value),false);
 });
 
-test("userEnv cannot authorize a launch or connection when its value changes", async t => {
-  const f=runtime(t),key="VANESSA_READINESS_FIXTURE_USER",before=process.env[key];
-  t.after(()=>{if(before===undefined)delete process.env[key];else process.env[key]=before;});
-  const manager={...f.profile,manager:{...f.profile.manager,userEnv:key}};
-  const client={...f.profile,client:{...f.profile.client,userEnv:key}};
-  f.setState(wire.state);const mutations=[];
-  const transport={request:async(method,args)=>{
-    if(args.name==="manage_test_client_profiles"&&args.arguments.action==="get_list")return wire.emptyProfiles;
-    if(args.name==="manage_test_client_profiles"||args.name==="manage_test_client")mutations.push(args);
-    return f.client.request(method,args);
-  }};
-  for(const value of ["FirstUser","SecondUser"]){
-    process.env[key]=value;
-    assert.equal((await start(manager)).reason,"manager_session_user_unverified");
-    assert.equal((await start(client)).reason,"actual_test_client_user_unverified");
-    assert.equal((await setupSession(client,transport,f.tools,f.contract)).reason,"actual_test_client_user_unverified");
+test("ambiguous Vanessa profile names or synonyms block connection before mutation", async t => {
+  for(const [otherName, synonym] of [["OtherClient","tEsTcLiEnT"],["TESTCLIENT",""]]){
+    const f=runtime(t);f.setState(wire.state);
+    const extra=wire.profiles.content[0].text.replaceAll("ExistingClient",otherName)
+      .replace("| Синоним |  |",`| Синоним | ${synonym} |`).split("## Профиль: ")[1];
+    f.changeProfile(text=>text.replace("Найдено профилей: 1","Найдено профилей: 2")+"\n## Профиль: "+extra);
+    assert.equal((await connectSession(f.profile,f.client,f.tools,f.contract)).reason,"client_profile_mismatch_or_ambiguous");
+    assert.equal(f.calls.includes("manage_test_client"),false);
   }
-  assert.deepEqual(mutations,[]);
+});
+
+test("a conflicting or unknown profile connection status blocks connect", async t => {
+  for(const status of ["✅ подключен","❓ неизвестно"]){
+    const f=runtime(t);f.setState(wire.state);
+    f.changeProfile(text=>text.replace("✅ подключен",status));
+    const result=await connectSession(f.profile,f.client,f.tools,f.contract);
+    assert.equal(result.reason,"client_connection_state_conflict");assert.equal(f.calls.includes("manage_test_client"),false);
+  }
+});
+
+test("a profile or connection changed before connect blocks the mutation", async t => {
+  for(const change of [
+    f=>f.changeProfile(text=>text.replace('Ref="ui-demo";','Ref="other-demo";')),
+    f=>f.changeProfile(text=>text.replace('/N"FixtureUser"','/N"DifferentUser"')),
+    f=>f.setState(wire.connectedState),
+  ]){
+    const f=runtime(t);f.setState(wire.state);f.changeProfile(text=>text.replace("✅ подключен","❌ не подключен"));
+    const client={request:async(method,args)=>{
+      const result=await f.client.request(method,args);
+      if(args.name==="get_editor_state" && !args.arguments.includeContent)change(f);
+      return result;
+    }};
+    const result=await connectSession(f.profile,client,f.tools,f.contract);
+    assert.equal(result.reason,"client_binding_changed_or_unverified");assert.equal(f.calls.includes("manage_test_client"),false);
+  }
 });
 
 test("an abbreviated editor state after selection blocks scenario execution", async t => {
@@ -256,24 +275,29 @@ test("an abbreviated editor state after selection blocks scenario execution", as
   assert.equal(result.reason,"session_state_response_contract_unverified");assert.equal(f.calls.includes("run_scenario"),false);
 });
 
-test("setup recognizes upstream empty profiles and creates the first client", async t => {
+test("setup requires a profile configured in Vanessa before connecting", async t => {
   const f=runtime(t);let created=false,connected=false;const mutations=[];
   assert.deepEqual(parseProfiles(wire.emptyProfiles),[]);
   assert.equal(parseProfiles(wire.response(wire.emptyProfiles.content[0].text+"\n## Профиль: unexpected")),null);
   assert.equal(parseProfiles(wire.response("# Список профилей клиентов тестирования\n\nПрофили не настроены.")),null);
   const client={request:async(method,args)=>{
     if(args.name==="manage_test_client_profiles"){
-      if(args.arguments.action==="add"){mutations.push("add");created=true;return wire.response("created");}
+      if(args.arguments.action!=="get_list"){mutations.push(args);return wire.response("unexpected");}
       if(!created)return wire.emptyProfiles;
       const selected=wire.profiles.content[0].text.replaceAll("ExistingClient","TestClient")
-        .replace('/N"FixtureUser"','/iTaxi /N"FixtureUser"').replace("| PID | 0 |","| PID | 19968 |")
+        .replace('/N"FixtureUser"','/iTaxi /N"FixtureUser" /P"FixturePassword"').replace("| PID | 0 |","| PID | 19968 |")
         .replace("❌ не подключен",connected?"✅ подключен":"❌ не подключен");
       return wire.response(selected);
     }
     if(args.name==="get_vanessa_automation_state")return connected?wire.connectedState:wire.state;
-    if(args.name==="manage_test_client"){mutations.push("connect");connected=true;return wire.response("connected");}
+    if(args.name==="manage_test_client"){mutations.push(args.arguments);connected=true;return wire.response("connected");}
     return f.client.request(method,args);
   }};
+  const missing=await setupSession(f.profile,client,f.tools,f.contract);
+  assert.equal(missing.reason,"client_profile_not_configured");assert.deepEqual(mutations,[]);assert.match(missing.nextAction,/логин и пароль/);
+  created=true;
   const result=await setupSession(f.profile,client,f.tools,f.contract);
-  assert.equal(result.status,"ready");assert.deepEqual(mutations,["add","connect"]);
+  assert.equal(result.status,"ready");assert.equal(result.authenticatedUser,"unverified");
+  assert.deepEqual(mutations,[{action:"connect",profileName:"TestClient"}]);
+  assert.equal(JSON.stringify(result).includes("FixturePassword"),false);
 });

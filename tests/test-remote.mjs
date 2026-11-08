@@ -18,6 +18,7 @@ import {
   tool_header_fields,
 } from "../scripts/remote_client.mjs";
 import { all_pages } from "../scripts/mcp_pages.mjs";
+import { wait_with_abort } from "../scripts/mcp_codec.mjs";
 
 async function endpoint(t, handler) {
   const calls = [],
@@ -156,6 +157,21 @@ test("external code-index preparation checks scoped health without installing a 
   await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), error =>
     error.remote === true && /Проверка состояния code-index не удалась.*текст внешней ошибки скрыт/.test(error.message) && !error.message.includes("health unavailable"));
 });
+
+test("a component observation bounds the whole multi-request MCP probe", async t => {
+  const f = fixture(t), config = settings();
+  const e = await endpoint(t, async ({ res, message, reply }) => {
+    if (message.method === "server/discover") { await sleep(600); return reply({ supportedVersions: ["2026-07-28"], serverInfo: { name: "slow", version: "1" } }); }
+    if (message.method === "tools/list") { await sleep(600); return reply({ tools: [{ name: "health", inputSchema: { type: "object" } }] }); }
+    if (message.method?.startsWith("notifications/")) return res.writeHead(202).end();
+    return reply({});
+  });
+  Object.assign(config.mcp.managed["code-index"], { mode: "external", url: e.url, timeout_seconds: 5 });
+  const started = Date.now();
+  await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5, false, null, false, 1), /общее время проверки/);
+  assert.ok(Date.now() - started < 4000);
+  assert.ok(e.calls.some(call => call.message.method === "tools/list"));
+});
 test("environment credential references apply to authenticated calls and session cleanup",async t=>{
   const previous=process.env.CORE_TEST_AUTH_HEADER;process.env.CORE_TEST_AUTH_HEADER="Bearer fixture";
   t.after(()=>{if(previous===undefined)delete process.env.CORE_TEST_AUTH_HEADER;else process.env.CORE_TEST_AUTH_HEADER=previous;});
@@ -267,8 +283,104 @@ test("a closed client bounds the wait for an unanswered initialize", async t => 
   const pending = client.request("initialize", {}).then(() => null, error => error);
   await entered.promise;
   client.timeout = 250;
-  await client.close();
+  await assert.rejects(client.close(), error => error.code === "MCP_CLEANUP_UNKNOWN" && error.outcomeUnknown === true);
   assert.equal((await pending)?.outcomeUnknown, true);
+  assert.equal(client.activeRequests.size, 0);
+});
+
+test("an initialize that times out before close retains its unknown cleanup outcome", async t => {
+  const e = await endpoint(t, () => {}), client = new RemoteMcp(e.url, 1);
+  client.timeout = 150;
+  await assert.rejects(client.request("initialize", {}));
+  assert.equal(client.activeRequests.size, 0);
+  await assert.rejects(client.close(), error => error.code === "MCP_CLEANUP_UNKNOWN" && error.outcomeUnknown === true);
+  await assert.rejects(client.initialize(), error => error.code === "MCP_CLEANUP_UNKNOWN");
+});
+
+test("concurrent close callers await the same remote session cleanup", async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const e = await endpoint(t, async ({ req, res }) => {
+    assert.equal(req.method, "DELETE"); entered.resolve(); await release.promise; res.writeHead(204).end();
+  });
+  const client = new RemoteMcp(e.url, 3); client.session = "owned-session";
+  const first = client.close(), second = client.close();
+  assert.equal(first, second);
+  await entered.promise; let done = false; second.then(() => { done = true; });
+  await sleep(30); assert.equal(done, false); release.resolve();
+  await Promise.all([first, second]); assert.equal(e.calls.filter(call => call.method === "DELETE").length, 1);
+});
+
+test("closing a session rejects new requests until a fresh initialize", async t => {
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const e = await endpoint(t, async ({ req, res, message, reply, error }) => {
+    if (req.method === "DELETE") { entered.resolve(); await release.promise; return res.writeHead(204).end(); }
+    if (message.method === "server/discover") return reply({ supportedVersions: ["2026-07-28"], serverInfo: { name: "fixture" } });
+    return error(-32601);
+  });
+  const client = new RemoteMcp(e.url, 3); client.session = "owned-session";
+  const closing = client.close(); await entered.promise;
+  await assert.rejects(client.request("tools/list"), /connection is closed/);
+  release.resolve(); await closing;
+  await assert.rejects(client.request("tools/list"), /connection is closed/);
+  assert.equal(e.calls.length, 1); assert.equal(client.activeRequests.size, 0);
+  await client.initialize(); assert.equal(e.calls.length, 2);
+  await client.close();
+});
+
+for (const status of [404, 405, 500]) test(`unconfirmed remote session cleanup is reported and retained: HTTP ${status}`, async t => {
+  const e = await endpoint(t, ({ res }) => res.writeHead(status).end());
+  const client = new RemoteMcp(e.url, 3); client.session = "secret-session-fixture";
+  const first = client.close();
+  await assert.rejects(first, error => error.code === "MCP_CLEANUP_UNKNOWN" && error.outcomeUnknown && error.status === status && !error.message.includes("secret-session-fixture"));
+  await assert.rejects(client.close(), error => error.code === "MCP_CLEANUP_UNKNOWN");
+  assert.equal(e.calls.length, 1, "an uncertain cleanup is not silently retried");
+});
+
+test("a timed out remote session cleanup reports an unknown outcome", async t => {
+  const closed = Promise.withResolvers();
+  const e = await endpoint(t, ({ res }) => { res.on("close", () => closed.resolve()); });
+  const client = new RemoteMcp(e.url, 1); client.timeout = 200; client.session = "owned-session";
+  await assert.rejects(client.close(), error => error.code === "MCP_CLEANUP_UNKNOWN" && error.outcomeUnknown);
+  await Promise.race([closed.promise, sleep(2000).then(() => { throw new Error("DELETE connection remained open"); })]);
+});
+
+test("closing cancels a hanging server callback without a late response", async t => {
+  const entered = Promise.withResolvers(), answer = Promise.withResolvers(), closed = Promise.withResolvers();
+  const e = await endpoint(t, ({ res, message }) => {
+    res.on("close", () => closed.resolve());
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ jsonrpc: "2.0", id: "server-call", method: "sampling/createMessage" })}\n\n`);
+  });
+  let callbackSignal;
+  const client = new RemoteMcp(e.url, 2, { onRequest: (_message, { signal }) => { callbackSignal = signal; entered.resolve(); return answer.promise; } });
+  const request = client.request("tools/call", { name: "pending" }).then(() => null, error => error);
+  await entered.promise; await client.close(); assert.equal(callbackSignal.aborted, true);
+  assert.equal((await request)?.outcomeUnknown, true); assert.equal(client.activeRequests.size, 0);
+  answer.resolve({ text: "too late" }); await sleep(30);
+  assert.equal(e.calls.length, 1, "a late host answer must not start a POST");
+  await Promise.race([closed.promise, sleep(2000).then(() => { throw new Error("SSE connection remained open"); })]);
+});
+
+test("an aborted callback is not started and a late rejection is observed", async () => {
+  const aborted = new AbortController(); aborted.abort(new Error("closed")); let started = false;
+  await assert.rejects(wait_with_abort(() => { started = true; return Promise.reject(new Error("late")); }, aborted.signal), /closed/);
+  assert.equal(started, false);
+  const controller = new AbortController(), pending = Promise.withResolvers();
+  const waiting = wait_with_abort(() => { started = true; return pending.promise; }, controller.signal);
+  await Promise.resolve(); assert.equal(started, true);
+  controller.abort(new Error("closed")); await assert.rejects(waiting, /closed/);
+  pending.reject(new Error("late callback failure"));
+  await new Promise(resolve => setImmediate(resolve));
+});
+
+test("an unanswered 202 response closes its real HTTP stream", async t => {
+  const closed = Promise.withResolvers();
+  const e = await endpoint(t, ({ res }) => { res.on("close", () => closed.resolve()); res.writeHead(202).write("pending"); });
+  const client = new RemoteMcp(e.url, 3);
+  await assert.rejects(client.request("tools/list"), /no result/); await client.close();
+  await Promise.race([closed.promise, sleep(2000).then(() => { throw new Error("202 response stream remained open"); })]);
   assert.equal(client.activeRequests.size, 0);
 });
 

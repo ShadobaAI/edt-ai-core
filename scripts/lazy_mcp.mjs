@@ -43,7 +43,6 @@ const state = state_root(),
     process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");
 const diagnostic = create_diagnostic_logger(component, state);
 const workflowKnowledge = new WorkflowKnowledge();
-diagnostic.event("session_started", { version: core_version, projectRoot: process.env.EDT_AI_PROJECT_ROOT || null, node: process.version });
 process.on("uncaughtExceptionMonitor", error => diagnostic.event("uncaught_exception", { error }, "error"));
 let client = null,
   currentRevision = null,
@@ -65,6 +64,8 @@ let selected = selection.directory,
   requestInitialRoots = false;
 let lastError = "Выберите каталог проекта с .ai/project.yaml.";
 let lastFailure = null;
+let lastHostToolsObservation = null;
+if (selected) diagnostic.event("session_started", { version: core_version, projectRoot: selected, node: process.version });
 let rootsReady = Promise.resolve(), finishRoots = null;
 let closed = false;
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -161,13 +162,23 @@ async function refreshNotifiedTools() {
 let bindingPromise = null, generation = 0, hostCapabilities = {}, callbackSequence = 0;
 const callbacks = new Map(), requests = new Map();
 const requestKey = id => typeof id + ":" + id;
-function callback(message) {
+function callback(message, { signal } = {}) {
   if (closed) return Promise.reject(new Error("Host disconnected"));
+  if (signal?.aborted) return Promise.reject(signal.reason);
   const id = "core-callback-" + ++callbackSequence;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { callbacks.delete(id); reject(new Error("Host callback timed out")); }, 60000);
-    callbacks.set(id, reply => { clearTimeout(timer); reply.error ? reject(Object.assign(new Error(reply.error.message), { code: reply.error.code })) : resolve(reply.result); });
-    emit({ ...message, id });
+    let finished = false;
+    const finish = (error, value) => {
+      if (finished) return;
+      finished = true; clearTimeout(timer); callbacks.delete(id); signal?.removeEventListener("abort", aborted);
+      error ? reject(error) : resolve(value);
+    };
+    const aborted = () => finish(signal.reason || new Error("Connection closed"));
+    const timer = setTimeout(() => finish(new Error("Host callback timed out")), 60000);
+    callbacks.set(id, reply => reply.error ? finish(Object.assign(new Error(reply.error.message), { code: reply.error.code })) : finish(null, reply.result));
+    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal?.aborted) return aborted();
+    try { emit({ ...message, id }); } catch (error) { finish(error); }
   });
 }
 async function ensureBinding(refreshSurface = true, retryFailed = true, connect = true) {
@@ -198,10 +209,11 @@ async function bind(refreshSurface, retryFailed, connect) {
     if (!connect) { if (revision !== failedRevision) lastError = "Компонент не подключён. Откройте его инструменты после подготовки MCP."; return; }
     currentRevision = revision;
     const epoch = generation;
+    let stderrObserved = false;
     const transportOptions = { capabilities: { ...hostCapabilities, roots: { listChanged: false } },
-      onRequest: message => message.method === "roots/list" ? { roots: component === "v8std" ? [] : [{ uri: pathToFileURL(root).href, name: path.basename(root) }] } : callback(message),
+      onRequest: (message, context) => message.method === "roots/list" ? { roots: component === "v8std" ? [] : [{ uri: pathToFileURL(root).href, name: path.basename(root) }] } : callback(message, context),
       maxBytes: options.max_response_bytes,
-      onStderr: chunk => diagnostic.event("runtime_stderr", { projectRoot: root, bytes: chunk.length, content: "omitted" }, "warning"),
+      onStderr: () => { if (!stderrObserved) { stderrObserved = true; diagnostic.event("runtime_stderr", { projectRoot: root }); } },
       onNotification: message => {
         if (message.method === "notifications/tools/list_changed") toolsDirty = true;
         else if (client && !closed) emit(message);
@@ -274,7 +286,7 @@ async function bind(refreshSurface, retryFailed, connect) {
     await disconnect();
     failedRevision = revision;
     if (revision === null) currentRevision = null;
-    if (lastError !== safe_error_message(error)) diagnostic.event("connection_failed", { projectRoot: selected, error }, "error");
+    if (lastError !== safe_error_message(error)) diagnostic.event("connection_failed", { projectRoot: selected, phase: stage, error }, "error");
     lastError = safe_error_message(error);
     lastFailure = { stage, ...connection_failure(error, ["configuration", "preparation"].includes(stage) ? "configuration" : stage === "initialize" ? "transport" : "server_contract") };
   }
@@ -444,13 +456,14 @@ async function dispatch(message) {
       if (component === "bsl-ls")
         result.instructions +=
           " Discover configuration paths via EDT; register each directory before analysis. Only paths inside this binding are accepted.";
-      diagnostic.event("host_initialized", { protocol: result.protocolVersion, rootsAdvertised: message.params?.capabilities?.roots != null });
+      if (selected) diagnostic.event("host_initialized", { projectRoot: selected, protocol: result.protocolVersion, rootsAdvertised: message.params?.capabilities?.roots != null });
       requestInitialRoots = message.params?.capabilities?.roots != null && !process.env.EDT_AI_PROJECT_ROOT;
       emit({ id, result });
       return;
     }
     let result;
     const params = message.params || {};
+    if (method === "tools/call") register_diagnostic_secrets(params.arguments || {});
     if (method === "tools/call") diagnostic.event("request_started", { requestId: id, tool: params.name, projectRoot: selected });
     const pending = { cancelled: false };
     requests.set(requestKey(id), pending);
@@ -528,8 +541,9 @@ async function dispatch(message) {
           ...(params.arguments?.detail === "names" ? { names: selectedTools.map(tool => tool.name) } : { tools: selectedTools }) } };
       } else if (client && control && params.name === "core_runtime_call") {
         const owner = client, ownerBinding = bindingContext, epoch = generation, results = [];
-        for (const call of params.arguments.calls) {
+        for (const [callIndex, call] of params.arguments.calls.entries()) {
           let dispatched = false, received = false;
+          const nativeStarted = Date.now();
           try {
             if (pending.cancelled || client !== owner || epoch !== generation) throw new ConfigError("Runtime batch interrupted before the next call; completed calls were not rolled back");
             await refreshNotifiedTools();
@@ -540,18 +554,19 @@ async function dispatch(message) {
             const recheckKnowledge = await checkKnowledgeWorkflow(declaredRead ? params.arguments.workflowAction : "workflow");
             if (pending.cancelled || client !== owner || epoch !== generation) throw new ConfigError("Runtime batch interrupted before the next call; completed calls were not rolled back");
             pending.client = owner;
-            diagnostic.event("native_request_started", { requestId: id, tool: call.name, projectRoot: selected });
+            diagnostic.event("native_request_started", { requestId: id, callIndex: callIndex + 1, tool: call.name, projectRoot: selected, phase: "dispatch" });
             const native = await owner.request("tools/call", { ...call, ...(params._meta ? { _meta: params._meta } : {}) }, {
               onId: value => { pending.upstreamId = value; }, onDispatch: () => { dispatched = true; },
             });
             received = true;
             results.push({ name: call.name, result: native });
-            diagnostic.event("native_request_completed", { requestId: id, tool: call.name, projectRoot: selected, isError: Boolean(native.isError) });
+            diagnostic.event("native_request_completed", { requestId: id, callIndex: callIndex + 1, tool: call.name, projectRoot: selected, phase: "completed", durationMs: Date.now() - nativeStarted, outcome: native.isError ? "response_error" : "response_ok", isError: Boolean(native.isError) }, native.isError ? "error" : "info");
             if (call.name === "enable_toolset") toolsDirty = true;
             recheckKnowledge();
             if (native.isError) break;
           } catch (error) {
-            diagnostic.event("native_request_failed", { requestId: id, tool: call.name, projectRoot: ownerBinding?.projectRoot, error }, "error");
+            diagnostic.event("native_request_failed", { requestId: id, callIndex: callIndex + 1, tool: call.name, projectRoot: ownerBinding?.projectRoot,
+              phase: dispatched ? "transport" : "dispatch", durationMs: Date.now() - nativeStarted, outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed", error }, "error");
             const detail = { message: safe_error_message(error), outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) };
             if (received) results.at(-1).error = detail;
             else results.push({ name: call.name, error: detail });
@@ -616,7 +631,13 @@ async function dispatch(message) {
     }
     if (method === "tools/call") diagnostic.event("request_completed", { requestId: id, tool: message.params?.name, projectRoot: selected,
       durationMs: Date.now() - started, isError: Boolean(result?.isError), binding: bindingContext }, result?.isError ? "error" : "info");
-    if (method === "tools/list") diagnostic.event("host_tools_list", { requestId: id, durationMs: Date.now() - started, count: result.tools.length, controlCount: controlTools().length, bound: Boolean(client), rootsPending: Boolean(rootsPending) });
+    if (method === "tools/list" && selected) {
+      const observed = JSON.stringify([selected, result.tools.length, Boolean(client), Boolean(rootsPending)]);
+      if (observed !== lastHostToolsObservation) {
+        lastHostToolsObservation = observed;
+        diagnostic.event("host_tools_list", { requestId: id, projectRoot: selected, durationMs: Date.now() - started, count: result.tools.length, controlCount: controlTools().length, bound: Boolean(client), rootsPending: Boolean(rootsPending) });
+      }
+    }
     emit({ id, result });
     if (method === "tools/call" && client && params.name === "enable_toolset") {
       toolsDirty = true;

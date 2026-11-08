@@ -211,6 +211,8 @@ export function state_path(config, override) {
   return resolve(value);
 }
 export const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+export const barrier_recovery_hint = file =>
+  `Путь состояния: ${file}. Если операция не завершается, следуйте разделу «Восстановление после неподтверждённой очистки» в ${path.join(ROOT, "docs", "USAGE.md")}.`;
 export async function operation_lock(state, action, timeout = 0) {
   fs.mkdirSync(state, { recursive: true });
   const lock = path.join(state, "operation.lock"),
@@ -223,15 +225,19 @@ export async function operation_lock(state, action, timeout = 0) {
       if (error.code !== "EEXIST") throw error;
       if (Date.now() >= deadline)
         throw Object.assign(new ConfigError(
-          `Другая операция удерживает ${lock}. Перед удалением устаревшей блокировки проверьте её PID.`,
+          `Другая операция удерживает блокировку. ${barrier_recovery_hint(lock)}`,
         ), { code: "RUNTIME_BUSY" });
       await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
     }
   }
+  let retain = false;
   try {
     return await action();
+  } catch (error) {
+    retain = error?.retainOperationLock === true;
+    throw error;
   } finally {
-    fs.rmSync(lock, { force: true });
+    if (!retain) fs.rmSync(lock, { force: true });
   }
 }
 export const stable = (value) =>
@@ -249,13 +255,14 @@ export const entrypoint = (url) =>
 export async function cli(main) {
   const { create_diagnostic_logger, safe_error_message } = await import("./diagnostics.mjs");
   const diagnostic = create_diagnostic_logger("cli");
-  const executable = path.basename(process.argv[1] || "");
-  diagnostic.event("command_started", { executable });
+  const executable = path.basename(process.argv[1] || ""), started = Date.now(), startedAt = new Date(started).toISOString();
+  const context = { executable, projectRoot: process.env.EDT_AI_PROJECT_ROOT || null };
+  diagnostic.event("command_started", { ...context, phase: "dispatch", startedAt });
   try {
     process.exitCode = (await main()) || 0;
-    diagnostic.event("command_completed", { executable, exitCode: process.exitCode });
+    diagnostic.event("command_completed", { ...context, phase: "completed", durationMs: Date.now() - started, exitCode: process.exitCode });
   } catch (error) {
-    diagnostic.event("command_failed", { executable, error }, "error");
+    diagnostic.event("command_failed", { ...context, phase: "dispatch", startedAt, durationMs: Date.now() - started, error }, "error");
     console.log(JSON.stringify({ status: "error", error: safe_error_message(error) }));
     process.exitCode = 1;
   }

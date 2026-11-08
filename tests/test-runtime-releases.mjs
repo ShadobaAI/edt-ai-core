@@ -3,7 +3,7 @@ import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { fixture } from "./helpers.mjs";
+import { fixture, protected_process_skip } from "./helpers.mjs";
 import { settings } from "../scripts/common.mjs";
 import { zip } from "../scripts/archives.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
@@ -42,7 +42,7 @@ function releases(component) {
 }
 
 for (const component of ["code-index", "bsl-ls"]) {
-  test(`${component}: one installation validates a fresh candidate and also installs an older selected version`, async t => {
+  test(`${component}: one installation validates a fresh candidate and also installs an older selected version`, { skip: protected_process_skip }, async t => {
     const f=fixture(t),config=settings(),options=config.mcp.managed[component],r=releases(component);
     options.enabled=true;
     const first=await ensure_installed(f.state,config,component,false,r.io);
@@ -65,7 +65,7 @@ for (const component of ["code-index", "bsl-ls"]) {
     assert.equal(events.filter(event=>event==="validate").length,2);
   });
 
-  test(`${component}: failed installation leaves the verified active artifact unchanged`, async t => {
+  test(`${component}: failed installation leaves the verified active artifact unchanged`, { skip: protected_process_skip }, async t => {
     const f=fixture(t),config=settings(),options=config.mcp.managed[component],r=releases(component);
     options.enabled=true;
     const first=await ensure_installed(f.state,config,component,false,r.io);
@@ -226,15 +226,16 @@ for (const component of ["code-index", "bsl-ls"]) {
     let launched = false;
     const io = { ...r.io, smoke: async () => { launched = true; return { status: "mcp_ready" }; } };
     options.allow_prerelease = false;
-    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), /текущим настройкам версии/);
+    const refused = protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /текущим настройкам версии/;
+    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), refused);
     options.version = "v9.0.0";
-    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), /текущим настройкам версии/);
+    await assert.rejects(update_component(f.state, config, f.root, f.profile, component, "apply", io), refused);
     assert.equal(launched, false);
     assert.equal(artifact(f.state, component), active);
   });
 }
 
-test("BSL RC candidate can be applied only while the current default still selects it", async t => {
+test("BSL RC candidate can be applied only while the current default still selects it", { skip: protected_process_skip }, async t => {
   const f = fixture(t), config = settings(), options = config.mcp.managed["bsl-ls"], r = releases("bsl-ls");
   options.allow_prerelease = true;
   await ensure_installed(f.state, config, "bsl-ls", true, r.io, { stage: true });

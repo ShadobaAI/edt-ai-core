@@ -34,14 +34,14 @@ Do not create it as a substitute for agreement or expand old permission.
 manager and modify runtime, so require corresponding effects.
 Select an initial TestClient with `--client NAME` on both `describe` and the
 action; without it the local profile's `client` is used. Additional named
-clients are in `clients` and share its infobase. Prepare each profile while
-the manager is disconnected, using `setup` with the appropriate agreement.
+clients are in `clients` and share its infobase. Configure each client's login
+and password in its existing Vanessa profile before using `setup` or `connect`.
 An already connected different client is not disconnected automatically.
 Scenario steps can switch between prepared Vanessa profile names; readiness
 checks the selected initial client, so inspect actual state again after a run.
-For local profile fields and the mutual exclusion of `user` and `userEnv`, see
-`docs/PROFILES.md` in the plugin package.
-For generic `call`, establish effects from live schema/guide and actual arguments.
+For local profile fields and credential ownership, see `docs/PROFILES.md`.
+For generic `call`, establish effects from live schema/guide and actual arguments;
+do not supply logins or passwords through the plugin or its argument files.
 
 `run` holds the shared endpoint/TestClient lock from full readiness through reload,
 syntax, independent selection/content checks, selected-scenario execution and
@@ -55,10 +55,9 @@ TestClient. On Linux and macOS this CLI returns unverified for a connected
 client; this does not describe upstream Vanessa's platform support. It also
 blocks execution if a full idle/connection state is unavailable after the
 editor transition or immediately before running the selected scenario.
-If `manager.user`/`manager.userEnv` is set, the CLI blocks manager launch and
-dependent actions; if `client.user`/`client.userEnv` is set, it blocks client
-setup/connection, manager launch and dependent actions. The result is unverified: `/N` does
-not prove the authenticated 1C user. Do not infer it from the saved profile.
+The CLI does not confirm the authenticated 1C session user: `authenticatedUser`
+is unverified even when the named client and its connection are verified. Do
+not infer the user from a saved profile or launch parameter.
 
 The bundled wire adapter was initially verified on Vanessa Single 1.2.043.45 /
 MCP 1.31. Versions are retained as provenance. Compatibility depends on current

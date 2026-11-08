@@ -6,10 +6,11 @@ export const binding = (config, root = ROOT) => ({
   command: config.mcp.managed["bsl-ls"].node || process.execPath,
   args: [path.join(root, "policy/read-only-mcp.mjs")],
 });
-export async function smoke(config) {
+export async function smoke(config, { command, env, timeoutMs } = {}) {
   const entry = binding(config),
-    client = new McpClient([entry.command, ...entry.args], ROOT, null, 15);
-  try {
+    client = new McpClient([command || entry.command, ...entry.args], ROOT, env || null, 15);
+  let timer;
+  const work = (async () => {
     const server = (await client.initialize()).serverInfo,
       tools = (await client.request("tools/list")).tools;
     const required = [
@@ -86,7 +87,13 @@ export async function smoke(config) {
       registry_version: selection.registryVersion,
       evidence: "synthetic_protocol_checks_only",
     };
+  })();
+  try {
+    if (!timeoutMs) return await work;
+    const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Истекло время проверки политики")), timeoutMs); });
+    return await Promise.race([work, deadline]);
   } finally {
+    clearTimeout(timer);
     await client.close();
   }
 }

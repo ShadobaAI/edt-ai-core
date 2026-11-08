@@ -1,6 +1,25 @@
 // Transport budgets protect memory, independently of model response budgets.
 export const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 const contract_error = message => Object.assign(new Error(message), { category: "server_contract", outcomeUnknown: true });
+// Host callbacks are arbitrary promises. A closed transport must stop waiting
+// for them and remove its abort listener even if the host never answers.
+export function wait_with_abort(start, signal) {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const done = (callback, result) => {
+      if (finished) return;
+      finished = true; signal.removeEventListener("abort", aborted); callback(result);
+    };
+    const aborted = () => done(reject, signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    // Start lazily: a callback must not be invoked after cancellation, and an
+    // eventual rejection remains observed even if cancellation wins the race.
+    Promise.resolve().then(() => { signal.throwIfAborted(); return start(); })
+      .then(result => done(resolve, result), error => done(reject, error));
+    if (signal.aborted) aborted();
+  });
+}
 export function envelope(message) {
   if (!message || typeof message !== "object" || Array.isArray(message) || message.jsonrpc !== "2.0")
     throw contract_error("Invalid MCP envelope; outcome unknown");

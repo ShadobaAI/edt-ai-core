@@ -345,42 +345,61 @@ test("malformed profiles can be read as text and repaired through preview and re
   assert.equal((await client.call("settings.read", {})).structuredContent.profile.status, "loaded");
 });
 
-test("Java probing rejects absent installations and reports the actual executable when available", t => {
+test("Java probing rejects absent installations and reports the actual executable when available", async t => {
+  if (process.platform === "darwin") return t.skip("protected local launch is unavailable on macOS");
   const f = fixture(t);
-  assert.throws(() => java_in_directory(f.root), /не найден/);
+  await assert.rejects(java_in_directory(f.root), /не найден/);
   let java;
-  try { java = java_info("java"); } catch { t.skip("Java is not installed in PATH"); return; }
+  try { java = await java_info("java"); } catch (error) { if (!which("java")) { t.skip("Java is not installed in PATH"); return; } throw error; }
   assert.ok(path.isAbsolute(java.path)); assert.match(java.version, /^\d/);
-  assert.equal(java_in_directory(path.dirname(java.path)).path, java.path);
+  assert.equal((await java_in_directory(path.dirname(java.path))).path, java.path);
 });
 
-test("Java probe failure never includes arbitrary process output or error text", () => {
-  const original = childProcess.spawnSync;
-  try {
-    childProcess.spawnSync = () => ({ status: 1, stderr: "Picked up JAVA_TOOL_OPTIONS: -Dauth=synthetic-private-value\n" });
-    syncBuiltinESMExports();
-    assert.throws(() => java_info(process.execPath), error => /exit 1/.test(error.message) && !error.message.includes("synthetic-private-value"));
-    childProcess.spawnSync = () => ({ status: null, error: Object.assign(new Error("synthetic-private-value"), { code: "ETIMEDOUT" }) });
-    syncBuiltinESMExports();
-    assert.throws(() => java_info(process.execPath), error => /ETIMEDOUT/.test(error.message) && !error.message.includes("synthetic-private-value"));
-    childProcess.spawnSync = () => ({ status: 0, stderr: 'Picked up JAVA_TOOL_OPTIONS: -Dauth=version "2synthetic-private-value"\nopenjdk version "21.0.2"\n' });
-    syncBuiltinESMExports();
-    assert.equal(java_info(process.execPath).version, "21.0.2");
-  } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
+function inject_java_probe(t, mode, extra = {}) {
+  const spawn = childProcess.spawn;
+  const preload = new URL("./fixtures/java-probe-inject.mjs", import.meta.url).href;
+  const calls = t.mock.method(childProcess, "spawn", (command, args, options) => {
+    if (path.basename(args?.[0] || "") !== "process_supervisor.mjs") return spawn(command, args, options);
+    extra.inspect?.(options.env);
+    return spawn(command, ["--import", preload, ...args], { ...options, env: { ...options.env,
+      JAVA_PROBE_TEST_MODE: mode, ...(extra.pids ? { JAVA_PROBE_TEST_PIDS: extra.pids } : {}) } });
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  return calls;
+}
+
+test("Java probe failure never includes arbitrary process output or error text", async t => {
+  if (process.platform === "darwin") return t.skip("protected local launch is unavailable on macOS");
+  inject_java_probe(t, "error");
+  await assert.rejects(java_info(process.execPath), error => /exit 1/.test(error.message) && !error.message.includes("synthetic-private-value"));
+});
+
+test("Java version comes from a version line, not echoed JVM options", async t => {
+  if (process.platform === "darwin") return t.skip("protected local launch is unavailable on macOS");
+  inject_java_probe(t, "version");
+  assert.equal((await java_info(process.execPath)).version, "21.0.2");
+});
+
+test("a timed out Java probe terminates its detached descendants before returning", { timeout: 15000, skip: process.platform === "darwin" }, async t => {
+  const f = fixture(t), pids = path.join(f.base, "java-probe-pids.json");
+  inject_java_probe(t, "hang", { pids });
+  const started = Date.now();
+  await assert.rejects(java_info(process.execPath, null, process.env, { timeoutMs: 3000, state: f.state }), error => /ETIMEDOUT/.test(error.message));
+  assert.ok(Date.now() - started < 12000);
+  assert.ok(fs.existsSync(pids), "the process tree must actually have started");
+  for (const pid of JSON.parse(fs.readFileSync(pids, "utf8"))) assert.throws(() => process.kill(pid, 0));
+  const logs = fs.readFileSync(path.join(f.state, "diagnostics", "events.0.jsonl"), "utf8");
+  assert.match(logs, /process_started/); assert.match(logs, /process_stopped/);
+  assert.doesNotMatch(logs, /synthetic-private-value/);
 });
 
 test("Java probe remains available with invalid settings without inheriting credentials", async t => {
+  if (process.platform === "darwin") return t.skip("protected local launch is unavailable on macOS");
   const f = fixture(t), backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
   t.mock.method(backend, "current", () => { throw new Error("invalid settings"); });
-  const original = childProcess.spawnSync;
-  try {
-    childProcess.spawnSync = (_command, _args, options) => {
-      assert.deepEqual(options.env, {});
-      return { status: 0, stderr: 'java version "21"' };
-    };
-    syncBuiltinESMExports();
-    assert.equal((await backend.main({ action: "java_probe", command: process.execPath })).version, "21");
-  } finally { childProcess.spawnSync = original; syncBuiltinESMExports(); }
+  inject_java_probe(t, "version", { inspect: env => assert.deepEqual(env, {}) });
+  assert.equal((await backend.main({ action: "java_probe", command: process.execPath })).version, "21.0.2");
 });
 
 test("failed Java startup does not copy JVM options into operations or the journal", async t => {

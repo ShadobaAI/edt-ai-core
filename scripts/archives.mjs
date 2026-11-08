@@ -142,10 +142,11 @@ export function write_project_archive(documents) {
   return zip(Object.fromEntries(projectEntries.map(name => [name, Buffer.from(documents[name], "utf8")])));
 }
 export function extract_binary(bytes, format, executable) {
+  const matches_name = name => executable.includes("/") ? name === executable : name.split("/").at(-1) === executable;
   if (format === "zip") {
     const data = unzip(bytes, 512 * 1024 * 1024),
       matches = Object.keys(data).filter(
-        (name) => name.split("/").at(-1) === executable,
+        matches_name,
       );
     if (matches.length !== 1)
       throw new Error("Архив должен содержать ровно один файл " + executable);
@@ -180,7 +181,7 @@ export function extract_binary(bytes, format, executable) {
     if (!Number.isSafeInteger(size) || cursor + size > tar.length)
       throw new Error("Обрезанная запись tar");
     // Nothing is extracted by path. Only regular files with the exact basename qualify.
-    if (name.split("/").at(-1) === executable) {
+    if (matches_name(name)) {
       if (!["", "0"].includes(type))
         throw new Error("Исполняемый файл компонента должен быть обычным файлом");
       matches.push(tar.subarray(cursor, cursor + size));

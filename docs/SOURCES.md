@@ -17,7 +17,7 @@
 | --- | --- |
 | Code-index | [Regsorm/code-index-mcp](https://github.com/Regsorm/code-index-mcp), управляемый исполняемый файл выпуска |
 | BSL Language Server | [1c-syntax/bsl-language-server](https://github.com/1c-syntax/bsl-language-server), внешний JAR |
-| Koffi | [Koromix/koffi](https://github.com/Koromix/koffi), включённый в пакет доступ к Windows API |
+| Koffi | [Koromix/koffi](https://github.com/Koromix/koffi), включённый в пакет доступ к системным API |
 | Unicode case folding | [Unicode](https://www.unicode.org/), данные и отдельная лицензия в пакете |
 | EDT-MCP | Сервер пользователя; проверяется по живому MCP-контракту |
 | v8std: исходный проект | [zeegin/v8std](https://github.com/zeegin/v8std), основа |

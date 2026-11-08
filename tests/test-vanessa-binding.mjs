@@ -94,9 +94,7 @@ test("Vanessa describe preserves Unicode and binds exact canonical targets and r
 });
 test("Vanessa client selection is validated and bound to authorization scope", (t) => {
   const f = binding(t);
-  f.raw.manager.user = "АдминистраторТакси";
-  f.raw.client.user = "АдминистраторKafka";
-  f.raw.clients = [{ ...f.raw.client, name: "RestrictedClient", user: "ПользовательKafka" }];
+  f.raw.clients = [{ ...f.raw.client, name: "RestrictedClient" }];
   f.save();
   const args = ["--for-action", "connect"];
   const normal = success(f.invoke("describe", args));
@@ -115,17 +113,12 @@ test("Vanessa client selection is validated and bound to authorization scope", (
   const bad = f.invoke("describe", [...args, "--client", "missing"]);
   assert.notEqual(bad.status, 0);
   assert.match(bad.stdout + bad.stderr, /Неизвестное имя клиента/);
-  for (const [change, diagnostic] of [
-    [() => { f.raw.manager.userEnv = "MANAGER_USER"; }, /Для manager нельзя одновременно указывать user и userEnv/],
-    [() => { delete f.raw.manager.userEnv; f.raw.client.userEnv = "CLIENT_USER"; }, /Для client нельзя одновременно указывать user и userEnv/],
-    [() => { delete f.raw.client.userEnv; f.raw.clients[0].user = " "; }, /Некорректное поле client user/],
-  ]) {
-    change(); f.save();
-    assert.throws(() => runtime_profile(f.root), diagnostic);
+  for (const [target, field] of [[f.raw.manager,"user"],[f.raw.manager,"userEnv"],[f.raw.client,"password"],[f.raw.clients[0],"userEnv"]]) {
+    target[field] = "fixture-secret"; f.save();
+    assert.throws(() => runtime_profile(f.root), /Учётные данные.*настройте в Vanessa/);
+    assert.throws(() => check_schema(f.raw, "vanessa-runtime.schema.json"));
+    delete target[field];
   }
-  f.raw.clients[0].user = "ПользовательKafka";
-  delete f.raw.manager.user; delete f.raw.client.user; delete f.raw.clients;
-  f.raw.manager.userEnv = "MANAGER_USER"; f.raw.client.userEnv = "CLIENT_USER";
   f.save();
   assert.doesNotThrow(() => runtime_profile(f.root));
   assert.equal(success(f.invoke("describe", args)).scope.includes('"clientName":"TestClient"'), true);
@@ -137,9 +130,9 @@ test("documented local Vanessa profile is valid and selects both clients", t => 
   const example = JSON.parse(section.match(/```json\s*([\s\S]*?)```/)[1]);
   check_schema(example, "vanessa-runtime.schema.json");
   fs.writeFileSync(f.file, JSON.stringify(example));
-  assert.equal(loadProfile(f.file).client.user, "АдминистраторKafka");
-  assert.equal(loadProfile(f.file, undefined, "RestrictedClient").client.user, "ПользовательKafka");
-  assert.equal(loadProfile(f.file).manager.user, "АдминистраторТакси");
+  assert.equal(loadProfile(f.file).client.name, "AdminClient");
+  assert.equal(loadProfile(f.file, undefined, "RestrictedClient").client.name, "RestrictedClient");
+  assert.equal(loadProfile(f.file).manager.interface, "taxi");
 });
 for (const feature of ["features/smoke.feature", ".local/repair.feature"])
   test(

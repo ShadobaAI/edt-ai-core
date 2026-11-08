@@ -1,4 +1,4 @@
-import { read_lines, DEFAULT_MAX_BYTES } from "./mcp_codec.mjs";
+import { read_lines, DEFAULT_MAX_BYTES, wait_with_abort } from "./mcp_codec.mjs";
 import { pathToFileURL } from "node:url";
 import path from "node:path";
 import { launch, stop_child } from "./processes.mjs";
@@ -17,10 +17,12 @@ export class McpClient {
     this.sequence = 0;
     this.tools_revision = 0;
     this.pending = new Map();
+    this.controller = new AbortController();
     this.process = launch(command[0], command.slice(1), {
       cwd,
       env: env || process.env,
       stdio: ["pipe", "pipe", "pipe"],
+      ...(options.readerJob ? { readerJob: options.readerJob } : {}),
     });
     this.process.stderr.on("data", (chunk) => {
       this.stderr = "[stderr omitted]";
@@ -39,7 +41,7 @@ export class McpClient {
           void (async () => {
             try {
               const result = message.method === "roots/list" ? { roots: this.roots }
-                : this.options.onRequest ? await this.options.onRequest(message)
+                : this.options.onRequest ? await wait_with_abort(() => this.options.onRequest(message, { signal: this.controller.signal }), this.controller.signal)
                   : await Promise.reject(Object.assign(new Error("Not supported"), { code: -32601 }));
               this.send({ id: message.id, result });
             } catch (error) { this.send({ id: message.id, error: { code: error.code || -32603, message: error.message } }); }
@@ -54,6 +56,7 @@ export class McpClient {
   fail(error) {
     if (this.error) return;
     this.error = error;
+    this.controller.abort(error);
     for (const done of this.pending.values())
       done({ [localFailure]: error });
     this.pending.clear();
@@ -99,7 +102,7 @@ export class McpClient {
       capabilities: { ...this.options.capabilities, roots: { listChanged: false } },
       clientInfo: { name: "1c-ai-core", version: core_version },
     });
-    this.initialization = result;
+    this.initialization = this.probeInitialization = result;
     this.notify("notifications/initialized");
     return result;
   }
@@ -109,8 +112,8 @@ export class McpClient {
       throw Object.assign(new Error(`${name}: ${JSON.stringify(result).slice(0, 4000)}`), { remote: true });
     return result;
   }
-  async close() {
+  async close({ grace = 5000 } = {}) {
     this.fail(Object.assign(new Error("MCP connection closed; pending operation outcome unknown"), { outcomeUnknown: true }));
-    await stop_child(this.process);
+    await stop_child(this.process, grace);
   }
 }

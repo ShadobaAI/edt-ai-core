@@ -8,6 +8,27 @@ import { smoke } from "../scripts/policy_runtime.mjs";
 import { Ajv2020 } from "../vendor/deps.mjs";
 import { loadRegistry } from "../policy/selector.mjs";
 import { validateSchema } from "../policy/schema.mjs";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { alive } from "../scripts/processes.mjs";
+
+test("policy smoke has a bounded total deadline and closes its child", async t => {
+  const f = fixture(t), script = path.join(f.base, "slow-policy.mjs"), pidFile = path.join(f.base, "slow-policy.pid");
+  fs.writeFileSync(script, `import fs from "node:fs"; import {createInterface} from "node:readline"; fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid)); for await (const line of createInterface({input:process.stdin})) { const m=JSON.parse(line); if(m.method==="initialize") setTimeout(()=>process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{protocolVersion:"2025-11-25",serverInfo:{name:"slow",version:"1"},capabilities:{}}})+"\\n"),100); }`);
+  const spawn = childProcess.spawn;
+  t.mock.method(childProcess, "spawn", (command, args, options) => {
+    const child = spawn(command, args, options), send = child.send?.bind(child);
+    if (send) child.send = (message, ...rest) => {
+      if (message.args?.some(value => value.endsWith("policy/read-only-mcp.mjs") || value.endsWith("policy\\read-only-mcp.mjs"))) message = { ...message, command: process.execPath, args: [script] };
+      return send(message, ...rest);
+    };
+    return child;
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const started = Date.now();
+  await assert.rejects(smoke(settings(), { command: process.execPath, env: process.env, timeoutMs: 1000 }), /Истекло время проверки политики/);
+  assert.ok(Date.now() - started < 8000); assert.equal(alive(Number(fs.readFileSync(pidFile, "utf8"))), false);
+});
 
 async function policy(t) {
   const f = fixture(t),
