@@ -17,7 +17,7 @@ import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { launch, stop_child, alive } from "../scripts/processes.mjs";
+import { launch, spawn_guarded_linux, stop_child, alive } from "../scripts/processes.mjs";
 import { stop_daemon, platform_build, save_json, acquire_reader, installed_runtime, ensure_daemon } from "../scripts/runtime.mjs";
 const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href;
 async function managed(t, f, prepare = true, extra = {}) {
@@ -251,7 +251,13 @@ test("stop validates the running daemon's old immutable executable after active 
   fs.mkdirSync(path.dirname(old),{recursive:true});fs.writeFileSync(old,bytes,{mode:0o755});
   fs.writeFileSync(path.join(f.root,".project"),"<projectDescription><name>Product</name></projectDescription>");
   let child;
-  const io={launch:(exe,_args,options)=>{child=launch(exe,[path.join(ROOT,"tests/fixtures/index-daemon.mjs")],options);f.clients.push({close:()=>stop_child(child,0)});return child;}};
+  const io={launch:async(exe,_args,options)=>{
+    child=process.platform==="linux"
+      ? await spawn_guarded_linux(exe,[path.join(ROOT,"tests/fixtures/index-daemon.mjs")],options)
+      : launch(exe,[path.join(ROOT,"tests/fixtures/index-daemon.mjs")],options);
+    if(process.platform!=="linux")f.clients.push({close:()=>stop_child(child,0)});
+    return child;
+  }};
   await ensure_daemon(f.state,f.root,f.profile,old,io);
   const nextBytes=Buffer.from("new active runtime"),nextDigest=sha256(nextBytes),next=path.join(f.state,"runtime/code-index/v2.0.0",nextDigest,platform_build().executable);
   fs.mkdirSync(path.dirname(next),{recursive:true});fs.writeFileSync(next,nextBytes);
