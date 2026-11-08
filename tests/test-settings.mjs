@@ -688,7 +688,22 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     );
   fs.writeFileSync(
     path.join(plugin, "scripts/settings_backend.mjs"),
-    `import fs from 'node:fs'; let input=''; for await (const chunk of process.stdin) input+=chunk; const r=JSON.parse(input); await new Promise(done=>setTimeout(done,200)); fs.appendFileSync(process.env.EDT_AI_STATE_DIR+'/calls',r.action+'\\n'); if(r.set?.edtUrl==='unknown') { process.stderr.write('unmarked-backend-secret-8931'); process.exit(3); } if(r.action==='rebuild_index'){process.send?.({type:'progress',progress:{phase:'indexing',total:2,completed:1,repository:'extension',edtProject:'Extension',message:'unmarked-progress-secret-2184'}});await new Promise(done=>setTimeout(done,400));} console.log(JSON.stringify({ok:true,result:r.set?.edtUrl==='malformed'?null:{managed:[],values:{projectRoot:process.env.EDT_AI_PROJECT_ROOT}}}));if(process.connected)process.disconnect();`,
+    `import fs from 'node:fs';
+    import path from 'node:path';
+    let input=''; for await (const chunk of process.stdin) input+=chunk;
+    const r=JSON.parse(input), state=process.env.EDT_AI_STATE_DIR;
+    if(r.action==='check') {
+      fs.writeFileSync(path.join(state,'check-started'),'');
+      const deadline=Date.now()+30000;
+      while(!fs.existsSync(path.join(state,'check-release'))) {
+        if(Date.now()>deadline) throw new Error('Check was not released');
+        await new Promise(done=>setTimeout(done,20));
+      }
+    } else await new Promise(done=>setTimeout(done,200));
+    fs.appendFileSync(path.join(state,'calls'),r.action+'\\n');
+    if(r.set?.edtUrl==='unknown') { process.stderr.write('unmarked-backend-secret-8931'); process.exit(3); }
+    if(r.action==='rebuild_index'){process.send?.({type:'progress',progress:{phase:'indexing',total:2,completed:1,repository:'extension',edtProject:'Extension',message:'unmarked-progress-secret-2184'}});await new Promise(done=>setTimeout(done,400));}
+    console.log(JSON.stringify({ok:true,result:r.set?.edtUrl==='malformed'?null:{managed:[],values:{projectRoot:process.env.EDT_AI_PROJECT_ROOT}}}));if(process.connected)process.disconnect();`,
   );
   const client = new McpClient(
     [process.execPath, path.join(plugin, "mcp/settings.mjs")],
@@ -708,24 +723,25 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
       },
     })
   ).structuredContent;
-  assert.equal(operation.status, "running");
-  await assert.rejects(
-    client.call("settings.update", { set: { edtUrl: "x" } }),
-    /ещё выполняется/,
-  );
-  const report = JSON.parse(fs.readFileSync((await client.call("settings.export_diagnostics", {}))._meta.data.path, "utf8"));
-  assert.equal(report.snapshot.host.operation.id, operation.id);
-  assert.equal(report.snapshot.host.operation.status, "running");
-  let completed;
-  for (let i = 0; i < 50; i++) {
-    completed = (
-      await client.call("settings.operation", { operationId: operation.id })
-    ).structuredContent;
-    if (completed.status !== "running") break;
-    await sleep(20);
+  const started = path.join(f.state, "check-started");
+  try {
+    assert.equal(operation.status, "running");
+    for (let i = 0; i < 750 && !fs.existsSync(started); i++) await sleep(20);
+    assert.ok(fs.existsSync(started), "check backend must start before the export");
+    await assert.rejects(
+      client.call("settings.update", { set: { edtUrl: "x" } }),
+      /ещё выполняется/,
+    );
+    const report = JSON.parse(fs.readFileSync((await client.call("settings.export_diagnostics", {}))._meta.data.path, "utf8"));
+    assert.equal(report.snapshot.host.operation.id, operation.id);
+    assert.equal(report.snapshot.host.operation.status, "running");
+    assert.equal((await client.call("settings.operation", { operationId: operation.id })).structuredContent.status, "running");
+  } finally {
+    fs.writeFileSync(path.join(f.state, "check-release"), "");
   }
+  const completed = (await client.call("settings.operation", { operationId: operation.id, waitMs: 10000 })).structuredContent;
   assert.equal(completed.status, "completed");
-  assert.equal(fs.readFileSync(path.join(f.state, "calls"), "utf8"), "check\nread\n");
+  assert.deepEqual(fs.readFileSync(path.join(f.state, "calls"), "utf8").trim().split("\n").sort(), ["check", "read"]);
   await assert.rejects(
     client.call("settings.update", { set: { edtUrl: "unknown" } }),
     /неизвестен/,
