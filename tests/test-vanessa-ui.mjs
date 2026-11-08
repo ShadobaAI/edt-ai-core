@@ -51,7 +51,8 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 const port = server.address().port;
 const raw = {
   version: 1, id: "arbitrary-project", projectRoot: "..", platform: "../platform.exe", runtime: { epf: "../runtime.epf" },
-  manager: { infobase: { type: "file", path: "../base" } }, client: { name: "fixture-" + path.basename(root), infobase: { type: "file", path: "../base" } },
+  manager: { infobase: { type: "file", path: "../base" }, user: { name: "Manager", password: "manager-secret", interface: "taxi" } },
+  infobase: { type: "file", path: "../base" }, users: { ["fixture-" + path.basename(root)]: { name: "User", password: "client-secret", interface: "taxi" } },
   mcp: { url: `http://127.0.0.1:${port}/mcp`, port }, features: "../features", results: "../results", limits: { timeoutMs: 1000 },
 };
 const write = value => fs.writeFileSync(profileFile, JSON.stringify(value));
@@ -68,19 +69,22 @@ try {
   assert.equal(calls.filter(call => call.method === "tools/call").length, callsBeforeMismatch);
   const authorizedHash = digest(fs.readFileSync(profileFile));
   assert.equal(loadProfile(profileFile, authorizedHash).id, raw.id);
-  write({ ...raw, client: { ...raw.client, name: "changed-after-consent" } });
+  write({ ...raw, users: { Changed: { name: "User", password: "client-secret", interface: "taxi" } } });
   await assert.rejects(main(["configure", "--profile", profileFile, "--expected-profile-sha256", authorizedHash]), /изменился после разрешения/);
   write(raw);
   assert.equal(profile.projectRoot, root); assert.equal(profile.mcp.serverName, "vanessa"); checkFiles(profile);
   assert.equal(startArguments(profile).includes("/TESTMANAGER"), true);
   assert.equal(startArguments(profile).includes("/iTaxi"), true);
-  assert.equal(profile.manager.interface, "taxi"); assert.equal(profile.client.interface, "taxi");
+  assert.equal(profile.manager.user.interface, "taxi"); assert.equal(profile.client.user.interface, "taxi");
+  const launchArgs = startArguments(profile);
+  assert.equal(launchArgs[launchArgs.indexOf("/N") + 1], raw.manager.user.name);
+  assert.equal(launchArgs[launchArgs.indexOf("/P") + 1], raw.manager.user.password);
   for (const host of ["localhost", "127.0.0.1", "::1", os.hostname()]) assert.equal(isLocalComputer(host), true);
   assert.equal(isLocalComputer("remote-test-host.invalid"), false);
-  const multiple = { ...raw, clients: [{ ...raw.client, name: "RestrictedClient" }] };
+  const multiple = { ...raw, users: { ...raw.users, RestrictedClient: { name: "Restricted", password: "secret", interface: "taxi" } } };
   write(multiple);
   const admin = loadProfile(profileFile), restricted = loadProfile(profileFile, undefined, "RestrictedClient");
-  assert.equal(startArguments(admin, {}).includes("/N"), false);
+  assert.equal(startArguments(admin, {}).includes("/N"), true);
   assert.equal((await main(["configure", "--profile", profileFile, "--client", "RestrictedClient"])).status, "configuration_only");
   await assert.rejects(main(["configure", "--profile", profileFile, "--client", "unknown"]), /Неизвестное имя клиента/);
   assert.equal(clientControlKey(admin), clientControlKey(restricted));
@@ -93,20 +97,21 @@ try {
   const oldClient = { ...admin.client }; delete oldClient.computerName;
   const oldFingerprint = digest(JSON.stringify([admin.platform, admin.runtime, admin.manager, oldClient, admin.stateDir, interactiveParameters(admin)]));
   fs.writeFileSync(ownerPath, JSON.stringify({ profile: admin.identity, pid: process.pid, status: "running", fingerprint: oldFingerprint, clientKeyVersion: 3 }));
-  try { assert.throws(() => checkOwner(restricted), /Настройки запуска профиля изменились/); } finally { fs.unlinkSync(ownerPath); }
+  const existing1c = { platform: "win32", processIdentity: pid => ({ pid, executable: admin.platform, created: "win32-filetime:1" }) };
+  try { assert.throws(() => checkOwner(restricted, { system: existing1c }), /Настройки запуска профиля изменились/); } finally { fs.unlinkSync(ownerPath); }
   const obsoleteOwner = JSON.stringify({ profile: admin.identity, pid: process.pid, status: "running", fingerprint: ownerFingerprint });
   fs.writeFileSync(ownerPath, obsoleteOwner);
   try {
-    assert.throws(() => checkOwner(admin), /Неподдерживаемая запись владельца активного менеджера/);
+    assert.throws(() => checkOwner(admin), /Неподдерживаемая запись владельца (?:активного )?менеджера/);
     assert.equal(fs.readFileSync(ownerPath, "utf8"), obsoleteOwner);
   } finally { fs.unlinkSync(ownerPath); }
   for (const broken of [
     { ...multiple, manager: { ...multiple.manager, userEnv: "UI_USER" } },
-    { ...multiple, client: { ...multiple.client, userEnv: "UI_USER" } },
-    { ...multiple, client: { ...multiple.client, user: "LegacyUser" } },
-    { ...multiple, clients: [{ ...multiple.client }] },
-    { ...multiple, clients: [{ ...multiple.clients[0], infobase: { type: "file", path: "../other" } }] },
+    { ...multiple, users: { Broken: { name: "user", password: "secret", interface: "itdi" } } },
+    { ...multiple, client: {} },
     { ...multiple, clients: [] },
+    { ...multiple, manager: { ...multiple.manager, interface: "taxi" } },
+    { ...multiple, users: {} },
   ]) { write(broken); assert.throws(() => loadProfile(profileFile)); }
   write(raw);
   assert.equal(taxiCompatible("/iTaxi"), true); assert.equal(taxiCompatible("/N fixture /ITAXI"), true);
@@ -147,14 +152,15 @@ try {
     { ...raw, manager: { infobase: { type: "file", path: "../base", server: "host" } } },
     { ...raw, limits: { maxBytes: 99999999 } },
     { ...raw, manager: { ...raw.manager, interface: "tabs" } },
-    { ...raw, client: { ...raw.client, interface: "itdi" } },
+    { ...raw, manager: { ...raw.manager, user: { ...raw.manager.user, interface: "itdi" } } },
+    { ...raw, users: { Bad: { name: "user", password: "secret", interface: "itdi" } } },
   ]) { write(broken); assert.throws(() => loadProfile(profileFile)); }
   write(raw);
   write({ ...raw, runtime: { navigationUrl: "e1cib/app/Обработка.TestRuntime" } });
   const embedded = loadProfile(profileFile); checkFiles(embedded);
   assert.equal(startArguments(embedded).includes("/URL"), true);
   assert.equal(startArguments(embedded).includes("/Execute"), false);
-  assert.equal(startArguments(embedded).includes("/N"), false);
+  assert.equal(startArguments(embedded).includes("/N"), true);
   write(raw);
   const paramsFile = path.join(root, "config", "params.json");
   fs.writeFileSync(paramsFile, JSON.stringify({ "ВыполнитьСценарии": true }));
@@ -214,15 +220,16 @@ try {
   fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: process.pid, status: "running", clientKeyVersion: 3 }));
   try {
     const changedPort = { ...profile, mcp: { ...profile.mcp, port: port + 1 } };
-    assert.throws(() => checkClaims(changedPort), /другому адресу/);
+    assert.throws(() => checkClaims(changedPort, { system: existing1c }), /другому адресу/);
   } finally { fs.unlinkSync(foreignOwnerFile); }
   const exitedChild = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
   assert.equal(exitedChild.status, 0);
   fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: exitedChild.pid, status: "running", fingerprint: "previous-settings", clientKeyVersion: 3 }));
   try {
-    assert.equal(checkOwner(profile).pid, exitedChild.pid, "dead own process permits new launch settings");
+    const stoppedProcess = { platform: "win32", processIdentity: () => null };
+    assert.equal(checkOwner(profile, { system: stoppedProcess }).pid, exitedChild.pid, "dead own process permits new launch settings");
     fs.writeFileSync(foreignOwnerFile, JSON.stringify({ profile: profile.identity, pid: exitedChild.pid, status: "starting", fingerprint: "previous-settings", clientKeyVersion: 3 }));
-    assert.throws(() => checkOwner(profile), /неизвестным исходом/);
+    assert.throws(() => checkOwner(profile, { system: stoppedProcess }), /неизвестным исходом/);
   } finally { fs.unlinkSync(foreignOwnerFile); }
 
   const listed = await main(["list", "--profile", profileFile]); assert.equal(listed.tools.length, requiredTools.length + 1);
@@ -285,7 +292,7 @@ try {
     processBinding: () => ({ managerPid: 99999, managerCreated: "win32-filetime:123400" }),
     environment: () => ({ managerInfobase: profile.manager.infobase, vanessaExt: true, runtimeVersion: "fixture" }),
     editor: () => ({ stateAvailable: true, errorCount: 0 }),
-    profiles: () => [{ name: profile.client.name, infobase: profile.client.infobase, additionalParameters: "/iTaxi", computerName: profile.client.computerName, connected }],
+    profiles: () => [{ name: profile.client.name, infobase: profile.client.infobase, additionalParameters: "/iTaxi", clientType: "Тонкий", computerName: profile.client.computerName, connected }],
     state: () => ({ connected, clientName: profile.client.name, clientInfobase: profile.client.infobase, running: false, recording: false }),
     extensions: () => [{ name: "VAExtension", active: true, version: "fixture" }],
     processes: () => ({ filter: null, matchedCount: 1, processes: [{ kind: "test_client", pid: 12345, startedAt: "fixture-session", launch: { infobase: profile.client.infobase, interface: "taxi", testPort: 48000 } }] }),
@@ -293,7 +300,7 @@ try {
   for (const selected of [admin, restricted]) {
     let connectedClient = false, connects = 0;
     const testContract = { ...semanticContract,
-      profiles: () => [{ name: selected.client.name, infobase: selected.client.infobase, additionalParameters: '/iTaxi /N"FixtureUser" /P"FixturePassword"', computerName: "localhost", connected: connectedClient }],
+      profiles: () => [{ name: selected.client.name, infobase: selected.client.infobase, additionalParameters: '/iTaxi /N"FixtureUser" /P"FixturePassword"', clientType: "Тонкий", computerName: "localhost", connected: connectedClient }],
       state: () => ({ connected: connectedClient, clientName: selected.client.name, running: false, recording: false }),
       processes: () => ({ filter: null, matchedCount: 1, processes: [{ kind: "test_client", pid: 12345, startedAt: "fixture", launch: { infobase: selected.client.infobase, interface: "taxi", testPort: 48000 } }] }),
     };
@@ -303,7 +310,7 @@ try {
       }
       return { content: [] };
     } };
-    const prepared = await setupSession(selected, testClient, fixtureTools, testContract);
+    const prepared = await setupSession(selected, testClient, fixtureTools, testContract, { verifyManager: () => true });
     assert.equal(prepared.status, "ready");assert.equal(prepared.authenticatedUser, "unverified");assert.equal(connects, 1);
     const secondProcess = { kind: "test_client", pid: 23456, startedAt: "other-session", launch: { infobase: { type: "file", path: profile.features }, interface: "taxi", testPort: 48001, user: "OtherUser" } };
     const multi = { ...testContract,
@@ -358,25 +365,24 @@ try {
     }
     return fixtureClient.request(method, params);
   } };
-  assert.equal((await setupSession(profile, setupClient, fixtureTools, setupContract)).reason, "client_profile_not_configured");
-  assert.equal(adds, 0);
   profilePresent = true;
-  assert.equal((await setupSession(profile, setupClient, fixtureTools, setupContract)).status, "ready");
-  assert.equal(adds, 0, "setup uses the profile configured in Vanessa");
+  assert.equal((await setupSession(profile, setupClient, fixtureTools, setupContract, { verifyManager: () => true })).status, "ready");
+  assert.equal(adds, 0);
   let computerFixed = false, edits = 0;
   const computerContract = { ...semanticContract, profiles: () => [{ ...semanticContract.profiles()[0], computerName: computerFixed ? "localhost" : "" }] };
   const editClient = { request: async (method, params) => {
     if (params.name === "manage_test_client_profiles" && params.arguments.action === "edit") {
-      assert.deepEqual(params.arguments, { action: "edit", name: profile.client.name, computer_name: "localhost" });
+      assert.equal(params.arguments.computer_name, "localhost");
+      assert.equal(params.arguments.client_type, "Тонкий");
       computerFixed = true; edits++; return { content: [] };
     }
     return fixtureClient.request(method, params);
   } };
-  assert.equal((await setupSession(profile, editClient, fixtureTools, computerContract)).reason, "client_computer_name_mismatch_or_unverified");
-  assert.equal(edits, 0, "the plugin never edits a Vanessa-owned profile");
+  connected = false;
+  assert.equal((await setupSession(profile, editClient, fixtureTools, computerContract, { verifyManager: () => true })).status, "ready");
+  assert.equal(edits, 1);
   computerFixed = true;
-  assert.equal((await setupSession(profile, editClient, fixtureTools, computerContract)).status, "ready");
-  assert.equal(edits, 0);
+  assert.equal((await setupSession(profile, editClient, fixtureTools, computerContract, { verifyManager: () => true })).reason, "client_profile_setup_state_unverified");
   recordOwnership(profile, "active", "fixture-version", "manager-session-1");
   assert.equal(ownRecording(profile, "manager-session-1").status, "active");
   assert.throws(() => ownRecording(profile, "manager-session-2"), /Сессия менеджера записи изменилась/);
@@ -390,10 +396,12 @@ try {
   recordOwnership(profile, "idle", "fixture-version", "manager-session-1");
   assert.equal(ownRecording(profile, "manager-session-1"), null);
   assert.deepEqual(parseEnvironment(wire.environment), { runtimeVersion: "1.2.043.45", mcpVersion: "1.31", platformVersion: "8.5.1.1423", vanessaExt: true, managerInfobase: { type: "server", server: "localhost", database: "ui-demo" } });
+  assert.deepEqual(parseEnvironment(wire.response(wire.environment.content[0].text.replace("Это Vanessa Automation Single", "Это обычная Vanessa Automation"))), parseEnvironment(wire.environment));
+  assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("Это Vanessa Automation Single", "Это Vanessa Automation Single\n- Это обычная Vanessa Automation"))), null);
   assert.deepEqual(parseState(wire.state), { connected: false, running: false, recording: false });
   assert.deepEqual(parseEditor(wire.editor), { stateAvailable: true, tabCount: 1, errorCount: 0 });
   assert.equal((await inspectSession(profile, fixtureClient, fixtureTools, semanticContract)).editorEnabled, "unverified", "a cached editor snapshot never proves enabled state");
-  assert.deepEqual(parseProfiles(wire.profiles), [{ name: "ExistingClient", synonym: "", infobase: { type: "server", server: "localhost", database: "ui-demo" }, connectionFingerprint: digest('Srvr="localhost";Ref="ui-demo";'), additionalParameters: '/N"FixtureUser"', connected: false, pid: 0, computerName: "localhost" }]);
+  assert.deepEqual(parseProfiles(wire.profiles), [{ name: "ExistingClient", synonym: "", infobase: { type: "server", server: "localhost", database: "ui-demo" }, connectionFingerprint: digest('Srvr="localhost";Ref="ui-demo";'), additionalParameters: '/N"FixtureUser"', clientType: "Тонкий", connected: false, pid: 0, computerName: "localhost" }]);
   assert.equal(parseInfobase('Srvr="localhost";Ref="one";Ref="two";'), null);
   assert.equal(parseInfobase('File="C:\\Demo";Srvr="localhost";Ref="one";'), null);
   assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("1.31", "9.99"))).mcpVersion, "9.99");
@@ -509,7 +517,7 @@ try {
   // Exercise the real HTTP session deadline around the entire workflow. A
   // rejected mock request alone cannot reproduce the outer Promise.race.
   const base = { type: "server", server: "localhost", database: "ui-demo" };
-  write({ ...raw, manager: { infobase: base }, client: { name: "TestClient", infobase: base }, limits: { timeoutMs: 1500 } });
+  write({ ...raw, manager: { ...raw.manager, infobase: base }, infobase: base, users: { TestClient: { name: "User", password: "secret", interface: "taxi" } }, limits: { timeoutMs: 1500 } });
   networkTools = workflowTools;
   const rewrite = (response, change) => wire.response(change(response.content[0].text));
   let httpMode = "success";
@@ -531,6 +539,54 @@ try {
   };
   const networkOptions = ["run", "--profile", profileFile, "--feature", feature, "--scenario", scenario];
   const httpContract = { ...runtimeContract, processIdentity: semanticContract.processIdentity, processBinding: semanticContract.processBinding };
+  const normalNetworkCall = networkCall;
+  networkCall = (name, args) => {
+    if (name === "get_vanessa_automation_state") return wire.state;
+    if (name === "manage_test_client_profiles") return args.action === "get_list" ? wire.emptyProfiles : undefined;
+    return normalNetworkCall(name, args);
+  };
+  calls = [];
+  await assert.rejects(main(["setup", "--profile", profileFile], { contract: httpContract }), /Подключение не принадлежит этому профилю/);
+  assert.equal(calls.filter(item => item.method === "tools/call").length, 0);
+  const setupProfile = loadProfile(profileFile), setupPid = 34567;
+  const setupFingerprint = digest(JSON.stringify([setupProfile.platform, setupProfile.runtime, setupProfile.manager,
+    { infobase: setupProfile.client.infobase }, setupProfile.stateDir, interactiveParameters(setupProfile)]));
+  const setupOwner = { profile: setupProfile.identity, pid: setupPid, created: "win32-filetime:42", status: "running",
+    fingerprint: setupFingerprint, client: clientControlKey(setupProfile), clientKeyVersion: 3 };
+  const setupOwnerFile = path.join(registryDir(), `endpoint-${port}.owner.json`);
+  fs.mkdirSync(registryDir(), { recursive: true }); fs.mkdirSync(setupProfile.stateDir, { recursive: true });
+  fs.writeFileSync(setupOwnerFile, JSON.stringify(setupOwner)); fs.writeFileSync(path.join(setupProfile.stateDir, "manager.json"), JSON.stringify(setupOwner));
+  const managerSystem = { platform: "win32", processIdentity: pid => ({ pid, executable: setupProfile.platform, created: setupOwner.created }),
+    tcpRows: socket => {
+      const address = "7f000001", caller = { family: 2, state: 5, pid: process.pid, localAddress: address, localScope: 0,
+        localPort: socket.localPort, remoteAddress: address, remoteScope: 0, remotePort: port };
+      return [{ family: 2, state: 2, pid: setupPid, localPort: port, localAddress: address, localScope: 0 }, caller,
+        { ...caller, pid: setupPid, localPort: port, remotePort: socket.localPort }];
+    } };
+  try {
+    const wrongSystem = { ...managerSystem, tcpRows: socket => managerSystem.tcpRows(socket).map((row, i) => i === 2 ? { ...row, pid: setupPid + 1 } : row) };
+    calls = [];
+    await assert.rejects(main(["setup", "--profile", profileFile], { contract: httpContract, managerSystem: wrongSystem }), /Ошибка транспорта HTTP MCP/);
+    assert.equal(calls.length, 0, "an unverified socket must not receive even initialization bytes");
+    let editorChecks = 0, denyNextSocket = false;
+    const beforeSwitch = networkCall;
+    networkCall = (name, args) => {
+      const response = beforeSwitch(name, args);
+      if (name === "get_editor_state" && ++editorChecks === 2) denyNextSocket = true;
+      return response;
+    };
+    const changedSystem = { ...managerSystem, tcpRows: socket => managerSystem.tcpRows(socket).map((row, i) =>
+      denyNextSocket && i === 2 ? { ...row, pid: setupPid + 1 } : row) };
+    calls = [];
+    await assert.rejects(main(["setup", "--profile", profileFile], { contract: httpContract, managerSystem: changedSystem }));
+    assert.equal(calls.filter(item => item.method === "tools/call" && item.params.arguments.action === "add").length, 0,
+      "a replaced peer must not receive the credential-bearing mutation");
+    networkCall = beforeSwitch; calls = [];
+    await assert.rejects(main(["setup", "--profile", profileFile], { contract: httpContract, managerSystem }), error =>
+      error.code === "mutation_indeterminate" && error.detail.tool === "manage_test_client_profiles" && error.detail.outcome === "indeterminate");
+  } finally { fs.unlinkSync(setupOwnerFile); }
+  assert.equal(calls.filter(item => item.method === "tools/call" && item.params.name === "manage_test_client_profiles" && item.params.arguments.action === "add").length, 1);
+  networkCall = normalNetworkCall;
   const profileListArgs = path.join(root, "profile-list-args.json");
   fs.writeFileSync(profileListArgs, JSON.stringify({ action: "get_list" }));
   const originalNetworkCall = networkCall;

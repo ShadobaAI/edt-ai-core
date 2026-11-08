@@ -36,8 +36,10 @@ not establish availability of the external v8std corpus.
 ## Vanessa and source protection
 
 The Vanessa adapter requires the user's platform and Vanessa runtime. Its
-supported wire contract is Vanessa Single `1.2.043.45` / MCP `1.31`; unknown
-versions or response formats fail closed. Portable bindings, action policy and
+wire contract is based on Vanessa Single `1.2.043.45` / MCP `1.31`. The manager
+environment parser also recognizes the ordinary Vanessa edition marker. Unknown
+response formats fail closed; a version alone does not establish compatibility.
+Portable bindings, action policy and
 run receipts do not by themselves establish a live business outcome.
 
 The profile-driven source guard checks protected paths and permitted index

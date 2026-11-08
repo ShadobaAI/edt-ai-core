@@ -39,7 +39,9 @@ export function parseInfobase(value) {
 }
 export function parseEnvironment(result) {
   const text = toolText(result);
-  if (!text?.startsWith("# Данные об окружении\n") || !text.includes("\n- Это Vanessa Automation Single\n")) return null;
+  if (!text?.startsWith("# Данные об окружении\n")) return null;
+  const editions = [...text.matchAll(/^- Это (?:Vanessa Automation Single|обычная Vanessa Automation)$/gm)];
+  if (editions.length !== 1) return null;
   const runtimeVersion = scalar(text, "Версия")?.replace(/^ver /, "");
   const mcpVersion = scalar(text, "Версия MCP");
   const managerInfobase = parseInfobase(scalar(text, "Строка соединения с информационной базой"));
@@ -121,13 +123,13 @@ export function parseProfiles(result) {
   const profiles = [];
   for (const section of sections) {
     const fields = propertyTable(section[2]);
-    if (!fields || fields["Имя"] !== section[1] || typeof fields["Синоним"] !== "string" || typeof fields["Дополнительные параметры"] !== "string") return null;
+    if (!fields || fields["Имя"] !== section[1] || typeof fields["Синоним"] !== "string" || typeof fields["Дополнительные параметры"] !== "string" || typeof fields["Тип клиента"] !== "string") return null;
     const infobase = parseInfobase(fields["Строка подключения"]);
     if (!infobase) return null;
     // Keep the exact connection settings comparable without returning the
     // username/password in the parsed structure.
     const connectionFingerprint = createHash("sha256").update(fields["Строка подключения"]).digest("hex");
-    profiles.push({ name: section[1], synonym: fields["Синоним"], infobase, connectionFingerprint, additionalParameters: fields["Дополнительные параметры"],
+    profiles.push({ name: section[1], synonym: fields["Синоним"], infobase, connectionFingerprint, additionalParameters: fields["Дополнительные параметры"], clientType: fields["Тип клиента"],
       connected: /^❌ не подключ[её]н$/.test(fields["Статус"]) ? false : /^✅ подключ[её]н$/.test(fields["Статус"]) ? true : null,
       computerName: fields["Имя компьютера"], pid: /^(?:\d+|\d{1,3}(?:\u00a0\d{3})+)$/.test(fields.PID ?? "") ? Number(fields.PID.replaceAll("\u00a0", "")) : null });
   }

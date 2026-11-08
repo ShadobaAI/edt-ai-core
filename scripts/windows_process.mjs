@@ -1,5 +1,6 @@
 // Windows process identity via a bundled Node N-API addon; no shell helper.
 import { createRequire } from "node:module";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 let api;
@@ -562,21 +563,59 @@ export function windows_tcp_rows(family) {
   return rows;
 }
 
+const reciprocal_tcp = (left, right) => right.family === left.family && right.state === 5 &&
+  right.localPort === left.remotePort && right.remotePort === left.localPort && right.localAddress === left.remoteAddress &&
+  right.remoteAddress === left.localAddress && right.localScope === left.remoteScope && right.remoteScope === left.localScope;
+
+function tcp_address_hex(value) {
+  if (typeof value !== "string") return null;
+  const address = value.split("%")[0], family = net.isIP(address);
+  if (family === 4) return address.split(".").map(part => Number(part).toString(16).padStart(2, "0")).join("");
+  if (family !== 6) return null;
+  let input = address;
+  const lastColon = input.lastIndexOf(":"), tail = input.slice(lastColon + 1);
+  if (net.isIP(tail) === 4) {
+    const bytes = tail.split(".").map(Number);
+    input = input.slice(0, lastColon + 1) + ((bytes[0] << 8) | bytes[1]).toString(16) + ":" + ((bytes[2] << 8) | bytes[3]).toString(16);
+  }
+  const halves = input.split("::"), left = halves[0] ? halves[0].split(":") : [], right = halves[1] ? halves[1].split(":") : [];
+  const groups = halves.length === 2 ? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right] : left;
+  return groups.length === 8 ? groups.map(group => group.toLowerCase().padStart(4, "0")).join("") : null;
+}
+
+// A listening PID alone does not establish that this MCP session reached it.
+export function match_mcp_binding(rows, mcpPort, managerPid, callerPid = process.pid, socket) {
+  if (!Number.isInteger(mcpPort) || mcpPort < 1 || mcpPort > 65535 ||
+      !Number.isInteger(managerPid) || managerPid < 1 || !Number.isInteger(callerPid) || callerPid < 1) return false;
+  // A replaced listener is not necessarily the server of an existing keep-alive
+  // connection. Check listeners that could serve each actual destination;
+  // unrelated listeners on a different address or family are not owners.
+  let mcpConnections = rows.filter(row => row.state === 5 && row.pid === callerPid && row.remotePort === mcpPort);
+  if (socket) {
+    const localAddress = tcp_address_hex(socket.localAddress), remoteAddress = tcp_address_hex(socket.remoteAddress);
+    if (!localAddress || !remoteAddress || socket.remotePort !== mcpPort || !Number.isInteger(socket.localPort)) return false;
+    mcpConnections = mcpConnections.filter(row => row.localPort === socket.localPort && row.localAddress === localAddress &&
+      row.remoteAddress === remoteAddress && row.localScope === 0 && row.remoteScope === 0);
+    if (mcpConnections.length !== 1) return false;
+  }
+  return mcpConnections.length > 0 && mcpConnections.every(left => {
+    const listeners = [...new Set(rows.filter(row => row.state === 2 && row.localPort === mcpPort && row.family === left.family &&
+      typeof row.localAddress === "string" && (/^0+$/.test(row.localAddress) ||
+        row.localAddress === left.remoteAddress && row.localScope === left.remoteScope)).map(row => row.pid))];
+    return listeners.length === 1 && listeners[0] === managerPid && rows.some(right => right.pid === managerPid && reciprocal_tcp(left, right));
+  });
+}
+
 export function match_testclient_binding(rows, mcpPort, clientPid, clientPort, callerPid = process.pid) {
   if (![mcpPort, clientPort].every(port => Number.isInteger(port) && port > 0 && port <= 65535) ||
       !Number.isInteger(clientPid) || clientPid <= 0 || !Number.isInteger(callerPid) || callerPid <= 0) return null;
-  const listeners = [...new Set(rows.filter(row => row.state === 2 && row.localPort === mcpPort).map(row => row.pid))];
-  if (listeners.length !== 1 || !listeners[0] || listeners[0] === clientPid) return null;
-  const managerPid = listeners[0];
-  const reciprocal = (left, right) => right.family === left.family && right.state === 5 &&
-    right.localPort === left.remotePort && right.remotePort === left.localPort && right.localAddress === left.remoteAddress &&
-    right.remoteAddress === left.localAddress && right.localScope === left.remoteScope && right.remoteScope === left.localScope;
-  // A replaced listener is not necessarily the server of an existing keep-alive
-  // connection. All of this process's live MCP connections must reach it.
   const mcpConnections = rows.filter(row => row.state === 5 && row.pid === callerPid && row.remotePort === mcpPort);
-  if (!mcpConnections.length || mcpConnections.some(left => !rows.some(right => right.pid === managerPid && reciprocal(left, right)))) return null;
+  const peers = [...new Set(rows.filter(right => mcpConnections.some(left => reciprocal_tcp(left, right))).map(row => row.pid))];
+  if (peers.length !== 1 || !peers[0] || peers[0] === clientPid) return null;
+  const managerPid = peers[0];
+  if (!match_mcp_binding(rows, mcpPort, managerPid, callerPid)) return null;
   const managerConnections = rows.filter(row => row.state === 5 && row.pid === managerPid && row.remotePort === clientPort);
-  const matched = managerConnections.filter(left => rows.some(right => right.pid === clientPid && reciprocal(left, right)));
+  const matched = managerConnections.filter(left => rows.some(right => right.pid === clientPid && reciprocal_tcp(left, right)));
   return matched.length > 0 && matched.length === managerConnections.length ? managerPid : null;
 }
 

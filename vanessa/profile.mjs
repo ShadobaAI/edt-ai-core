@@ -53,7 +53,8 @@ export function loadManagerProfile(file, expectedHash) {
   file = path_identity(file);
   const raw = readJson(file, 65536, expectedHash), base = path.dirname(file);
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1) fail("Некорректная версия профиля запуска");
-  if (!raw.manager || typeof raw.manager !== "object" || Array.isArray(raw.manager)) fail("Некорректное поле manager");
+  if (Object.hasOwn(raw, "client") || Object.hasOwn(raw, "clients")) fail("Неизвестное поле в profile");
+  object(raw.manager, ["infobase", "user"], "manager");
   return { projectRoot: path.resolve(base, text(raw.projectRoot, "project root")),
     manager: { infobase: profileInfobase(raw.manager.infobase, base) }, mcp: profileMcp(raw.mcp) };
 }
@@ -64,7 +65,7 @@ export function loadProfile(file, expectedHash, clientName) {
   let raw;
   try { raw = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); } catch { fail("Некорректный файл JSON"); }
   const base = path.dirname(file);
-  object(raw, ["version", "id", "projectRoot", "platform", "runtime", "manager", "client", "clients", "mcp", "features", "results", "stateDir", "limits"], "profile");
+  object(raw, ["version", "id", "projectRoot", "platform", "runtime", "manager", "infobase", "users", "mcp", "features", "results", "stateDir", "limits"], "profile");
   if (raw.version !== 1) fail("Неподдерживаемая версия профиля");
   if (typeof raw.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(raw.id)) fail("Некорректный идентификатор профиля");
   const resolve = (value, label) => path.resolve(base, text(value, label));
@@ -73,25 +74,21 @@ export function loadProfile(file, expectedHash, clientName) {
   if (Object.hasOwn(raw.runtime, "epf") === Object.hasOwn(raw.runtime, "navigationUrl") || (Object.hasOwn(raw.runtime, "navigationUrl") && Object.hasOwn(raw.runtime, "manifest"))) fail("Для запуска требуется ровно один вариант: EPF или встроенный navigationUrl");
   for (const key of ["epf", "navigationUrl", "paramsFile", "manifest"]) if (Object.hasOwn(raw.runtime, key)) text(raw.runtime[key], `runtime ${key}`);
   if (raw.runtime.navigationUrl && !/^e1cib\/app\/[^\s;"\x00-\x1f]+$/i.test(raw.runtime.navigationUrl)) fail("Некорректный navigationUrl встроенного запуска");
-  const rejectCredentials = (value, label) => {
-    if (value && ["user", "userEnv", "password", "passwordEnv"].some(key => Object.hasOwn(value, key)))
-      fail(`Учётные данные в ${label} не поддерживаются: удалите их из профиля плагина и настройте в Vanessa`);
+  const parseUser = value => {
+    object(value, ["name", "password", "interface"], "user");
+    text(value.name, "user name");
+    if (typeof value.password !== "string" || /[\x00-\x1f]/.test(value.password)) fail("Некорректный пароль пользователя");
+    if (value.interface !== "taxi") fail("Неподдерживаемый интерфейс; требуется taxi");
+    return { name: value.name, password: value.password, interface: value.interface };
   };
-  rejectCredentials(raw.manager, "manager");
-  object(raw.manager, ["infobase", "interface"], "manager");
-  if (raw.manager.interface !== undefined && raw.manager.interface !== "taxi") fail("Неподдерживаемый интерфейс менеджера; требуется taxi");
-  const parseClient = value => {
-    rejectCredentials(value, "client");
-    object(value, ["name", "infobase", "interface", "computerName"], "client");
-    if (Object.hasOwn(value, "computerName")) text(value.computerName, "client computer name");
-    if (value.interface !== undefined && value.interface !== "taxi") fail("Неподдерживаемый интерфейс клиента; требуется taxi");
-    return { name: text(value.name, "client name"), infobase: infobase(value.infobase), interface: "taxi", computerName: value.computerName ?? "localhost" };
-  };
-  if (raw.clients !== undefined && (!Array.isArray(raw.clients) || raw.clients.length === 0)) fail("Некорректный список дополнительных клиентов");
-  const clients = [raw.client, ...(raw.clients ?? [])].map(parseClient);
-  if (new Set(clients.map(client => client.name)).size !== clients.length) fail("Повторное имя клиента");
-  const baseKey = base => base.type === "file" ? `file:${process.platform === "win32" ? base.path.toLowerCase() : base.path}` : `server:${base.server.toLowerCase()}\u0000${base.database.toLowerCase()}`;
-  if (clients.some(client => baseKey(client.infobase) !== baseKey(clients[0].infobase))) fail("Дополнительные клиенты должны использовать ту же информационную базу, что и основной клиент");
+  object(raw.manager, ["infobase", "user"], "manager");
+  const managerUser = parseUser(raw.manager.user);
+  if (!raw.users || typeof raw.users !== "object" || Array.isArray(raw.users) || !Object.keys(raw.users).length) fail("Требуется список пользователей");
+  const applicationBase = infobase(raw.infobase);
+  const clients = Object.entries(raw.users).map(([name, value]) => {
+    const user = parseUser(value);
+    return { name: text(name, "profile name"), infobase: applicationBase, computerName: "localhost", user };
+  });
   const selectedClient = clientName === undefined ? clients[0] : clients.find(client => client.name === clientName);
   if (!selectedClient) fail("Неизвестное имя клиента");
   const mcp = profileMcp(raw.mcp);
@@ -101,10 +98,10 @@ export function loadProfile(file, expectedHash, clientName) {
   object(limits, ["timeoutMs", "maxBytes"], "limits");
   if (!Number.isInteger(limits.timeoutMs) || limits.timeoutMs < 100 || limits.timeoutMs > 120000 || !Number.isInteger(limits.maxBytes) || limits.maxBytes < 1024 || limits.maxBytes > 8 * 1024 * 1024) fail("Некорректные ограничения профиля");
   const identity = digest(file);
-  return { version: 1, id: raw.id, file, identity,
+  return { version: raw.version, id: raw.id, file, identity,
     projectRoot: resolve(raw.projectRoot, "project root"), platform: resolve(raw.platform, "platform"),
     runtime: { ...(raw.runtime.epf ? { epf: resolve(raw.runtime.epf, "runtime epf") } : { navigationUrl: raw.runtime.navigationUrl }), ...(raw.runtime.paramsFile ? { paramsFile: resolve(raw.runtime.paramsFile, "runtime paramsFile") } : {}), ...(raw.runtime.manifest ? { manifest: resolve(raw.runtime.manifest, "runtime manifest") } : {}) },
-    manager: { infobase: infobase(raw.manager.infobase), interface: "taxi" }, client: selectedClient, ...(raw.clients ? { ownerClient: clients[0] } : {}),
+    manager: { infobase: infobase(raw.manager.infobase), user: managerUser }, client: selectedClient, ownerClient: clients[0],
     mcp, features: resolve(raw.features, "features"), results: resolve(raw.results, "results"),
     stateDir: raw.stateDir ? resolve(raw.stateDir, "stateDir") : path.join(base, ".vanessa", `${raw.id}-${identity.slice(0, 12)}`), limits };
 }
@@ -120,7 +117,8 @@ export function startArguments(profile, _env = process.env, { startupLog = path.
   const paramsFile = path.join(profile.stateDir, "interactive.json");
   if ([paramsFile, profile.projectRoot].some(value => /[;"\r\n]/.test(value))) fail("Недопустимые символы в пути запуска");
   const command = ["runMcp", `mcpPort=${profile.mcp.port}`, "UseEditor", `WorkspaceRoot=${profile.projectRoot}`, `VAParams=${paramsFile}`];
-  return ["ENTERPRISE", "/TESTMANAGER", "/iTaxi", "/IBConnectionString", connectionString(profile.manager.infobase),
+  return ["ENTERPRISE", "/TESTMANAGER", profile.manager.user.interface === "taxi" ? "/iTaxi" : fail("Неподдерживаемый интерфейс менеджера"), "/IBConnectionString", connectionString(profile.manager.infobase),
+    "/N", profile.manager.user.name, "/P", profile.manager.user.password,
     ...(profile.runtime.epf ? ["/Execute", profile.runtime.epf] : ["/URL", profile.runtime.navigationUrl]), "/Out", startupLog, "/C", command.join(";")];
 }
 

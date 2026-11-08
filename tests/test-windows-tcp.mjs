@@ -3,11 +3,11 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import net from "node:net";
 import test from "node:test";
-import { match_testclient_binding, windows_tcp_rows } from "../scripts/windows_process.mjs";
+import { match_mcp_binding, match_testclient_binding, windows_tcp_rows } from "../scripts/windows_process.mjs";
 
 for (const family of [2, 23]) test(`TCP binding requires reciprocal established connections (family ${family})`, () => {
   const address = family === 2 ? "7f000001" : "00000000000000000000000000000001";
-  const listener = { family, state: 2, pid: 100, localPort: 2000 };
+  const listener = { family, state: 2, pid: 100, localPort: 2000, localAddress: address, localScope: 0 };
   const manager = { family, state: 5, pid: 100, localAddress: address, localScope: 0, localPort: 3100,
     remoteAddress: address, remoteScope: 0, remotePort: 4000 };
   const client = { family, state: 5, pid: 200, localAddress: address, localScope: 0, localPort: 4000,
@@ -15,6 +15,19 @@ for (const family of [2, 23]) test(`TCP binding requires reciprocal established 
   const caller = { ...manager, pid: 300, localPort: 3200, remotePort: 2000 };
   const mcp = { ...client, pid: 100, localPort: 2000, remotePort: 3200 };
   const base = [listener, manager, client, caller, mcp];
+  const endpoint = family === 2 ? "127.0.0.1" : "::1";
+  const socket = { localAddress: endpoint, localPort: 3200, remoteAddress: endpoint, remotePort: 2000 };
+  assert.equal(match_mcp_binding(base, 2000, 100, 300, socket), true);
+  assert.equal(match_mcp_binding(base, 2000, 100, 300, { ...socket, localPort: 3201 }), false);
+  assert.equal(match_mcp_binding(base, 2000, 100, 300, { ...socket, remoteAddress: family === 2 ? "127.0.0.2" : "::2" }), false);
+  assert.equal(match_mcp_binding(base, 2000, 100, 300), true);
+  assert.equal(match_mcp_binding(base, 2000, 101, 300), false);
+  assert.equal(match_mcp_binding(base.filter(row => row !== caller), 2000, 100, 300), false);
+  assert.equal(match_mcp_binding([...base, { ...caller, localPort: 3201 }], 2000, 100, 300), false);
+  const otherAddress = family === 2 ? "7f000002" : "00000000000000000000000000000002";
+  assert.equal(match_mcp_binding([...base, { ...listener, pid: 101, localAddress: otherAddress }], 2000, 100, 300), true);
+  assert.equal(match_mcp_binding([...base, { ...listener, pid: 101, family: family === 2 ? 23 : 2 }], 2000, 100, 300), true);
+  assert.equal(match_mcp_binding([...base, { ...listener, pid: 101, localAddress: "0".repeat(address.length) }], 2000, 100, 300), false);
   const match = rows => match_testclient_binding(rows, 2000, 200, 4000, 300);
   assert.equal(match(base), 100);
   assert.equal(match([listener, manager, caller, mcp]), null);
@@ -24,6 +37,7 @@ for (const family of [2, 23]) test(`TCP binding requires reciprocal established 
   assert.equal(match([listener, manager, { ...client, remoteScope: 1 }, caller, mcp]), null);
   assert.equal(match([listener, manager, { ...client, family: family === 2 ? 23 : 2 }, caller, mcp]), null);
   assert.equal(match([...base, { ...listener, pid: 101 }]), null);
+  assert.equal(match([...base, { ...listener, pid: 101, localAddress: otherAddress }]), 100);
   assert.equal(match([...base, { ...manager, localPort: 3101 }]), null);
   assert.equal(match(base.filter(row => row !== caller)), null);
   assert.equal(match(base.map(row => row === mcp ? { ...mcp, pid: 101 } : row)), null);
@@ -53,6 +67,8 @@ for (const [family, address] of [[2, "127.0.0.1"], [23, "::1"]]) {
     await once(mcpSocket, "connect");
     t.after(() => { socket.destroy(); mcpSocket.destroy(); mcp.close(); });
     const rows = windows_tcp_rows(family);
+    assert.equal(match_mcp_binding(rows, mcp.address().port, process.pid), true);
+    assert.equal(match_mcp_binding(rows, mcp.address().port, process.pid, process.pid, mcpSocket), true);
     assert.equal(match_testclient_binding(rows, mcp.address().port, child.pid, info.port), process.pid);
     assert.equal(match_testclient_binding(rows, mcp.address().port, child.pid + 1, info.port), null);
   });

@@ -36,8 +36,7 @@ export function runtime_profile(selected, with_digest = false) {
     throw new ConfigError("Профиль запуска Vanessa превышает 64 КиБ");
   const payload = fs.readFileSync(file),
     raw = JSON.parse(payload.toString("utf8").replace(/^\uFEFF/, ""));
-  // Runtime validation gives actionable diagnostics for conflicting user settings,
-  // duplicate names and cross-client infobase mismatches before schema validation.
+  // Validate the selected runtime contract before schema and project binding checks.
   loadProfile(file, sha256(payload));
   check_schema(raw, "vanessa-runtime.schema.json");
   for (const [key, expected] of [

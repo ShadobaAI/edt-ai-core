@@ -32,8 +32,8 @@ test("the same Vanessa profile reached through a directory alias keeps its ident
   fs.symlinkSync(profiles, alias, process.platform === "win32" ? "junction" : "dir");
   fs.writeFileSync(path.join(profiles, "runtime.json"), JSON.stringify({
     version: 1, id: "fixture", projectRoot: "..", platform: "platform", runtime: { epf: "runner.epf" },
-    manager: { infobase: { type: "file", path: "database" } },
-    client: { name: "fixture", infobase: { type: "file", path: "database" } },
+    manager: { infobase: { type: "file", path: "database" }, user: { name: "manager", password: "secret", interface: "taxi" } },
+    infobase: { type: "file", path: "database" }, users: { fixture: { name: "user", password: "secret", interface: "taxi" } },
     mcp: { url: "http://127.0.0.1:12345/mcp", port: 12345 }, features: "features", results: "results",
   }));
   const direct = loadProfile(path.join(profiles, "runtime.json")), indirect = loadProfile(path.join(alias, "runtime.json"));

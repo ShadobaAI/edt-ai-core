@@ -344,7 +344,7 @@ test("Windows terminates the daemon startup job when its owner crashes", { skip:
 test("Windows commits an intentionally persistent daemon only after startup", { skip: process.platform !== "win32", timeout: 10000 }, async t => {
   const f = fixture(t), pidFile = path.join(f.base, "committed-daemon.pid"), readyFile = path.join(f.base, "committed.ready");
   const windows = pathToFileURL(path.join(ROOT, "scripts/windows_process.mjs")).href;
-  const target = `require('node:fs').writeFileSync(${JSON.stringify(pidFile)},String(process.pid));setTimeout(()=>process.exit(0),2000);`;
+  const target = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(pidFile + ".tmp")},String(process.pid));fs.renameSync(${JSON.stringify(pidFile + ".tmp")},${JSON.stringify(pidFile)});setTimeout(()=>process.exit(0),2000);`;
   const ownerCode = `import fs from 'node:fs';import {spawn_detached_windows} from ${JSON.stringify(windows)};
     const child=spawn_detached_windows(process.execPath,['-e',${JSON.stringify(target)}],{cwd:process.cwd(),env:process.env,guardUntilCommit:true});
     child.commit();child.release();fs.writeFileSync(${JSON.stringify(readyFile)},'committed');setInterval(()=>{},1000);`;
