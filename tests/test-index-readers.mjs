@@ -15,6 +15,7 @@ import { acquire_reader, active_readers, ensure_daemon, index_config, restart_in
 import { open_reader, reader_active } from "../scripts/reader_lease.mjs";
 import { private_observation_directory } from "../scripts/openviking_store.mjs";
 import { copy_and_hash_regular_file } from "../scripts/bounded_file.mjs";
+import { create_windows_reader_job, windows_process_identity, windows_process_session } from "../scripts/windows_process.mjs";
 
 test("private observations use canonical parents and avoid writable shared ancestors", { skip: process.platform === "win32" }, t => {
   const f = fixture(t), shared = path.join(f.base, "shared"), safe = path.join(f.base, "safe"), foreign = path.join(f.base, "foreign"), alias = path.join(shared, "alias");
@@ -254,7 +255,8 @@ test("a legacy reader without termination proof blocks maintenance without touch
   await assert.rejects(restart_index(f.state, settings(), f.root, f.profile, {
     installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
     restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }),
-  }), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /Не подтверждено завершение/);
+  }), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : error =>
+    /Не подтверждено завершение/.test(error.message) && error.message.includes(file));
   assert.deepEqual(calls, []);
   assert.equal(fs.existsSync(file), true);
   assert.doesNotThrow(() => process.kill(process.pid, 0));
@@ -355,12 +357,31 @@ test("unresponsive reader owners have one bounded deadline and release their con
 test("a malformed live reader marker never permits maintenance", async t => {
   const f = fixture(t), lease = await acquire_reader(f.state, f.root); f.clients.push(lease);
   await lease.arm(); const original = fs.readFileSync(lease.file);
-  for (const record of [null, {}, { id: randomUUID(), pid: process.pid, root: f.root, phase: "preparing" }]) {
+  const valid = JSON.parse(original);
+  for (const record of [null, {}, { id: randomUUID(), pid: process.pid, root: f.root, phase: "preparing" },
+    { ...valid, recovery: { kind: "windows-observer-job-v1", session: -1 } },
+    { ...valid, observerBinding: "invalid", recovery: { kind: "windows-observer-job-v1", session: 1 } },
+    { ...valid, observerBinding: "a".repeat(64), snapshotMayExist: "no" }]) {
     fs.writeFileSync(lease.file, JSON.stringify(record));
     await assert.rejects(active_readers(f.state, f.root), /Неподдерживаемая запись/);
     assert.equal(fs.existsSync(lease.file), true);
   }
   fs.writeFileSync(lease.file, original);
+});
+
+test("legacy preparing observations retain the barrier when snapshot state is unknown", async t => {
+  const f = fixture(t), binding = "f".repeat(64);
+  const fresh = await acquire_reader(f.state, f.root, { observerBinding: binding });
+  await fresh.abandon();
+  assert.deepEqual(await active_readers(f.state, f.root), []);
+  const legacy = await acquire_reader(f.state, f.root, { observerBinding: binding });
+  await legacy.abandon();
+  const record = JSON.parse(fs.readFileSync(legacy.file));
+  delete record.snapshotMayExist;
+  fs.writeFileSync(legacy.file, JSON.stringify(record));
+  assert.equal((await active_readers(f.state, f.root))[0]?.orphaned, true);
+  fs.writeFileSync(legacy.file, JSON.stringify({ ...record, snapshotMayExist: true }));
+  assert.equal((await active_readers(f.state, f.root))[0]?.orphaned, true);
 });
 
 test("a crashed reader releases its OS endpoint and its stale record is removed", async t => {
@@ -399,6 +420,117 @@ test("a crashed native observation retains a fail-closed maintenance barrier", a
     restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }),
   }), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /Не подтверждено завершение читателя/);
   assert.deepEqual(calls, []);
+});
+
+test("a crashed Windows observation is released only after its named job disappears", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
+  const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href;
+  const live = await acquire_reader(f.state, f.root); f.clients.push(live);
+  const code = `import {acquire_reader} from ${JSON.stringify(runtime)};
+    const lease=await acquire_reader(${JSON.stringify(f.state)},${JSON.stringify(f.root)},{observerBinding:'a'.repeat(64)});
+    await lease.arm(); console.log(lease.id); setInterval(()=>{},1000);`;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const closed = new Promise(resolve => owner.once("close", resolve));
+  t.after(async () => { if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await closed; });
+  const [data] = await once(owner.stdout, "data"), id = String(data).trim();
+  const file = path.join(project_home(f.state, f.root), "code-index/readers", id + ".json");
+  const record = JSON.parse(fs.readFileSync(file));
+  assert.equal(record.recovery.kind, "windows-observer-job-v1");
+  assert.match(record.recovery.creation, /^win32-filetime:\d+$/);
+  const job = create_windows_reader_job(id);
+  t.after(() => job.close());
+  owner.kill("SIGKILL"); await closed;
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === id)?.orphaned, true);
+  await assert.rejects(live.assertAvailable(), /Не подтверждено завершение/);
+  job.close();
+  // A finished Job says nothing about an interrupted snapshot cleanup.
+  fs.writeFileSync(file, JSON.stringify({ ...record, phase: "closing" }));
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === id)?.orphaned, true);
+  // A local Job name cannot prove anything about a different Windows session.
+  fs.writeFileSync(file, JSON.stringify({ ...record, recovery: { ...record.recovery, session: record.recovery.session + 1 } }));
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === id)?.orphaned, true);
+  // Older recovery records do not prove that a snapshot was never created.
+  const { snapshotMayExist, ...legacyRecord } = record;
+  assert.equal(snapshotMayExist, false);
+  fs.writeFileSync(file, JSON.stringify(legacyRecord));
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === id)?.orphaned, true);
+  fs.writeFileSync(file, JSON.stringify(record));
+  const deadline = Date.now() + 5000; let readers;
+  do {
+    readers = await active_readers(f.state, f.root);
+    if (!readers.some(item => item.id === id)) break;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  } while (Date.now() < deadline);
+  assert.deepEqual(readers.map(item => item.id), [live.id]);
+  assert.equal(fs.existsSync(file), false);
+  await live.assertAvailable();
+});
+
+test("a crashed observer with an unremoved snapshot retains its barrier", { timeout: 15000 }, async t => {
+  const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href,
+    storage = pathToFileURL(path.join(ROOT, "scripts/openviking_store.mjs")).href;
+  const code = `import fs from 'node:fs'; import path from 'node:path'; import {acquire_reader} from ${JSON.stringify(runtime)};
+    import {private_observation_directory} from ${JSON.stringify(storage)};
+    const lease=await acquire_reader(${JSON.stringify(f.state)},${JSON.stringify(f.root)},{observerBinding:'e'.repeat(64)});
+    await lease.arm({snapshotMayExist:true}); await lease.arm();
+    const snapshot=private_observation_directory(${JSON.stringify(path.join(project_home(f.state, f.root), "code-index"))});
+    if(snapshot.writeFile) snapshot.writeFile('daemon.json','fixture'); else fs.writeFileSync(path.join(snapshot.path,'daemon.json'),'fixture');
+    console.log(JSON.stringify({id:lease.id,path:snapshot.path}));
+    setInterval(()=>{},1000);`;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const closed = new Promise(resolve => owner.once("close", resolve));
+  t.after(async () => { if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await closed; });
+  const [data] = await once(owner.stdout, "data"), snapshot = JSON.parse(String(data));
+  owner.kill("SIGKILL"); await closed;
+  const deadline = Date.now() + 1500;
+  do {
+    const [reader] = await active_readers(f.state, f.root);
+    assert.equal(reader?.id, snapshot.id);
+    assert.equal(reader?.orphaned, true);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+  assert.equal(fs.existsSync(path.join(snapshot.path, "daemon.json")), true);
+});
+
+test("Windows can recover an observer whose PID now belongs to a different process", { skip: process.platform !== "win32" }, async t => {
+  const f = fixture(t), id = randomUUID(), file = path.join(project_home(f.state, f.root), "code-index/readers", id + ".json");
+  const current = windows_process_identity(process.pid), ticks = BigInt(current.created.slice("win32-filetime:".length));
+  save_json(file, { id, pid: process.pid, root: f.root, phase: "active", orphanedBarrier: true, observerBinding: "d".repeat(64), snapshotMayExist: false,
+    recovery: { kind: "windows-observer-job-v1", session: windows_process_session(process.pid), creation: "win32-filetime:" + (ticks + 1n) } });
+  assert.deepEqual(await active_readers(f.state, f.root), []);
+  assert.equal(fs.existsSync(file), false);
+  assert.doesNotThrow(() => process.kill(process.pid, 0));
+});
+
+test("a missing Windows observation endpoint never releases a still-live owner", { skip: process.platform !== "win32" }, async t => {
+  const f = fixture(t), lease = await acquire_reader(f.state, f.root, { observerBinding: "c".repeat(64) });
+  await lease.arm(); await lease.abandon();
+  const [reader] = await active_readers(f.state, f.root);
+  assert.equal(reader.id, lease.id); assert.equal(reader.orphaned, true);
+  assert.equal(fs.existsSync(lease.file), true);
+});
+
+test("a killed Windows observation owner cannot strand its protected native reader", { skip: process.platform !== "win32", timeout: 20000 }, async t => {
+  const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href,
+    processes = pathToFileURL(path.join(ROOT, "scripts/processes.mjs")).href, started = path.join(f.base, "reader-started");
+  const live = await acquire_reader(f.state, f.root); f.clients.push(live);
+  const target = `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(started)},'started'); setInterval(()=>{},1000);`;
+  const code = `import {acquire_reader} from ${JSON.stringify(runtime)}; import {launch} from ${JSON.stringify(processes)};
+    const lease=await acquire_reader(${JSON.stringify(f.state)},${JSON.stringify(f.root)},{observerBinding:'b'.repeat(64)});
+    await lease.arm(); launch(process.execPath,['--input-type=module','-e',${JSON.stringify(target)}],{readerJob:lease.id,stdio:'ignore'});
+    console.log(lease.id); setInterval(()=>{},1000);`;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const closed = new Promise(resolve => owner.once("close", resolve));
+  t.after(async () => { if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await closed; });
+  const [data] = await once(owner.stdout, "data"), id = String(data).trim();
+  let deadline = Date.now() + 10000;
+  while (!fs.existsSync(started) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+  assert.ok(fs.existsSync(started), "the protected native reader must have started");
+  owner.kill("SIGKILL"); await closed;
+  deadline = Date.now() + 10000;
+  while ((await active_readers(f.state, f.root)).some(item => item.id === id) && Date.now() < deadline)
+    await new Promise(resolve => setTimeout(resolve, 50));
+  assert.deepEqual((await active_readers(f.state, f.root)).map(item => item.id), [live.id]);
+  await live.assertAvailable();
 });
 
 test("a daemon is not started while another reader might still own a native process", async t => {

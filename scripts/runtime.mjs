@@ -47,7 +47,7 @@ import { all_pages } from "./mcp_pages.mjs";
 import { COMPONENTS, managed_components, component_enabled, component_settings, grant_preparation, preparation_granted, require_preparation, native_environment } from "./components.mjs";
 import { RemoteMcp } from "./remote_client.mjs";
 import { core_version } from "./compatibility.mjs";
-import { spawn_detached_windows, windows_process_identity, windows_tcp_rows, pin_windows_process, windows_has_tcp_peer } from "./windows_process.mjs";
+import { spawn_detached_windows, windows_process_identity, windows_process_session, windows_reader_job_absent, windows_tcp_rows, pin_windows_process, windows_has_tcp_peer } from "./windows_process.mjs";
 import { index_repositories, index_selection } from "./directory_context.mjs";
 import { capture_index_snapshot, snapshot_bytes } from "./index_snapshot.mjs";
 import { open_reader, reader_active, observe_reader } from "./reader_lease.mjs";
@@ -448,12 +448,38 @@ async function active_readers_locked(state, root) {
         typeof reader.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reader.id) || name !== reader.id + ".json" ||
         reader.root !== resolve(root) || !Number.isSafeInteger(reader.pid) || reader.pid <= 0 ||
         reader.phase !== undefined && !["preparing", "active", "closing"].includes(reader.phase) ||
-        ["active", "closing"].includes(reader.phase) && reader.orphanedBarrier !== true)
+        ["active", "closing"].includes(reader.phase) && reader.orphanedBarrier !== true ||
+        reader.snapshotMayExist !== undefined && (typeof reader.snapshotMayExist !== "boolean" ||
+          typeof reader.observerBinding !== "string" || !/^[a-f0-9]{64}$/.test(reader.observerBinding)) ||
+        reader.recovery !== undefined && (!reader.recovery || typeof reader.recovery !== "object" || Array.isArray(reader.recovery) ||
+          Object.keys(reader.recovery).sort().join(",") !== "creation,kind,session" || reader.recovery.kind !== "windows-observer-job-v1" ||
+          !Number.isSafeInteger(reader.recovery.session) || reader.recovery.session < 0 ||
+          typeof reader.recovery.creation !== "string" || !/^win32-filetime:\d+$/.test(reader.recovery.creation) ||
+          typeof reader.observerBinding !== "string" || !/^[a-f0-9]{64}$/.test(reader.observerBinding)))
       throw new ConfigError("Неподдерживаемая запись читателя индекса; обслуживание заблокировано. " + barrier_recovery_hint(file));
     if (await reader_active(reader.id, { timeoutMs: Math.max(1, Math.min(2000, deadline - performance.now())) })) active.push(reader);
     // An observation may have spawned a supervised native reader. Loss of the
     // backend's socket alone does not prove that child tree has terminated.
-    else if (reader.phase !== "preparing" || reader.orphanedBarrier === true) active.push({ ...reader, orphaned: true });
+    else if (reader.phase !== "preparing" || reader.orphanedBarrier === true ||
+        Object.hasOwn(reader, "observerBinding") && reader.snapshotMayExist !== false) {
+      let recovered = false;
+      // The v1 marker is used only when every process of the observation,
+      // including the copy worker, uses this one named Windows Job. The owner
+      // must be gone and the Job must be absent in its original session. A
+      // missing endpoint, PID alone, timeout, foreign session, or unknown Job
+      // is never evidence of cleanup; old markers retain their barrier.
+      // An absent Job says nothing about snapshot files. Only a marker which
+      // explicitly predates snapshot creation can be recovered this way; old
+      // markers and interruptions during or after creation remain barriers.
+      if (process.platform === "win32" && reader.phase === "active" && reader.recovery?.kind === "windows-observer-job-v1" &&
+          reader.snapshotMayExist === false) try {
+        const current = windows_process_identity(reader.pid);
+        recovered = windows_process_session(process.pid) === reader.recovery.session &&
+          (!current || current.created !== reader.recovery.creation) && windows_reader_job_absent(reader.id);
+      } catch { /* Preserve the marker whenever the kernel cannot confirm it. */ }
+      if (recovered) fs.rmSync(file, { force: true });
+      else active.push({ ...reader, orphaned: true });
+    }
     else fs.rmSync(file, { force: true });
   } };
   const results = await Promise.allSettled(Array.from({ length: Math.min(8, names.length) }, worker));
@@ -473,6 +499,10 @@ async function wait_for_readers(state, root, timeoutMs = 6000) {
     if (!readers.length || readers.some(reader => reader.orphaned) || performance.now() >= deadline) return readers;
     await sleep(Math.min(250, Math.max(1, deadline - performance.now())));
   }
+}
+function orphaned_reader_message(home, reader) {
+  return "Не подтверждено завершение читателя индекса после аварии. Обслуживание заблокировано до проверки процесса. " +
+    barrier_recovery_hint(path.join(home, "readers", reader.id + ".json"));
 }
 function check_maintenance(home, allowOwned = false) {
   const guard = path.join(home, "guard-cleanup-unknown.json");
@@ -524,9 +554,15 @@ export async function acquire_reader(state, root, { preparing = true, observerBi
       throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое подключение заблокировано. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
     const existing = observerBinding && readers.find(reader => reader.observerBinding === observerBinding && reader.instance === instance_name());
     if (existing) return existing.phase === "closing" ? { closing: existing.id } : { joined: existing.id };
+    let recovery;
+    if (observerBinding && process.platform === "win32") {
+      const identity = windows_process_identity(process.pid);
+      if (!identity?.created) throw new ConfigError("Не удалось подтвердить владельца наблюдателя индекса.");
+      recovery = { kind: "windows-observer-job-v1", session: windows_process_session(process.pid), creation: identity.created };
+    }
     const id = randomUUID(), file = path.join(home, "readers", id + ".json"), owner = await open_reader(id, { binding: observerBinding, observe });
-    const record = { id, pid: process.pid, root: resolve(root), ...(preparing ? { phase: "preparing" } : {}),
-      ...(observerBinding ? { observerBinding, instance: instance_name() } : {}) };
+    let record = { id, pid: process.pid, root: resolve(root), ...(preparing ? { phase: "preparing" } : {}),
+      ...(observerBinding ? { observerBinding, instance: instance_name(), snapshotMayExist: false } : {}), ...(recovery ? { recovery } : {}) };
     try { save_json(file, record); }
     catch (error) { await owner.close(); throw error; }
     let closing;
@@ -537,9 +573,13 @@ export async function acquire_reader(state, root, { preparing = true, observerBi
       if (orphaned)
         throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое наблюдение заблокировано. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
     };
-    return { id, file, assertAvailable: () => operation_lock(home, ensureAvailable, 45), arm: () => operation_lock(home, async () => {
+    return { id, file, assertAvailable: () => operation_lock(home, ensureAvailable, 45), arm: ({ snapshotMayExist = false } = {}) => operation_lock(home, async () => {
+      if (typeof snapshotMayExist !== "boolean") throw new ConfigError("Некорректное состояние снимка читателя индекса.");
       await ensureAvailable();
-      save_json(file, { ...record, phase: "active", orphanedBarrier: true });
+      const next = { ...record, phase: "active", orphanedBarrier: true,
+        ...(observerBinding ? { snapshotMayExist: record.snapshotMayExist || snapshotMayExist } : {}) };
+      save_json(file, next);
+      record = next;
     }, 45), markClosing: () => operation_lock(home, () => {
       save_json(file, { ...record, phase: "closing", orphanedBarrier: true });
     }, 10), close: () => closing ||= (async () => {
@@ -593,7 +633,8 @@ export async function update_component(state, config, root, data, component, act
     signal_component(state, root, component, true);
     if (component === "code-index") {
       const readers = await wait_for_readers(state, root);
-      if (readers.length) throw new ConfigError(readers.some(reader => reader.orphaned) ? "Не подтверждено завершение читателя индекса после аварии. Обслуживание заблокировано до проверки процесса." : "Индекс кода используется. Завершите текущие операции или закройте их чаты, затем примените загруженного кандидата.");
+      const orphaned = readers.find(reader => reader.orphaned);
+      if (readers.length) throw new ConfigError(orphaned ? orphaned_reader_message(home, orphaned) : "Индекс кода используется. Завершите текущие операции или закройте их чаты, затем примените загруженного кандидата.");
       try { await (io.stop || stop_daemon)(state, root); }
       catch (error) { leaveMaintenance = true; throw uncertain_update("Остановка демона не подтверждена; перед повтором проверьте его фактическое состояние: " + safe_error_message(error)); }
     }
@@ -1121,7 +1162,8 @@ async function maintain_index(state, config, root, data, repositories, io) {
       signal_component(state, root, "code-index", true);
       progress("waiting_readers");
       const readers = await wait_for_readers(state, root);
-      if (readers.length) throw new ConfigError(readers.some(reader => reader.orphaned) ? "Не подтверждено завершение читателя индекса после аварии. Обслуживание заблокировано до проверки процесса." : "Индекс используется. Завершите текущие запросы и повторите действие.");
+      const orphaned = readers.find(reader => reader.orphaned);
+      if (readers.length) throw new ConfigError(orphaned ? orphaned_reader_message(home, orphaned) : "Индекс используется. Завершите текущие запросы и повторите действие.");
       const environment = native_environment(config);
       progress("stopping");
       try { await (io.stop || stop_daemon)(state, root, undefined, environment); stopped = true; }
@@ -1252,7 +1294,7 @@ async function copy_index_runtime(config, home, source, destination, timeoutMs, 
   let child, timer, monitor, expired = false, output = "", oversized = false;
   try {
     child = launch(process.execPath, [fileURLToPath(new URL("./index_copy_worker.mjs", import.meta.url))], {
-      cwd: home, env: native_environment(config), readerJob: randomUUID(), stdio: ["pipe", "pipe", "pipe"],
+      cwd: home, env: native_environment(config), readerJob: process.platform === "win32" ? readerId : randomUUID(), stdio: ["pipe", "pipe", "pipe"],
     });
     diagnostic.event("reader_copy_started", { reader: readerId, supervisorPid: child.pid });
     register(() => stop_child(child, 0));
@@ -1565,13 +1607,19 @@ export class IndexObserver {
         if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
         await lease.assertAvailable();
         checkAuthority();
+        // Record the possible snapshot before creating anything. If this
+        // process dies during creation, neither Job absence nor a preparing
+        // lease proves that the private files were removed.
+        await lease.arm({ snapshotMayExist: true });
+        checkAuthority();
+        if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
         snapshotDirectory = private_observation_directory(home); snapshotHome = snapshotDirectory.path;
         snapshotDirectory.ensure();
         const target = resolve(owner.executable), runtimeRoot = resolve(path.join(state, "runtime", "code-index"));
         const access = snapshotDirectory.ioPath, expected = path.basename(path.dirname(target)), readerName = process.platform === "win32" ? "reader.exe" : "reader", reader = path.join(access, readerName);
         if (!target.startsWith(runtimeRoot + path.sep) || !/^[0-9a-f]{64}$/.test(expected))
           throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
-        await lease.arm(); checkAuthority();
+        checkAuthority();
         if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
         const destinationIdentity = process.platform === "win32" ? snapshotDirectory.createFile(readerName) : null;
         launching = true;

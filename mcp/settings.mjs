@@ -57,7 +57,7 @@ function indexObserver() {
   return indexObserverPromise ||= waitIndexObserverCleanup("new_reader").then(() => {
     if (sessionClosing) throw Object.assign(new Error("Сеанс настроек закрывается."), { outcomeUnknown: true });
     if (indexObserverFailure) throw Object.assign(new Error("Завершение предыдущего читателя индекса не подтверждено."), { outcomeUnknown: true });
-    return import("../scripts/runtime.mjs").then(({ IndexObserver }) => new IndexObserver(state));
+    return import("../scripts/index_observer_proxy.mjs").then(({ IndexObserverProxy }) => new IndexObserverProxy(state));
   });
 }
 function dropIndexObserver(reason) {
@@ -306,7 +306,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
   return new Promise((resolve, reject) => {
     if (sessionClosing) return reject(new Error("Сеанс настроек завершён; новая операция не запущена."));
     if (backendCleanupFailure) return reject(Object.assign(new Error("Завершение предыдущего процесса настроек не подтверждено; новая операция заблокирована."), { outcomeUnknown: true }));
-    const observerToken = action === "refresh_readiness" ? randomUUID() : null, revision = selectionRevision, requests = new Map();
+    const observerToken = ["refresh_readiness", "probe"].includes(action) ? randomUUID() : null, revision = selectionRevision, requests = new Map();
     const protectedRead = Boolean(readDeadline && action === "read"), owner = randomUUID();
     // These operations may deliberately create a daemon that outlives this
     // backend. A strict reader job cannot safely perform that handoff.

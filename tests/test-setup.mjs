@@ -59,7 +59,9 @@ test("a direct backend receives the index observation response", { timeout: 1500
       process.send({type:'index_observation',token:input._indexObserverToken,id:randomUUID(),root,config:{active_project:root},profile:{},snapshot:{}});
     });`);
   fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
-    if(path.basename(process.argv[1]||'')==='settings.mjs') Object.defineProperty(process,'platform',{value:'darwin'});
+    if(path.basename(process.argv[1]||'')==='settings.mjs') { Object.defineProperty(process,'platform',{value:'darwin'});
+      const {IndexObserverProxy}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
+      IndexObserverProxy.prototype.observe=async()=>{throw new Error('invalid observation fixture');}; IndexObserverProxy.prototype.close=async()=>{}; }
     const spawn=cp.spawn; cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='settings_backend.mjs'
       ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options); syncBuiltinESMExports();`);
   const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
@@ -166,7 +168,7 @@ test("a rejected observation does not block a later request from the same backen
       process.on('message',m=>{if(m.id===first)send(second,root);else if(m.id===second)done(m.ok===true);});
       send(first,path.join(root,'wrong-project'));setTimeout(()=>done(false),2500).unref();});`);
   fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
-    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href)});IndexObserver.prototype.observe=async()=>({ok:true});}
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});IndexObserver.prototype.observe=async()=>({ok:true});}
     const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
       ? spawn(command,['--import',import.meta.url,...args],options)
       : path.basename(args?.[0]||'')==='settings_backend.mjs' ? spawn(command,[${JSON.stringify(fake)}],options) : spawn(command,args,options);syncBuiltinESMExports();`);
@@ -188,7 +190,7 @@ test("an observation cancellation waits for observer cleanup and reports its fai
       const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(started)}))return;clearInterval(poll);process.send({type:'index_observation_cancel',token,id});},20);
       setTimeout(()=>process.exit(2),8000).unref();});`);
   fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
-    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href)});let fail;
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});let fail;
       IndexObserver.prototype.observe=()=>new Promise((_,reject)=>{fail=reject;fs.writeFileSync(${JSON.stringify(started)},'started');});
       IndexObserver.prototype.close=()=>{fail(new Error('observation cancelled'));return new Promise((_,reject)=>setTimeout(()=>reject(new Error('forced observer cleanup failure')),1000));};}
     const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
@@ -212,7 +214,7 @@ test("a reader cleanup failure cannot become a completed observation", { timeout
     process.on('message',m=>{if(m.id!==id)return;console.log(JSON.stringify({ok:true,result:{projectRoot:root,componentChecks:[],managed:[],external:{}}}));process.disconnect();});
     process.send({type:'index_observation',token,id,root,config:{active_project:root},profile:{},snapshot:{}});});`);
   fs.writeFileSync(preload, `import cp from 'node:child_process';import path from 'node:path';import {syncBuiltinESMExports} from 'node:module';
-    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href)});
+    if(path.basename(process.argv[1]||'')==='settings.mjs'){const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
       IndexObserver.prototype.observe=async function(){this.cleanupError=Object.assign(new Error('fixture reader cleanup failure'),{outcomeUnknown:true});throw this.cleanupError;};
       IndexObserver.prototype.close=async function(){throw this.cleanupError;};}
     const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
@@ -239,7 +241,7 @@ test("an unresponsive observer bounds both operation and session shutdown", { ti
       setTimeout(()=>process.exit(2),8000).unref();});`);
   fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
     if(path.basename(process.argv[1]||'')==='settings.mjs'){const original=setTimeout;globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms===12000?1200:ms,...args);
-      const {IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href)});
+      const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
       IndexObserver.prototype.observe=()=>{fs.writeFileSync(${JSON.stringify(started)},'started');return new Promise(()=>{});};
       IndexObserver.prototype.close=()=>{setInterval(()=>{},1000);return new Promise(()=>{});};}
     const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
@@ -269,7 +271,7 @@ test("switching projects bounds observer cleanup and keeps the reader barrier", 
     process.send({type:'index_observation',token,id,root,config:{active_project:root},profile:{},snapshot:{}});});`);
   fs.writeFileSync(preload, `import cp from 'node:child_process';import path from 'node:path';import {syncBuiltinESMExports} from 'node:module';
     if(path.basename(process.argv[1]||'')==='settings.mjs'){const original=setTimeout;globalThis.setTimeout=(fn,ms,...args)=>original(fn,ms===12000?1200:ms,...args);
-      const {IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href)});
+      const {IndexObserverProxy:IndexObserver}=await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/index_observer_proxy.mjs")).href)});
       IndexObserver.prototype.observe=async()=>({ok:true});IndexObserver.prototype.close=()=>{setInterval(()=>{},1000);return new Promise(()=>{});};}
     const spawn=cp.spawn;cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs'
       ? spawn(command,['--import',import.meta.url,...args],options)

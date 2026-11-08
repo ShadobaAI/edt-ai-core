@@ -87,11 +87,24 @@ test("the real Code Index reader uses an isolated runtime snapshot", { skip: !pr
       readerId ||= readers[0].id;
       assert.equal(readers[0].id, readerId, "settings sessions must reuse the same verified reader");
     }
-    await second.close();
-    assert.equal((await active_readers(f.state, f.root)).length, 1);
-    await client.close();
+    const probe = (await second.call("settings.probe_connections", { component: "code-index" })).structuredContent;
+    let checked;
+    do { checked = (await second.call("settings.operation", { operationId: probe.id, waitMs: 10000 })).structuredContent; }
+    while (checked.status === "running");
+    assert.equal(checked.status, "completed", JSON.stringify(checked));
+    assert.equal(checked.result.componentChecks[0].state, "ready", JSON.stringify(checked.result));
+    assert.equal((await active_readers(f.state, f.root))[0].id, readerId);
+    // Crash the settings session which owns the shared observer. Its separate
+    // cleanup worker must retire the reader without stopping the daemon or
+    // damaging another session's ability to reconnect.
+    const interrupted = (await client.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;
+    assert.equal(interrupted.status, "running");
+    const closed = once(client.process, "close"); client.process.kill("SIGKILL"); await closed;
+    const cleanupDeadline = Date.now() + 15000;
+    while ((await active_readers(f.state, f.root)).length && Date.now() < cleanupDeadline)
+      await new Promise(done => setTimeout(done, 50));
     assert.deepEqual(await active_readers(f.state, f.root), []);
-    const restarted = await session(t, "mcp/settings.mjs", [], f);
+    const restarted = second;
     const loaded = (await restarted.call("settings.read", {})).structuredContent;
     assert.equal(loaded.profile.status, "loaded");
     const job = (await restarted.call("settings.refresh_readiness", { scope: f.root + "#first", component: "code-index" })).structuredContent;

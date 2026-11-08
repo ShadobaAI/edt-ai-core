@@ -110,6 +110,9 @@ function windowsAPI() {
     openJob: kernel.func(
       "void * __stdcall OpenJobObjectW(uint32_t access, int inherit, const uint16_t *name)",
     ),
+    processSession: kernel.func(
+      "int __stdcall ProcessIdToSessionId(uint32_t pid, _Out_ uint32_t *session)",
+    ),
     queryJob: kernel.func(
       "int __stdcall QueryInformationJobObject(void *job, int kind, _Out_ void *info, uint32_t size, void *returned)",
     ),
@@ -126,6 +129,30 @@ function reader_job_name(id) {
   return "Local\\1c-ai-core-index-reader-" + id;
 }
 const wide = value => Buffer.from(value + "\0", "utf16le");
+
+export function windows_process_session(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0xffffffff) throw new Error("Invalid process PID");
+  const win = windowsAPI(), session = [0];
+  if (!win.processSession(pid, session)) throw new Error("Cannot determine Windows process session (" + win.error() + ")");
+  return session[0];
+}
+
+// Job names are local to a Windows session. Callers must first establish that
+// they are looking in the same session in which the job was created. Windows
+// destroys a Job object only after its handles close and its members terminate:
+// https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
+export function windows_reader_job_absent(id) {
+  const win = windowsAPI();
+  win.setError(0);
+  const job = win.openJob(0x0004, 0, wide(reader_job_name(id)));
+  if (!job) {
+    const error = win.error();
+    if (error === 2) return true;
+    throw new Error("Cannot inspect index reader job (" + error + ")");
+  }
+  if (!win.close(job)) throw new Error("Cannot close index reader job handle (" + win.error() + ")");
+  return false;
+}
 
 // The controller remains outside the job. The supervisor joins it before
 // creating the native reader, so even its first instruction is contained.

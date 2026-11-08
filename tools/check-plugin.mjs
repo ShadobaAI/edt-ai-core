@@ -84,6 +84,8 @@ async function check_worker(selected) {
     }
   }
   scan(root);
+  for (const name of ["scripts/index_observer_proxy.mjs", "scripts/index_observer_worker.mjs"])
+    assert.ok(fs.statSync(path.join(root, name)).isFile(), name);
   assert.ok(fs.statSync(path.join(root, "vendor/deps.mjs")).size > 1000);
   assert.match(
     fs.readFileSync(path.join(root, "vendor/NOTICE.txt"), "utf8"),

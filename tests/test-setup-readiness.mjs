@@ -25,6 +25,7 @@ import { project_profile } from "../scripts/profile.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { open_reader, reader_active } from "../scripts/reader_lease.mjs";
+import { read_diagnostic_logs } from "../scripts/diagnostics.mjs";
 
 function testProtected(name, options, body) {
   if (typeof options === "function") return test(name, { skip: protected_process_skip }, options);
@@ -1454,7 +1455,7 @@ async function live_index_fixture(t) {
           copies.push(message); message = onCopyLaunch?.(message) || message;
           return send(message, ...rest);
         }
-        onReaderLaunch?.(message);
+        onReaderLaunch?.(message, child);
         assert.match(path.basename(fs.realpathSync.native(path.dirname(message.command))), /^\.observation-/);
         assert.deepEqual(fs.readFileSync(message.command), binary);
         assert.equal(message.args[0], "serve"); assert.equal(message.args[1], "--config");
@@ -1548,7 +1549,10 @@ testProtected("a session reuses one verified native reader and rehashes only on 
   const config = backend.effective(backend.current()), observer = new IndexObserver(f.state);
   f.clients.push(observer); t.after(() => observer.close());
   for (let i = 0; i < 3; i++) assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1); assert.equal((await active_readers(f.state, f.root)).length, 1);
+  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+  const readers = await active_readers(f.state, f.root); assert.equal(readers.length, 1);
+  const [reader] = readers;
+  assert.equal(reader.snapshotMayExist, true);
   const owner = path.join(home, "owner.json"), changed = JSON.parse(fs.readFileSync(owner, "utf8")); changed.generation = randomUUID(); fs.writeFileSync(owner, JSON.stringify(changed));
   assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
   assert.equal(starts.length, 2); assert.equal(copies.length, 2);
@@ -1675,7 +1679,7 @@ testProtected("snapshot cleanup failure blocks repeated readers even after the p
   } finally { process.env.EDT_AI_INSTANCE = "first"; observer.cleanupError = null; }
 });
 
-testProtected("snapshot cleanup failure before reader arming retains a project-wide barrier", async t => {
+testProtected("snapshot cleanup failure before runtime validation retains a project-wide barrier", async t => {
   const { f, backend, home, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const outside = path.join(f.base, "foreign-index"), ownerFile = path.join(home, "owner.json"), owner = JSON.parse(fs.readFileSync(ownerFile, "utf8"));
@@ -1717,8 +1721,13 @@ testProtected("failed snapshot initialization preserves the reader barrier witho
   } finally { process.env.EDT_AI_INSTANCE = "first"; pinFailure.mock.restore(); removeFailure.mock.restore(); observer.cleanupError = null; }
 });
 
-testProtected("separate observers share one read-only reader for the same project and instance", async t => {
-  const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
+testProtected("separate observers share at most one read-only reader for the same project and instance", async t => {
+  const { f, backend, starts, copies, health, setHealth, onReaderLaunch } = await live_index_fixture(t);
+  const children = [], overlaps = [];
+  onReaderLaunch((_message, child) => {
+    overlaps.push(children.some(previous => previous.exitCode === null && previous.signalCode === null));
+    children.push(child);
+  });
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), first = new IndexObserver(f.state), second = new IndexObserver(f.state);
   f.clients.push(second, first);
@@ -1728,8 +1737,17 @@ testProtected("separate observers share one read-only reader for the same projec
     assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
     assert.equal((await active_readers(f.state, f.root)).length, 1);
   }
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
-  await second.close(); assert.equal((await active_readers(f.state, f.root)).length, 1);
+  const events = read_diagnostic_logs(f.state).events.filter(event => event.component === "index-observer")
+    .map(({ event, detail }) => ({ event, reason: detail?.reason }));
+  // The conservative lock watcher may retire an idle reader if even this
+  // test's active_readers call holds the project lock for over a second under
+  // load. Replacement is safe only after that reader has stopped.
+  const stopped = events.filter(event => event.event === "reader_stopped");
+  assert.ok(overlaps.every(value => !value), JSON.stringify(events));
+  assert.ok(stopped.every(event => event.reason === "index_locked"), JSON.stringify(events));
+  assert.equal(copies.length, starts.length, JSON.stringify(events));
+  // After a lock-triggered handoff either observer can own the shared reader.
+  await second.close(); assert.ok((await active_readers(f.state, f.root)).length <= 1);
   await first.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 

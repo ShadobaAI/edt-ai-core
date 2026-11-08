@@ -1137,7 +1137,7 @@ export class SettingsBackend {
           try { require_preparation(this.STATE, root, component); prepared = true; } catch { /* Observation never grants preparation permission. */ }
           if (health && prepared) {
             try {
-              const observed = this.observeIndex && request.collectOnly
+              const observed = this.observeIndex
                 ? await this.observeIndex({ config, root, profile, snapshot: indexSnapshot })
                 : await runtime.observe_index(this.STATE, config, root, profile, indexSnapshot);
               check = observed ? { id: component, state: observed.index_state === "not_checked" ? "not_verified" : observed.index_state, repositories: observed.index.repositories,
@@ -1786,6 +1786,7 @@ export class SettingsBackend {
     throw new ConfigError("Неизвестная операция.");
   }
 }
+const INDEX_OBSERVATION_TIMEOUT_MS = 75000;
 function parent_index_observer(token) {
   const pending = new Map();
   const onMessage = message => {
@@ -1813,7 +1814,7 @@ function parent_index_observer(token) {
           pending.delete(id);
           if (process.connected) try { process.send({ type: "index_observation_cancel", token, id }, () => {}); } catch {}
           reject(new ConfigError("Истекло время наблюдения индекса."));
-        }, 75000);
+        }, INDEX_OBSERVATION_TIMEOUT_MS);
         pending.set(id, { resolve, reject, timer });
         process.send({ type: "index_observation", token, id, ...payload }, error => {
           if (!error || !pending.has(id)) return;
@@ -1825,7 +1826,7 @@ function parent_index_observer(token) {
   };
 }
 if (entrypoint(import.meta.url)) {
-  let indexBridge;
+  let indexBridge, localObserver;
   try {
     if (process.platform === "linux" && process.env.EDT_AI_SETTINGS_PARENT_PID !== undefined) {
       const expected = Number(process.env.EDT_AI_SETTINGS_PARENT_PID);
@@ -1843,19 +1844,36 @@ if (entrypoint(import.meta.url)) {
     const request = JSON.parse(input), token = request._indexObserverToken;
     delete request._indexObserverToken;
     if (token !== undefined) {
-      if (request.action !== "refresh_readiness" || !process.connected || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(token))
+      if (!["refresh_readiness", "probe"].includes(request.action) || !process.connected || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(token))
         throw new ConfigError("Некорректный канал наблюдения индекса.");
       indexBridge = parent_index_observer(token);
+    } else if (["refresh_readiness", "probe"].includes(request.action)) {
+      // Standalone CLI checks need the same crash-independent reader cleanup
+      // as checks routed through the settings MCP session.
+      const { IndexObserverProxy } = await import("./index_observer_proxy.mjs");
+      localObserver = new IndexObserverProxy(process.env.EDT_AI_STATE_DIR);
+      indexBridge = { observe: async ({ config, root, profile, snapshot }) => {
+        let timer;
+        try {
+          return await Promise.race([
+            localObserver.observe(config, root, profile, snapshot),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new ConfigError("Истекло время наблюдения индекса.")), INDEX_OBSERVATION_TIMEOUT_MS); }),
+          ]);
+        } finally { clearTimeout(timer); }
+      } };
     }
-    const result = await new SettingsBackend(undefined, undefined, { observeIndex: indexBridge?.observe }).main(request, progress => {
-      if (process.connected) try { process.send({ type: "progress", progress }, () => {}); } catch {}
-    });
+    let result;
+    try {
+      result = await new SettingsBackend(undefined, undefined, { observeIndex: indexBridge?.observe }).main(request, progress => {
+        if (process.connected) try { process.send({ type: "progress", progress }, () => {}); } catch {}
+      });
+    } finally { if (localObserver) await localObserver.close(); }
     console.log(JSON.stringify({ ok: true, result }));
   } catch (error) {
     console.log(JSON.stringify({ ok: false, error: safe_error_message(error), diagnosticFailure: diagnostic_failure(error), ...(error.code ? { errorCode: error.code } : {}), ...(Number.isSafeInteger(error.documentLine) ? { documentLine: error.documentLine } : {}), ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }));
     process.exitCode = 1;
   } finally {
-    indexBridge?.close();
+    indexBridge?.close?.();
     if (process.connected) process.disconnect();
   }
 }
