@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import http from "node:http";
 import { fixture, environment, session, dialog_session, ROOT, node } from "./helpers.mjs";
-import { LOG_POLICY, create_diagnostic_logger, read_diagnostic_logs, sanitize_diagnostics, register_diagnostic_secrets, diagnostic_state, diagnostic_journal, diagnostic_failure, diagnostic_id, diagnostic_project_id, connection_failure, environment_compatibility } from "../scripts/diagnostics.mjs";
+import { LOG_POLICY, create_diagnostic_logger, read_diagnostic_logs, sanitize_diagnostics, redact_log_data, register_diagnostic_secrets, diagnostic_state, diagnostic_journal, diagnostic_failure, diagnostic_id, diagnostic_project_id, connection_failure, environment_compatibility } from "../scripts/diagnostics.mjs";
 import { support_bundle, saved_support_report, detailed_log_export } from "../scripts/support_bundle.mjs";
 
 import { save_export_to_path } from "../scripts/settings_export.mjs";
@@ -30,15 +30,15 @@ test("detailed log export filters the requested period and sanitizes event detai
   assert.throws(() => detailed_log_export(f.state, 30), /период/);
 });
 
-test("errors, retained operations, readiness cache and exports exclude credential representations", async t => {
+test("non-log operation responses still protect registered credentials", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const secret = 'search-credential-9831/"'; process.env.PLAIN_VALUE = secret;
   const refs = { headers_env: { "X-Search": "PLAIN_VALUE" } };
   register_diagnostic_secrets(refs);
   const encoded = Buffer.from(secret).toString("base64"), arbitrary = [...secret].join(".");
   const logger = create_diagnostic_logger("fixture", f.state);
-  logger.event("remote_error", { error: new RemoteRpcError({ code: -32000, message: arbitrary }) });
-  logger.event("known_error", { message: secret + " " + encoded });
+  logger.event("remote_error", { projectRoot: f.root, error: new RemoteRpcError({ code: -32000, message: arbitrary }) });
+  logger.event("known_error", { projectRoot: f.root, message: secret + " " + encoded });
   const operations = new SettingsOperations(async () => ({ detail: secret + " " + encoded }));
   const job = operations.start("probe", {}, {}); await operations.wait(job.id, 1000);
   const failing = new SettingsOperations(async () => { throw new RemoteRpcError({ code: -32000, message: arbitrary }); });
@@ -48,9 +48,13 @@ test("errors, retained operations, readiness cache and exports exclude credentia
   const cache = fs.readFileSync(path.join(instance_directory(f.state, f.root), "first.readiness.json"), "utf8");
   const bundle = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root,
     readCurrent: () => ({ values: refs }) });
-  const outputs = [JSON.stringify(operations.status(job.id)), JSON.stringify(failing.status(failure.id)), cache,
-    fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8"), bundle.text].join("\n");
+  const outputs = [JSON.stringify(operations.status(job.id)), JSON.stringify(failing.status(failure.id)), cache].join("\n");
   for (const value of [secret, encoded, arbitrary]) assert.equal(outputs.includes(value), false);
+  const logged = read_diagnostic_logs(f.state).events;
+  assert.equal(logged.find(event => event.event === "known_error").detail.message, secret + " " + encoded);
+  assert.equal(logged.find(event => event.event === "remote_error").detail.error.message, arbitrary);
+  const report = JSON.parse(bundle.text);
+  assert.equal(report.events.find(event => event.event === "known_error").detail.message, secret + " " + encoded);
   assert.match(failing.status(failure.id).error, /RPC -32000.*текст внешней ошибки скрыт/);
   const cli = node("scripts/settings_backend.mjs", [], { env: f.env, input: '{"secret":"unmarked-source-8812"' });
   assert.equal(cli.status, 1); assert.doesNotMatch(cli.stdout + cli.stderr, /unmarked-source-8812/);
@@ -92,6 +96,7 @@ test("connection failures use numeric evidence and local phases instead of upstr
     [new Error("authorization failed"), "index", "index"],
     [new Error("index failed"), "access_scope", "access_scope"],
   ]) assert.equal(connection_failure(error, phase).category, expected);
+  assert.equal(connection_failure({ cause: { code: "ECONNREFUSED" } }).osCode, "ECONNREFUSED");
   assert.throws(() => json_message('{"jsonrpc":"1.0","id":1,"result":{}}'),
     error => connection_failure(error, "transport").category === "server_contract");
 });
@@ -120,7 +125,8 @@ test("the settings journal returns a bounded newest-first window and survives co
   const journal=diagnostic_journal(f.state);
   assert.equal(journal.total,240);assert.equal(journal.truncated,true);
   assert.ok(journal.events.length<=200);assert.ok(Buffer.byteLength(JSON.stringify(journal.events))<260*1024);
-  assert.equal(journal.events[0].event,"event-239");assert.equal(journal.events[0].detail.password,undefined);
+  assert.equal(journal.events[0].event,"event-239");assert.equal(journal.events[0].detail.password,"[REDACTED]");
+  assert.equal(journal.events[0].detail.message,"x".repeat(2000));
   assert.ok(journal.issues.length);assert.equal(journal.stats.invalidRecords,1);assert.equal(fs.existsSync(path.join(f.state,"runtime")),false);
 });
 
@@ -187,23 +193,73 @@ test("concurrent plugin processes leave complete records under one shared size l
   assert.deepEqual(logs.events.map(event => `${event.session}:${event.detail.i}`).sort(), expected);
 });
 
-test("diagnostic events omit arbitrary text and URLs before writing", t => {
+test("diagnostic events preserve operational details while redacting known credentials", t => {
   const f = fixture(t); environment(t, f.env);
   process.env.CUSTOM_HEADER_VALUE = "custom-credential-983214";
   process.env.SERVICE_PASSWORD = "password-983214";
-  register_diagnostic_secrets({ headers_env: { "X-Private": "CUSTOM_HEADER_VALUE" } });
-  const value = { password: "inline-password", apiKey: "inline-key", env: { PUBLIC: "private" }, args: ["--secret", "value"],
-    url: "https://person:passwd@host.invalid:8042/mcp?key=url-secret#fragment-secret",
-    message: "CUSTOM custom-credential-983214 password-983214 Bearer bearer-secret token=plain-secret api_key=quoted-secret" };
+  register_diagnostic_secrets({ headers_env: { "X-Private": "CUSTOM_HEADER_VALUE", Authorization: "CUSTOM_HEADER_VALUE" } });
+  const url = "https://person:passwd@host.invalid:8042/mcp?key=url-secret&view=summary#section";
+  const encodedHeader = Buffer.from(process.env.CUSTOM_HEADER_VALUE).toString("base64");
+  const value = { password: "inline-password", apiKey: "inline-key", env: { PUBLIC: "visible" }, args: ["--secret", "argument-value", "--project", "orders"],
+    headers_env: { Authorization: "CUSTOM_HEADER_VALUE" }, url,
+    message: `CUSTOM custom-credential-983214 password-983214 ${encodedHeader} Bearer bearer-secret token=plain-secret api_key=quoted-secret tokenCount=17 URL=${url}`,
+    headerText: "Authorization: Token opaque-header-value\nCookie: session=session-value; access=second-cookie\npath=/Project/source",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer header-secret" }, username: "alice" };
   const logger = create_diagnostic_logger("fixture", f.state); logger.event("failure", value, "error");
   const stored = fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8");
-  for (const secret of ["inline-password", "inline-key", "custom-credential", "password-983214", "bearer-secret", "plain-secret", "quoted-secret", "url-secret", "fragment-secret", "person", "passwd@"])
+  for (const secret of ["inline-password", "inline-key", "argument-value", "bearer-secret", "plain-secret", "quoted-secret", "header-secret", "opaque-header-value", "session-value", "second-cookie"])
     assert.equal(stored.includes(secret), false, secret);
-  assert.doesNotMatch(stored, /host\.invalid|\/mcp/);
+  for (const visible of [url, "custom-credential-983214", "password-983214", encodedHeader, "tokenCount=17", "alice", "application/json", "orders", "/Project/source"]) assert.ok(stored.includes(visible), visible);
+  const event = read_diagnostic_logs(f.state).events[0];
+  assert.equal(event.detail.env.PUBLIC, "visible"); assert.equal(event.detail.args[1], "[REDACTED]");
+  assert.equal(event.detail.headers.Authorization, "[REDACTED]"); assert.equal(event.detail.username, "alice");
+  assert.equal(event.detail.url, url); assert.ok(event.detail.message.includes(url));
+  assert.equal(event.detail.headers_env.Authorization, "CUSTOM_HEADER_VALUE");
   assert.equal(sanitize_diagnostics(value).args, "[OMITTED]");
 });
 
-test("user supplied request identifiers are hashed even when they look like a stored hash", t => {
+test("URLs stay byte-for-byte unchanged in logs and reports, including credentials", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const url = "HtTpS://alice:known-password@example.invalid:443/mcp?token=known-token&key=a%2Fb#section";
+  const apostropheUrl = "https://alice:o'brien@example.invalid/path?token=other-token";
+  const message = `connect ${url} and ${apostropheUrl} password=known-password`;
+  const logger = create_diagnostic_logger("settings", f.state);
+  logger.event("request_failed", { projectRoot: f.root, password: "known-password", token: "known-token", url,
+    error: new Error(message) }, "error");
+  const event = read_diagnostic_logs(f.state).events.find(item => item.event === "request_failed");
+  assert.equal(event.detail.url, url);
+  assert.ok(event.detail.error.message.includes(url));
+  assert.ok(event.detail.error.message.includes(apostropheUrl));
+  assert.match(event.detail.error.message, /password=\[REDACTED\]/);
+  assert.equal(event.detail.password, "[REDACTED]"); assert.equal(event.detail.token, "[REDACTED]");
+  assert.ok(detailed_log_export(f.state, 1).text.includes(url));
+  const report = JSON.parse((await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root,
+    readCurrent: () => ({ values: { projectRoot: f.root, edtUrl: url } }) })).text);
+  assert.equal(report.snapshot.current.components.edt.endpoint.url, url);
+  assert.equal(report.events.find(item => item.event === "request_failed").detail.url, url);
+});
+
+test("environment and headers_env values are not registered for log redaction", t => {
+  const f = fixture(t); environment(t, f.env);
+  process.env.LOG_TEST_PASSWORD = "environment-value-9486";
+  process.env.LOG_TEST_CUSTOM_HEADER = "header-value-9486";
+  process.env.LOG_TEST_ENV_OBJECT_SECRET = "environment-object-secret-9486";
+  register_diagnostic_secrets({ headers_env: { Authorization: "LOG_TEST_CUSTOM_HEADER" },
+    env: { PASSWORD: process.env.LOG_TEST_ENV_OBJECT_SECRET }, environment: { apiKey: "environment-api-key-9486" } });
+  const encoded = Buffer.from(process.env.LOG_TEST_CUSTOM_HEADER).toString("base64");
+  const text = `values ${process.env.LOG_TEST_PASSWORD} ${process.env.LOG_TEST_CUSTOM_HEADER} ${encoded} ${process.env.LOG_TEST_ENV_OBJECT_SECRET} environment-api-key-9486`;
+  const logger = create_diagnostic_logger("fixture", f.state);
+  logger.event("example", { projectRoot: f.root, message: text, headers_env: { Authorization: "LOG_TEST_CUSTOM_HEADER" },
+    env: { PASSWORD: process.env.LOG_TEST_ENV_OBJECT_SECRET }, environment: { apiKey: "environment-api-key-9486" }, password: "explicit-password" });
+  const event = read_diagnostic_logs(f.state).events[0];
+  assert.equal(event.detail.message, text);
+  assert.equal(event.detail.headers_env.Authorization, "LOG_TEST_CUSTOM_HEADER");
+  assert.equal(event.detail.env.PASSWORD, "[REDACTED]");
+  assert.equal(event.detail.environment.apiKey, "[REDACTED]");
+  assert.equal(event.detail.password, "[REDACTED]");
+});
+
+test("request identifiers retain their values and types for correlation", t => {
   const f = fixture(t), logger = create_diagnostic_logger("edt", f.state), raw = "0123456789abcdef01234567";
   logger.event("request_started", { requestId: raw, projectRoot: f.root });
   logger.event("request_completed", { requestId: raw, projectRoot: f.root });
@@ -211,10 +267,45 @@ test("user supplied request identifiers are hashed even when they look like a st
   logger.event("request_started", { requestId: "1", projectRoot: f.root });
   const stored = fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8");
   const events = read_diagnostic_logs(f.state).events;
-  assert.doesNotMatch(stored, new RegExp(raw));
+  assert.match(stored, new RegExp(raw));
   assert.equal(events[0].detail.requestId, events[1].detail.requestId);
   assert.notEqual(events[2].detail.requestId, events[3].detail.requestId);
   assert.deepEqual(events.map(event => event.sequence), [1, 2, 3, 4]);
+});
+
+test("log redaction preserves non-secret fields, nested causes and repeated objects", () => {
+  const shared = { component: "reader", count: 3 };
+  const cause = Object.assign(new Error("path C:/logs/result.json password=xy --token abc"), { code: "EACCES" });
+  const error = new Error("failed for orders", { cause });
+  const detail = { projectRoot: "C:/projects/orders", token: "abc", password: "xy", tokenCount: 17, tokens: ["array-secret", "second-secret"],
+    privateKey: Buffer.from("binary-private-key"),
+    message: "array-secret and binary-private-key must not appear",
+    credentials: { username: "alice", password: "xy" }, error, first: shared, second: shared,
+    args: ["/P", "xy", "--token", "abc", "--project", "orders"],
+    unixPath: "/Project/source", unixMessage: "Cannot open /Project/source",
+    url: "https://alice:xy@example.invalid/api?token=abc&view=summary" };
+  detail.urlMessage = `connect ${detail.url} password=xy`;
+  detail.invalidUrl = "not-a-valid-url?token=abc";
+  const redacted = redact_log_data(detail), text = JSON.stringify(redacted);
+  assert.equal(redacted.projectRoot, detail.projectRoot); assert.equal(redacted.tokenCount, 17);
+  assert.equal(redacted.credentials.username, "alice"); assert.equal(redacted.credentials.password, "[REDACTED]");
+  assert.deepEqual(redacted.tokens, ["[REDACTED]", "[REDACTED]"]); assert.equal(redacted.privateKey, "[REDACTED]");
+  assert.equal(redacted.error.cause.code, "EACCES"); assert.match(redacted.error.cause.message, /C:\/logs\/result\.json/);
+  assert.equal(redacted.unixPath, detail.unixPath); assert.equal(redacted.unixMessage, detail.unixMessage);
+  assert.deepEqual(redacted.first, redacted.second); assert.equal(redacted.args.at(-1), "orders");
+  assert.equal(redacted.url, detail.url); assert.equal(redacted.invalidUrl, detail.invalidUrl);
+  assert.ok(redacted.urlMessage.includes(detail.url)); assert.match(redacted.urlMessage, /password=\[REDACTED\]/);
+  assert.doesNotMatch(JSON.stringify({ ...redacted, url: undefined, urlMessage: undefined, invalidUrl: undefined }), /password=xy|--token abc|\/P","xy|array-secret|second-secret|binary-private-key/);
+  assert.deepEqual(redact_log_data(redacted), redacted, "re-reading a log does not repeatedly change redaction markers");
+});
+
+test("remote errors retain their message without collecting the MCP error payload", t => {
+  const f = fixture(t), logger = create_diagnostic_logger("edt", f.state);
+  logger.event("request_failed", { projectRoot: f.root, error: new RemoteRpcError({ code: -32000,
+    message: "Remote service rejected the request", data: { sourceCode: "protected-source-payload" } }) }, "error");
+  const event = read_diagnostic_logs(f.state).events[0];
+  assert.equal(event.detail.error.message, "Remote service rejected the request");
+  assert.doesNotMatch(JSON.stringify(event), /protected-source-payload/);
 });
 
 test("support collection is partial, bounded, read-only and does not include source or chat files", async t => {
@@ -346,6 +437,10 @@ test("relay logs diagnose transport failures without recording tool arguments or
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Use initialize" } })); return;
     }
+    if (message.method === "tools/call" && message.params?.arguments?.password) {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "upstream failure " + message.params.arguments.password } })); return;
+    }
     const result = message.method === "initialize" ? { protocolVersion: "2025-11-25", serverInfo: { name: "fixture", version: "1" }, capabilities: {} }
       : message.method === "tools/list" ? { tools: [{ name: "private_action", inputSchema: { type: "object" } }] }
       : { content: [{ type: "text", text: "PRIVATE-RESULT-73482" }] };
@@ -356,6 +451,7 @@ test("relay logs diagnose transport failures without recording tool arguments or
   f.profile.connections = { edt: { url: `http://127.0.0.1:${server.address().port}/mcp` } }; f.save();
   const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
   await client.call("private_action", { source: "PRIVATE-ARGUMENT-73482" });
+  await assert.rejects(client.call("private_action", { password: "request-secret-73482" }));
   await new Promise(resolve => server.close(resolve));
   await assert.rejects(client.call("private_action", {}));
   const logs = read_diagnostic_logs(f.state), text = JSON.stringify(logs.events);
@@ -364,6 +460,8 @@ test("relay logs diagnose transport failures without recording tool arguments or
   assert.match(text, /ECONNREFUSED/);
   assert.equal(text.includes("PRIVATE-ARGUMENT"), false);
   assert.equal(text.includes("PRIVATE-RESULT"), false);
+  assert.ok(text.includes("upstream failure"));
+  assert.equal(text.includes("request-secret-73482"), false);
 });
 
 test("unbound relay discovery does not flood the journal and later binding failures remain visible", async t => {
@@ -452,6 +550,17 @@ test("legacy stderr warnings become informational and arbitrary legacy details s
   assert.doesNotMatch(report.text, /unmarked-legacy-secret-7981/);
 });
 
+test("version 3 events remain readable using their original restricted projection", t => {
+  const f = fixture(t), directory = path.join(f.state, "diagnostics"); fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory, "events.0.jsonl"), JSON.stringify({ formatVersion: 3, time: new Date().toISOString(),
+    component: "settings", event: "request_failed", level: "error", detail: { projectId: diagnostic_project_id(f.root),
+      failure: { category: "unknown", reasonCode: "unknown_failure" }, message: "legacy-untrusted-detail" } }) + "\n");
+  const logs = read_diagnostic_logs(f.state);
+  assert.equal(logs.stats.unsupportedRecords, 0); assert.equal(logs.events[0].detail.projectId, diagnostic_project_id(f.root));
+  assert.equal(logs.events[0].detail.failure.reasonCode, "unknown_failure");
+  assert.doesNotMatch(JSON.stringify(logs.events), /legacy-untrusted-detail/);
+});
+
 test("legacy truncated records keep the truncation marker without exporting their summaries", t => {
   const f = fixture(t), directory = path.join(f.state, "diagnostics"); fs.mkdirSync(directory);
   fs.writeFileSync(path.join(directory, "events.0.jsonl"), JSON.stringify({ formatVersion: 2, time: new Date().toISOString(), component: "settings",
@@ -503,15 +612,17 @@ test("a damaged priority file cannot disable the ordinary journal", t => {
   assert.ok(logs.issues.length);
 });
 
-test("support JSON projects saved evidence and isolates project events without copying arbitrary fields", async t => {
+test("support JSON preserves selected-project event details and isolates other projects", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const other = path.join(f.base, "other"); fs.mkdirSync(other);
   const a = create_diagnostic_logger("edt", f.state), b = create_diagnostic_logger("edt", f.state);
   a.event("session_started", { projectRoot: f.root });
   a.event("request_failed", { projectRoot: f.root, tool: "unmarked-tool-secret-951", error: Object.assign(new Error("unmarked-error-secret-951"), { code: "ECONNREFUSED" }), result: "unmarked-result-secret-951" }, "error");
+  a.event("request_failed", { error: new Error("unbound-foreign-context-951") }, "error");
   b.event("request_failed", { projectRoot: other, error: Object.assign(new Error("other"), { code: "EACCES" }) }, "error");
   const checkedAt = new Date(Date.now() - 1800000).toISOString(), expiresAt = new Date(Date.now() - 600000).toISOString();
-  const current = { values: { projectRoot: f.root, edtUrl: "http://unmarked-url-secret-951", codeIndexEnabled: true },
+  const current = { values: { projectRoot: f.root, edtUrl: "https://user:pw@unmarked-url-secret-951/mcp?token=value#fragment",
+    v8stdUrl: "not a valid URL; token=leave-as-is", codeIndexEnabled: true },
     profile: { status: "loaded", unrelated: "unmarked-profile-secret-951" }, summary: { observedAt: new Date().toISOString() },
     profileDirectoryContext: { edt: { projectCount: 1, connection: { status: "detected", workspace: f.root, port: 8765, liveVerified: false } } },
     componentChecks: [{ id: "edt", state: "check_stale", lastState: "ready", checkedAt, expiresAt,
@@ -522,13 +633,17 @@ test("support JSON projects saved evidence and isolates project events without c
   const report = JSON.parse(result.text), edt = report.snapshot.current.components.edt;
   assert.equal(report.version, 2); assert.equal(edt.observation.state, "check_stale"); assert.equal(edt.observation.lastState, "ready");
   assert.equal(edt.observation.freshness, "stale"); assert.equal(edt.observation.checkedAt, checkedAt);
-  assert.equal(edt.endpoint.scheme, "http"); assert.equal(edt.endpoint.hostKind, "other"); assert.equal(edt.endpoint.connectivity, "not_checked_by_export");
+  assert.equal(edt.endpoint.url, current.values.edtUrl); assert.equal(edt.endpoint.state, "configured"); assert.equal(edt.endpoint.connectivity, "not_checked_by_export");
+  assert.equal(report.snapshot.current.components.v8std.endpoint.url, current.values.v8stdUrl);
+  assert.equal(report.snapshot.current.components.v8std.endpoint.state, "configured");
   assert.equal(edt.workspace.state, "detected"); assert.equal(edt.workspace.projectCount, 1); assert.equal(edt.workspace.liveVerified, false);
   assert.equal(edt.observation.repositories[0].matched, true); assert.equal(report.snapshot.current.components.v8std.currentState, "unknown");
   assert.ok(report.events.some(event => event.detail.failure?.osCode === "ECONNREFUSED" && event.scope === "project"));
   assert.ok(!report.events.some(event => event.detail.failure?.osCode === "EACCES"));
   assert.ok(report.collection.scope.excludedEvents >= 1);
-  for (const value of ["unmarked-tool-secret-951", "unmarked-error-secret-951", "unmarked-url-secret-951", "unmarked-profile-secret-951", "unmarked-detail-secret-951", "unmarked-result-secret-951", "private-repository-951", f.root, other]) assert.equal(result.text.includes(value), false, value);
+  for (const value of ["unmarked-tool-secret-951", "unmarked-error-secret-951", "unmarked-result-secret-951"]) assert.equal(result.text.includes(value), true, value);
+  assert.ok(report.events.some(event => event.detail.projectRoot === f.root));
+  for (const value of ["unbound-foreign-context-951", "unmarked-profile-secret-951", "unmarked-detail-secret-951", "private-repository-951", other]) assert.equal(result.text.includes(value), false, value);
   assert.deepEqual(current, before, "collection does not alter component observations");
 });
 
@@ -550,6 +665,23 @@ test("operation log links request ownership, progress, duration and changed obse
   assert.ok(events.some(event => event.event === "component_observed" && event.detail.version === "2.1.3" && event.detail.toolsVerified === true));
 });
 
+test("component observations retain connection reasons and log a changed failure", async t => {
+  const f = fixture(t); environment(t, f.env);
+  const logger = create_diagnostic_logger("settings", f.state);
+  let code = "ECONNREFUSED";
+  const operations = new SettingsOperations(async () => ({ componentChecks: [{ id: "v8std", state: "error", detail: `fetch failed: ${code} https://service.invalid/mcp?view=summary&token=connection-secret` }],
+    external: { v8std: { configured: true, connected: false, ready: false, failure: connection_failure({ cause: { code } }) } } }),
+    (name, detail, level) => logger.event(name, detail, level));
+  for (const next of ["ECONNREFUSED", "ECONNREFUSED", "ECONNRESET"]) {
+    code = next; const job = operations.start("probe", {}, { projectRoot: f.root, instance: "first" }); await job.finished;
+  }
+  const observations = read_diagnostic_logs(f.state).events.filter(event => event.event === "component_observed");
+  assert.equal(observations.length, 2);
+  assert.match(observations[0].detail.detail, /fetch failed: ECONNREFUSED.*view=summary&token=connection-secret/);
+  assert.equal(observations[0].detail.failure.osCode, "ECONNREFUSED");
+  assert.equal(observations[1].detail.failure.osCode, "ECONNRESET");
+});
+
 test("backend configuration failures preserve a structured reason across the settings process", async t => {
   const f = fixture(t); f.save();
   const client = await session(t, "mcp/settings.mjs", [], f);
@@ -566,10 +698,13 @@ test("a stalled status read leaves other diagnostic sections available", async t
   const f = fixture(t); environment(t, f.env); f.save();
   const original = globalThis.setTimeout;
   t.mock.method(globalThis, "setTimeout", (callback, delay, ...args) => original(callback, delay === 10000 ? 25 : delay, ...args));
-  const result = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root, readCurrent: () => new Promise(() => {}) });
+  const observed = [];
+  const result = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root, readCurrent: () => new Promise(() => {}),
+    onIssue: (section, error) => observed.push({ section, code: error.code }) });
   const report = JSON.parse(result.text);
   assert.equal(report.snapshot.current.unavailable, true); assert.equal(report.snapshot.current.error, "READ_TIMEOUT");
   assert.ok(report.collection.issues.some(issue => issue.section === "current" && issue.reason === "READ_TIMEOUT"));
+  assert.deepEqual(observed, [{ section: "current", code: "READ_TIMEOUT" }]);
   assert.equal(report.snapshot.project.profile.exists, true); assert.ok(report.snapshot.host.node);
 });
 
@@ -586,6 +721,18 @@ test("support JSON excludes events from another instance and reports capped unbo
   assert.ok(!report.events.some(event => event.detail.failure?.osCode === "EACCES"));
   assert.equal(report.events.filter(event => event.scope === "unbound_unknown").length, 100);
   assert.equal(report.collection.scope.unboundEventsOmitted, 5);
+});
+
+test("a modified event cannot move another project's details into this project's report", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const other = path.join(f.base, "other-project"), directory = path.join(f.state, "diagnostics"); fs.mkdirSync(directory);
+  fs.writeFileSync(path.join(directory, "events.0.jsonl"), JSON.stringify({ formatVersion: 4, time: new Date().toISOString(),
+    component: "settings", event: "request_failed", level: "error", instance: "first", instanceId: diagnostic_id("first"),
+    detail: { projectRoot: other, projectId: diagnostic_project_id(f.root), message: "other-project-detail" } }) + "\n");
+  const logs = read_diagnostic_logs(f.state); assert.equal(logs.events.length, 0);
+  assert.ok(logs.issues.includes("Conflicting diagnostic scope"));
+  const report = await support_bundle({ state: f.state, configPath: f.env.EDT_AI_SETTINGS, selectedRoot: f.root });
+  assert.doesNotMatch(report.text, /other-project-detail/);
 });
 
 test("support JSON lists concurrent operations only for the selected project and instance", async t => {

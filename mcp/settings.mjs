@@ -532,13 +532,18 @@ async function assertUserFileBoundary(selected, projectRoot, write = false, allo
   }
 }
 async function exportDestination(data, context, title) {
+  context.onStage?.("prepare_destination");
   const { save_export_to_path, state_export_path, save_state_export } = await import("../scripts/settings_export.mjs");
   const fallback = process.platform !== "win32";
+  context.onStage?.("choose_destination");
   const selected = fallback ? state_export_path(state, context.kind) : await folder_action("save", "", { title, filename: data.filename, extension: path.extname(data.filename).slice(1) || "json" });
   if (!selected) return { cancelled: true };
+  context.onDestination?.(selected);
+  context.onStage?.("validate_destination");
   if (context.revision !== selectionRevision) throw new Error("Профиль изменился во время выбора файла. Повторите экспорт.");
   await assertUserFileBoundary(selected, context.projectRoot, true, fallback);
   if (context.revision !== selectionRevision) throw new Error("Профиль изменился во время выбора файла. Повторите экспорт.");
+  context.onStage?.("write_file");
   const saved = fallback ? save_state_export(state, context.kind, data, selected, context.limit) : save_export_to_path(selected, data, context.limit);
   return { ...saved, canOpenDirectory: !fallback };
 }
@@ -555,7 +560,7 @@ function publicResult(value) {
 function result(data, text) {
   return { content: [{ type: "text", text: text ?? JSON.stringify(data) }], structuredContent: data };
 }
-async function call(name, args, meta = {}) {
+async function call(name, args, meta = {}, requestContext = {}) {
   // An import is committed for the reviewed project as one operation.
   // Queue root changes and other calls until its actual result is known.
   while (transferInFlight) await transferInFlight;
@@ -616,22 +621,40 @@ async function call(name, args, meta = {}) {
     return { content: [{ type: "text", text: "Журнал плагина прочитан." }], _meta: { data } };
   }
   if (name === "settings.export_diagnostics") {
-    const exportContext = { revision: selectionRevision, projectRoot: selectedRoot, kind: "diagnostics", limit: 16 * 1024 * 1024 };
-    diagnostic.event("support_export_requested", { projectRoot: selectedRoot });
-    const { support_bundle } = await import("../scripts/support_bundle.mjs");
-    const context = { selectedDirectory: selectedRoot, rootLocked };
-    const operationsObservedAt = new Date().toISOString();
-    const data = await support_bundle({ state, configPath, selectedRoot,
-      selection: { rootLocked, selectionError, pendingRoots }, operation: operations.status(), operations: operations.retained(), operationsObservedAt, loggerStatus: diagnostic.status(),
-      readCurrent: () => backend("read", {}, context, 8000) });
-    if (exportContext.revision !== selectionRevision) throw new Error("Профиль изменился во время подготовки диагностики. Повторите операцию.");
-    const saved = await exportDestination(data, exportContext, "Сохранить диагностику · 1C AI Core");
-    if (saved.cancelled) return { content: [{ type: "text", text: "Сохранение отменено." }], _meta: { data: saved } };
-    latestDiagnosticsExport = saved;
-    diagnostic.event("support_export_saved", { path: saved.path, bytes: saved.bytes });
-    // Only the settings app receives the saved path. File bytes do not cross
-    // the app bridge, and a success response requires a completed disk write.
-    return { content: [{ type: "text", text: "Диагностический файл сохранён." }], _meta: { data: { ...saved, canOpenDirectory: process.platform === "win32" } } };
+    const requestId = requestContext.id;
+    const stageLabels = { collect: "Сбор диагностических данных", validate_selection: "Проверка выбранного проекта",
+      prepare_destination: "Подготовка сохранения", choose_destination: "Выбор файла", validate_destination: "Проверка пути", write_file: "Запись и проверка файла" };
+    const exportProgress = requestContext.exportProgress = { stage: "collect", stageLabel: stageLabels.collect };
+    const setStage = stage => { exportProgress.stage = stage; exportProgress.stageLabel = stageLabels[stage]; };
+    const exportContext = { revision: selectionRevision, projectRoot: selectedRoot, kind: "diagnostics", limit: 16 * 1024 * 1024,
+      onStage: setStage, onDestination: value => { exportProgress.destination = value; } };
+    requestContext.exportRoot = exportContext.projectRoot;
+    const started = Date.now();
+    diagnostic.event("support_export_requested", { projectRoot: exportContext.projectRoot, requestId });
+    try {
+      const { support_bundle } = await import("../scripts/support_bundle.mjs");
+      const context = { selectedDirectory: selectedRoot, rootLocked };
+      const operationsObservedAt = new Date().toISOString();
+      const data = await support_bundle({ state, configPath, selectedRoot,
+        selection: { rootLocked, selectionError, pendingRoots }, operation: operations.status(), operations: operations.retained(), operationsObservedAt, loggerStatus: diagnostic.status(), currentSession: diagnostic.session,
+        readCurrent: () => backend("read", {}, context, 8000),
+        onIssue: (section, error) => diagnostic.event("support_export_section_failed", { projectRoot: exportContext.projectRoot, requestId, stage: "collect", stageLabel: stageLabels.collect, section, error }, "error") });
+      setStage("validate_selection");
+      if (exportContext.revision !== selectionRevision) throw new Error("Профиль изменился во время подготовки диагностики. Повторите операцию.");
+      const saved = await exportDestination(data, exportContext, "Сохранить диагностику · 1C AI Core");
+      if (saved.cancelled) {
+        diagnostic.event("support_export_cancelled", { projectRoot: exportContext.projectRoot, requestId, ...exportProgress });
+        return { content: [{ type: "text", text: "Сохранение отменено." }], _meta: { data: saved } };
+      }
+      latestDiagnosticsExport = saved;
+      diagnostic.event("support_export_saved", { projectRoot: exportContext.projectRoot, requestId, path: saved.path, bytes: saved.bytes, durationMs: Date.now() - started });
+      // Only the settings app receives the saved path. File bytes do not cross
+      // the app bridge, and a success response requires a completed disk write.
+      return { content: [{ type: "text", text: "Диагностический файл сохранён." }], _meta: { data: { ...saved, canOpenDirectory: process.platform === "win32" } } };
+    } catch (error) {
+      diagnostic.event("support_export_failed", { projectRoot: exportContext.projectRoot, requestId, ...exportProgress, durationMs: Date.now() - started, error }, "error");
+      throw error;
+    }
   }
   if (name === "settings.export_log") {
     const exportContext = { revision: selectionRevision, projectRoot: selectedRoot, kind: "logs", limit: 16 * 1024 * 1024 };
@@ -933,14 +956,16 @@ async function dispatch(message) {
     else if (message.method === "tools/list") data = { tools };
     else if (message.method === "tools/call") {
       const started = Date.now(), tool = message.params?.name;
+      register_diagnostic_secrets(message.params?.arguments || {});
       const quiet = ["settings.read", "settings.status", "settings.operation", "settings.diagnostics", "settings.refresh_readiness"].includes(tool);
+      const requestContext = { id: message.id };
       if (!quiet) diagnostic.event("request_started", { requestId: message.id, tool, projectRoot: selectedRoot, phase: "dispatch" });
       try {
-        data = await call(message.params.name, message.params.arguments || {}, message.params._meta);
+        data = await call(message.params.name, message.params.arguments || {}, message.params._meta, requestContext);
         if (!quiet) diagnostic.event("request_completed", { requestId: message.id, tool, projectRoot: selectedRoot, durationMs: Date.now() - started,
           ...(data.structuredContent?.status === "running" ? { operationId: data.structuredContent.id } : {}), isError: Boolean(data.isError), phase: "completed" }, data.isError ? "error" : "info");
       }
-      catch (error) { diagnostic.event("request_failed", { requestId: message.id, tool, projectRoot: selectedRoot, phase: "dispatch", durationMs: Date.now() - started, error }, "error"); data = { isError: true, content: [{ type: "text", text: safe_error_message(error) }] }; }
+      catch (error) { diagnostic.event("request_failed", { requestId: message.id, tool, projectRoot: Object.hasOwn(requestContext, "exportRoot") ? requestContext.exportRoot : selectedRoot, phase: "dispatch", ...requestContext.exportProgress, durationMs: Date.now() - started, error }, "error"); data = { isError: true, content: [{ type: "text", text: safe_error_message(error) }] }; }
     } else if (message.method === "resources/list") {
       data = { resources: [{ uri: resource, name: "Настройки 1C AI Core", mimeType: "text/html;profile=mcp-app" }] };
     } else if (message.method === "resources/read" && message.params?.uri === resource) {

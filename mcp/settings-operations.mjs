@@ -115,6 +115,7 @@ export class SettingsOperations {
       return result;
     }).then(
       result => {
+        const observationResult = result;
         if (["probe", "check", "refresh_readiness"].includes(action)) result = sanitize_setup_result(result);
         if (result?.values && Object.hasOwn(result.values, "projectRoot")) job.projectRoot = result.values.projectRoot || null;
         else if (typeof result?.projectRoot === "string") job.projectRoot = result.projectRoot;
@@ -123,18 +124,19 @@ export class SettingsOperations {
         const durationMs = Date.parse(job.completedAt) - Date.parse(job.startedAt);
         if (!backgroundObservation) this.observe("operation_completed", { id: job.id, action, projectRoot: job.projectRoot, component: job.component,
           phase: "completed", durationMs, status: result?.cancelled ? "cancelled" : "completed" });
-        for (const check of Array.isArray(result?.componentChecks) ? result.componentChecks : []) {
-          if (!check || !["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"].includes(check.id) || typeof check.state !== "string" || result.superseded || (Array.isArray(result.supersededComponents) && result.supersededComponents.includes(check.id))) continue;
-          const external = result.external?.[check.id], failure = check.failure || check.diagnostic?.failure || external?.failure;
+        for (const check of Array.isArray(observationResult?.componentChecks) ? observationResult.componentChecks : []) {
+          if (!check || !["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"].includes(check.id) || typeof check.state !== "string" || observationResult.superseded || (Array.isArray(observationResult.supersededComponents) && observationResult.supersededComponents.includes(check.id))) continue;
+          const external = observationResult.external?.[check.id], failure = check.failure || check.diagnostic?.failure || external?.failure;
           const key = JSON.stringify([job.projectRoot, job.instance, check.id]);
-          const state = JSON.stringify([check.state, check.reasonCode, failure?.category, failure?.httpStatus, failure?.rpcCode,
+          const detail = check.detail || external?.detail;
+          const state = JSON.stringify([check.state, check.reasonCode, failure?.category, failure?.httpStatus, failure?.rpcCode, failure?.osCode, detail,
             external?.configured, external?.connected, external?.ready, external?.toolsVerified, external?.server?.version]
             .map(value => typeof value === "string" ? value.slice(0, 128) : ["number", "boolean"].includes(typeof value) ? value : null));
           if (this.observedStates.get(key) === state) continue;
           this.observedStates.set(key, state);
           while (this.observedStates.size > 256) this.observedStates.delete(this.observedStates.keys().next().value);
           this.observe("component_observed", { operationId: job.id, action, projectRoot: job.projectRoot, component: check.id, state: check.state,
-            reasonCode: check.reasonCode, failure, checkedAt: check.checkedAt, expiresAt: check.expiresAt, durationMs,
+            reasonCode: check.reasonCode, failure, detail, diagnostic: check.diagnostic, checkedAt: check.checkedAt, expiresAt: check.expiresAt, durationMs,
             configured: external?.configured, connected: external?.connected, ready: external?.ready, toolsVerified: external?.toolsVerified, version: external?.server?.version },
             check.state === "error" ? "error" : "info");
         }

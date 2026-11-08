@@ -463,6 +463,7 @@ async function dispatch(message) {
     }
     let result;
     const params = message.params || {};
+    if (method === "tools/call") register_diagnostic_secrets(params.arguments || {});
     if (method === "tools/call") diagnostic.event("request_started", { requestId: id, tool: params.name, projectRoot: selected });
     const pending = { cancelled: false };
     requests.set(requestKey(id), pending);

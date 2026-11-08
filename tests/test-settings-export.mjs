@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { fixture, dialog_session } from "./helpers.mjs";
 import { save_export_to_path, state_export_path, save_state_export } from "../scripts/settings_export.mjs";
-import { parse } from "../scripts/common.mjs";
+import { parse, dump } from "../scripts/common.mjs";
+import { read_diagnostic_logs } from "../scripts/diagnostics.mjs";
 
 async function platform_session(t, f, platform) {
   return (await dialog_session(t, f, { platform })).client;
@@ -30,6 +31,71 @@ test("failed settings export leaves the previous file intact and does not claim 
   fs.rmSync(saved.path);fs.mkdirSync(saved.path);
   assert.throws(()=>save_export_to_path(target,{text:"{}"}));
   assert.ok(fs.statSync(saved.path).isDirectory());
+});
+
+test("diagnostics export records the failing stage and sanitized reason, then includes them in a later report", async t => {
+  const f = fixture(t); f.save();
+  const { client, choose, failDialog } = await dialog_session(t, f);
+  const url = "https://alice:pw@example.invalid/mcp?token=url-token#fragment";
+  failDialog({ message: `Save As failed for C:/logs/report.json URL=${url} password=dialog-secret`, code: "EACCES" });
+  assert.equal((await client.request("tools/call", { name: "settings.export_diagnostics", arguments: {} })).isError, true);
+  choose(path.join(f.root, "src", "report.json"));
+  assert.equal((await client.request("tools/call", { name: "settings.export_diagnostics", arguments: {} })).isError, true);
+  choose(f.base);
+  assert.equal((await client.request("tools/call", { name: "settings.export_diagnostics", arguments: {} })).isError, true);
+  const events = read_diagnostic_logs(f.state).events;
+  const failures = events.filter(event => event.event === "support_export_failed");
+  assert.deepEqual(failures.map(event => event.detail.stage), ["choose_destination", "validate_destination", "write_file"]);
+  assert.deepEqual(failures.map(event => event.detail.stageLabel), ["Выбор файла", "Проверка пути", "Запись и проверка файла"]);
+  assert.match(failures[0].detail.error.message, /Save As failed for C:\/logs\/report\.json/);
+  assert.ok(failures[0].detail.error.message.includes(url));
+  assert.equal(failures[0].detail.error.code, "EACCES");
+  assert.equal(failures[1].detail.destination, path.join(f.root, "src", "report.json"));
+  assert.doesNotMatch(JSON.stringify(failures), /dialog-secret/);
+  assert.ok(failures.every(event => event.detail.projectRoot === f.root && event.detail.requestId !== undefined));
+  for (const failure of failures) {
+    const request = events.find(event => event.event === "request_failed" && event.detail.requestId === failure.detail.requestId);
+    assert.equal(request.detail.stage, failure.detail.stage); assert.equal(request.detail.error.message, failure.detail.error.message);
+  }
+  const target = path.join(f.base, "diagnostics.json"); choose(target);
+  await client.call("settings.export_diagnostics", {});
+  const report = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.ok(report.events.some(event => event.event === "support_export_failed" && event.detail.stage === "choose_destination" && /Save As failed/.test(event.detail.error.message)));
+  assert.ok(report.events.some(event => event.event === "support_export_failed" && event.detail.error.message.includes(url)));
+  assert.doesNotMatch(JSON.stringify(report), /dialog-secret/);
+});
+
+test("an unbound settings session retains its own export failure details", async t => {
+  const f = fixture(t), { client, choose, failDialog } = await dialog_session(t, f, { extra: { EDT_AI_PROJECT_ROOT: "" }, roots: [] });
+  client.notify("notifications/roots/list_changed");
+  failDialog({ message: "Save As unavailable", code: "EACCES" });
+  assert.equal((await client.request("tools/call", { name: "settings.export_diagnostics", arguments: {} })).isError, true);
+  const target = path.join(f.base, "unbound-diagnostics.json"); choose(target);
+  await client.call("settings.export_diagnostics", {});
+  const report = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.equal(report.snapshot.host.selectedRoot, null);
+  const failure = report.events.find(event => event.event === "support_export_failed");
+  assert.equal(failure.scope, "session"); assert.equal(failure.detail.stage, "choose_destination");
+  assert.equal(failure.detail.error.message, "Save As unavailable");
+});
+
+test("an export interrupted by project selection records both failures against its original project", async t => {
+  const f = fixture(t); f.save();
+  const other = path.join(f.base, "other-project"); fs.mkdirSync(other); fs.mkdirSync(path.join(other, "src"));
+  dump(f.profile, path.join(other, ".ai", "project.yaml"));
+  const { client, holdDialog } = await dialog_session(t, f, { extra: { EDT_AI_PROJECT_ROOT: "" }, roots: [] });
+  client.notify("notifications/roots/list_changed");
+  await client.call("settings.select_profile", { projectRoot: f.root });
+  const dialog = holdDialog(path.join(f.base, "interrupted-report.json"));
+  const pending = client.request("tools/call", { name: "settings.export_diagnostics", arguments: {} });
+  try {
+    await dialog.wait();
+    await client.call("settings.select_profile", { projectRoot: other });
+  } finally { dialog.release(); }
+  assert.equal((await pending).isError, true);
+  const failures = read_diagnostic_logs(f.state).events.filter(event => ["support_export_failed", "request_failed"].includes(event.event) && event.detail.stage === "validate_destination");
+  assert.equal(failures.length, 2);
+  assert.ok(failures.every(event => event.detail.projectRoot === f.root));
 });
 
 for (const platform of ["linux", "darwin"]) test(`${platform} exports settings and diagnostics to confirmed state files`, async t => {

@@ -113,7 +113,7 @@ export async function session(t, file, args, f, extra = {}) {
 // Exercise the real settings MCP and backend while substituting only the
 // user-operated OS dialog. This is not evidence of native window behavior.
 export async function dialog_session(t, f, { extra = {}, roots, platform = "win32" } = {}) {
-  const plugin = path.join(f.base, "dialog-plugin"), choice = path.join(f.base, "dialog-choice.json");
+  const plugin = path.join(f.base, "dialog-plugin"), choice = path.join(f.base, "dialog-choice.json"), opened = path.join(f.base, "dialog-opened"), released = path.join(f.base, "dialog-released");
   for (const dir of ["mcp", "scripts", "assets", "settings"]) fs.mkdirSync(path.join(plugin, dir), { recursive: true });
   for (const file of ["plugin.json", "mcp/settings.mjs", "mcp/settings-operations.mjs", "assets/icon.svg", "settings/defaults.json"])
     fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
@@ -124,7 +124,7 @@ export async function dialog_session(t, f, { extra = {}, roots, platform = "win3
   fs.writeFileSync(path.join(plugin, "scripts/processes.mjs"), `import {spawn} from 'node:child_process';
     export function launch(command,args,{readerJob,...options}) { return spawn(command,args,options); }
     export async function stop_child(child) { if(child.exitCode!==null||child.signalCode!==null)return; child.kill('SIGKILL'); await new Promise(resolve=>child.once('close',resolve)); }`);
-  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `import fs from 'node:fs'; export async function folder_action() { return JSON.parse(fs.readFileSync(${JSON.stringify(choice)}, 'utf8')).path; }`);
+  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `import fs from 'node:fs'; export async function folder_action() { const choice=JSON.parse(fs.readFileSync(${JSON.stringify(choice)}, 'utf8')); if(choice.error) throw Object.assign(new Error(choice.error.message), {code:choice.error.code}); if(choice.hold) { fs.writeFileSync(${JSON.stringify(opened)},'open'); const until=Date.now()+10000; while(!fs.existsSync(${JSON.stringify(released)})) { if(Date.now()>until) throw new Error('Dialog fixture timed out'); await new Promise(resolve=>setTimeout(resolve,10)); } } return choice.path; }`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_backend.mjs"),
     `import { SettingsBackend } from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/settings_backend.mjs")).href)}; let input=''; for await (const chunk of process.stdin) input+=chunk; try { console.log(JSON.stringify({ok:true,result:await new SettingsBackend().main(JSON.parse(input))})); } catch(error) { console.log(JSON.stringify({ok:false,error:error.message})); process.exitCode=1; }`);
   // Platform-spoofed UI tests use the fixture adapter rather than pretending
@@ -133,5 +133,10 @@ export async function dialog_session(t, f, { extra = {}, roots, platform = "win3
   fs.writeFileSync(entry, `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} }); await import('./mcp/settings.mjs');`);
   const client = new McpClient([process.execPath, entry], f.root, { ...f.env, ...extra }, 10);
   f.clients.push(client); if (roots !== undefined) client.roots = roots; await client.initialize();
-  return { client, choose: file => fs.writeFileSync(choice, JSON.stringify({ path: file })) };
+  return { client, choose: file => fs.writeFileSync(choice, JSON.stringify({ path: file })), failDialog: error => fs.writeFileSync(choice, JSON.stringify({ error })),
+    holdDialog: file => {
+      fs.writeFileSync(choice, JSON.stringify({ path: file, hold: true }));
+      return { wait: async () => { const until = Date.now() + 10000; while (!fs.existsSync(opened)) { if (Date.now() > until) throw new Error("Dialog fixture did not open"); await new Promise(resolve => setTimeout(resolve, 10)); } },
+        release: () => fs.writeFileSync(released, "release") };
+    } };
 }

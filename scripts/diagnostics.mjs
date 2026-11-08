@@ -1,4 +1,4 @@
-// Local operational telemetry. Never record MCP arguments, results or source.
+// Local operational telemetry. Do not collect MCP payloads or source files.
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export const LOG_POLICY = Object.freeze({ files: 4, fileBytes: 512 * 1024, priorityFiles: 2, priorityFileBytes: 256 * 1024, days: 7, eventBytes: 8192 });
-export const LOG_FORMAT_VERSION = 3;
+export const LOG_FORMAT_VERSION = 4;
 const failureCategories = new Set(["configuration", "transport", "authorization", "server_contract", "access_scope", "index"]);
 export function verification_limits(knowledgeVerified = false) {
   return { hostHookTrust: "not_verified", hostHookActivation: "not_verified", hostEffectiveToolCatalogue: "not_verified",
@@ -28,7 +28,8 @@ export function connection_failure(error, phase = "transport") {
     : status || Number.isInteger(error?.code) ? "server_contract"
     : failureCategories.has(phase) ? phase : "transport";
   const rpcCode = Number.isInteger(error?.code) ? error.code : error?.rpcCode;
-  return { category, ...(status ? { httpStatus: status } : {}), ...(Number.isInteger(rpcCode) ? { rpcCode } : {}) };
+  return { category, ...(status ? { httpStatus: status } : {}), ...(Number.isInteger(rpcCode) ? { rpcCode } : {}),
+    ...(osCodes.has(code) ? { osCode: code } : {}) };
 }
 
 // Only locally established codes are retained. An upstream message, code
@@ -137,23 +138,35 @@ index_output index_completed index_failed reader_copy_started reader_copy_stoppe
 // Records are local, mutable input too. An old or forged event name must not
 // become a way to smuggle arbitrary text into an exported report.
 export function export_diagnostic_events(events) {
+  const variants = log_secret_variants();
   return events.map(event => ({ ...event,
-    component: diagnosticComponents.has(event.component) ? event.component : "unknown",
-    ...(diagnosticEvents.has(event.event) ? {} : { event: "unrecognized_event", eventId: diagnostic_id(event.event) }),
-    detail: diagnostic_fields(event.detail, { projected: true }),
+    component: event.formatVersion === LOG_FORMAT_VERSION ? clean_log_text(event.component, variants) : diagnosticComponents.has(event.component) ? event.component : "unknown",
+    ...(event.formatVersion === LOG_FORMAT_VERSION || diagnosticEvents.has(event.event) ? {} : { event: "unrecognized_event", eventId: diagnostic_id(event.event) }),
+    detail: event.formatVersion === LOG_FORMAT_VERSION ? diagnostic_event_detail(event.detail, { projected: true, variants }) : diagnostic_fields(event.detail, { projected: true }),
   }));
 }
 const secretKey = /password|passwd|pwd|secret|token|credential|authorization|api.?key|cookie|private.?key|binding.?key|connection.?string|строкасоединения|пароль|имяпользователя/i;
 const omittedKey = /^(?:env|environment|headers|args|arguments|command|text|content|sourceCode)$/i;
 const registered = new Set();
-export function register_diagnostic_secrets(value) {
+const logSecrets = new Set();
+// Match credential names, not unrelated words such as tokenCount or publicKey.
+const logSecretKey = /(?:passwords?|passwd|pwd|пароль|secrets?|tokens?|credentials?|authorization|authentication|api.?keys?|access.?keys?|private.?keys?|binding.?keys?|access.?receipts?|publication.?receipts?|cookies?|auth)$/i;
+const stableLogKeys = new Set(["projectRoot", "projectId", "selectedDirectory", "selectedDirectoryId", "instance", "binding", "requestId", "operationId", "tool", "phase", "stage", "state", "status", "action", "component", "error", "failure", "message", "stack", "cause", "code", "name"]);
+export function register_diagnostic_secrets(value, registerForLog = true) {
   if (!value || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value)) {
     if (key === "headers_env" && child && typeof child === "object") {
       for (const variable of Object.values(child)) if (process.env[variable]) registered.add(process.env[variable]);
+      register_diagnostic_secrets(child, false);
+      continue;
+    }
+    if (/^(?:env|environment)$/i.test(key) && child && typeof child === "object") {
+      register_diagnostic_secrets(child, false);
+      continue;
     }
     else if (secretKey.test(key) && typeof child === "string" && child.length >= 4) registered.add(child);
-    if (child && typeof child === "object") register_diagnostic_secrets(child);
+    if (registerForLog && logSecretKey.test(key) && typeof child === "string" && child) logSecrets.add(child);
+    if (child && typeof child === "object") register_diagnostic_secrets(child, registerForLog);
   }
 }
 export function diagnostic_state() {
@@ -264,6 +277,116 @@ function clean_text(value) {
     .replace(/((?:password|passwd|pwd|usr|secret|token|credential|authorization|api[_-]?key|cookie|пароль|имяпользователя)[\w-]*["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;}]+)/gi, "$1[REDACTED]")
     .replace(/(^|[\s|;])\/([NP])\s*(?:"(?:[^"]|"")*"|[^\s|;]+)/gm, "$1/$2[REDACTED]");
 }
+
+// Events contain operational details deliberately supplied by their producers.
+// Redact known credentials in those details, rather than discarding paths,
+// names, error messages or entire argument/header objects.
+function log_secret_variants(extra = [], onlyExtra = false) {
+  const values = onlyExtra ? extra : [...logSecrets, ...extra];
+  return [...new Set(values.filter(value => typeof value === "string" && value).flatMap(value => {
+    const parts = /^(?:Bearer|Basic)\s+/i.test(value) ? [value, value.replace(/^(?:Bearer|Basic)\s+/i, "")] : [value];
+    return parts.flatMap(part => {
+      const encoded = Buffer.from(part).toString("base64"), escaped = JSON.stringify(part).slice(1, -1);
+      let uri = part; try { uri = encodeURIComponent(part); } catch { /* A malformed surrogate is still redacted literally. */ }
+      return [part, escaped, JSON.stringify(escaped).slice(1, -1), uri, encoded,
+        encoded.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, ""), [...part].join("."), [...part].join("~")];
+    });
+  }))].filter(Boolean).sort((a, b) => b.length - a.length);
+}
+
+function clean_log_fragment(value, variants) {
+  let text = value;
+  for (const secret of variants) {
+    if (secret.length >= 4) text = text.split(secret).join("[REDACTED]");
+    else text = text.replace(new RegExp(`(?<![\\p{L}\\p{N}_])${secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}\\p{N}_])`, "gu"), "[REDACTED]");
+  }
+  return text.replace(/-----BEGIN (?:[A-Z ]* )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z ]* )?PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
+    .replace(/\b(Bearer|Basic)\s+[^\s,;"']+/gi, "$1 [REDACTED]")
+    .replace(/((?:proxy[_-]?)?authorization["']?\s*[:=]\s*)(?:\[REDACTED\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Bearer|Basic|Token|ApiKey)\s+[^\s,;}]+|[^\r\n,;}]+)/gi, "$1[REDACTED]")
+    .replace(/((?:set[_-]?)?cookie["']?\s*[:=]\s*)(?:\[REDACTED\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n}]+)/gi, "$1[REDACTED]")
+    .replace(/((?:password|passwd|pwd|пароль|secret|tokens?|credentials?|authorization|authentication|api[_-]?key|access[_-]?key|private[_-]?key|binding[_-]?key|cookies?)["']?\s*[:=]\s*)(?:\[REDACTED\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&}\]]+)/gi, "$1[REDACTED]")
+    .replace(/(--(?:password|passwd|pwd|secret|token|credential|authorization|authentication|auth|api[_-]?key|access[_-]?key|private[_-]?key|binding[_-]?key)\s+)(?:\[REDACTED\]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/gi, "$1[REDACTED]")
+    .replace(/(^|[\s|;])\/P(?:\s+(?:"(?:[^"]|"")*"|[^\s|;]+)|"(?:[^"]|"")*")/gim, "$1/P [REDACTED]");
+}
+
+function clean_log_text(value, variants) {
+  const text = String(value), scheme = /\b[a-z][a-z0-9+.-]*:\/\//gi;
+  let result = "", offset = 0;
+  for (const match of text.matchAll(scheme)) {
+    if (match.index < offset) continue;
+    const preceding = text[match.index - 1], quote = preceding === '"' || preceding === "'" ? preceding : '"';
+    let end = match.index + match[0].length;
+    while (end < text.length && !/[\s<>]/.test(text[end]) && text[end] !== quote) end++;
+    result += clean_log_fragment(text.slice(offset, match.index), variants) + text.slice(match.index, end);
+    offset = end;
+  }
+  return result + clean_log_fragment(text.slice(offset), variants);
+}
+
+export function redact_log_data(value, { variants: baseVariants } = {}) {
+  const additional = [], scanned = new WeakSet();
+  const collect = (item, depth = 0, sensitiveParent = false) => {
+    if (!item || typeof item !== "object" || depth > 16 || scanned.has(item)) return;
+    scanned.add(item);
+    for (const [key, child] of Object.entries(item).slice(0, 256)) {
+      if (item instanceof Error && item.remote === true && key === "error") continue;
+      if (/^(?:headers_env|env|environment)$/i.test(key)) continue;
+      const sensitive = logSecretKey.test(key) || sensitiveParent && /^(?:value|data|key)$/i.test(key);
+      if (sensitive && typeof child === "string" && child) additional.push(child);
+      if (sensitive && Array.isArray(child)) additional.push(...child.filter(value => typeof value === "string" && value));
+      if (sensitive && Buffer.isBuffer(child)) additional.push(child.toString("utf8"), child.toString("base64"));
+      if (child && typeof child === "object" && !Buffer.isBuffer(child)) collect(child, depth + 1, sensitiveParent || logSecretKey.test(key));
+    }
+    if (item instanceof Error && item.cause) collect(item.cause, depth + 1, sensitiveParent);
+  };
+  collect(value);
+  const variants = baseVariants ? [...new Set([...baseVariants, ...log_secret_variants(additional, true)])].sort((a, b) => b.length - a.length) : log_secret_variants(additional), seen = new WeakSet();
+  const visit = (item, key = "", depth = 0, sensitiveParent = false, headerEnvValue = false) => {
+    if (depth > 16) return "[depth limit]";
+    if (!headerEnvValue && (logSecretKey.test(key) || sensitiveParent && /^(?:value|data|key)$/i.test(key)) && item !== null && typeof item !== "object") return "[REDACTED]";
+    if (item === null || typeof item === "boolean" || typeof item === "number") return item;
+    if (typeof item === "string") {
+      if (/(?:url|uri|endpoint)$/i.test(key)) return item.slice(0, 16000);
+      if ((key === "state" || key === "status") && diagnosticStates.has(item) || key === "phase" && diagnosticPhases.has(item) || key === "action" && diagnosticActions.has(item)) return item;
+      return clean_log_text(item, variants).slice(0, 16000);
+    }
+    if (typeof item === "bigint") return String(item);
+    if (!item || typeof item !== "object") return undefined;
+    if (logSecretKey.test(key) && (Buffer.isBuffer(item) || ArrayBuffer.isView(item))) return "[REDACTED]";
+    if (seen.has(item)) return "[circular]";
+    seen.add(item);
+    if (Array.isArray(item)) {
+      let redactNext = false;
+      const result = item.slice(0, 256).map(child => {
+        if (logSecretKey.test(key) && (child === null || typeof child !== "object" || ArrayBuffer.isView(child))) return "[REDACTED]";
+        if (redactNext) { redactNext = false; return "[REDACTED]"; }
+        if (typeof child === "string" && /^(?:--?[^=\s]+|\/P)$/i.test(child) && (/^\/P$/i.test(child) || logSecretKey.test(child.replace(/^--?/, "")))) redactNext = true;
+        return visit(child, "", depth + 1, sensitiveParent || logSecretKey.test(key));
+      });
+      seen.delete(item);
+      return result;
+    }
+    const fields = item instanceof Error
+      ? { ...Object.fromEntries(Object.entries(item).filter(([name]) => !(item.remote === true && name === "error"))), name: item.name, message: item.message, stack: item.stack, ...(item.cause === undefined ? {} : { cause: item.cause }) }
+      : item;
+    const result = Object.fromEntries(Object.entries(fields).slice(0, 256).flatMap(([name, child]) => {
+      const redacted = visit(child, name, depth + 1, sensitiveParent || logSecretKey.test(key), key === "headers_env");
+      return redacted === undefined ? [] : [[stableLogKeys.has(name) ? name : clean_log_text(name, variants), redacted]];
+    }));
+    seen.delete(item);
+    return result;
+  };
+  return visit(value);
+}
+
+export function diagnostic_event_detail(detail = {}, { projected = false, variants } = {}) {
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return {};
+  const result = redact_log_data(detail, { variants }), typed = diagnostic_fields(detail, { projected });
+  for (const key of ["projectId", "selectedDirectoryId", "toolId", "executableId"]) if (typed[key] !== undefined) result[key] = typed[key];
+  if (typed.failure) result.failure = { ...(result.failure && typeof result.failure === "object" ? result.failure : {}), ...typed.failure };
+  if (typed.binding?.projectId && result.binding && typeof result.binding === "object") result.binding.projectId = typed.binding.projectId;
+  return result;
+}
 export function safe_error_message(error) {
   if (error?.remote === true) {
     const evidence = connection_failure(error);
@@ -360,11 +483,20 @@ export function create_diagnostic_logger(component, state = diagnostic_state()) 
       expire(logFiles(directory), now);
       let priorityUnavailable = false;
       try { expire(priorityFiles(directory), now); } catch { priorityUnavailable = true; }
-      const record = { formatVersion: LOG_FORMAT_VERSION, recordId: randomUUID(), time: new Date(now).toISOString(), component: clean_text(component).slice(0, 80), session, sequence: eventSequence, pid: process.pid,
-        instanceId: diagnostic_id(process.env.EDT_AI_INSTANCE || "default"), event: clean_text(name).slice(0, 80), level: level === "warning" ? "warn" : ["info", "warn", "error", "debug"].includes(level) ? level : "info",
-        detail: diagnostic_fields({ ...(uuid(process.env.EDT_AI_OPERATION_ID) ? { operationId: process.env.EDT_AI_OPERATION_ID } : {}), ...detail }), ...(dropped ? { droppedBefore: dropped } : {}), ...(priorityDropped ? { priorityDroppedBefore: priorityDropped } : {}) };
+      const variants = log_secret_variants();
+      const instance = process.env.EDT_AI_INSTANCE || "default";
+      const record = { formatVersion: LOG_FORMAT_VERSION, recordId: randomUUID(), time: new Date(now).toISOString(), component: clean_log_text(component, variants).slice(0, 80), session, sequence: eventSequence, pid: process.pid,
+        instance: clean_log_text(instance, variants), instanceId: diagnostic_id(instance), event: clean_log_text(name, variants).slice(0, 80), level: level === "warning" ? "warn" : ["info", "warn", "error", "debug"].includes(level) ? level : "info",
+        detail: diagnostic_event_detail({ ...(uuid(process.env.EDT_AI_OPERATION_ID) ? { operationId: process.env.EDT_AI_OPERATION_ID } : {}), ...detail }, { variants }), ...(dropped ? { droppedBefore: dropped } : {}), ...(priorityDropped ? { priorityDroppedBefore: priorityDropped } : {}) };
       let line = JSON.stringify(record) + "\n";
-      if (Buffer.byteLength(line) > LOG_POLICY.eventBytes) { record.detail = { truncated: true }; line = JSON.stringify(record) + "\n"; }
+      if (Buffer.byteLength(line) > LOG_POLICY.eventBytes) {
+        const { projectId, selectedDirectoryId, projectRoot, operationId, requestId, tool, phase, stage, stageLabel, failure, error } = record.detail;
+        const small = (value, limit) => typeof value === "string" ? value.slice(0, limit) : value;
+        record.detail = { projectId, selectedDirectoryId, projectRoot: small(projectRoot, 512), operationId, requestId: small(requestId, 256), tool: small(tool, 256), phase: small(phase, 128), stage: small(stage, 128), stageLabel: small(stageLabel, 128), failure,
+          ...(error && typeof error === "object" ? { error: { name: small(error.name, 128), code: small(error.code, 128), message: small(error.message, 1000) } } : {}), truncated: true };
+        line = JSON.stringify(record) + "\n";
+        if (Buffer.byteLength(line) > LOG_POLICY.eventBytes) { record.detail = { projectId, operationId, stage: small(stage, 80), truncated: true }; line = JSON.stringify(record) + "\n"; }
+      }
       const important = record.level === "error" || record.level === "warn" || /^(?:connected|disconnected|connection_failed|operation_failed|operation_outcome_unknown|operation_rejected|component_observed|daemon_started|daemon_stopped)$/.test(name);
       if (will_discard(logFiles(directory), LOG_POLICY.fileBytes, Buffer.byteLength(line))) record.rotatedBefore = true;
       if (important && !priorityUnavailable) try {
@@ -394,7 +526,7 @@ export function read_diagnostic_logs(state = diagnostic_state()) {
     const directoryStat = fs.lstatSync(directory);
     if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) return { events, issues: ["Diagnostic directory is not a regular directory"], stats };
   } catch (error) { return { events, issues: error.code === "ENOENT" ? issues : ["Diagnostic directory unavailable: " + (error.code || "read_failed")], stats }; }
-  const seen = new Map();
+  const seen = new Map(), variants = log_secret_variants();
   for (const file of [...logFiles(directory).reverse(), ...priorityFiles(directory).reverse()]) {
     let fd;
     try {
@@ -416,21 +548,31 @@ export function read_diagnostic_logs(state = diagnostic_state()) {
           const timestamp = Date.parse(event.time);
           if (!Number.isFinite(timestamp)) { stats.invalidTimestamps++; continue; }
           if (timestamp < Date.now() - LOG_POLICY.days * 86400000) { stats.expiredRecords++; continue; }
-          if (![2, LOG_FORMAT_VERSION].includes(event.formatVersion)) {
+          if (![2, 3, LOG_FORMAT_VERSION].includes(event.formatVersion)) {
             stats.unsupportedRecords++;
             issues.push("Unsupported log format: record details omitted");
             continue;
           }
+          if (event.formatVersion === LOG_FORMAT_VERSION) {
+            const matches = (value, id, hash) => typeof value !== "string" || value.includes("[REDACTED]") || !id || hash(value) === id;
+            if (!matches(event.detail?.projectRoot, event.detail?.projectId, diagnostic_project_id) ||
+                !matches(event.detail?.binding?.projectRoot, event.detail?.binding?.projectId, diagnostic_project_id) ||
+                !matches(event.instance, event.instanceId, diagnostic_id)) {
+              stats.invalidRecords++; issues.push("Conflicting diagnostic scope"); continue;
+            }
+          }
           const recordId = uuid(event.recordId), duplicate = recordId && seen.get(recordId);
           if (duplicate?.line === line.trim()) continue;
           if (duplicate) issues.push("Conflicting duplicate log record");
-          const detail = diagnostic_fields(event.detail, { projected: event.formatVersion === LOG_FORMAT_VERSION });
+          const detail = event.formatVersion === LOG_FORMAT_VERSION ? diagnostic_event_detail(event.detail, { projected: true, variants }) : diagnostic_fields(event.detail, { projected: event.formatVersion === 3 });
+          const currentVariants = event.formatVersion === LOG_FORMAT_VERSION ? variants : null;
           const projected = { formatVersion: event.formatVersion, ...(recordId ? { recordId } : {}), time: new Date(timestamp).toISOString(),
-            component: typeof event.component === "string" && /^[a-z0-9-]{1,80}$/.test(event.component) ? event.component : "unknown",
+            component: typeof event.component === "string" && /^[a-z0-9-]{1,80}$/.test(event.component) ? (currentVariants ? clean_log_text(event.component, currentVariants) : event.component) : "unknown",
             ...(uuid(event.session) ? { session: event.session } : {}), ...(Number.isSafeInteger(event.pid) && event.pid > 0 ? { pid: event.pid } : {}),
             ...(Number.isSafeInteger(event.sequence) && event.sequence > 0 ? { sequence: event.sequence } : {}),
+            ...(currentVariants && typeof event.instance === "string" ? { instance: clean_log_text(event.instance, currentVariants).slice(0, 256) } : {}),
             instanceId: typeof event.instanceId === "string" && /^[a-f0-9]{24}$/.test(event.instanceId) ? event.instanceId : diagnostic_id(event.instance),
-            event: typeof event.event === "string" && /^[a-z0-9_-]{1,80}$/.test(event.event) ? event.event : "unknown",
+            event: typeof event.event === "string" && /^[a-z0-9_-]{1,80}$/.test(event.event) ? (currentVariants ? clean_log_text(event.event, currentVariants) : event.event) : "unknown",
             level: event.formatVersion === 2 && ["runtime_stderr", "index_output"].includes(event.event) && ["warning", "warn"].includes(event.level) ? "info" : event.level === "warning" ? "warn" : ["info", "warn", "error", "debug"].includes(event.level) ? event.level : "info", detail,
             ...(Number.isSafeInteger(event.droppedBefore) && event.droppedBefore > 0 ? { droppedBefore: event.droppedBefore } : {}),
             ...(Number.isSafeInteger(event.priorityDroppedBefore) && event.priorityDroppedBefore > 0 ? { priorityDroppedBefore: event.priorityDroppedBefore } : {}),

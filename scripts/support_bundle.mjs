@@ -50,16 +50,8 @@ function observation(check, now) {
     ...(repositories ? { repositories, ...(check.repositories.length > repositories.length ? { repositoriesOmitted: check.repositories.length - repositories.length } : {}) } : {}) };
 }
 function endpoint(value) {
-  if (typeof value !== "string" || !value) return { state: "not_configured" };
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol)) return { state: "unsupported_scheme" };
-    const host = url.hostname.toLowerCase(), loopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(host);
-    const unspecified = ["0.0.0.0", "[::]", "::"].includes(host);
-    return { state: "configured", scheme: url.protocol.slice(0, -1), port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
-      portSource: url.port ? "explicit" : "scheme_default", hostKind: loopback ? "loopback" : unspecified ? "unspecified" : "other",
-      endpointId: diagnostic_id(url.origin + url.pathname), source: "effective_settings", connectivity: "not_checked_by_export" };
-  } catch { return { state: "invalid_url" }; }
+  if (typeof value !== "string") return { state: "not_configured" };
+  return { state: value ? "configured" : "not_configured", url: value, source: "effective_settings", connectivity: "not_checked_by_export" };
 }
 function componentSummary(current, now) {
   const values = current?.values || {}, checks = new Map((Array.isArray(current?.componentChecks) ? current.componentChecks : []).filter(check => componentIds.includes(check?.id)).map(check => [check.id, check]));
@@ -103,7 +95,7 @@ function componentSummary(current, now) {
     return [id, item];
   }));
 }
-function scopedEvents(events, projectRoot, instance, selectedRoot = projectRoot) {
+function scopedEvents(events, projectRoot, instance, selectedRoot = projectRoot, currentSession = null) {
   const projectIds = new Set([diagnostic_project_id(projectRoot), diagnostic_project_id(selectedRoot)].filter(Boolean));
   const instanceId = diagnostic_id(instance || "default"), matches = event => event.detail?.projectId || event.detail?.binding?.projectId;
   const sessions = new Set(events.filter(event => projectIds.has(matches(event)) && (!event.instanceId || event.instanceId === instanceId)).map(event => event.session).filter(Boolean));
@@ -113,9 +105,10 @@ function scopedEvents(events, projectRoot, instance, selectedRoot = projectRoot)
     const project = matches(event);
     if ((event.instanceId && event.instanceId !== instanceId) || (project && !projectIds.has(project))) { excluded++; continue; }
     if (project) kept.push({ ...event, scope: "project" });
-    else if (event.session && sessions.has(event.session)) kept.push({ ...event, scope: "session" });
+    else if (!projectRoot && currentSession && event.session === currentSession) kept.push({ ...event, scope: "session" });
+    else if (event.session && sessions.has(event.session)) kept.push({ ...event, detail: diagnostic_fields(event.detail, { projected: true }), scope: "session" });
     else if (["error", "warn"].includes(event.level)) {
-      if (unboundKept < 100) { kept.push({ ...event, scope: "unbound_unknown" }); unboundKept++; }
+      if (unboundKept < 100) { kept.push({ ...event, detail: diagnostic_fields(event.detail, { projected: true }), scope: "unbound_unknown" }); unboundKept++; }
       else unboundOmitted++;
     }
     else excluded++;
@@ -142,17 +135,18 @@ export function detailed_log_export(state, days, now = Date.now()) {
   if (![1, 3, 7].includes(days)) throw new Error("Выберите период журнала: 1, 3 или 7 дней.");
   const logs = read_diagnostic_logs(state), cutoff = now - days * 86400000;
   const events = export_diagnostic_events(logs.events.filter(event => Date.parse(event.time) >= cutoff));
-  const lines = ["1C AI Core — журнал событий", `Период: ${days} дн.`, "Пути и произвольный текст заменены диагностическими идентификаторами или исключены.", "", ...events.map(event => JSON.stringify(event))];
+  const lines = ["1C AI Core — журнал событий", `Период: ${days} дн.`, "События содержат диагностические данные всех локальных сеансов; URL записываются без изменений.", "", ...events.map(event => JSON.stringify(event))];
   if (logs.issues.length) lines.push("", "Замечания при чтении: " + JSON.stringify(sanitize_diagnostics(logs.issues)));
   return { filename: "1c-ai-core-log.txt", mimeType: "text/plain", text: lines.join("\n") + "\n" };
 }
 // Deliberately no CLI or model tool. Only the settings app calls this collector.
 // Every section fails independently; invalid settings must still be exportable.
-export async function support_bundle({ state, configPath, selectedRoot, selection, operation, operations, operationsObservedAt, loggerStatus, readCurrent }) {
+export async function support_bundle({ state, configPath, selectedRoot, selection, operation, operations, operationsObservedAt, loggerStatus, readCurrent, onIssue, currentSession }) {
   const issues = [], snapshot = {};
   const capture = async (name, read) => {
     try { snapshot[name] = await read(); }
     catch (error) { const reason = ["ENOENT", "EACCES", "EPERM", "READ_TIMEOUT", "LOCAL_FILE_CHANGED"].includes(error?.code) ? error.code : "unavailable";
+      try { onIssue?.(name, error); } catch { /* Diagnostics must remain available if logging fails. */ }
       snapshot[name] = { unavailable: true, error: reason }; issues.push({ section: name, reason }); }
   };
   const document = async (file, label = "document", boundary) => {
@@ -302,12 +296,12 @@ export async function support_bundle({ state, configPath, selectedRoot, selectio
   for (const [name, value] of Object.entries(safe)) if (Buffer.byteLength(JSON.stringify(value)) > SECTION_LIMIT) {
     safe[name] = { omitted: "section_size_limit" }; issues.push({ section: name, reason: "section_size_limit" });
   }
-  const scoped = scopedEvents(logs.events, projectIdentityRoot, process.env.EDT_AI_INSTANCE || "default", selectedRoot);
+  const scoped = scopedEvents(logs.events, projectIdentityRoot, process.env.EDT_AI_INSTANCE || "default", selectedRoot, currentSession);
   const report = { format: "1c-ai-core-diagnostics", version: 2, createdAt,
     collection: { policy: LOG_POLICY, readOnly: true, networkRequests: false,
       includes: ["Операционные события недавних сессий плагина", "Текущие настройки выбранного проекта и локальное состояние компонентов"],
-      excludes: ["История чата", "Исходные файлы", "Значения переменных окружения", "Аргументы и результаты MCP", "Содержимое журналов внешних сервисов"],
-      redaction: "Только разрешённые типизированные поля; пути, адреса, произвольные сообщения, результаты операций и содержимое файлов исключены. Идентификаторы проектов и инструментов хешированы.",
+      excludes: ["Отдельный сбор истории чата и исходных файлов", "Систематический сбор значений переменных окружения", "Систематический сбор аргументов и результатов MCP", "Чтение журналов внешних сервисов"],
+      redaction: "События проекта и текущего сеанса без проекта включают диагностические подробности; распознанные поля авторизации скрываются. URL сохраняются как есть. Другие события без подтверждённой привязки содержат только типизированные поля.",
       scope: { projectId: diagnostic_project_id(projectIdentityRoot), instanceId: selectedInstanceId, excludedEvents: scoped.excluded, excludedOperations, unboundEventsOmitted: scoped.unboundOmitted,
         unboundEvents: "unbound_unknown is not evidence of association with this project", retention: "bounded; older and dropped records may be unavailable",
         ordering: "sequence orders records within one logger session; timestamps do not establish order across sessions",

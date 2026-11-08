@@ -12,7 +12,7 @@ import { launch_selection, explicit_selection, roots_selection } from "../script
 import { knowledge_status } from "../scripts/knowledge.mjs";
 import { core_version } from "../scripts/compatibility.mjs";
 import { read_lines } from "../scripts/mcp_codec.mjs";
-import { create_diagnostic_logger, safe_error_message } from "../scripts/diagnostics.mjs";
+import { create_diagnostic_logger, register_diagnostic_secrets, safe_error_message } from "../scripts/diagnostics.mjs";
 
 const state = state_root(), configuration = process.env.EDT_AI_SETTINGS || path.join(state, "settings.json");
 const PROTOCOLS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -128,6 +128,7 @@ async function dispatch(message) {
   }
   let admitted = false, eventRoot = selection.directory, eventTool = message.params?.name;
   const started = Date.now();
+  if (message.method === "tools/call") register_diagnostic_secrets(message.params?.arguments || {});
   if (message.method === "tools/call") diagnostic.event("request_started", { requestId: message.id, tool: eventTool, projectRoot: eventRoot, phase: "dispatch" });
   try {
     let result;
