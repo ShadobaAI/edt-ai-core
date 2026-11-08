@@ -11,7 +11,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import { createRequire } from "node:module";
-import { edt_fixture as fixture, environment, node_async, session, ROOT } from "./helpers.mjs";
+import { edt_fixture as fixture, environment, node_async, session, ROOT, protected_process_skip } from "./helpers.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { setup_assets, save_readiness, read_readiness, save_component_checks, read_component_checks, component_statuses, begin_foreground_readiness, activate_foreground_readiness, release_foreground_readiness, capture_readiness_priority, readiness_priority_current, foreground_readiness_active } from "../scripts/setup_readiness.mjs";
 import { instance_directory, project_directory, sha256 } from "../scripts/project_paths.mjs";
@@ -25,6 +25,11 @@ import { project_profile } from "../scripts/profile.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { open_reader, reader_active } from "../scripts/reader_lease.mjs";
+
+function testProtected(name, options, body) {
+  if (typeof options === "function") return test(name, { skip: protected_process_skip }, options);
+  return test(name, { ...options, skip: options.skip || protected_process_skip }, body);
+}
 
 async function with_clean_policy_environment(run) {
   const isPolicyInput = name => !["NODE_TEST_CONTEXT", "NODE_TEST_WORKER_ID"].includes(name.toUpperCase()) &&
@@ -1291,7 +1296,7 @@ test("malformed explicit BSL JSON is reported without launching Java or revealin
   assert.equal(launches, 0);
 });
 
-test("first BSL preparation accepts its own installation, reuses unchanged API evidence and rejects input races", async t => {
+testProtected("first BSL preparation accepts its own installation, reuses unchanged API evidence and rejects input races", async t => {
   const {f,backend,authorization}=await ready_fixture(t),configuration=path.join(f.root,"bsl.json");
   fs.writeFileSync(configuration,"{}");
   await backend.main({action:"update",set:{bslLsEnabled:true,bslLsJava:process.execPath}});
@@ -1489,7 +1494,7 @@ test("a replacement index process cannot inherit the previous process API proof"
   const result=await refresh();assert.equal(result.componentChecks[0].state,"not_verified");assert.equal(result.managed[0].ready,false);
 });
 
-test("prepared index refresh replaces liveness and cached results with current read-only API evidence", async t => {
+testProtected("prepared index refresh replaces liveness and cached results with current read-only API evidence", async t => {
   const { f, backend, home, starts, health, setHealth, refresh } = await live_index_fixture(t);
   const config = backend.effective(backend.current()), files = ["daemon.json", "owner.json", "daemon.toml"];
   const before = files.map(file => fs.readFileSync(path.join(home, file)));
@@ -1518,7 +1523,7 @@ test("prepared index refresh replaces liveness and cached results with current r
   assert.equal((await backend.main({ action: "read" })).readiness.state, "not_checked");
 });
 
-test("concurrent local index observations share a single native client", async t => {
+testProtected("concurrent local index observations share a single native client", async t => {
   const { f, starts, health, setHealth, refresh } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const request = McpClient.prototype.request; let enter, release;
@@ -1537,7 +1542,7 @@ test("concurrent local index observations share a single native client", async t
   assert.equal(starts.length, 1);
 });
 
-test("a session reuses one verified native reader and rehashes only on a new launch", async t => {
+testProtected("a session reuses one verified native reader and rehashes only on a new launch", async t => {
   const { f, backend, home, starts, copies, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), observer = new IndexObserver(f.state);
@@ -1550,7 +1555,7 @@ test("a session reuses one verified native reader and rehashes only on a new lau
   await observer.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("replacing and restoring the runtime at dispatch cannot change the verified reader image", async t => {
+testProtected("replacing and restoring the runtime at dispatch cannot change the verified reader image", async t => {
   const { f, backend, exe, starts, health, setHealth, onReaderLaunch } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const original = fs.readFileSync(exe), backup = exe + ".backup"; let swapped = false;
@@ -1570,8 +1575,10 @@ test("Windows protects the reader copy and pins its directory", { skip: process.
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state); f.clients.push(observer); t.after(() => observer.close());
   assert.equal((await observer.observe(backend.effective(backend.current()), f.root, f.profile)).index_state, "ready");
-  const directory = observer.entry.snapshotHome, reader = path.join(directory, "reader.exe");
+  const directory = observer.entry.snapshotHome, reader = path.join(directory, "reader.exe"),
+    files = [reader, path.join(directory, "daemon.json"), path.join(directory, "daemon.toml")];
   assert.throws(() => fs.renameSync(directory, directory + ".moved"), /EPERM|EACCES|EBUSY|access|permission/i);
+  for (const file of files) assert.throws(() => fs.renameSync(file, file + ".moved"), /EPERM|EACCES|EBUSY|access|permission/i);
   const parent = path.dirname(directory);
   assert.throws(() => fs.renameSync(parent, parent + ".moved"), /EPERM|EACCES|EBUSY|access|permission/i);
   const intermediate = path.dirname(parent);
@@ -1587,19 +1594,20 @@ test("Windows protects the reader copy and pins its directory", { skip: process.
   const token = [null], userBuffer = Buffer.alloc(4096), needed = [0]; assert.ok(open(current(), 8, token));
   try {
     assert.ok(info(token[0], 1, userBuffer, userBuffer.length, needed)); const user = k.decode(userBuffer, "void *");
-    for (const target of [directory, reader]) {
+    for (const target of [directory, ...files]) {
       const owner = [null], dacl = [null], descriptor = [null]; assert.equal(get(target, 1, 5, owner, null, dacl, null, descriptor), 0);
       try {
-        assert.ok(equal(owner[0], user)); const data = Buffer.alloc(12); assert.ok(aclInfo(dacl[0], data, data.length, 2)); assert.equal(data.readUInt32LE(0), 1);
+        assert.ok(equal(owner[0], user), `owner differs from the token user: ${path.basename(target)}`); const data = Buffer.alloc(12); assert.ok(aclInfo(dacl[0], data, data.length, 2)); assert.equal(data.readUInt32LE(0), 1);
         const ace = [null]; assert.ok(aceAt(dacl[0], 0, ace));
         const header = Buffer.from(k.decode(ace[0], "uint8_t", 4)), bytes = Buffer.from(k.decode(ace[0], "uint8_t", header.readUInt16LE(2)));
         assert.equal(bytes[0], 0); assert.ok(equal(bytes.subarray(8), user));
       } finally { if (descriptor[0]) free(descriptor[0]); }
     }
+    assert.ok(userBuffer.length > 0); // Keep the backing TOKEN_USER buffer alive while using its SID pointer.
   } finally { close(token[0]); }
 });
 
-test("a replaced observation directory cannot redirect cleanup", { skip: process.platform === "win32" }, async t => {
+testProtected("a replaced observation directory cannot redirect cleanup", { skip: process.platform === "win32" }, async t => {
   const { f, backend, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state); t.after(async () => { await observer.close().catch(() => {}); });
@@ -1633,7 +1641,7 @@ test("replacing the observation directory during copy cannot redirect the reader
   } finally { observer.cleanupError = null; }
 });
 
-test("temporary snapshot cleanup errors are retried without retaining a reader lease", async t => {
+testProtected("temporary snapshot cleanup errors are retried without retaining a reader lease", async t => {
   const { f, backend, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state); f.clients.push(observer); t.after(() => observer.close());
@@ -1647,7 +1655,7 @@ test("temporary snapshot cleanup errors are retried without retaining a reader l
   assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("snapshot cleanup failure blocks repeated readers even after the process exits", async t => {
+testProtected("snapshot cleanup failure blocks repeated readers even after the process exits", async t => {
   const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state), config = backend.effective(backend.current());
@@ -1667,7 +1675,7 @@ test("snapshot cleanup failure blocks repeated readers even after the process ex
   } finally { process.env.EDT_AI_INSTANCE = "first"; observer.cleanupError = null; }
 });
 
-test("snapshot cleanup failure before reader arming retains a project-wide barrier", async t => {
+testProtected("snapshot cleanup failure before reader arming retains a project-wide barrier", async t => {
   const { f, backend, home, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const outside = path.join(f.base, "foreign-index"), ownerFile = path.join(home, "owner.json"), owner = JSON.parse(fs.readFileSync(ownerFile, "utf8"));
@@ -1687,7 +1695,7 @@ test("snapshot cleanup failure before reader arming retains a project-wide barri
   } finally { process.env.EDT_AI_INSTANCE = "first"; failure.mock.restore(); observer.cleanupError = null; }
 });
 
-test("failed snapshot initialization preserves the reader barrier without a snapshot object", { skip: process.platform === "win32" }, async t => {
+testProtected("failed snapshot initialization preserves the reader barrier without a snapshot object", { skip: process.platform === "win32" }, async t => {
   const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const open = fs.openSync, remove = fs.rmdirSync;
@@ -1709,7 +1717,7 @@ test("failed snapshot initialization preserves the reader barrier without a snap
   } finally { process.env.EDT_AI_INSTANCE = "first"; pinFailure.mock.restore(); removeFailure.mock.restore(); observer.cleanupError = null; }
 });
 
-test("separate observers share one read-only reader for the same project and instance", async t => {
+testProtected("separate observers share one read-only reader for the same project and instance", async t => {
   const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), first = new IndexObserver(f.state), second = new IndexObserver(f.state);
@@ -1725,7 +1733,7 @@ test("separate observers share one read-only reader for the same project and ins
   await first.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("repeated index checks keep daemon connections bounded and release them", { timeout: 25000 }, async t => {
+testProtected("repeated index checks keep daemon connections bounded and release them", { timeout: 25000 }, async t => {
   const { f, backend, starts, health, setHealth, connections } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state), config = backend.effective(backend.current());
@@ -1738,7 +1746,7 @@ test("repeated index checks keep daemon connections bounded and release them", {
   assert.equal(connections().active, 0, "idle daemon connections must close within the server deadline");
 });
 
-test("failed reader cleanup leaves an orphan barrier and does not leave its lease listener active", async t => {
+testProtected("failed reader cleanup leaves an orphan barrier and does not leave its lease listener active", async t => {
   const { f, backend, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), observer = new IndexObserver(f.state);
@@ -1758,7 +1766,7 @@ test("failed reader cleanup leaves an orphan barrier and does not leave its leas
   await other.close();
 });
 
-test("a closing reader is replaced only after its process and lease are closed", async t => {
+testProtected("a closing reader is replaced only after its process and lease are closed", async t => {
   const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), first = new IndexObserver(f.state), second = new IndexObserver(f.state);
@@ -1781,7 +1789,7 @@ test("a closing reader is replaced only after its process and lease are closed",
   assert.equal(starts.length, 2);
 });
 
-test("a session hands off a reader even when closing starts before the marker changes", async t => {
+testProtected("a session hands off a reader even when closing starts before the marker changes", async t => {
   const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), first = new IndexObserver(f.state), second = new IndexObserver(f.state);
@@ -1800,7 +1808,7 @@ test("a session hands off a reader even when closing starts before the marker ch
   assert.equal((await pending).index_state, "ready"); assert.equal(starts.length, 2);
 });
 
-for (const change of ["disable", "revoke"]) test(`an idle index reader closes when its ${change} input changes`, async t => {
+for (const change of ["disable", "revoke"]) testProtected(`an idle index reader closes when its ${change} input changes`, async t => {
   const { f, backend, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), observer = new IndexObserver(f.state);
@@ -1812,7 +1820,7 @@ for (const change of ["disable", "revoke"]) test(`an idle index reader closes wh
   assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("unrelated settings do not restart or rehash an idle index reader", async t => {
+testProtected("unrelated settings do not restart or rehash an idle index reader", async t => {
   const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
@@ -1826,7 +1834,7 @@ test("unrelated settings do not restart or rehash an idle index reader", async t
   assert.equal(starts.length, 1); assert.equal(copies.length, 1);
 });
 
-test("an unrelated BSL runtime update does not restart or rehash the index reader", async t => {
+testProtected("an unrelated BSL runtime update does not restart or rehash the index reader", async t => {
   const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
@@ -1839,7 +1847,7 @@ test("an unrelated BSL runtime update does not restart or rehash the index reade
   assert.equal(starts.length, 1); assert.equal(copies.length, 1);
 });
 
-test("granting BSL preparation preserves index readiness and its live reader", async t => {
+testProtected("granting BSL preparation preserves index readiness and its live reader", async t => {
   const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
@@ -1854,7 +1862,7 @@ test("granting BSL preparation preserves index readiness and its live reader", a
   assert.equal(starts.length, 1); assert.equal(copies.length, 1);
 });
 
-test("an unrelated grant during an index check discards the result but keeps its reader", async t => {
+testProtected("an unrelated grant during an index check discards the result but keeps its reader", async t => {
   const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
@@ -1876,7 +1884,7 @@ test("an unrelated grant during an index check discards the result but keeps its
   assert.equal(starts.length, 1); assert.equal(copies.length, 1);
 });
 
-test("a synchronous reader spawn failure does not leave an orphan barrier", async t => {
+testProtected("a synchronous reader spawn failure does not leave an orphan barrier", async t => {
   const { f, backend, home, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const spawn = childProcess.spawn;
@@ -1891,7 +1899,7 @@ test("a synchronous reader spawn failure does not leave an orphan barrier", asyn
   assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("a timed-out copy worker and detached child exit before releasing the lease", { timeout: 20000 }, async t => {
+testProtected("a timed-out copy worker and detached child exit before releasing the lease", { timeout: 20000 }, async t => {
   const { f, backend, starts, copies, health, setHealth, onCopyLaunch } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const settings = backend.current(); settings.mcp.managed["code-index"].timeout_seconds = 2;
@@ -1909,7 +1917,7 @@ test("a timed-out copy worker and detached child exit before releasing the lease
   assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("closing the observer cancels an in-progress copy tree", { timeout: 15000 }, async t => {
+testProtected("closing the observer cancels an in-progress copy tree", { timeout: 15000 }, async t => {
   const { f, backend, starts, health, setHealth, onCopyLaunch } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const marker = path.join(f.base, "cancel-copy-pids.json"), fixtureFile = fileURLToPath(new URL("./fixtures/index-copy-hang.mjs", import.meta.url));
@@ -1924,7 +1932,7 @@ test("closing the observer cancels an in-progress copy tree", { timeout: 15000 }
   assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("index maintenance stops a running copy tree before restarting the daemon", { timeout: 15000 }, async t => {
+testProtected("index maintenance stops a running copy tree before restarting the daemon", { timeout: 15000 }, async t => {
   const { f, backend, starts, health, setHealth, onCopyLaunch } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const marker = path.join(f.base, "maintenance-copy-pids.json"), fixtureFile = fileURLToPath(new URL("./fixtures/index-copy-hang.mjs", import.meta.url));
@@ -1956,7 +1964,7 @@ test("repeated index reader lifecycles do not accumulate process handles or desc
   assert.deepEqual(fs.readdirSync(home).filter(name => name.startsWith(".observation-")), []);
 });
 
-test("index maintenance closes an idle cached reader before restarting the daemon", async t => {
+testProtected("index maintenance closes an idle cached reader before restarting the daemon", async t => {
   const { f, backend, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), observer = new IndexObserver(f.state), calls = [];
@@ -1968,7 +1976,7 @@ test("index maintenance closes an idle cached reader before restarting the daemo
   assert.deepEqual(calls, ["stop", "restart"]); assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("revoking the local index preparation grant invalidates an in-flight observation", async t => {
+testProtected("revoking the local index preparation grant invalidates an in-flight observation", async t => {
   const { f, health, setHealth, refresh } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const request = McpClient.prototype.request; let enter, release;
@@ -2001,7 +2009,7 @@ test("a revoked grant cannot be used after daemon health even if its bytes are r
   assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-test("a grant removed and restored during health dispatch cannot publish ready", async t => {
+testProtected("a grant removed and restored during health dispatch cannot publish ready", async t => {
   const { f, health, setHealth, refresh } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const file = path.join(instance_directory(f.state, f.root), "first.preparation.json"), grant = fs.readFileSync(file);
@@ -2062,7 +2070,7 @@ test("a daemon swapped after probe dispatch cannot prove the original daemon rea
   assert.notEqual(saved?.state, "ready");
 });
 
-test("an unconfirmed native client shutdown retains the index reader barrier", async t => {
+testProtected("an unconfirmed native client shutdown retains the index reader barrier", async t => {
   const { f, home, health, setHealth, refresh } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const close = McpClient.prototype.close;
@@ -2090,7 +2098,8 @@ test("index observation never launches an unapproved, stopped, foreign or modifi
     const result = await refresh(); assert.equal(result.managed[0].state, "error"); assert.match(result.managed[0].detail, /Владелец/);
   }
   fs.writeFileSync(ownerFile, JSON.stringify(owner)); fs.writeFileSync(exe, "modified artifact");
-  assert.match((await refresh()).managed[0].detail, /исполняемый файл/);
+  assert.match((await refresh()).managed[0].detail, protected_process_skip ? /Безопасное управление деревом/ : /исполняемый файл/);
+  assert.equal(starts.length, 0);
   fs.writeFileSync(path.join(home, "daemon.json"), "{}");
   const unavailable = (await refresh()).managed[0];
   assert.equal(unavailable.state, "not_verified"); assert.equal(starts.length, 0);
@@ -2098,7 +2107,7 @@ test("index observation never launches an unapproved, stopped, foreign or modifi
   assert.doesNotMatch(unavailable.detail, /не запущен|разрешённую подготовку/);
 });
 
-test("a temporary invalid index health response does not claim the live daemon is stopped", async t => {
+testProtected("a temporary invalid index health response does not claim the live daemon is stopped", async t => {
   const { f, starts, health, setHealth, refresh } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   assert.equal((await refresh()).managed[0].state, "ready");

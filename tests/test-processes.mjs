@@ -82,6 +82,24 @@ test("macOS direct index daemon startup refuses before launching or writing conf
   assert.equal(status, 0, stderr); assert.equal(stdout.trim(), "rejected"); assert.deepEqual(fs.readdirSync(home), []);
 });
 
+test("macOS managed smoke, updates and maintenance refuse protected launches", async t => {
+  const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href,
+    common = pathToFileURL(path.join(ROOT, "scripts/common.mjs")).href;
+  fs.writeFileSync(path.join(f.root, ".project"), "<projectDescription><name>Product</name></projectDescription>");
+  const code = `import assert from 'node:assert/strict';import fs from 'node:fs';
+    Object.defineProperty(process,'platform',{value:'darwin'});
+    const {smoke,restart_index,update_component}=await import(${JSON.stringify(runtime)}),{settings}=await import(${JSON.stringify(common)});
+    const config=settings(),calls=[];config.mcp.managed['code-index'].enabled=true;config.mcp.managed['bsl-ls'].enabled=true;
+    const io={installed:()=>calls.push('installed'),launch:()=>calls.push('launch'),stop:()=>calls.push('stop'),smoke:()=>calls.push('smoke')};
+    const state=${JSON.stringify(f.state)},root=${JSON.stringify(f.root)},profile=${JSON.stringify(f.profile)};
+    for(const operation of [()=>smoke(state,config,root,profile,'bsl-ls'),()=>restart_index(state,config,root,profile,io),()=>update_component(state,config,root,profile,'bsl-ls','apply',io)])
+      await assert.rejects(operation,error=>error.code==='PROCESS_CONTAINMENT_UNAVAILABLE'&&error.notSpawned===true);
+    assert.deepEqual(calls,[]);assert.deepEqual(fs.readdirSync(state),[]);console.log('rejected');`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  let output = "", errors = ""; child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => errors += chunk);
+  const [status] = await once(child, "close"); assert.equal(status, 0, errors); assert.equal(output.trim(), "rejected");
+});
+
 test("a protected index reader closes its entire owned process tree", { timeout: 15000, skip: process.platform === "darwin" }, async t => {
   const f = fixture(t), pidFile = path.join(f.base, "strict-tree.json");
   const source = `import {spawn} from 'node:child_process'; import fs from 'node:fs';

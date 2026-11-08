@@ -21,9 +21,9 @@ function record_path(state, key) {
   return path.join(state, "openviking-private", createHash("sha256").update(JSON.stringify(key)).digest("hex") + ".json");
 }
 
-// On Windows Node's mode bits do not establish an ACL. Explicitly protect the
-// directory with a DACL granting only the current token user, and let files
-// inherit it. Fail closed when the platform cannot enforce this policy.
+// On Windows Node's mode bits do not establish an ACL. Protect private
+// directories and observation files with an explicit owner and a DACL for the
+// current token user. Fail closed when the platform cannot enforce this policy.
 let win;
 function windows_api() {
   if (win) return win;
@@ -45,6 +45,7 @@ function windows_api() {
     equalSid: adv.func("int __stdcall EqualSid(void *left, void *right)"),
     getSecurity: adv.func("uint32_t __stdcall GetNamedSecurityInfoW(str16 file, int type, uint32_t info, _Out_ void **owner, void *group, void *dacl, void *sacl, _Out_ void **descriptor)"),
     getHandleSecurity: adv.func("uint32_t __stdcall GetSecurityInfo(void *file, int type, uint32_t info, _Out_ void **owner, void *group, _Out_ void **dacl, void *sacl, _Out_ void **descriptor)"),
+    descriptorControl: adv.func("int __stdcall GetSecurityDescriptorControl(void *descriptor, _Out_ uint16_t *control, _Out_ uint32_t *revision)"),
     aclInfo: adv.func("int __stdcall GetAclInformation(void *acl, _Out_ void *information, uint32_t size, int kind)"),
     aceAt: adv.func("int __stdcall GetAce(void *acl, uint32_t index, _Out_ void **ace)"),
     descriptor: adv.func("int __stdcall ConvertStringSecurityDescriptorToSecurityDescriptorW(str16 text, uint32_t revision, _Out_ void **descriptor, void *size)"),
@@ -58,18 +59,24 @@ function windows_api() {
   return win;
 }
 
-function verify_private_directory_handle(api, handle, sid) {
+function verify_private_handle(api, handle, sid, directory) {
   const owner = [null], acl = [null], descriptor = [null];
   let prior;
   try {
     const status = api.getHandleSecurity(handle, 1, 5, owner, null, acl, null, descriptor);
     if (status) throw new Error("Cannot inspect private directory security (" + status + ")");
-    const info = Buffer.alloc(12), ace = [null];
-    if (!owner[0] || !api.equalSid(sid, owner[0]) || !api.aclInfo(acl[0], info, info.length, 2) || info.readUInt32LE(0) !== 1 || !api.aceAt(acl[0], 0, ace))
+    const info = Buffer.alloc(12), ace = [null], control = [0], revision = [0];
+    if (!descriptor[0] || !owner[0] || !acl[0] || !api.equalSid(sid, owner[0]) || !api.descriptorControl(descriptor[0], control, revision) || (control[0] & 0x1004) !== 0x1004 ||
+        !api.aclInfo(acl[0], info, info.length, 2) || info.readUInt32LE(0) !== 1 || !api.aceAt(acl[0], 0, ace) || !ace[0])
       throw new Error("Private directory ownership or ACL is not confirmed");
+    const start = api.koffi.address(acl[0]), end = start + BigInt(info.readUInt32LE(4)), entry = api.koffi.address(ace[0]);
+    if (end < start + 8n || entry < start + 8n || entry + 4n > end) throw new Error("Invalid private object ACL");
     const header = Buffer.from(api.koffi.decode(ace[0], "uint8_t", 4));
-    const bytes = Buffer.from(api.koffi.decode(ace[0], "uint8_t", header.readUInt16LE(2)));
-    if (bytes[0] !== 0 || (bytes[1] & 3) !== 3 || !api.equalSid(bytes.subarray(8), sid)) throw new Error("Private directory ACL is not exclusive");
+    const length = header.readUInt16LE(2);
+    if (length < 16 || entry + BigInt(length) > end) throw new Error("Invalid private object ACL");
+    const bytes = Buffer.from(api.koffi.decode(ace[0], "uint8_t", length));
+    if (bytes[8] !== 1 || bytes[9] > 15 || length !== 16 + 4 * bytes[9] || bytes[0] !== 0 || bytes.readUInt32LE(4) !== 0x001f01ff ||
+        bytes[1] !== (directory ? 3 : 0) || !api.equalSid(bytes.subarray(8), sid)) throw new Error("Private object ACL is not exclusive");
   } catch (error) { prior = error; throw error; }
   finally {
     if (descriptor[0] && api.free(descriptor[0]))
@@ -172,6 +179,7 @@ export function private_observation_directory(parent) {
     }
     let closed = false;
     const ensure = () => {
+      if (closed) throw new Error("Private observation directory is closed");
       const current = fs.lstatSync(directory, { bigint: true });
       if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino)
         throw new Error("Private observation directory changed");
@@ -181,7 +189,7 @@ export function private_observation_directory(parent) {
       remove() { ensure(); close(); fs.rmdirSync(directory); } };
   }
   const parentPath = fs.realpathSync.native(parent), directory = path.join(parentPath, ".observation-" + randomUUID()), api = windows_api();
-  let handle, parentHandle; const ancestors = [];
+  let handle, parentHandle; const ancestors = [], files = new Map();
   try {
     const root = path.parse(parentPath).root, parts = path.relative(root, parentPath).split(path.sep).filter(Boolean);
     let current = root;
@@ -204,23 +212,63 @@ export function private_observation_directory(parent) {
       // no other user can replace the new entry between creation and pinning.
       const status = api.ntCreate(output, 0x001f01ff, attributes, io, null, 0, 3, 2, 0x21, null, 0);
       if (status !== 0 || !output[0]) throw new Error("Cannot create the private observation directory (NTSTATUS " + status + ")");
-      handle = output[0]; verify_private_directory_handle(api, handle, sid);
+      handle = output[0]; verify_private_handle(api, handle, sid, true);
     });
     const info = Buffer.alloc(52);
     if (!api.fileInformation(handle, info) || !(info.readUInt32LE(0) & 0x10) || (info.readUInt32LE(0) & 0x400)) throw new Error("Private observation directory type is not confirmed");
     const identity = { dev: BigInt(info.readUInt32LE(28)), ino: (BigInt(info.readUInt32LE(44)) << 32n) | BigInt(info.readUInt32LE(48)) }; let closed = false;
     const ensure = () => {
+      if (closed) throw new Error("Private observation directory is closed");
       const current = fs.lstatSync(directory, { bigint: true });
       if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== identity.dev || current.ino !== identity.ino)
         throw new Error("Private observation directory changed");
     };
+    const createFile = name => {
+      if (!/^(?:reader\.exe|daemon\.json|daemon\.toml)$/.test(name) || files.has(name)) throw new Error("Invalid private observation file");
+      ensure();
+      return with_windows_identity(false, (_api, sid, descriptor) => {
+        const attributes = { nLength: api.securityAttributesSize, lpSecurityDescriptor: descriptor, bInheritHandle: 0 };
+        // Do not share deletion: the exact file stays pinned through reader shutdown.
+        const file = api.createFile(path.join(directory, name), 0x00130080, 3, attributes, 1, 0x80, null);
+        if (!file || BigInt.asIntN(64, api.koffi.address(file)) === -1n) throw new Error("Cannot create a private observation file (" + api.error() + ")");
+        files.set(name, file);
+        const data = Buffer.alloc(52);
+        if (!api.fileInformation(file, data) || (data.readUInt32LE(0) & (0x10 | 0x400))) throw new Error("Private observation file type is not confirmed");
+        verify_private_handle(api, file, sid, false);
+        return { dev: String(data.readUInt32LE(28)), ino: String((BigInt(data.readUInt32LE(44)) << 32n) | BigInt(data.readUInt32LE(48))) };
+      });
+    };
+    const writeFile = (name, contents) => {
+      const expected = createFile(name), fd = fs.openSync(path.join(directory, name), "r+");
+      try {
+        const stat = fs.fstatSync(fd, { bigint: true });
+        if (!stat.isFile() || String(stat.dev) !== expected.dev || String(stat.ino) !== expected.ino || stat.size !== 0n)
+          throw new Error("Private observation file changed before writing");
+        fs.writeFileSync(fd, contents);
+      } finally { fs.closeSync(fd); }
+    };
     const close = () => {
       if (closed) return; closed = true;
-      let failure = api.close(handle) ? 0 : api.error();
-      for (const ancestor of ancestors.reverse()) if (!api.close(ancestor)) failure ||= api.error();
+      let failure = 0;
+      for (const file of files.values()) if (!api.close(file)) failure ||= api.error() || 1;
+      files.clear();
+      if (!api.close(handle)) failure ||= api.error() || 1;
+      for (const ancestor of ancestors.reverse()) if (!api.close(ancestor)) failure ||= api.error() || 1;
       if (failure) throw new Error("Cannot close the private directory handles (" + failure + ")");
     };
-    return { path: directory, ioPath: directory, ensure, close, unlink(name) { ensure(); fs.rmSync(path.join(directory, name), { force: true }); }, remove() {
+    return { path: directory, ioPath: directory, ensure, close, createFile, writeFile, unlink(name) {
+      ensure();
+      const file = files.get(name);
+      if (!file) { fs.rmSync(path.join(directory, name), { force: true }); return; }
+      const disposition = Buffer.alloc(4); disposition.writeUInt32LE(1);
+      if (!api.setFileInformation(file, 4, disposition, disposition.length)) {
+        const error = api.error(), code = error === 5 ? "EACCES" : [32, 33].includes(error) ? "EBUSY" : undefined;
+        throw Object.assign(new Error("Cannot remove a private observation file (" + error + ")"), code ? { code } : {});
+      }
+      files.delete(name);
+      // An unsuccessful close is ambiguous; never retry a possibly reused handle.
+      if (!api.close(file)) throw Object.assign(new Error("Cannot close a private observation file (" + api.error() + ")"), { outcomeUnknown: true, cleanupUnconfirmed: true });
+    }, remove() {
       ensure();
       const disposition = Buffer.alloc(4); disposition.writeUInt32LE(1);
       const ok = api.setFileInformation(handle, 4, disposition, disposition.length), error = ok ? 0 : api.error();

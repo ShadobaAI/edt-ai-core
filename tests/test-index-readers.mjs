@@ -5,14 +5,16 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once, EventEmitter } from "node:events";
+import { createRequire } from "node:module";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import net from "node:net";
-import { edt_fixture as fixture, ROOT } from "./helpers.mjs";
+import { edt_fixture as fixture, ROOT, protected_process_skip } from "./helpers.mjs";
 import { settings } from "../scripts/common.mjs";
 import { acquire_reader, active_readers, ensure_daemon, index_config, restart_index, project_home, save_json } from "../scripts/runtime.mjs";
 import { open_reader, reader_active } from "../scripts/reader_lease.mjs";
 import { private_observation_directory } from "../scripts/openviking_store.mjs";
+import { copy_and_hash_regular_file } from "../scripts/bounded_file.mjs";
 
 test("private observations use canonical parents and avoid writable shared ancestors", { skip: process.platform === "win32" }, t => {
   const f = fixture(t), shared = path.join(f.base, "shared"), safe = path.join(f.base, "safe"), foreign = path.join(f.base, "foreign"), alias = path.join(shared, "alias");
@@ -71,6 +73,21 @@ test("failed initial private-directory inspection does not remove an unverified 
   assert.equal(denied, true); assert.equal(fs.readdirSync(f.base).filter(name => name.startsWith(".observation-")).length, 1);
 });
 
+test("a closed observation directory cannot create or remove files", t => {
+  const f = fixture(t), snapshot = private_observation_directory(f.base), file = path.join(snapshot.path, "untouched");
+  fs.writeFileSync(file, "keep"); snapshot.close();
+  assert.throws(() => snapshot.ensure(), /closed/);
+  assert.throws(() => snapshot.unlink("untouched"), /closed/);
+  if (process.platform === "win32") {
+    assert.throws(() => snapshot.createFile("reader.exe"), /closed/);
+    assert.throws(() => snapshot.writeFile("daemon.json", "{}"), /closed/);
+    assert.equal(fs.existsSync(path.join(snapshot.path, "reader.exe")), false);
+  }
+  assert.throws(() => snapshot.remove(), /closed/);
+  assert.equal(fs.readFileSync(file, "utf8"), "keep");
+  snapshot.close();
+});
+
 test("Windows reports failed native identity cleanup without retaining the fixture handles", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
   const f = fixture(t), module = pathToFileURL(path.join(ROOT, "scripts/openviking_store.mjs")).href;
   const native = path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node");
@@ -84,6 +101,127 @@ test("Windows reports failed native identity cleanup without retaining the fixtu
     let output = "", errors = ""; child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => errors += chunk);
     const [status] = await once(child, "close"); assert.equal(status, 0, errors); assert.equal(output.trim(), "unconfirmed");
   }
+});
+
+test("Windows rejects unprotected observation security descriptors and removes the empty objects", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
+  const f = fixture(t), module = pathToFileURL(path.join(ROOT, "scripts/openviking_store.mjs")).href;
+  const native = path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node");
+  for (const kind of ["directory", "file"]) for (const mask of [0x1000, 0x0004]) {
+    const code = `import assert from 'node:assert/strict';import fs from 'node:fs';import {createRequire} from 'node:module';
+      const k=createRequire(import.meta.url)(${JSON.stringify(native)}),load=k.load;let checks=0;
+      k.load=name=>{const lib=load(name);if(name!=='advapi32.dll')return lib;return {func(...args){const fn=lib.func(...args);
+        if(typeof args[0]==='string'&&args[0].includes('GetSecurityDescriptorControl'))return (...values)=>{const ok=fn(...values);if(++checks===${kind === "directory" ? 1 : 2})values[1][0]&=~${mask};return ok;};return fn;}};};
+      const {private_observation_directory}=await import(${JSON.stringify(module)});
+      if(${JSON.stringify(kind)}==='directory')assert.throws(()=>private_observation_directory(${JSON.stringify(f.base)}),/ownership or ACL/);
+      else {const snapshot=private_observation_directory(${JSON.stringify(f.base)});try{assert.throws(()=>snapshot.createFile('reader.exe'),/ownership or ACL/);snapshot.unlink('reader.exe');}finally{snapshot.remove();}}
+      assert.deepEqual(fs.readdirSync(${JSON.stringify(f.base)}).filter(name=>name.startsWith('.observation-')),[]);console.log('rejected');`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let output = "", errors = ""; child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => errors += chunk);
+    const [status] = await once(child, "close"); assert.equal(status, 0, `${kind} ${mask}: ${errors}`); assert.equal(output.trim(), "rejected");
+  }
+});
+
+test("Windows never retries an ambiguous close of a private observation file", { skip: process.platform !== "win32", timeout: 10000 }, async t => {
+  const f = fixture(t), module = pathToFileURL(path.join(ROOT, "scripts/openviking_store.mjs")).href;
+  const native = path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node");
+  const code = `import assert from 'node:assert/strict';import {createRequire} from 'node:module';
+    const k=createRequire(import.meta.url)(${JSON.stringify(native)}),load=k.load;let reader=null,closes=0;
+    k.load=name=>{const lib=load(name);if(name!=='kernel32.dll')return lib;return {func(...args){const fn=lib.func(...args);
+      if(args[1]==='CreateFileW')return (...values)=>{const h=fn(...values);if(String(values[0]).endsWith('reader.exe'))reader=k.address(h);return h;};
+      if(typeof args[0]==='string'&&args[0].includes('CloseHandle'))return h=>{if(reader!==null&&k.address(h)===reader){closes++;const ok=fn(h);return closes===1?0:ok;}return fn(h);};return fn;}};};
+    const {private_observation_directory}=await import(${JSON.stringify(module)}),snapshot=private_observation_directory(${JSON.stringify(f.base)});
+    snapshot.createFile('reader.exe');assert.throws(()=>snapshot.unlink('reader.exe'),error=>error.outcomeUnknown&&error.cleanupUnconfirmed);
+    snapshot.close();assert.equal(closes,1);console.log('closed once');`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  let output = "", errors = ""; child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => errors += chunk);
+  const [status] = await once(child, "close"); assert.equal(status, 0, errors); assert.equal(output.trim(), "closed once");
+});
+
+test("Windows reports an ambiguous ancestor close even without a native error code", { skip: process.platform !== "win32", timeout: 10000 }, async t => {
+  const f = fixture(t), module = pathToFileURL(path.join(ROOT, "scripts/openviking_store.mjs")).href;
+  const native = path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node");
+  const code = `import assert from 'node:assert/strict';import {createRequire} from 'node:module';
+    const k=createRequire(import.meta.url)(${JSON.stringify(native)}),load=k.load;let ancestor=null,closes=0;
+    k.load=name=>{const lib=load(name);if(name!=='kernel32.dll')return lib;const setError=lib.func('void __stdcall SetLastError(uint32_t code)');return {func(...args){const fn=lib.func(...args);
+      if(args[1]==='CreateFileW')return (...values)=>{const h=fn(...values);if(ancestor===null)ancestor=k.address(h);return h;};
+      if(typeof args[0]==='string'&&args[0].includes('CloseHandle'))return h=>{if(ancestor!==null&&k.address(h)===ancestor){closes++;const ok=fn(h);if(closes===1){setError(0);return 0;}return ok;}return fn(h);};return fn;}};};
+    const {private_observation_directory}=await import(${JSON.stringify(module)}),snapshot=private_observation_directory(${JSON.stringify(f.base)});
+    assert.throws(()=>snapshot.close(),/Cannot close/);snapshot.close();assert.equal(closes,1);console.log('reported');`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  let output = "", errors = ""; child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => errors += chunk);
+  const [status] = await once(child, "close"); assert.equal(status, 0, errors); assert.equal(output.trim(), "reported");
+});
+
+test("Windows reports retryable private-file deletion failures without losing its pin", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
+  const f = fixture(t), module = pathToFileURL(path.join(ROOT, "scripts/openviking_store.mjs")).href;
+  const native = path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node");
+  for (const [winError, expectedCode] of [[5, "EACCES"], [32, "EBUSY"], [33, "EBUSY"], [50, null]]) {
+    const code = `import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';import {createRequire} from 'node:module';
+      const k=createRequire(import.meta.url)(${JSON.stringify(native)}),load=k.load;let reader=null,attempts=0;
+      k.load=name=>{const lib=load(name);if(name!=='kernel32.dll')return lib;const setError=lib.func('void __stdcall SetLastError(uint32_t code)');return {func(...args){const fn=lib.func(...args);
+        if(args[1]==='CreateFileW')return (...values)=>{const h=fn(...values);if(String(values[0]).endsWith('reader.exe'))reader=k.address(h);return h;};
+        if(typeof args[0]==='string'&&args[0].includes('SetFileInformationByHandle'))return (...values)=>{if(reader!==null&&k.address(values[0])===reader&&++attempts===1){setError(${winError});return 0;}return fn(...values);};return fn;}};};
+      const {private_observation_directory}=await import(${JSON.stringify(module)}),snapshot=private_observation_directory(${JSON.stringify(f.base)});
+      snapshot.createFile('reader.exe');const file=path.join(snapshot.path,'reader.exe');
+      assert.throws(()=>snapshot.unlink('reader.exe'),error=>error.code===${JSON.stringify(expectedCode)}||(error.code===undefined&&${JSON.stringify(expectedCode)}===null));
+      assert.equal(fs.existsSync(file),true);assert.throws(()=>fs.renameSync(file,file+'.moved'));
+      snapshot.unlink('reader.exe');assert.equal(attempts,2);snapshot.remove();console.log('recovered');`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let output = "", errors = ""; child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => errors += chunk);
+    const [status] = await once(child, "close"); assert.equal(status, 0, `${winError}: ${errors}`); assert.equal(output.trim(), "recovered");
+  }
+});
+
+test("Windows observation files use the token user even when its default owner differs", { skip: process.platform !== "win32" }, t => {
+  const f = fixture(t), k = createRequire(import.meta.url)(path.join(ROOT, "vendor/native", "win32_" + process.arch, "koffi.node")),
+    adv = k.load("advapi32.dll"), kernel = k.load("kernel32.dll");
+  const open = adv.func("int __stdcall OpenProcessToken(void *process, uint32_t access, _Out_ void **token)"),
+    info = adv.func("int __stdcall GetTokenInformation(void *token, int kind, _Out_ void *buffer, uint32_t size, _Out_ uint32_t *needed)"),
+    equal = adv.func("int __stdcall EqualSid(void *left, void *right)"),
+    get = adv.func("uint32_t __stdcall GetNamedSecurityInfoW(str16 file, int type, uint32_t info, _Out_ void **owner, void *group, void *dacl, void *sacl, _Out_ void **descriptor)"),
+    current = kernel.func("void * __stdcall GetCurrentProcess()"), close = kernel.func("int __stdcall CloseHandle(void *handle)"),
+    free = kernel.func("void * __stdcall LocalFree(void *pointer)");
+  const token = [null], userBuffer = Buffer.alloc(4096), ownerBuffer = Buffer.alloc(4096), needed = [0];
+  assert.ok(open(current(), 8, token));
+  try {
+    assert.ok(info(token[0], 1, userBuffer, userBuffer.length, needed));
+    assert.ok(info(token[0], 4, ownerBuffer, ownerBuffer.length, needed));
+    const user = k.decode(userBuffer, "void *"), defaultOwner = k.decode(ownerBuffer, "void *");
+    if (equal(user, defaultOwner)) return t.skip("the current token has the user as its default owner");
+    const snapshot = private_observation_directory(f.base), names = [];
+    try {
+      const ownedBy = (file, sid) => {
+        const owner = [null], descriptor = [null];
+        assert.equal(get(file, 1, 1, owner, null, null, null, descriptor), 0);
+        try { return Boolean(equal(owner[0], sid)); }
+        finally { if (descriptor[0]) free(descriptor[0]); }
+      };
+      const control = path.join(snapshot.path, "default-owner-control");
+      fs.writeFileSync(control, "");
+      try { assert.equal(ownedBy(control, defaultOwner), true); assert.equal(ownedBy(control, user), false); }
+      finally { fs.rmSync(control); }
+      names.push("reader.exe"); snapshot.createFile("reader.exe");
+      for (const name of ["daemon.json", "daemon.toml"]) { names.push(name); snapshot.writeFile(name, "fixture"); }
+      for (const name of names) assert.equal(ownedBy(path.join(snapshot.path, name), user), true, name);
+    } finally { for (const name of names) snapshot.unlink(name); snapshot.remove(); }
+    assert.ok(userBuffer.length && ownerBuffer.length);
+  } finally { close(token[0]); }
+});
+
+test("Windows can execute and clean up the pinned private reader", { skip: process.platform !== "win32", timeout: 30000 }, async t => {
+  const f = fixture(t), snapshot = private_observation_directory(f.base), names = [];
+  try {
+    names.push("reader.exe");
+    const identity = snapshot.createFile("reader.exe"), reader = path.join(snapshot.path, "reader.exe");
+    await copy_and_hash_regular_file(process.execPath, reader, 512 * 1024 * 1024, 20000, identity);
+    for (const name of ["daemon.json", "daemon.toml"]) { names.push(name); snapshot.writeFile(name, "fixture"); }
+    const child = spawn(reader, ["--version"], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let output = "", errors = ""; child.stdout.on("data", chunk => output += chunk); child.stderr.on("data", chunk => errors += chunk);
+    const timer = setTimeout(() => child.kill(), 10000);
+    try { const [status] = await once(child, "close"); assert.equal(status, 0, errors); }
+    finally { clearTimeout(timer); }
+    assert.equal(output.trim(), process.version);
+  } finally { for (const name of names) snapshot.unlink(name); snapshot.remove(); }
 });
 
 test("Windows rejects a replaced ancestor before creating a private directory", { skip: process.platform !== "win32" }, t => {
@@ -116,7 +254,7 @@ test("a legacy reader without termination proof blocks maintenance without touch
   await assert.rejects(restart_index(f.state, settings(), f.root, f.profile, {
     installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
     restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }),
-  }), /Не подтверждено завершение/);
+  }), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /Не подтверждено завершение/);
   assert.deepEqual(calls, []);
   assert.equal(fs.existsSync(file), true);
   assert.doesNotThrow(() => process.kill(process.pid, 0));
@@ -259,7 +397,7 @@ test("a crashed native observation retains a fail-closed maintenance barrier", a
   await assert.rejects(restart_index(f.state, settings(), f.root, f.profile, {
     installed: async () => "fixture-exe", stop: async () => calls.push("stop"),
     restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }),
-  }), /Не подтверждено завершение читателя/);
+  }), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /Не подтверждено завершение читателя/);
   assert.deepEqual(calls, []);
 });
 
@@ -268,11 +406,11 @@ test("a daemon is not started while another reader might still own a native proc
   f.clients.push(earlier, current); let starts = 0;
   await earlier.arm();
   await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath,
-    { launch: () => { starts++; throw new Error("unexpected daemon launch"); } }, {}, current.id), /другие читатели/);
+    { launch: () => { starts++; throw new Error("unexpected daemon launch"); } }, {}, current.id), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /другие читатели/);
   assert.equal(starts, 0);
 });
 
-test("unstarted readers do not deadlock the initial daemon launch", async t => {
+test("unstarted readers do not deadlock the initial daemon launch", { skip: protected_process_skip }, async t => {
   const f = fixture(t), [first, second] = await Promise.all([acquire_reader(f.state, f.root, { preparing: true }), acquire_reader(f.state, f.root, { preparing: true })]);
   f.clients.push(first, second); let starts = 0;
   const startedAt = new Date().toISOString();
@@ -287,7 +425,7 @@ test("unstarted readers do not deadlock the initial daemon launch", async t => {
   assert.deepEqual(homes, [home, home]); assert.equal(starts, 1);
 });
 
-test("a reader arriving during daemon startup waits for the project lock", async t => {
+test("a reader arriving during daemon startup waits for the project lock", { skip: protected_process_skip }, async t => {
   const f = fixture(t), first = await acquire_reader(f.state, f.root, { preparing: true }); f.clients.push(first);
   const startedAt = new Date().toISOString();
   const server = createServer((_request, response) => response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ pid: process.pid, status: "running", started_at: startedAt, paths: [{ path: f.root, status: "ready" }] })));

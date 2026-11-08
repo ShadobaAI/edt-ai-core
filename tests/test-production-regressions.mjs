@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { fixture, environment, session, ROOT } from "./helpers.mjs";
+import { fixture, environment, session, ROOT, protected_process_skip } from "./helpers.mjs";
 import { settings, dump, sleep } from "../scripts/common.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 import { instance_directory, sha256 } from "../scripts/project_paths.mjs";
@@ -131,7 +131,7 @@ test("host EOF releases an unanswered native callback and its relay", async t =>
   } finally { clearTimeout(timer); }
   await pending;
 });
-test("managed relay bounds shutdown of a child that ignores host EOF", async t => {
+test("managed relay bounds shutdown of a child that ignores host EOF", { skip: protected_process_skip }, async t => {
   const f = fixture(t); environment(t, f.env); f.save(); grant_preparation(f.state, f.root, ["bsl-ls"]);
   dump({ mcp: { managed: { "bsl-ls": { enabled: true, java: process.execPath } } } }, f.env.EDT_AI_SETTINGS);
   const bytes = Buffer.from("fixture jar"), digest = sha256(bytes), jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", digest, "bsl-language-server-exec.jar");
@@ -162,7 +162,7 @@ test("managed relay bounds shutdown of a child that ignores host EOF", async t =
   for (let i = 0; i < 100 && alive(ownedPid); i++) await sleep(10);
   assert.equal(alive(ownedPid), false);
 });
-test("direct managed BSL launch excludes credentials from the native child", async t => {
+test("direct managed BSL launch excludes credentials from the native child", { skip: protected_process_skip }, async t => {
   const f = fixture(t); environment(t, f.env);
   f.profile.connections = { openviking: { connection_id: "team" } };
   f.save(); grant_preparation(f.state, f.root, ["bsl-ls"]);
@@ -216,7 +216,7 @@ test("profile compatibility is checked against core semantics independently of f
   assert.throws(()=>satisfies_core(">=0.1.0 bad"),/сравнение версии/);
 });
 function download(bytes,tag){return {fetch_json:async()=>({tag_name:tag,assets:[{name:`bsl-language-server-${tag}-exec.jar`,size:bytes.length,digest:"sha256:"+sha256(bytes),browser_download_url:`https://github.com/1c-syntax/bsl-language-server/releases/download/${tag}/server.jar`}]}),fetch:async()=>new Response(bytes)};}
-test("old BSL releases cannot start or be restored, but the RC fallback can be installed", async t => {
+test("old BSL releases cannot start or be restored, but the RC fallback can be installed", { skip: protected_process_skip }, async t => {
   const f=fixture(t), config=settings(), bytes=zip({"old.txt":Buffer.from("old")}), digest=sha256(bytes);
   const old=path.join(f.state,"runtime/bsl-ls/v1.0.7",digest,"bsl-language-server-exec.jar");
   fs.mkdirSync(path.dirname(old),{recursive:true});fs.writeFileSync(old,bytes);
@@ -230,7 +230,7 @@ test("old BSL releases cannot start or be restored, but the RC fallback can be i
   await assert.rejects(update_component(f.state,config,f.root,f.profile,"bsl-ls","rollback",{}),/1\.1\.0-rc\.4/);
   assert.equal(read_json(path.join(f.state,"runtime-lock.json"))["bsl-ls"].release,"v1.1.0-rc.8");
 });
-test("download, failed validation, apply and rollback preserve the active artifact transactionally",async t=>{
+test("download, failed validation, apply and rollback preserve the active artifact transactionally",{skip:protected_process_skip},async t=>{
   const f=fixture(t),config=settings();config.mcp.managed["bsl-ls"].enabled=true;
   const first=await ensure_installed(f.state,config,"bsl-ls",false,download(zip({"old.txt":Buffer.from("old")}),"v1.1.0"));
   const changed=structuredClone(config);changed.mcp.managed["bsl-ls"].version="9.0.0";
@@ -272,7 +272,7 @@ test("maintenance blocks new reader leases before a runtime switch",async t=>{
   await assert.rejects(acquire_reader(f.state,f.root),/Обновление компонента выполняется или было прервано/);
   assert.equal(fs.existsSync(path.join(home,"readers")),false);
 });
-test("rejected code-index candidate restores the previous daemon; uncertain cleanup retains maintenance",async t=>{
+test("rejected code-index candidate restores the previous daemon; uncertain cleanup retains maintenance",{skip:protected_process_skip},async t=>{
   const f=fixture(t),config=settings(), entries=["old","new"].map((text,i)=>{
     const bytes=Buffer.from(text),digest=sha256(bytes),file=path.join(f.state,"runtime/code-index/v"+(i+1)+".0.0",digest,platform_build().executable);
     fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);

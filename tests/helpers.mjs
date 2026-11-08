@@ -7,6 +7,9 @@ import { pathToFileURL } from "node:url";
 import { ROOT, load, dump } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 export { ROOT };
+// Protected local process trees deliberately fail closed on macOS. Tests that
+// require a successful local launch run on Windows and Linux instead.
+export const protected_process_skip = process.platform === "darwin" ? "protected local processes are unavailable on macOS" : false;
 export function fixture(t, { preserveOnCleanupFailure = false } = {}) {
   const base = fs.realpathSync.native(
       fs.mkdtempSync(path.join(os.tmpdir(), "core fixture Юникод ")),

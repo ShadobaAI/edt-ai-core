@@ -45,7 +45,7 @@ export function hash_regular_file(file, maxBytes) {
 
 // Used by the long-lived settings MCP: keep one pinned source descriptor, but
 // perform disk I/O asynchronously so a large runtime cannot block the UI.
-export async function copy_and_hash_regular_file(file, destination, maxBytes, timeoutMs = 30000) {
+export async function copy_and_hash_regular_file(file, destination, maxBytes, timeoutMs = 30000, destinationIdentity = null) {
   let source, output, complete = false;
   const stamp = stat => [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(":");
   const deadline = performance.now() + timeoutMs;
@@ -57,7 +57,15 @@ export async function copy_and_hash_regular_file(file, destination, maxBytes, ti
     source = await fs.promises.open(file, flags); check();
     const opened = await source.stat({ bigint: true }); check();
     if (!opened.isFile() || stamp(opened) !== stamp(before) || opened.size > BigInt(maxBytes)) throw new Error("Local input changed while opening");
-    output = await fs.promises.open(destination, "wx", 0o700); check();
+    if (destinationIdentity) {
+      if (typeof destinationIdentity.dev !== "string" || typeof destinationIdentity.ino !== "string" ||
+          !/^\d{1,32}$/.test(destinationIdentity.dev) || !/^\d{1,32}$/.test(destinationIdentity.ino)) throw new Error("Invalid destination identity");
+      const destinationBefore = await fs.promises.lstat(destination, { bigint: true }); check();
+      const matches = stat => stat.isFile() && String(stat.dev) === destinationIdentity.dev && String(stat.ino) === destinationIdentity.ino && stat.size === 0n;
+      if (destinationBefore.isSymbolicLink() || !matches(destinationBefore)) throw new Error("Destination changed before copying");
+      output = await fs.promises.open(destination, fs.constants.O_WRONLY | (fs.constants.O_NOFOLLOW || 0)); check();
+      if (!matches(await output.stat({ bigint: true }))) throw new Error("Destination changed while opening");
+    } else { output = await fs.promises.open(destination, "wx", 0o700); check(); }
     const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(256 * 1024); let total = 0;
     while (true) {
       const { bytesRead } = await source.read(buffer, 0, buffer.length, null); check();
@@ -76,7 +84,7 @@ export async function copy_and_hash_regular_file(file, destination, maxBytes, ti
     try { await source?.close(); }
     finally {
       try { await output?.close(); }
-      finally { if (output && !complete) await fs.promises.rm(destination, { force: true }); }
+      finally { if (output && !complete && !destinationIdentity) await fs.promises.rm(destination, { force: true }); }
     }
   }
 }

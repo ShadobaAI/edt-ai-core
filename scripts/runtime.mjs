@@ -1248,7 +1248,7 @@ function reader_file_identity(file) {
   return [actual, ...[stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String)];
 }
 
-async function copy_index_runtime(config, home, source, destination, timeoutMs, diagnostic, readerId, register) {
+async function copy_index_runtime(config, home, source, destination, timeoutMs, diagnostic, readerId, register, destinationIdentity = null) {
   let child, timer, monitor, expired = false, output = "", oversized = false;
   try {
     child = launch(process.execPath, [fileURLToPath(new URL("./index_copy_worker.mjs", import.meta.url))], {
@@ -1271,7 +1271,7 @@ async function copy_index_runtime(config, home, source, destination, timeoutMs, 
       try { fs.lstatSync(path.join(home, "maintenance.json")); void stop_child(child, 0).catch(() => {}); }
       catch (error) { if (error.code !== "ENOENT") void stop_child(child, 0).catch(() => {}); }
     }, 200); monitor.unref?.();
-    child.stdin.end(JSON.stringify({ source, destination }));
+    child.stdin.end(JSON.stringify({ source, destination, ...(destinationIdentity ? { destinationIdentity } : {}) }));
     const code = await Promise.race([completion, deadline]);
     await stop_child(child, 0);
     if (expired) throw new ConfigError("Истекло время подготовки проверенной копии индекса.");
@@ -1568,22 +1568,28 @@ export class IndexObserver {
         snapshotDirectory = private_observation_directory(home); snapshotHome = snapshotDirectory.path;
         snapshotDirectory.ensure();
         const target = resolve(owner.executable), runtimeRoot = resolve(path.join(state, "runtime", "code-index"));
-        const access = snapshotDirectory.ioPath, expected = path.basename(path.dirname(target)), reader = path.join(access, process.platform === "win32" ? "reader.exe" : "reader");
+        const access = snapshotDirectory.ioPath, expected = path.basename(path.dirname(target)), readerName = process.platform === "win32" ? "reader.exe" : "reader", reader = path.join(access, readerName);
         if (!target.startsWith(runtimeRoot + path.sep) || !/^[0-9a-f]{64}$/.test(expected))
           throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
         await lease.arm(); checkAuthority();
         if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
+        const destinationIdentity = process.platform === "win32" ? snapshotDirectory.createFile(readerName) : null;
         launching = true;
         const digest = await copy_index_runtime(config, home, target, reader, Math.min(component_settings(config, "code-index").timeout_seconds || 30, 25) * 1000,
-          diagnostic, lease.id, cancel => { this.cancelCopy = cancel; });
+          diagnostic, lease.id, cancel => { this.cancelCopy = cancel; }, destinationIdentity);
         launching = false;
         if (digest !== expected)
           throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
         if (!index_snapshot_current(state, root, data, snapshot) || stable(reader_file_identity(owner.executable)) !== stable(executable))
           throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
         snapshotDirectory.ensure();
-        fs.writeFileSync(path.join(access, "daemon.json"), daemonBytes, { flag: "wx", mode: 0o600 });
-        fs.writeFileSync(path.join(access, "daemon.toml"), configBytes, { flag: "wx", mode: 0o600 });
+        if (process.platform === "win32") {
+          snapshotDirectory.writeFile("daemon.json", daemonBytes);
+          snapshotDirectory.writeFile("daemon.toml", configBytes);
+        } else {
+          fs.writeFileSync(path.join(access, "daemon.json"), daemonBytes, { flag: "wx", mode: 0o600 });
+          fs.writeFileSync(path.join(access, "daemon.toml"), configBytes, { flag: "wx", mode: 0o600 });
+        }
         const options = component_settings(config, "code-index");
         await lease.assertAvailable();
         if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");

@@ -8,7 +8,7 @@ import { once } from "node:events";
 import readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { fixture, environment } from "./helpers.mjs";
+import { fixture, environment, protected_process_skip } from "./helpers.mjs";
 import { settings } from "../scripts/common.mjs";
 import { smoke, save_json } from "../scripts/runtime.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
@@ -173,7 +173,7 @@ test("EOF terminates even a child that ignores disconnect", async (t) => {
   assert.throws(() => process.kill(s.init.pid, 0));
 });
 
-for(const mode of ["ready","invalid_tools","initialize_timeout","tools_timeout"])test(`BSL smoke closes its temporary child before returning: ${mode}`,async t=>{
+for(const mode of ["ready","invalid_tools","initialize_timeout","tools_timeout"])test(`BSL smoke closes its temporary child before returning: ${mode}`,{skip:protected_process_skip},async t=>{
   const f=fixture(t);environment(t,f.env);f.save();
   const config=settings();config.active_project=f.root;
   Object.assign(config.mcp.managed["bsl-ls"],{enabled:true,java:process.execPath,node:process.execPath,timeout_seconds:mode.endsWith("timeout")?1:5});

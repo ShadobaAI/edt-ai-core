@@ -668,7 +668,7 @@ test("preparation validates exact root, instance, effects and evidence before ru
     assert.throws(() => authorize_preparation({ authorization }, f.root));
   assert.ok(!fs.existsSync(path.join(f.state, "runtime-lock.json")));
 });
-test("settings supervisor tracks one delayed operation and retains unknown outcomes without retry", async (t) => {
+for (const simulatedMacOS of process.platform === "linux" ? [false, true] : [false]) test(`settings supervisor tracks one delayed operation and retains unknown outcomes without retry${simulatedMacOS ? " (macOS guard)" : ""}`, async (t) => {
   const f = fixture(t),
     plugin = path.join(f.base, "plugin");
   fs.mkdirSync(path.join(plugin, "mcp"), { recursive: true });
@@ -701,14 +701,28 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
       }
     } else await new Promise(done=>setTimeout(done,200));
     fs.appendFileSync(path.join(state,'calls'),r.action+'\\n');
+    if(r.action==='update') fs.appendFileSync(path.join(state,'updates'),r.set?.edtUrl+'\\n');
     if(r.set?.edtUrl==='unknown') { process.stderr.write('unmarked-backend-secret-8931'); process.exit(3); }
-    if(r.action==='rebuild_index'){process.send?.({type:'progress',progress:{phase:'indexing',total:2,completed:1,repository:'extension',edtProject:'Extension',message:'unmarked-progress-secret-2184'}});await new Promise(done=>setTimeout(done,400));}
+    if(r.action==='rebuild_index') {
+      process.send?.({type:'progress',progress:{phase:'indexing',total:2,completed:1,repository:'extension',edtProject:'Extension',message:'unmarked-progress-secret-2184'}});
+      const deadline=Date.now()+30000;
+      while(!fs.existsSync(path.join(state,'rebuild-release'))) {
+        if(Date.now()>deadline) throw new Error('Rebuild was not released');
+        await new Promise(done=>setTimeout(done,20));
+      }
+    }
     console.log(JSON.stringify({ok:true,result:r.set?.edtUrl==='malformed'?null:{managed:[],values:{projectRoot:process.env.EDT_AI_PROJECT_ROOT}}}));if(process.connected)process.disconnect();`,
   );
+  const env = { ...f.env };
+  if (simulatedMacOS) {
+    const preload = path.join(f.base, "macos-settings-preload.mjs");
+    fs.writeFileSync(preload, `import path from 'node:path'; if(path.basename(process.argv[1]||'')==='settings.mjs') Object.defineProperty(process,'platform',{value:'darwin'});`);
+    env.NODE_OPTIONS = [env.NODE_OPTIONS, "--import " + pathToFileURL(preload).href].filter(Boolean).join(" ");
+  }
   const client = new McpClient(
     [process.execPath, path.join(plugin, "mcp/settings.mjs")],
     f.root,
-    f.env,
+    env,
     10,
   );
   f.clients.push(client);
@@ -735,13 +749,17 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     const report = JSON.parse(fs.readFileSync((await client.call("settings.export_diagnostics", {}))._meta.data.path, "utf8"));
     assert.equal(report.snapshot.host.operation.id, operation.id);
     assert.equal(report.snapshot.host.operation.status, "running");
+    if (simulatedMacOS || process.platform === "darwin")
+      assert.deepEqual(report.snapshot.current, { unavailable: true, error: "unavailable" });
+    else assert.equal(report.snapshot.current.source, "settings_read");
     assert.equal((await client.call("settings.operation", { operationId: operation.id })).structuredContent.status, "running");
   } finally {
     fs.writeFileSync(path.join(f.state, "check-release"), "");
   }
   const completed = (await client.call("settings.operation", { operationId: operation.id, waitMs: 10000 })).structuredContent;
   assert.equal(completed.status, "completed");
-  assert.deepEqual(fs.readFileSync(path.join(f.state, "calls"), "utf8").trim().split("\n").sort(), ["check", "read"]);
+  assert.deepEqual(fs.readFileSync(path.join(f.state, "calls"), "utf8").trim().split("\n").sort(),
+    simulatedMacOS || process.platform === "darwin" ? ["check"] : ["check", "read"]);
   await assert.rejects(
     client.call("settings.update", { set: { edtUrl: "unknown" } }),
     /неизвестен/,
@@ -750,6 +768,7 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
     client.call("settings.update", { set: { edtUrl: "malformed" } }),
     /некорректный/,
   );
+  assert.deepEqual(fs.readFileSync(path.join(f.state, "updates"), "utf8").trim().split("\n"), ["unknown", "malformed"]);
   const status = (await client.call("settings.operation", {}))
     .structuredContent;
   assert.doesNotMatch(client.stderr + JSON.stringify(status) + fs.readFileSync(path.join(f.state, "diagnostics/events.0.jsonl"), "utf8"), /unmarked-backend-secret-8931/);
@@ -758,18 +777,22 @@ test("settings supervisor tracks one delayed operation and retains unknown outco
   for (const selection of [{}, { all: true, repository: "product" }, { all: false }])
     await assert.rejects(client.call("settings.rebuild_index", { ...selection, authorization }), /Выберите|Некорректное/);
   const rebuild = (await client.call("settings.rebuild_index", { all: true, authorization })).structuredContent;
-  assert.equal(rebuild.status, "running"); assert.equal(rebuild.component, "code-index");
-  let observed;
-  for (let i = 0; i < 15; i++) {
-    observed = (await client.call("settings.operation", { operationId: rebuild.id, waitMs: 100 })).structuredContent;
-    if (observed.progress) break;
+  try {
+    assert.equal(rebuild.status, "running"); assert.equal(rebuild.component, "code-index");
+    let observed;
+    for (let i = 0; i < 100; i++) {
+      observed = (await client.call("settings.operation", { operationId: rebuild.id, waitMs: 100 })).structuredContent;
+      if (observed.progress || observed.status !== "running") break;
+    }
+    assert.equal(observed.status, "running"); assert.equal(observed.progress?.phase, "indexing");
+    assert.equal(observed.progress.completed, 1); assert.equal(observed.progress.total, 2);
+    assert.equal(observed.progress.edtProject, "Extension"); assert.equal(observed.progress.message, undefined);
+    assert.doesNotMatch(JSON.stringify(observed), /unmarked-progress-secret/);
+    await assert.rejects(client.call("settings.rebuild_index", { all: true, authorization }), /ещё выполняется/);
+  } finally {
+    fs.writeFileSync(path.join(f.state, "rebuild-release"), "");
   }
-  assert.equal(observed.status, "running"); assert.equal(observed.progress.phase, "indexing");
-  assert.equal(observed.progress.completed, 1); assert.equal(observed.progress.total, 2);
-  assert.equal(observed.progress.edtProject, "Extension"); assert.equal(observed.progress.message, undefined);
-  assert.doesNotMatch(JSON.stringify(observed), /unmarked-progress-secret/);
-  await assert.rejects(client.call("settings.rebuild_index", { all: true, authorization }), /ещё выполняется/);
-  const rebuilt = (await client.call("settings.operation", { operationId: rebuild.id, waitMs: 1000 })).structuredContent;
+  const rebuilt = (await client.call("settings.operation", { operationId: rebuild.id, waitMs: 10000 })).structuredContent;
   assert.equal(rebuilt.status, "completed"); assert.equal(rebuilt.progress.completed, 1);
   assert.equal(fs.readFileSync(path.join(f.state, "calls"), "utf8").split("\n").filter(action => action === "rebuild_index").length, 1);
 });

@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixture, environment, session, ROOT } from "./helpers.mjs";
+import { fixture, environment, session, ROOT, protected_process_skip } from "./helpers.mjs";
 import { dump, operation_lock } from "../scripts/common.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { settings } from "../scripts/common.mjs";
@@ -46,7 +46,7 @@ test("applying index mappings requires authorization for the selected project an
   assert.equal(fs.existsSync(path.join(f.state,"projects")),false);
 });
 
-test("installation commits the saved version only after validation and restores it if activation fails", async t => {
+test("installation commits the saved version only after validation and restores it if activation fails", { skip: protected_process_skip }, async t => {
   const f=fixture(t);environment(t,f.env);f.save();
   dump({mcp:{managed:{"bsl-ls":{enabled:true,version:"v1.1.0",java:process.execPath}}}},f.env.EDT_AI_SETTINGS);
   const backend=new SettingsBackend(),authorization={scope:f.root+"#first",effects:["launch"],evidence:"Install selected version"};
