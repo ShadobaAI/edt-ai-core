@@ -7,7 +7,13 @@ import { fileURLToPath } from "node:url";
 import { setTimeout } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { fixture } from "./helpers.mjs";
-import { folder_action, windows_folder_api, activate_folder_window, folder_error_details, folder_error_from_details } from "../scripts/settings_folder.mjs";
+import { folder_action, folder_actions_supported, windows_folder_api, activate_folder_window, folder_error_details, folder_error_from_details } from "../scripts/settings_folder.mjs";
+
+test("folder capability agrees with the action's platform guard", async () => {
+  const supported = folder_actions_supported();
+  assert.equal(supported, process.platform === "win32");
+  await assert.rejects(folder_action("unknown"), supported ? /Неизвестное действие/ : /доступен только в Windows/);
+});
 
 test("native worker errors retain their codes and stack across the worker boundary", () => {
   const original = Object.assign(new Error("Save As failed"), { code: "EACCES", errno: -1, hresult: -2147024891 });

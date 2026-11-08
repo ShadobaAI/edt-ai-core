@@ -9,7 +9,7 @@ import { launch_selection, roots_selection, explicit_selection } from "../script
 import { core_version } from "../scripts/compatibility.mjs";
 import { SettingsOperations } from "./settings-operations.mjs";
 import { plugin_icons, component_icons } from "../scripts/icons.mjs";
-import { folder_action } from "../scripts/settings_folder.mjs";
+import { folder_action, folder_actions_supported } from "../scripts/settings_folder.mjs";
 import { create_diagnostic_logger, register_diagnostic_secrets, diagnostic_journal, sanitize_diagnostics, safe_error_message } from "../scripts/diagnostics.mjs";
 import { locate_project, path_identity } from "../scripts/project_paths.mjs";
 import { launch, stop_child } from "../scripts/processes.mjs";
@@ -181,7 +181,7 @@ function readSettings(actual) {
     profileHistory: actual.profileHistory || [], profileHistoryHidden: actual.profileHistoryHidden, summary: actual.summary,
     configurationError: actual.configurationError,
     operation: operationSummary(),
-    folderActions: { supported: process.platform === "win32" },
+    folderActions: { supported: folder_actions_supported() },
     projectSelection: { status: selectionError ? (pendingRoots ? "pending" : "ambiguous") : selectedRoot ? "selected" : "unselected",
       locked: rootLocked, detail: selectionError },
   };
@@ -534,7 +534,7 @@ async function assertUserFileBoundary(selected, projectRoot, write = false, allo
 async function exportDestination(data, context, title) {
   context.onStage?.("prepare_destination");
   const { save_export_to_path, state_export_path, save_state_export } = await import("../scripts/settings_export.mjs");
-  const fallback = process.platform !== "win32";
+  const fallback = !folder_actions_supported();
   context.onStage?.("choose_destination");
   const selected = fallback ? state_export_path(state, context.kind) : await folder_action("save", "", { title, filename: data.filename, extension: path.extname(data.filename).slice(1) || "json" });
   if (!selected) return { cancelled: true };
@@ -650,7 +650,7 @@ async function call(name, args, meta = {}, requestContext = {}) {
       diagnostic.event("support_export_saved", { projectRoot: exportContext.projectRoot, requestId, path: saved.path, bytes: saved.bytes, durationMs: Date.now() - started });
       // Only the settings app receives the saved path. File bytes do not cross
       // the app bridge, and a success response requires a completed disk write.
-      return { content: [{ type: "text", text: "Диагностический файл сохранён." }], _meta: { data: { ...saved, canOpenDirectory: process.platform === "win32" } } };
+      return { content: [{ type: "text", text: "Диагностический файл сохранён." }], _meta: { data: { ...saved, canOpenDirectory: folder_actions_supported() } } };
     } catch (error) {
       diagnostic.event("support_export_failed", { projectRoot: exportContext.projectRoot, requestId, ...exportProgress, durationMs: Date.now() - started, error }, "error");
       throw error;
@@ -663,7 +663,7 @@ async function call(name, args, meta = {}, requestContext = {}) {
     const saved = await exportDestination(data, exportContext, "Сохранить журнал · 1C AI Core");
     if (saved.cancelled) return { content: [{ type: "text", text: "Сохранение отменено." }], _meta: { data: saved } };
     latestDiagnosticsExport = saved;
-    return { content: [{ type: "text", text: "Журнал сохранён." }], _meta: { data: { ...saved, canOpenDirectory: process.platform === "win32" } } };
+    return { content: [{ type: "text", text: "Журнал сохранён." }], _meta: { data: { ...saved, canOpenDirectory: folder_actions_supported() } } };
   }
   if (name === "settings.open_diagnostics_directory") {
     const { saved_support_report } = await import("../scripts/support_bundle.mjs");

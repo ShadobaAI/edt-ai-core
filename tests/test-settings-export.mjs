@@ -2,10 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixture, dialog_session } from "./helpers.mjs";
+import { fixture, dialog_session, environment } from "./helpers.mjs";
 import { save_export_to_path, state_export_path, save_state_export } from "../scripts/settings_export.mjs";
 import { parse, dump } from "../scripts/common.mjs";
-import { read_diagnostic_logs } from "../scripts/diagnostics.mjs";
+import { create_diagnostic_logger, diagnostic_project_id, read_diagnostic_logs } from "../scripts/diagnostics.mjs";
 
 async function platform_session(t, f, platform) {
   return (await dialog_session(t, f, { platform })).client;
@@ -34,7 +34,8 @@ test("failed settings export leaves the previous file intact and does not claim 
 });
 
 test("diagnostics export records the failing stage and sanitized reason, then includes them in a later report", async t => {
-  const f = fixture(t); f.save();
+  const f = fixture(t); f.save(); environment(t, f.env);
+  assert.equal(create_diagnostic_logger("fixture", f.state).event("operation_failed", { projectRoot: f.root, message: "host-scope-fixture" }, "error"), true);
   const { client, choose, failDialog } = await dialog_session(t, f);
   const url = "https://alice:pw@example.invalid/mcp?token=url-token#fragment";
   failDialog({ message: `Save As failed for C:/logs/report.json URL=${url} password=dialog-secret`, code: "EACCES" });
@@ -53,6 +54,7 @@ test("diagnostics export records the failing stage and sanitized reason, then in
   assert.equal(failures[1].detail.destination, path.join(f.root, "src", "report.json"));
   assert.doesNotMatch(JSON.stringify(failures), /dialog-secret/);
   assert.ok(failures.every(event => event.detail.projectRoot === f.root && event.detail.requestId !== undefined));
+  assert.ok(failures.every(event => event.detail.projectId === diagnostic_project_id(f.root)));
   for (const failure of failures) {
     const request = events.find(event => event.event === "request_failed" && event.detail.requestId === failure.detail.requestId);
     assert.equal(request.detail.stage, failure.detail.stage); assert.equal(request.detail.error.message, failure.detail.error.message);
@@ -60,6 +62,7 @@ test("diagnostics export records the failing stage and sanitized reason, then in
   const target = path.join(f.base, "diagnostics.json"); choose(target);
   await client.call("settings.export_diagnostics", {});
   const report = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.ok(report.events.some(event => event.event === "operation_failed" && event.detail.message === "host-scope-fixture" && event.scope === "project"));
   assert.ok(report.events.some(event => event.event === "support_export_failed" && event.detail.stage === "choose_destination" && /Save As failed/.test(event.detail.error.message)));
   assert.ok(report.events.some(event => event.event === "support_export_failed" && event.detail.error.message.includes(url)));
   assert.doesNotMatch(JSON.stringify(report), /dialog-secret/);
@@ -99,7 +102,8 @@ test("an export interrupted by project selection records both failures against i
 });
 
 for (const platform of ["linux", "darwin"]) test(`${platform} exports settings and diagnostics to confirmed state files`, async t => {
-  const f = fixture(t); f.save();
+  const f = fixture(t); f.save(); environment(t, f.env);
+  assert.equal(create_diagnostic_logger("fixture", f.state).event("operation_failed", { projectRoot: f.root, message: "host-scope-fixture" }, "error"), true);
   const client = await platform_session(t, f, platform);
   const settings = await client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}), report = await client.call("settings.export_diagnostics", {});
   assert.equal(settings.structuredContent, undefined); assert.equal(report.structuredContent, undefined);
@@ -107,7 +111,12 @@ for (const platform of ["linux", "darwin"]) test(`${platform} exports settings a
   assert.equal(report._meta.data.path, path.join(f.state, "diagnostics", "exports", "1c-ai-core-diagnostics.json"));
   assert.equal(settings._meta.data.canOpenDirectory, false); assert.equal(report._meta.data.canOpenDirectory, false);
   assert.equal(parse(fs.readFileSync(settings._meta.data.path, "utf8")).profile_id, f.profile.profile_id);
-  assert.equal(JSON.parse(fs.readFileSync(report._meta.data.path, "utf8")).format, "1c-ai-core-diagnostics");
+  const savedReport = JSON.parse(fs.readFileSync(report._meta.data.path, "utf8"));
+  assert.equal(savedReport.format, "1c-ai-core-diagnostics");
+  assert.ok(savedReport.events.some(event => event.event === "operation_failed" && event.detail.message === "host-scope-fixture" && event.scope === "project"));
+  const logs = read_diagnostic_logs(f.state);
+  assert.ok(logs.events.some(event => event.event === "support_export_saved" && event.detail.projectId === diagnostic_project_id(f.root)));
+  assert.ok(!logs.issues.includes("Conflicting diagnostic scope"));
   assert.equal((await client.call("settings.transfer_export", {scope:"profile",projectRoot:f.root}))._meta.data.path, settings._meta.data.path);
 });
 

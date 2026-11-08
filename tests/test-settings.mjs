@@ -211,7 +211,7 @@ test("the directory picker binds the canonical project without writes and discar
   for (const name of ["common", "setup_readiness", "processes"])
     fs.writeFileSync(path.join(plugin, "scripts", name + ".mjs"), `export * from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts", name + ".mjs")).href)};`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"),
-    `import fs from 'node:fs'; export async function folder_action() { const value=JSON.parse(fs.readFileSync(${JSON.stringify(choice)},'utf8')); if(value.wait) { fs.writeFileSync(${JSON.stringify(started)},''); while(!fs.existsSync(${JSON.stringify(released)})) await new Promise(done=>setTimeout(done,5)); } return value.directory; }`);
+    `import fs from 'node:fs'; export const folder_actions_supported = () => process.platform === 'win32'; export async function folder_action() { const value=JSON.parse(fs.readFileSync(${JSON.stringify(choice)},'utf8')); if(value.wait) { fs.writeFileSync(${JSON.stringify(started)},''); while(!fs.existsSync(${JSON.stringify(released)})) await new Promise(done=>setTimeout(done,5)); } return value.directory; }`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_backend.mjs"),
     `import { SettingsBackend } from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/settings_backend.mjs")).href)}; let input=''; for await (const chunk of process.stdin) input+=chunk; try { console.log(JSON.stringify({ok:true,result:await new SettingsBackend().main(JSON.parse(input))})); } catch(error) { console.log(JSON.stringify({ok:false,error:error.message})); process.exitCode=1; }`);
   const client = new McpClient([process.execPath, path.join(plugin, "mcp/settings.mjs")], plugin, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
@@ -677,7 +677,7 @@ for (const simulatedMacOS of process.platform === "linux" ? [false, true] : [fal
   fs.copyFileSync(path.join(ROOT,"plugin.json"),path.join(plugin,"plugin.json"));
   for (const name of ["icons.mjs", "selection.mjs", "project_paths.mjs", "casefold.mjs", "compatibility.mjs", "diagnostics.mjs", "support_bundle.mjs", "mcp_codec.mjs"])
     fs.copyFileSync(path.join(ROOT, "scripts", name), path.join(plugin, "scripts", name));
-  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `export async function folder_action() { return ${JSON.stringify(path.join(f.base, "report.json"))}; }`);
+  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `export const folder_actions_supported = () => process.platform === 'win32'; export async function folder_action() { return ${JSON.stringify(path.join(f.base, "report.json"))}; }`);
   for (const name of ["common", "profile", "settings_export", "setup_readiness", "processes"])
     fs.writeFileSync(path.join(plugin, "scripts", name + ".mjs"), `export * from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts", name + ".mjs")).href)};`);
   fs.copyFileSync(path.join(ROOT, "assets/icon.svg"), path.join(plugin, "assets/icon.svg"));

@@ -119,19 +119,16 @@ export async function dialog_session(t, f, { extra = {}, roots, platform = "win3
     fs.copyFileSync(path.join(ROOT, file), path.join(plugin, file));
   for (const name of ["selection", "compatibility", "icons", "diagnostics", "project_paths", "common", "profile", "settings_export", "support_bundle", "mcp_codec", "setup_readiness"])
     fs.writeFileSync(path.join(plugin, "scripts", name + ".mjs"), `export * from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts", name + ".mjs")).href)};`);
-  // This fixture deliberately spoofs process.platform for the picker UI. The
-  // unrelated protected process boundary is covered by real host OS tests.
+  // The protected process boundary is covered by real host OS tests.
   fs.writeFileSync(path.join(plugin, "scripts/processes.mjs"), `import {spawn} from 'node:child_process';
     export function launch(command,args,{readerJob,...options}) { return spawn(command,args,options); }
     export async function stop_child(child) { if(child.exitCode!==null||child.signalCode!==null)return; child.kill('SIGKILL'); await new Promise(resolve=>child.once('close',resolve)); }`);
-  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `import fs from 'node:fs'; export async function folder_action() { const choice=JSON.parse(fs.readFileSync(${JSON.stringify(choice)}, 'utf8')); if(choice.error) throw Object.assign(new Error(choice.error.message), {code:choice.error.code}); if(choice.hold) { fs.writeFileSync(${JSON.stringify(opened)},'open'); const until=Date.now()+10000; while(!fs.existsSync(${JSON.stringify(released)})) { if(Date.now()>until) throw new Error('Dialog fixture timed out'); await new Promise(resolve=>setTimeout(resolve,10)); } } return choice.path; }`);
+  fs.writeFileSync(path.join(plugin, "scripts/settings_folder.mjs"), `import fs from 'node:fs'; export const folder_actions_supported = () => ${platform === "win32"}; export async function folder_action() { const choice=JSON.parse(fs.readFileSync(${JSON.stringify(choice)}, 'utf8')); if(choice.error) throw Object.assign(new Error(choice.error.message), {code:choice.error.code}); if(choice.hold) { fs.writeFileSync(${JSON.stringify(opened)},'open'); const until=Date.now()+10000; while(!fs.existsSync(${JSON.stringify(released)})) { if(Date.now()>until) throw new Error('Dialog fixture timed out'); await new Promise(resolve=>setTimeout(resolve,10)); } } return choice.path; }`);
   fs.writeFileSync(path.join(plugin, "scripts/settings_backend.mjs"),
     `import { SettingsBackend } from ${JSON.stringify(pathToFileURL(path.join(ROOT, "scripts/settings_backend.mjs")).href)}; let input=''; for await (const chunk of process.stdin) input+=chunk; try { console.log(JSON.stringify({ok:true,result:await new SettingsBackend().main(JSON.parse(input))})); } catch(error) { console.log(JSON.stringify({ok:false,error:error.message})); process.exitCode=1; }`);
-  // Platform-spoofed UI tests use the fixture adapter rather than pretending
-  // the host OS can load another platform's native process implementation.
-  const entry = path.join(plugin, "dialog-entry.mjs");
-  fs.writeFileSync(entry, `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} }); await import('./mcp/settings.mjs');`);
-  const client = new McpClient([process.execPath, entry], f.root, { ...f.env, ...extra }, 10);
+  // Simulate only the folder UI capability; diagnostic and path identity must
+  // use the host platform in both the MCP process and the test process.
+  const client = new McpClient([process.execPath, path.join(plugin, "mcp/settings.mjs")], f.root, { ...f.env, ...extra }, 10);
   f.clients.push(client); if (roots !== undefined) client.roots = roots; await client.initialize();
   return { client, choose: file => fs.writeFileSync(choice, JSON.stringify({ path: file })), failDialog: error => fs.writeFileSync(choice, JSON.stringify({ error })),
     holdDialog: file => {

@@ -8,6 +8,9 @@ import { Worker, isMainThread, parentPort, workerData } from "node:worker_thread
 import { windows_process_identity } from "./windows_process.mjs";
 
 let modalActive = false;
+export function folder_actions_supported() {
+  return process.platform === "win32";
+}
 export function folder_error_details(error) {
   return { message: String(error?.message || error), name: error?.name || "Error",
     ...Object.fromEntries(["code", "errno", "syscall", "hresult", "stack"].filter(key => error?.[key] !== undefined).map(key => [key, error[key]])) };
@@ -37,7 +40,7 @@ export async function activate_folder_window(api, { attempts = 60, pause = ms =>
   throw new Error("Папка открыта, но не удалось найти её окно Проводника для активации.");
 }
 export function folder_action(action, directory = "", options = {}) {
-  if (process.platform !== "win32") return Promise.reject(new Error("Системный диалог доступен только в Windows в этой версии плагина."));
+  if (!folder_actions_supported()) return Promise.reject(new Error("Системный диалог доступен только в Windows в этой версии плагина."));
   if (!["pick", "open", "save", "file"].includes(action)) return Promise.reject(new Error("Неизвестное действие с папкой."));
   if (action !== "open" && modalActive) return Promise.reject(new Error("Завершите текущий системный диалог."));
   // Reject invalid input before starting a native worker. Keep the worker-side
