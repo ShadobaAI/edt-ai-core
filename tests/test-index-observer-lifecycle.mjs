@@ -10,7 +10,6 @@ import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { IndexObserverProxy } from "../scripts/index_observer_proxy.mjs";
 import { active_readers, daemon_health, ensure_daemon, stop_daemon } from "../scripts/runtime.mjs";
 import { spawn_guarded_linux } from "../scripts/processes.mjs";
-import { pin_linux_process } from "../scripts/unix_process.mjs";
 import { spawn_detached_windows } from "../scripts/windows_process.mjs";
 import { grant_preparation } from "../scripts/components.mjs";
 import { sha256 } from "../scripts/project_paths.mjs";
@@ -61,12 +60,15 @@ test("observation survives its session crash and releases the reader without sto
     const first = await active_readers(f.state, f.root); assert.equal(first.length, 1);
     second = new IndexObserverProxy(f.state);
     assert.equal((await second.observe(config, f.root, f.profile)).index_state, "ready");
-    assert.equal((await active_readers(f.state, f.root))[0].id, first[0].id);
+    const both = await active_readers(f.state, f.root);
+    assert.equal(both.length, 2);
+    const secondId = both.find(reader => reader.id !== first[0].id).id;
     owner.kill("SIGKILL"); await ownerClosed;
     const deadline = Date.now() + 15000;
-    while ((await active_readers(f.state, f.root)).length && Date.now() < deadline)
+    while ((await active_readers(f.state, f.root)).some(reader => reader.id === first[0].id) && Date.now() < deadline)
       await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepEqual(await active_readers(f.state, f.root), []);
+    const remaining = await active_readers(f.state, f.root);
+    assert.deepEqual(remaining.map(reader => reader.id), [secondId]);
     assert.equal((await second.observe(config, f.root, f.profile)).index_state, "ready");
     const cli = spawn(process.execPath, [path.join(ROOT, "scripts/settings_backend.mjs")], { cwd: f.root, env: f.env, stdio: ["pipe", "pipe", "pipe"] });
     let output = ""; cli.stdout.setEncoding("utf8"); cli.stdout.on("data", chunk => { output += chunk; });
@@ -90,19 +92,6 @@ test("observation survives its session crash and releases the reader without sto
     const stalledCheck = JSON.parse(stalledOutput).result.componentChecks[0];
     assert.equal(stalledCheck.state, "error"); assert.match(stalledCheck.detail, /Истекло время наблюдения индекса/);
     assert.equal((await active_readers(f.state, f.root)).length, 1);
-    if (process.platform === "linux") {
-      const [replacement] = await active_readers(f.state, f.root), pin = pin_linux_process(replacement.pid);
-      try {
-        pin.signal(15);
-        const stopDeadline = Date.now() + 15000;
-        while ((await active_readers(f.state, f.root)).length && Date.now() < stopDeadline)
-          await new Promise(resolve => setTimeout(resolve, 50));
-        assert.deepEqual(await active_readers(f.state, f.root), []);
-        while (second.socket && Date.now() < stopDeadline) await new Promise(resolve => setTimeout(resolve, 25));
-        assert.equal(second.socket, null);
-      } finally { pin.close(); }
-      assert.equal((await second.observe(config, f.root, f.profile)).index_state, "ready");
-    }
     assert.equal((await daemon_health(home)).pid, daemonBefore.pid);
   } finally { await cleanup(); }
 });

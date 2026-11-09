@@ -59,7 +59,7 @@ import {
 import { managed_components, component_enabled, grant_preparation, preparation_identity, require_preparation, component_settings, native_environment } from "./components.mjs";
 import { directory_context, edt_connection, edt_port_suggestion, index_repositories, repository_projects } from "./directory_context.mjs";
 import { profile_history, profile_hidden, remember_profile, profile_summary } from "./profile_history.mjs";
-import { read_readiness, save_readiness, read_component_checks, component_statuses, save_component_checks, begin_component_checks, component_checks_current, component_check_current, component_fingerprint, readiness_receipt_revision, readiness_fingerprint, bsl_readiness_fingerprint, bsl_api_observed, readiness_priority_current, foreground_readiness_active, reserve_component_flights, complete_component_flights, component_flight_result, abandon_component_flight, vanessa_runtime_snapshot } from "./setup_readiness.mjs";
+import { read_readiness, save_readiness, read_component_checks, component_statuses, save_component_checks, begin_component_checks, component_checks_current, component_check_current, component_fingerprint, readiness_receipt_revision, readiness_fingerprint, bsl_readiness_fingerprint, bsl_api_observed, readiness_priority_current, foreground_readiness_active, reserve_component_flights, complete_component_flights, component_flight_result, capture_component_flights, abandon_component_flight, vanessa_runtime_snapshot } from "./setup_readiness.mjs";
 import { open_reader, reader_active } from "./reader_lease.mjs";
 import { capture_index_snapshot } from "./index_snapshot.mjs";
 import { probe_yaxunit, yaxunit_result } from "./yaxunit_readiness.mjs";
@@ -89,8 +89,8 @@ function index_observation_detail(state) {
     not_verified: "API индекса не подтвердил актуальность каждого репозитория." })[state] || "API индекса вернул неподдерживаемое состояние.";
 }
 
-// Ensure the local layer is ignored before writing it. Keep existing rules,
-// including negations, and append our rule last so it remains effective.
+// Ensure the local layer is ignored before writing it. Retain an existing
+// exact rule unless a later negation might override it.
 function local_ignore_plan(root) {
   const nominal = path.join(root, ".ai", ".gitignore"), target = inside(root, ".ai/.gitignore");
   const stat = fs.lstatSync(nominal, { throwIfNoEntry: false });
@@ -107,8 +107,12 @@ function local_ignore_plan(root) {
     if (result.status === 0) throw new ConfigError(".ai/project.local.yaml уже отслеживается Git; правило игнорирования его не защитит. Уберите файл из индекса самостоятельно.");
     gitVerified = result.status === 1;
   }
-  const next = original.split(/\r?\n/).filter(line => line.trim() && !line.trimStart().startsWith("#")).at(-1)?.trim() === "/project.local.yaml"
-    ? original : original + (original && !original.endsWith("\n") ? "\n" : "") + "/project.local.yaml\n";
+  let protectedByRule = false;
+  for (const line of original.split(/\r?\n/)) {
+    if (line.startsWith("!")) protectedByRule = false;
+    else if (/^\/?project\.local\.yaml *$/.test(line)) protectedByRule = true;
+  }
+  const next = protectedByRule ? original : original + (original && !original.endsWith("\n") ? "\n" : "") + "/project.local.yaml\n";
   return { target, previous, next, changed: next !== original,
     gitWarning: repository && !gitVerified ? "Не удалось проверить индекс Git: правило игнорирования не защищает уже отслеживаемый файл project.local.yaml. Проверьте индекс самостоятельно." : null };
 }
@@ -867,7 +871,7 @@ export class SettingsBackend {
       layerScope: "profile", layerPath: file.path, textChanged: file.textChanged, layerChanges: file.changes,
       layerChangesTruncated: file.changesTruncated, revision: prepared.summary.revision } };
   }
-  async main(request, reportProgress = () => {}, { includeYaxunit = false, observationContext = null } = {}) {
+  async main(request, reportProgress = () => {}, { includeYaxunit = false, observationContext = null, flightRecoveryBudget = 1 } = {}) {
     const action = request.action;
     if (action === "transfer_context") {
       const config = this.current(), root = config.active_project;
@@ -1081,6 +1085,7 @@ export class SettingsBackend {
         ? observationContext?.indexGrantIdentity ?? preparation_identity(this.STATE, root) : null;
       const initialInputs = Object.fromEntries(observedComponents.map(id => [id, component_fingerprint(this.STATE, config, profile, id,
         { vanessaRuntimeSnapshot: id === "vanessa" ? vanessaSnapshot : undefined, indexSnapshot: id === "code-index" ? indexSnapshot : undefined })]));
+      let indexTransition = null;
       const initialReceipt = readiness_receipt_revision(this.STATE, root, observedComponents), instance = instance_name();
       if (request.connections !== undefined) {
         if (!object(request.connections) || Object.keys(request.connections).some(name => !["edt", "v8std", "openviking"].includes(name)))
@@ -1135,18 +1140,32 @@ export class SettingsBackend {
             { ...check, state: health ? expired || retained ? "not_verified" : "running" : uncertain ? "not_verified" : "stopped", detail: health ? expired || retained ? "Процесс работает, но актуальность индекса не подтверждена. Нажмите «Подготовить и проверить»." : "Процесс работает. Актуальность индекса этой проверкой не подтверждена." : uncertain ? "Не удалось подтвердить ответ сервиса индекса; процесс может работать. Повторим проверку автоматически." : "Сервис индекса недоступен. Нажмите «Подготовить и проверить»." };
           let prepared = false;
           try { require_preparation(this.STATE, root, component); prepared = true; } catch { /* Observation never grants preparation permission. */ }
-          if (health && prepared) {
+          if (prepared && !platformError && indexSnapshot !== null) {
             try {
               const observed = this.observeIndex
                 ? await this.observeIndex({ config, root, profile, snapshot: indexSnapshot })
                 : await runtime.observe_index(this.STATE, config, root, profile, indexSnapshot);
+              if (observed?.observationSnapshot) {
+                const latest = this.effective(this.current()), latestProfile = project_profile(root), currentSnapshot = capture_index_snapshot(this.STATE, root, latestProfile);
+                const priorInputs = component_fingerprint(this.STATE, latest, latestProfile, component,
+                  { indexSnapshot: { ...currentSnapshot, files: indexSnapshot.files } });
+                const nextInputs = component_fingerprint(this.STATE, config, profile, component, { indexSnapshot: observed.observationSnapshot });
+                if (latest.active_project !== root || priorInputs !== initialInputs[component] ||
+                    nextInputs !== component_fingerprint(this.STATE, latest, latestProfile, component, { indexSnapshot: currentSnapshot }))
+                  throw Object.assign(new ConfigError("Настройки индекса изменились во время запуска."), { inputsChanged: true });
+                indexTransition = { before: initialInputs[component], after: nextInputs };
+                initialInputs[component] = nextInputs;
+                indexSnapshot = observed.observationSnapshot;
+              }
               check = observed ? { id: component, state: observed.index_state === "not_checked" ? "not_verified" : observed.index_state, repositories: observed.index.repositories,
                 detail: index_observation_detail(observed.index_state) }
                 : { id: component, state: "not_verified", detail: "Не удалось подтвердить ответ сервиса индекса; процесс может работать. Повторим проверку автоматически." };
             } catch (error) {
               if (error.cleanupUnconfirmed) throw error;
               const busy = error.remote !== true && error.code === "RUNTIME_BUSY";
-              check = { id: component, state: busy ? "preparing" : "error", detail: busy ? "Подготовка окружения выполняется…" : safe_error_message(error),
+              const unknownDaemon = !health && uncertain && !error.inputsChanged;
+              check = { id: component, state: busy ? "preparing" : unknownDaemon ? "not_verified" : "error",
+                detail: busy ? "Подготовка окружения выполняется…" : unknownDaemon ? "Не удалось подтвердить состояние демона индекса; процесс может работать. " + safe_error_message(error) : safe_error_message(error),
                 ...(error.inputsChanged ? { observationInputsChanged: true } : {}) };
             }
           }
@@ -1214,6 +1233,7 @@ export class SettingsBackend {
         // Internal-only evidence of the inputs at actual probe dispatch. It is
         // never serialized into the public MCP result or persisted receipt.
         Object.defineProperty(collected, "observationInputs", { value: initialInputs });
+        Object.defineProperty(collected, "indexTransition", { value: indexTransition });
         return collected;
       }
       let superseded, supersededComponents = [];
@@ -1586,6 +1606,20 @@ export class SettingsBackend {
       const waitForJoined = async () => {
         const joined = reservation?.joined || {}, pending = new Map(Object.entries(joined)), completed = {};
         const deadline = performance.now() + 60000;
+        const recoverIndex = async () => {
+          if (!flightRecoveryBudget) return null;
+          const recovered = await this.main({ ...request, component: "code-index" }, reportProgress, { flightRecoveryBudget: flightRecoveryBudget - 1 });
+          if (recovered.superseded || !recovered.componentChecks?.length) return null;
+          return operation_lock(this.STATE, () => {
+            const latest = this.effective(this.current());
+            if (cancelled() || priorityChanged() || latest.active_project !== root || instance_name() !== instance) return null;
+            const latestProfile = project_profile(root), flight = capture_component_flights(this.STATE, root)["code-index"];
+            if (flight?.state !== "completed") return null;
+            const expected = { ...flight, fingerprint: component_fingerprint(this.STATE, latest, latestProfile, "code-index"), priority: priority?.revision || "" };
+            const outcome = component_flight_result(this.STATE, root, latest, latestProfile, "code-index", expected);
+            return outcome.state === "completed" ? { ...outcome, recoveredExpected: expected } : null;
+          }, 10);
+        };
         while (pending.size && performance.now() < deadline) {
           const states = await operation_lock(this.STATE, () => {
             const latest = this.effective(this.current());
@@ -1595,7 +1629,13 @@ export class SettingsBackend {
             return Object.fromEntries([...pending].map(([id, expected]) => [id, component_flight_result(this.STATE, root, latest, latestProfile, id, expected, cache)]));
           }, 10);
           for (const [id, outcome] of Object.entries(states)) if (outcome.state !== "running") {
-            pending.delete(id); if (outcome.state === "completed") completed[id] = outcome;
+            const expected = pending.get(id);
+            pending.delete(id);
+            if (outcome.state === "completed") completed[id] = outcome;
+            else if (id === "code-index" && flightRecoveryBudget && await reader_active(expected.owner).catch(() => null) === false) {
+              const recovered = await recoverIndex();
+              if (recovered) completed[id] = recovered;
+            }
           }
           if (!pending.size) break;
           const owners = [...new Set([...pending.values()].map(item => item.owner))];
@@ -1610,7 +1650,12 @@ export class SettingsBackend {
               if (checked.state === "running") abandon_component_flight(this.STATE, root, id, expected);
               return checked;
             }, 10);
-            pending.delete(id); if (outcome.state === "completed") completed[id] = outcome;
+            pending.delete(id);
+            if (outcome.state === "completed") completed[id] = outcome;
+            else if (id === "code-index") {
+              const recovered = await recoverIndex();
+              if (recovered) completed[id] = recovered;
+            }
           }
           if (pending.size) await new Promise(done => setTimeout(done, 150));
         }
@@ -1618,12 +1663,36 @@ export class SettingsBackend {
       };
       const [results, joinedChecks] = await Promise.all([componentResults, waitForJoined()]);
       const dispatchedInputs = Object.assign({}, ...results.map(item => item.observationInputs || {}));
+      const indexTransition = results.find(item => item.indexTransition)?.indexTransition;
       let superseded, supersededComponents = [];
       const componentChecks = await operation_lock(this.STATE, () => {
         const latest = this.effective(this.current());
         const scopeChanged = Boolean(cancelled()) || latest.active_project !== root || instance_name() !== instance ||
           transient && initialTransientReceipt !== readiness_receipt_revision(this.STATE, root);
         const latestProfile = scopeChanged ? null : project_profile(root), cache = {};
+        const updatedFingerprints = {};
+        if (!scopeChanged && indexTransition && indexSnapshot && indexTransition.before === initialInputs["code-index"]) {
+          const currentSnapshot = capture_index_snapshot(this.STATE, root, latestProfile);
+          const baseline = component_fingerprint(this.STATE, latest, latestProfile, "code-index", { indexSnapshot: { ...currentSnapshot, files: indexSnapshot.files } });
+          const current = component_fingerprint(this.STATE, latest, latestProfile, "code-index", { indexSnapshot: currentSnapshot });
+          if (baseline === indexTransition.before && current === indexTransition.after) {
+            initialInputs["code-index"] = current;
+            updatedFingerprints["code-index"] = current;
+          }
+        }
+        const joinedIndex = joinedChecks["code-index"];
+        if (!scopeChanged && joinedIndex && reservation?.joined["code-index"]?.fingerprint === initialInputs["code-index"]) {
+          const current = component_fingerprint(this.STATE, latest, latestProfile, "code-index");
+          let baseline = initialInputs["code-index"];
+          if (joinedIndex.recoveredExpected && indexSnapshot) {
+            const currentSnapshot = capture_index_snapshot(this.STATE, root, latestProfile);
+            baseline = component_fingerprint(this.STATE, latest, latestProfile, "code-index", { indexSnapshot: { ...currentSnapshot, files: indexSnapshot.files } });
+          }
+          if (baseline === initialInputs["code-index"] && joinedIndex.fingerprint === current) {
+            initialInputs["code-index"] = current;
+            if (joinedIndex.recoveredExpected) reservation.joined["code-index"] = joinedIndex.recoveredExpected;
+          }
+        }
         supersededComponents = components.filter(id => scopeChanged ||
           id === "code-index" && indexGrantIdentity !== null && indexGrantIdentity !== preparation_identity(this.STATE, root) ||
           !transient && leaders.includes(id) && !component_check_current(this.STATE, root, observation, id, cache) ||
@@ -1644,7 +1713,7 @@ export class SettingsBackend {
         if (transient) return accepted;
         const own = accepted.filter(item => leaders.includes(item.id));
         const saved = own.length ? save_component_checks(this.STATE, latest, latestProfile, own) : [];
-        if (reservation) complete_component_flights(this.STATE, root, reservation, saved, Object.assign({}, ...results.map(item => item.external)));
+        if (reservation) complete_component_flights(this.STATE, root, reservation, saved, Object.assign({}, ...results.map(item => item.external)), updatedFingerprints);
         return [...saved, ...accepted.filter(item => !leaders.includes(item.id))];
       }, 10);
       const readiness = superseded || transient ? null : await read_readiness(this.STATE, config, profile);

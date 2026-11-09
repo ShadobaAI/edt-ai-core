@@ -161,7 +161,7 @@ export function reader_active(id, { timeoutMs = 2000, cleanupStale = true } = {}
       received += chunk;
       if (received.length > id.length) finish(new Error("Некорректный ответ владельца читателя индекса"));
     });
-    socket.once("end", () => finish(received === id ? null : new Error("Идентичность владельца читателя индекса не подтверждена"), true));
+    socket.once("end", () => finish(received === id ? null : Object.assign(new Error("Идентичность владельца читателя индекса не подтверждена"), { code: "READER_IDENTITY_UNCONFIRMED" }), true));
     socket.once("error", error => {
       if (!["ENOENT", "ECONNREFUSED"].includes(error.code)) return finish(error);
       // A dead Unix listener can leave its socket inode. Its unique name is

@@ -24,13 +24,14 @@ export class SettingsOperations {
   }
 
   start(action, args, context) {
+    const independentIndex = ["probe", "refresh_readiness"].includes(action) && args.component === "code-index";
     const reject = (message, properties = {}) => {
       const error = Object.assign(new Error(message), properties);
       this.observe("operation_rejected", { action, projectRoot: context.projectRoot, component: args.component, phase: "dispatch", error }, "error");
       throw error;
     };
     if (this.closing) reject("Сеанс настроек завершён; новая операция не запущена.", { code: "RUNTIME_BUSY" });
-    if (this.unconfirmed && ["probe", "check", "refresh_readiness"].includes(action))
+    if (this.unconfirmed && !independentIndex && ["probe", "check", "refresh_readiness"].includes(action))
       reject("Завершение предыдущей проверки не подтверждено; новая проверка заблокирована.", { outcomeUnknown: true });
     const background = action === "refresh_readiness";
     const overlap = background && ["rebuild_index", "restart_index", "updates", "check"].includes(this.active?.action);
@@ -50,10 +51,10 @@ export class SettingsOperations {
     const job = { id: randomUUID(), action, ...context, ...(["probe", "refresh_readiness"].includes(action) && args.component ? { component: args.component } : {}),
       ...(["rebuild_index", "restart_index"].includes(action) ? { component: "code-index", ...(args.all === true ? { all: true } : {}) } : {}), status: "running", startedAt: new Date().toISOString() };
     const scope = this.stateDirectory && context.projectRoot && context.instance ? { root: path_identity(context.projectRoot), instance: context.instance } : null;
-    if (scope && ["probe", "check", "refresh_readiness"].includes(action)) assert_readiness_cleanup_known(this.stateDirectory, scope.root, scope.instance);
-    const priority = background && scope ? { ...scope, ...capture_readiness_priority(this.stateDirectory, scope.root, scope.instance) } : null;
+    if (scope && !independentIndex && ["probe", "check", "refresh_readiness"].includes(action)) assert_readiness_cleanup_known(this.stateDirectory, scope.root, scope.instance);
+    const priority = background && scope && !independentIndex ? { ...scope, ...capture_readiness_priority(this.stateDirectory, scope.root, scope.instance) } : null;
     const observedFlights = background && scope ? capture_component_flights(this.stateDirectory, scope.root) : null;
-    const foregroundLease = !background && scope && ["check", "probe"].includes(action)
+    const foregroundLease = !background && !independentIndex && scope && ["check", "probe"].includes(action)
       ? begin_foreground_readiness(this.stateDirectory, scope.root, scope.instance, job.id) : null;
     const backgroundObservation = action === "refresh_readiness";
     if (!backgroundObservation) this.observe("operation_started", { id: job.id, action, ...context, component: job.component, phase: "dispatch", startedAt: job.startedAt });

@@ -94,6 +94,13 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
         fs.readFileSync(path.join(ROOT, file)), `Extracted source differs: ${file}`);
     }
   }
+  f.profile.policy.edt_repository_ids = ["product"];
+  f.save();
+  const policy = spawnSync(process.execPath, [path.join(installed, "scripts/action_policy.mjs"), f.root], {
+    cwd: f.root, env: f.env, encoding: "utf8", windowsHide: true, timeout: 20000,
+  });
+  assert.equal(policy.status, 0, policy.stdout + policy.stderr);
+  assert.deepEqual(JSON.parse(policy.stdout).edt_repository_ids, ["product"]);
   const ambient = path.join(f.base, "unrelated-settings.json");
   fs.writeFileSync(ambient, JSON.stringify({ version: "99.0" }));
   environment(t, { ...f.env, EDT_AI_SETTINGS: ambient });
@@ -148,7 +155,10 @@ test("release data allowlist excludes project bindings, private corpora and loca
   }
   const contaminants = ["profiles/customer/profile.yaml", "profiles/generic-1c/instance.local.yaml",
     "knowledge/private-corpus.yaml", "runtime/owner.yaml", "settings/local.yaml",
-    ".ai/project.yaml", ".codex/config.toml", "hooks/runtime.local.json"];
+    ".ai/project.yaml", ".codex/config.toml", "hooks/runtime.local.json",
+    ".gitnexus/meta.json", "node_modules/dependency-cruiser/package.json",
+    ".dependency-cruiser.cjs", "playwright.config.mjs", "tests/ui-e2e/settings.spec.mjs",
+    "tools/inspect-settings.mjs", "test-results/screenshot.png"];
   for (const name of contaminants) {
     const target = path.join(checkout, name);
     fs.mkdirSync(path.dirname(target), { recursive: true });

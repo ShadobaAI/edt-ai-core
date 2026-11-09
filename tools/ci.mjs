@@ -21,7 +21,7 @@ if (action === "install") {
   const npm = candidates.find((file) => fs.existsSync(file));
   if (!npm)
     throw new Error("npm CLI is missing from the developer Node installation");
-  invoke(npm, ["ci", "--ignore-scripts", "--no-audit", "--no-fund"]);
+  invoke(npm, ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"]);
   invoke("tools/vendor.mjs");
 } else if (action === "test")
   invoke("tools/without-shells.mjs", ["tools/test.mjs"]);

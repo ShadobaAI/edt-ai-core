@@ -276,6 +276,27 @@ test("live reader leases preserve project isolation and concurrent release is id
   assert.equal(fs.existsSync(lease.file), false);
 });
 
+test("a reader owner disconnecting during identification remains an isolated barrier", async t => {
+  const f = fixture(t), id = randomUUID(), home = path.join(project_home(f.state, f.root), "code-index/readers");
+  const address = process.platform === "win32" ? "\\\\.\\pipe\\1c-ai-core-reader-" + id : "/tmp/1c-ai-core-reader-" + id + ".sock";
+  const server = net.createServer(socket => socket.end());
+  server.listen(address); await once(server, "listening");
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const file = path.join(home, id + ".json");
+  save_json(file, { id, pid: process.pid, root: f.root, phase: "active", role: "read-only-v1", orphanedBarrier: true });
+  const [uncertain] = await active_readers(f.state, f.root);
+  assert.equal(uncertain.id, id); assert.equal(uncertain.orphaned, true);
+  assert.equal(fs.existsSync(file), true);
+  const independent = await acquire_reader(f.state, f.root); f.clients.push(independent);
+  await independent.arm(); await independent.assertAvailable();
+  let launches = 0;
+  await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath, {
+    launch: () => { launches++; throw new Error("unexpected daemon launch"); },
+  }, {}, independent.id), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /Не подтверждено завершение предыдущего читателя/);
+  assert.equal(launches, 0);
+  await independent.close();
+});
+
 test("arming a reader cannot race removal of a stale preparing lease", async t => {
   const f = fixture(t), lease = await acquire_reader(f.state, f.root);
   const connect = net.connect, unlink = fs.unlinkSync; let first = true, enter, rejectConnection;
@@ -291,12 +312,16 @@ test("arming a reader cannot race removal of a stale preparing lease", async t =
   const scan = active_readers(f.state, f.root); await entered;
   const arm = lease.arm(); await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(JSON.parse(fs.readFileSync(lease.file, "utf8")).phase, "preparing");
-  rejectConnection(); await scan; await arm;
+  rejectConnection();
+  assert.equal((await scan)[0].orphaned, true, "a missing endpoint is not proof that the owner stopped");
+  await arm;
   assert.equal(JSON.parse(fs.readFileSync(lease.file, "utf8")).orphanedBarrier, true);
   await lease.abandon();
   const [reader] = await active_readers(f.state, f.root);
   assert.equal(reader.orphaned, true);
-  await assert.rejects(acquire_reader(f.state, f.root), /Не подтверждено завершение/);
+  const independent = await acquire_reader(f.state, f.root); f.clients.push(independent);
+  await independent.arm();
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === lease.id)?.orphaned, true);
 });
 
 test("reader release bounds a peer that keeps its half-open connection active", async t => {
@@ -373,18 +398,18 @@ test("legacy preparing observations retain the barrier when snapshot state is un
   const f = fixture(t), binding = "f".repeat(64);
   const fresh = await acquire_reader(f.state, f.root, { observerBinding: binding });
   await fresh.abandon();
-  assert.deepEqual(await active_readers(f.state, f.root), []);
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === fresh.id)?.orphaned, true);
   const legacy = await acquire_reader(f.state, f.root, { observerBinding: binding });
   await legacy.abandon();
   const record = JSON.parse(fs.readFileSync(legacy.file));
   delete record.snapshotMayExist;
   fs.writeFileSync(legacy.file, JSON.stringify(record));
-  assert.equal((await active_readers(f.state, f.root))[0]?.orphaned, true);
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === legacy.id)?.orphaned, true);
   fs.writeFileSync(legacy.file, JSON.stringify({ ...record, snapshotMayExist: true }));
-  assert.equal((await active_readers(f.state, f.root))[0]?.orphaned, true);
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === legacy.id)?.orphaned, true);
 });
 
-test("a crashed reader releases its OS endpoint and its stale record is removed", async t => {
+test("a crashed reader is removed only when its complete process tree can be verified", async t => {
   const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href;
   const code = `import {acquire_reader} from ${JSON.stringify(runtime)};
     await acquire_reader(${JSON.stringify(f.state)},${JSON.stringify(f.root)});
@@ -395,15 +420,44 @@ test("a crashed reader releases its OS endpoint and its stale record is removed"
   const [ready] = await once(owner.stdout, "data"); assert.equal(String(ready).trim(), "ready");
   assert.equal((await active_readers(f.state, f.root)).length, 1);
   owner.kill("SIGKILL"); await closed;
-  assert.deepEqual(await active_readers(f.state, f.root), []);
-  assert.deepEqual(fs.readdirSync(path.join(project_home(f.state, f.root), "code-index/readers")), []);
+  const readers = await active_readers(f.state, f.root);
+  if (["win32", "linux"].includes(process.platform)) {
+    assert.deepEqual(readers, []);
+    assert.deepEqual(fs.readdirSync(path.join(project_home(f.state, f.root), "code-index/readers")), []);
+  } else assert.equal(readers[0]?.orphaned, true);
 });
 
-test("a crashed native observation retains a fail-closed maintenance barrier", async t => {
+test("Linux recovers a reader record from a previous boot", { skip: process.platform !== "linux" }, async t => {
+  const f = fixture(t), lease = await acquire_reader(f.state, f.root); await lease.arm(); await lease.abandon();
+  const record = JSON.parse(fs.readFileSync(lease.file));
+  record.recovery.creation = "linux:00000000-0000-0000-0000-000000000000:1";
+  fs.writeFileSync(lease.file, JSON.stringify(record));
+  assert.deepEqual(await active_readers(f.state, f.root), []);
+  assert.equal(fs.existsSync(lease.file), false);
+});
+
+test("Linux retains an active reader without a completed-tree receipt", { skip: process.platform !== "linux", timeout: 15000 }, async t => {
+  const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href;
+  const code = `import {acquire_reader} from ${JSON.stringify(runtime)};
+    const lease=await acquire_reader(${JSON.stringify(f.state)},${JSON.stringify(f.root)}); await lease.arm();
+    console.log(lease.id); setInterval(()=>{},1000);`;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"] });
+  const closed = new Promise(resolve => owner.once("close", resolve));
+  t.after(async () => { if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await closed; });
+  const [data] = await once(owner.stdout, "data"), id = String(data).trim();
+  owner.kill("SIGKILL"); await closed;
+  const [reader] = await active_readers(f.state, f.root);
+  assert.equal(reader.id, id); assert.equal(reader.orphaned, true);
+  const independent = await acquire_reader(f.state, f.root); await independent.close();
+  assert.equal((await active_readers(f.state, f.root))[0].id, id);
+});
+
+test("an unknown legacy reader blocks maintenance without blocking independent readers", async t => {
   const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href;
   const previouslyIssued = await acquire_reader(f.state, f.root); f.clients.push(previouslyIssued);
-  const code = `import {acquire_reader} from ${JSON.stringify(runtime)};
+  const code = `import fs from 'node:fs'; import {acquire_reader} from ${JSON.stringify(runtime)};
     const lease = await acquire_reader(${JSON.stringify(f.state)},${JSON.stringify(f.root)}); await lease.arm();
+    const record=JSON.parse(fs.readFileSync(lease.file)); delete record.recovery; fs.writeFileSync(lease.file,JSON.stringify(record));
     console.log('ready'); setInterval(()=>{},1000);`;
   const owner = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   const closed = new Promise(resolve => owner.once("close", resolve));
@@ -411,8 +465,15 @@ test("a crashed native observation retains a fail-closed maintenance barrier", a
   await once(owner.stdout, "data"); owner.kill("SIGKILL"); await closed;
   const readers = await active_readers(f.state, f.root);
   assert.equal(readers.filter(reader => reader.orphaned).length, 1);
-  await assert.rejects(acquire_reader(f.state, f.root), /Не подтверждено завершение предыдущего читателя/);
-  await assert.rejects(previouslyIssued.assertAvailable(), /Не подтверждено завершение предыдущего читателя/);
+  const independent = await acquire_reader(f.state, f.root); f.clients.push(independent);
+  await independent.arm(); await independent.assertAvailable();
+  await previouslyIssued.assertAvailable();
+  let launches = 0;
+  await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath, {
+    launch: () => { launches++; throw new Error("unexpected daemon launch"); },
+  }, {}, independent.id), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /Не подтверждено завершение предыдущего читателя/);
+  assert.equal(launches, 0, "an uncertain reader cannot authorize another writer");
+  await independent.close();
   await previouslyIssued.close();
   const calls = [];
   await assert.rejects(restart_index(f.state, settings(), f.root, f.profile, {
@@ -420,6 +481,25 @@ test("a crashed native observation retains a fail-closed maintenance barrier", a
     restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }),
   }), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /Не подтверждено завершение читателя/);
   assert.deepEqual(calls, []);
+});
+
+test("a Windows reader remains registered until its named job is absent", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
+  const f = fixture(t), runtime = pathToFileURL(path.join(ROOT, "scripts/runtime.mjs")).href;
+  const code = `import {acquire_reader} from ${JSON.stringify(runtime)};
+    const lease=await acquire_reader(${JSON.stringify(f.state)},${JSON.stringify(f.root)}); await lease.arm();
+    console.log(lease.id); setInterval(()=>{},1000);`;
+  const owner = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const closed = new Promise(resolve => owner.once("close", resolve));
+  t.after(async () => { if (owner.exitCode === null && owner.signalCode === null) owner.kill("SIGKILL"); await closed; });
+  const [data] = await once(owner.stdout, "data"), id = String(data).trim();
+  const file = path.join(project_home(f.state, f.root), "code-index/readers", id + ".json");
+  assert.equal(JSON.parse(fs.readFileSync(file)).recovery.kind, "windows-reader-job-v2");
+  const job = create_windows_reader_job(id); t.after(() => job.close());
+  owner.kill("SIGKILL"); await closed;
+  assert.equal((await active_readers(f.state, f.root)).find(item => item.id === id)?.orphaned, true);
+  job.close();
+  assert.deepEqual(await active_readers(f.state, f.root), []);
+  assert.equal(fs.existsSync(file), false);
 });
 
 test("a crashed Windows observation is released only after its named job disappears", { skip: process.platform !== "win32", timeout: 15000 }, async t => {
@@ -440,7 +520,7 @@ test("a crashed Windows observation is released only after its named job disappe
   t.after(() => job.close());
   owner.kill("SIGKILL"); await closed;
   assert.equal((await active_readers(f.state, f.root)).find(item => item.id === id)?.orphaned, true);
-  await assert.rejects(live.assertAvailable(), /Не подтверждено завершение/);
+  await live.assertAvailable();
   job.close();
   // A finished Job says nothing about an interrupted snapshot cleanup.
   fs.writeFileSync(file, JSON.stringify({ ...record, phase: "closing" }));
@@ -533,10 +613,12 @@ test("a killed Windows observation owner cannot strand its protected native read
   await live.assertAvailable();
 });
 
-test("a daemon is not started while another reader might still own a native process", async t => {
+test("a daemon is not started while a legacy reader might still own a writer", async t => {
   const f = fixture(t), earlier = await acquire_reader(f.state, f.root), current = await acquire_reader(f.state, f.root);
   f.clients.push(earlier, current); let starts = 0;
   await earlier.arm();
+  const legacy = JSON.parse(fs.readFileSync(earlier.file)); delete legacy.role;
+  fs.writeFileSync(earlier.file, JSON.stringify(legacy));
   await assert.rejects(ensure_daemon(f.state, f.root, f.profile, process.execPath,
     { launch: () => { starts++; throw new Error("unexpected daemon launch"); } }, {}, current.id), protected_process_skip ? error => error.code === "PROCESS_CONTAINMENT_UNAVAILABLE" : /другие читатели/);
   assert.equal(starts, 0);

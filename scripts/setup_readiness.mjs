@@ -390,6 +390,7 @@ function component_flights(state, root) {
     for (const [id, item] of Object.entries(record.components))
       if (!checked_components.includes(id) || !object(item) || !["running", "completed", "superseded"].includes(item.state) ||
           !uuid.test(item.owner || "") || !uuid.test(item.ticket || "") || !/^[a-f0-9]{64}$/.test(item.fingerprint || "") ||
+          item.previousFingerprint !== undefined && !/^[a-f0-9]{64}$/.test(item.previousFingerprint) ||
           typeof item.priority !== "string" || item.priority && !uuid.test(item.priority) ||
           item.state === "completed" && !/^[a-f0-9]{64}$/.test(item.receiptRevision || "") ||
           item.session !== undefined && !uuid.test(item.session) ||
@@ -437,7 +438,7 @@ export function reserve_component_flights(state, root, components, inputs, prior
   return { leaders, joined, observation };
 }
 
-export function complete_component_flights(state, root, reservation, checks, external = {}) {
+export function complete_component_flights(state, root, reservation, checks, external = {}, updatedFingerprints = {}) {
   if (!reservation.observation) return;
   const flights = component_flights(state, root), saved = new Map(checks.map(item => [item.id, item]));
   const receipt = component_receipt(state, root);
@@ -446,7 +447,8 @@ export function complete_component_flights(state, root, reservation, checks, ext
     if (!flight || flight.ticket !== reservation.observation.id) continue;
     const revision = sha256(stable(receipt.components?.[id] || null));
     flights[id] = saved.has(id) && stable(receipt.components?.[id]?.result) === stable(saved.get(id))
-      ? { ...flight, state: "completed", receiptRevision: revision, finishedAt: Date.now(), ...(external[id] ? { external: external[id] } : {}) }
+      ? { ...flight, ...(updatedFingerprints[id] && updatedFingerprints[id] !== flight.fingerprint
+        ? { previousFingerprint: flight.fingerprint, fingerprint: updatedFingerprints[id] } : {}), state: "completed", receiptRevision: revision, finishedAt: Date.now(), ...(external[id] ? { external: external[id] } : {}) }
       : { ...flight, state: "superseded" };
   }
   atomic_write(flights_file(state, root), JSON.stringify({ version: 1, components: flights }));
@@ -454,14 +456,17 @@ export function complete_component_flights(state, root, reservation, checks, ext
 
 export function component_flight_result(state, root, config, profile, id, expected, cache = {}) {
   const current = (cache.flights ||= component_flights(state, root))[id];
+  // A cold managed index start legitimately changes its daemon files. The
+  // leader commits that transition only after validating all other inputs.
+  const transitioned = current?.state === "completed" && current.previousFingerprint === expected.fingerprint;
   if (!current || current.ticket !== expected.ticket || current.owner !== expected.owner ||
-      current.fingerprint !== expected.fingerprint || current.priority !== expected.priority) return { state: "superseded" };
+      current.fingerprint !== expected.fingerprint && !transitioned || current.priority !== expected.priority) return { state: "superseded" };
   if (current.state === "running") return { state: "running" };
   const receipt = cache.receipt ||= component_receipt(state, root), entry = receipt.components?.[id];
   if (current.state !== "completed" || (cache.observations ||= component_observations(state, root))[id] !== current.ticket ||
       sha256(stable(entry || null)) !== current.receiptRevision || entry?.fingerprint !== current.fingerprint) return { state: "superseded" };
   const check = (cache.checks ||= read_component_checks(state, config, profile)).find(item => item.id === id);
-  return check && check.state !== "check_stale" ? { state: "completed", check, ...(current.external ? { external: current.external } : {}) } : { state: "superseded" };
+  return check && check.state !== "check_stale" ? { state: "completed", check, fingerprint: current.fingerprint, ...(current.external ? { external: current.external } : {}) } : { state: "superseded" };
 }
 
 // Remove only the same reservation whose capability was just proven dead.

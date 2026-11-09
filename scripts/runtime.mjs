@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
-import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import {
   ROOT,
   ConfigError,
@@ -39,7 +39,7 @@ import {
 } from "./project_paths.mjs";
 import { project_profile, merged_profile } from "./profile.mjs";
 import { effective_settings, external_override_files } from "./project_context.mjs";
-import { safe_error_message, create_diagnostic_logger } from "./diagnostics.mjs";
+import { safe_error_message, create_diagnostic_logger, register_diagnostic_secrets } from "./diagnostics.mjs";
 import { launch, stop_child, alive, which, require_protected_process_support, spawn_guarded_linux } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
@@ -50,10 +50,9 @@ import { core_version } from "./compatibility.mjs";
 import { spawn_detached_windows, windows_process_identity, windows_process_session, windows_reader_job_absent, windows_tcp_rows, pin_windows_process, pin_windows_readonly_file, windows_has_tcp_peer } from "./windows_process.mjs";
 import { index_repositories, index_selection } from "./directory_context.mjs";
 import { capture_index_snapshot, snapshot_bytes } from "./index_snapshot.mjs";
-import { open_reader, reader_active, observe_reader } from "./reader_lease.mjs";
+import { open_reader, reader_active } from "./reader_lease.mjs";
 import { darwin_process_identity, darwin_process_executable, darwin_has_loopback_listener, linux_has_loopback_listener, pin_linux_process, linux_has_tcp_peer, linux_process_identity, linux_read_daemon_lease, linux_retain_daemon_barrier } from "./unix_process.mjs";
 import { read_regular_file, hash_regular_file } from "./bounded_file.mjs";
-import { private_observation_directory } from "./openviking_store.mjs";
 
 export const SPECS = Object.fromEntries(managed_components.map(id => [id, COMPONENTS[id].repository]));
 // Workspace registration tools first appeared in 1.1.0-rc.4.
@@ -447,40 +446,67 @@ async function active_readers_locked(state, root) {
     if (!reader || typeof reader !== "object" || Array.isArray(reader) ||
         typeof reader.id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(reader.id) || name !== reader.id + ".json" ||
         reader.root !== resolve(root) || !Number.isSafeInteger(reader.pid) || reader.pid <= 0 ||
+        reader.role !== undefined && reader.role !== "read-only-v1" ||
         reader.phase !== undefined && !["preparing", "active", "closing"].includes(reader.phase) ||
         ["active", "closing"].includes(reader.phase) && reader.orphanedBarrier !== true ||
         reader.snapshotMayExist !== undefined && (typeof reader.snapshotMayExist !== "boolean" ||
           typeof reader.observerBinding !== "string" || !/^[a-f0-9]{64}$/.test(reader.observerBinding)) ||
         reader.recovery !== undefined && (!reader.recovery || typeof reader.recovery !== "object" || Array.isArray(reader.recovery) ||
-          Object.keys(reader.recovery).sort().join(",") !== "creation,kind,session" || reader.recovery.kind !== "windows-observer-job-v1" ||
-          !Number.isSafeInteger(reader.recovery.session) || reader.recovery.session < 0 ||
-          typeof reader.recovery.creation !== "string" || !/^win32-filetime:\d+$/.test(reader.recovery.creation) ||
-          typeof reader.observerBinding !== "string" || !/^[a-f0-9]{64}$/.test(reader.observerBinding)))
+          (reader.recovery.kind === "linux-reader-v2" ?
+            Object.keys(reader.recovery).sort().join(",") !== "creation,kind" || !/^linux:[a-f0-9-]{36}:\d+$/i.test(reader.recovery.creation || "") ||
+              Object.hasOwn(reader, "observerBinding") || Object.hasOwn(reader, "snapshotMayExist") :
+            Object.keys(reader.recovery).sort().join(",") !== "creation,kind,session" || !["windows-observer-job-v1", "windows-reader-job-v2"].includes(reader.recovery.kind) ||
+              !Number.isSafeInteger(reader.recovery.session) || reader.recovery.session < 0 ||
+              typeof reader.recovery.creation !== "string" || !/^win32-filetime:\d+$/.test(reader.recovery.creation) ||
+              reader.recovery.kind === "windows-observer-job-v1" &&
+                (typeof reader.observerBinding !== "string" || !/^[a-f0-9]{64}$/.test(reader.observerBinding)) ||
+              reader.recovery.kind === "windows-reader-job-v2" &&
+                (Object.hasOwn(reader, "observerBinding") || Object.hasOwn(reader, "snapshotMayExist")))))
       throw new ConfigError("Неподдерживаемая запись читателя индекса; обслуживание заблокировано. " + barrier_recovery_hint(file));
-    if (await reader_active(reader.id, { timeoutMs: Math.max(1, Math.min(2000, deadline - performance.now())) })) active.push(reader);
-    // An observation may have spawned a supervised native reader. Loss of the
-    // backend's socket alone does not prove that child tree has terminated.
-    else if (reader.phase !== "preparing" || reader.orphanedBarrier === true ||
-        Object.hasOwn(reader, "observerBinding") && reader.snapshotMayExist !== false) {
+    let ownerActive;
+    try { ownerActive = await reader_active(reader.id, { timeoutMs: Math.max(1, Math.min(2000, deadline - performance.now())) }); }
+    catch (error) {
+      // The owner can disappear while its identity reply is in flight. Keep
+      // its barrier until a later scan can confirm the complete cleanup.
+      if (!["READER_IDENTITY_UNCONFIRMED", "ECONNRESET"].includes(error.code)) throw error;
+      active.push({ ...reader, orphaned: true });
+      continue;
+    }
+    if (ownerActive) active.push(reader);
+    else {
       let recovered = false;
-      // The v1 marker is used only when every process of the observation,
-      // including the copy worker, uses this one named Windows Job. The owner
-      // must be gone and the Job must be absent in its original session. A
-      // missing endpoint, PID alone, timeout, foreign session, or unknown Job
-      // is never evidence of cleanup; old markers retain their barrier.
-      // An absent Job says nothing about snapshot files. Only a marker which
-      // explicitly predates snapshot creation can be recovered this way; old
-      // markers and interruptions during or after creation remain barriers.
-      if (process.platform === "win32" && reader.phase === "active" && reader.recovery?.kind === "windows-observer-job-v1" &&
-          reader.snapshotMayExist === false) try {
+      // An absent endpoint is not proof that its owner cannot still launch a
+      // child. Recover only records whose owner identity and complete named
+      // Windows Job can both be checked. Old snapshot records additionally
+      // need explicit proof that no private files could have been created.
+      const recoverable = reader.recovery?.kind === "windows-reader-job-v2" ||
+        reader.recovery?.kind === "windows-observer-job-v1" && reader.phase !== "closing" && reader.snapshotMayExist === false;
+      if (process.platform === "win32" && recoverable) try {
         const current = windows_process_identity(reader.pid);
         recovered = windows_process_session(process.pid) === reader.recovery.session &&
           (!current || current.created !== reader.recovery.creation) && windows_reader_job_absent(reader.id);
       } catch { /* Preserve the marker whenever the kernel cannot confirm it. */ }
-      if (recovered) fs.rmSync(file, { force: true });
+      if (process.platform === "linux" && reader.recovery?.kind === "linux-reader-v2") try {
+        const current = linux_process_identity(process.pid), owner = linux_process_identity(reader.pid);
+        const bootChanged = current && current.split(":")[1] !== reader.recovery.creation.split(":")[1];
+        let ownerGone = owner && owner !== reader.recovery.creation;
+        if (!owner) try { fs.statSync(`/proc/${reader.pid}`); } catch (error) { if (error.code === "ENOENT") ownerGone = true; }
+        let treeStopped = false;
+        if (ownerGone && !bootChanged) try {
+          const receipt = read_regular_file(path.join(directory, reader.id + ".done"), 1024);
+          const evidence = receipt && JSON.parse(receipt.bytes.toString("utf8"));
+          treeStopped = evidence?.id === reader.id && evidence.completed === true;
+        } catch { /* Invalid or unavailable evidence keeps the barrier. */ }
+        // Before arm() the reader has not launched a native tree. An old boot
+        // or the supervisor's completed-tree receipt also permits recovery.
+        recovered = Boolean(bootChanged || ownerGone && (reader.phase === "preparing" || treeStopped));
+      } catch { /* Keep the barrier when process identity is unavailable. */ }
+      if (recovered) {
+        fs.rmSync(path.join(directory, reader.id + ".done"), { force: true });
+        fs.rmSync(file, { force: true });
+      }
       else active.push({ ...reader, orphaned: true });
     }
-    else fs.rmSync(file, { force: true });
   } };
   const results = await Promise.allSettled(Array.from({ length: Math.min(8, names.length) }, worker));
   const failed = results.find(result => result.status === "rejected");
@@ -525,6 +551,8 @@ function check_maintenance(home, allowOwned = false) {
 }
 function check_index_observation(home) {
   check_maintenance(home);
+  // An unconfirmed daemon stop retains this lock when a separate cleanup
+  // barrier cannot be written. It must also block reuse of an existing reader.
   const lock = path.join(home, "operation.lock");
   try { fs.lstatSync(lock); }
   catch (error) { if (error.code === "ENOENT") return; throw error; }
@@ -548,17 +576,24 @@ export async function acquire_reader(state, root, { preparing = true, observerBi
   const home = path.join(project_home(state, root), "code-index");
   return operation_lock(home, async () => {
     check_maintenance(home);
-    const readers = await active_readers_locked(state, root);
-    const orphaned = readers.find(reader => reader.orphaned);
-    if (orphaned)
-      throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое подключение заблокировано. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
-    const existing = observerBinding && readers.find(reader => reader.observerBinding === observerBinding && reader.instance === instance_name());
+    // Reader registration is independent of maintenance. An uncertain old
+    // reader remains a barrier to maintenance and to starting a new writer,
+    // but it must not prevent another reader from using a verified daemon.
+    // The observer lookup is an optional reuse optimization, not authority to
+    // discard or bypass any record when its owner cannot be inspected.
+    let readers = [];
+    if (observerBinding) try { readers = await active_readers_locked(state, root); } catch { /* Use an independent reader. */ }
+    const existing = observerBinding && readers.find(reader => !reader.orphaned && reader.observerBinding === observerBinding && reader.instance === instance_name());
     if (existing) return existing.phase === "closing" ? { closing: existing.id } : { joined: existing.id };
     let recovery;
-    if (observerBinding && process.platform === "win32") {
+    if (process.platform === "win32") {
       const identity = windows_process_identity(process.pid);
-      if (!identity?.created) throw new ConfigError("Не удалось подтвердить владельца наблюдателя индекса.");
-      recovery = { kind: "windows-observer-job-v1", session: windows_process_session(process.pid), creation: identity.created };
+      if (!identity?.created) throw new ConfigError("Не удалось подтвердить владельца читателя индекса.");
+      recovery = { kind: observerBinding ? "windows-observer-job-v1" : "windows-reader-job-v2", session: windows_process_session(process.pid), creation: identity.created };
+    } else if (process.platform === "linux" && !observerBinding) {
+      const creation = linux_process_identity(process.pid);
+      if (!creation) throw new ConfigError("Не удалось подтвердить владельца читателя индекса.");
+      recovery = { kind: "linux-reader-v2", creation };
     }
     const id = randomUUID(), file = path.join(home, "readers", id + ".json"), owner = await open_reader(id, { binding: observerBinding, observe });
     let record = { id, pid: process.pid, root: resolve(root), ...(preparing ? { phase: "preparing" } : {}),
@@ -569,14 +604,12 @@ export async function acquire_reader(state, root, { preparing = true, observerBi
     const ensureAvailable = async () => {
       if (closing) throw new ConfigError("Читатель индекса уже закрывается.");
       check_maintenance(home);
-      const orphaned = (await active_readers_locked(state, root)).find(reader => reader.orphaned);
-      if (orphaned)
-        throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Новое наблюдение заблокировано. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
     };
-    return { id, file, assertAvailable: () => operation_lock(home, ensureAvailable, 45), arm: ({ snapshotMayExist = false } = {}) => operation_lock(home, async () => {
+    const completion = process.platform === "linux" && !observerBinding ? path.join(home, "readers", id + ".done") : null;
+    return { id, file, completion, assertAvailable: () => operation_lock(home, ensureAvailable, 45), arm: ({ snapshotMayExist = false } = {}) => operation_lock(home, async () => {
       if (typeof snapshotMayExist !== "boolean") throw new ConfigError("Некорректное состояние снимка читателя индекса.");
       await ensureAvailable();
-      const next = { ...record, phase: "active", orphanedBarrier: true,
+      const next = { ...record, phase: "active", role: "read-only-v1", orphanedBarrier: true,
         ...(observerBinding ? { snapshotMayExist: record.snapshotMayExist || snapshotMayExist } : {}) };
       save_json(file, next);
       record = next;
@@ -587,6 +620,7 @@ export async function acquire_reader(state, root, { preparing = true, observerBi
       // have been closed. A failed endpoint cleanup must remain observable.
       await operation_lock(home, async () => {
         await owner.close();
+        if (completion) fs.rmSync(completion, { force: true });
         fs.rmSync(file, { force: true });
       }, 10);
     })(), abandon: () => closing ||= owner.close() };
@@ -872,7 +906,11 @@ export async function ensure_daemon(state, root, data, exe, io, environment, rea
       check_maintenance(home, true);
       try {
         return await start_daemon(home, root, data, exe, io, environment, async () => {
-          const readers = (await active_readers_locked(state, root)).filter(reader => reader.id !== readerId && (reader.orphaned || reader.phase !== "preparing"));
+          // An armed reader has already passed writer coordination before it
+          // can start read-only serve. It may stay open across daemon recovery.
+          // Legacy and orphaned records cannot provide that guarantee.
+          const readers = (await active_readers_locked(state, root)).filter(reader => reader.id !== readerId &&
+            (reader.orphaned || reader.phase !== "preparing" && reader.role !== "read-only-v1"));
           const orphaned = readers.find(reader => reader.orphaned);
           if (orphaned)
             throw new ConfigError("Не подтверждено завершение предыдущего читателя индекса. Запуск демона заблокирован. " + barrier_recovery_hint(path.join(home, "readers", orphaned.id + ".json")));
@@ -1032,6 +1070,65 @@ export async function launch_command(
     resolve(root),
     native_environment(config),
   ];
+}
+export async function serve_managed(component, selected, state, config) {
+  const [root, data] = project(selected, config, component === "code-index");
+  config = effective_settings(config, root, data, null, state);
+  register_diagnostic_secrets(config);
+  const diagnostic = create_diagnostic_logger("managed-" + component, state);
+  require_preparation(state, root, component);
+  require_protected_process_support();
+  const lease = component === "code-index" ? await acquire_reader(state, root, { preparing: true }) : null;
+  let launching = false, stopped = false;
+  try {
+    await lease?.assertAvailable();
+    const [command, cwd, env] = await launch_command(state, config, component, root, data, false, null, true, lease?.id);
+    await lease?.assertAvailable();
+    await lease?.arm();
+    launching = Boolean(lease);
+    let child;
+    try { child = launch(command[0], command.slice(1), {
+      cwd,
+      env: env || process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      readerJob: lease?.id || randomUUID(),
+      ...(lease?.completion ? { readerCompletion: lease.completion } : {}),
+    }); } catch (error) { if (error.notSpawned) launching = false; throw error; }
+    diagnostic.event("process_started", { projectRoot: root, supervisorPid: child.pid, executable: command[0] });
+    let stderrBytes = 0, stderrChunks = 0;
+    child.stderr.on("data", chunk => { stderrBytes += chunk.length; stderrChunks++; });
+    let stopping;
+    const reportShutdown = error => diagnostic.event("process_shutdown_failed", { projectRoot: root, error }, "error");
+    const inputEnded = () => {
+      if (!stopping) { stopping = stop_child(child); void stopping.catch(reportShutdown); }
+    };
+    const terminate = () => { void stop_child(child, 0).catch(reportShutdown); };
+    process.once("SIGTERM", terminate);
+    process.once("SIGINT", terminate);
+    child.stdin.on("error", () => {});
+    process.stdin.pipe(child.stdin);
+    process.stdin.once("end", inputEnded);
+    process.stdin.once("close", inputEnded);
+    process.stdin.once("error", inputEnded);
+    child.stdout.pipe(process.stdout, { end: false });
+    try {
+      const [code] = await once(child, "close");
+      if (stderrChunks) diagnostic.event("runtime_stderr", { projectRoot: root, bytes: stderrBytes, count: stderrChunks });
+      diagnostic.event("process_exited", { projectRoot: root, exitCode: code }, code === 0 ? "info" : "error");
+      return code ?? 1;
+    } finally {
+      process.stdin.unpipe(child.stdin);
+      process.stdin.pause();
+      process.stdin.removeListener("end", inputEnded);
+      process.stdin.removeListener("close", inputEnded);
+      process.stdin.removeListener("error", inputEnded);
+      try { await (stopping || stop_child(child)); stopped = true; }
+      finally { process.removeListener("SIGTERM", terminate); process.removeListener("SIGINT", terminate); }
+    }
+  } finally {
+    if (lease && (!launching || stopped)) await lease.close();
+    else if (lease) await lease.abandon();
+  }
 }
 export function validate_bsl_tools(tools) {
   const required = [
@@ -1257,32 +1354,12 @@ async function bounded_probe_client(client, component, root, data, timeoutMs, se
   finally { clearTimeout(timer); const failure = await closing; if (failure) throw failure; }
 }
 
-// Observe only the existing daemon through its immutable read-only client.
-// Do not use launch_command: it can prepare config and start a stopped daemon.
+// Compare the input inventory captured for an observation with current state.
 function index_snapshot_current(state, root, data, snapshot) {
   const current = capture_index_snapshot(state, root, data);
   const view = value => ({ root: value.root, repositories: value.repositories, selection: value.selection,
-    files: Object.fromEntries(Object.entries(value.files).map(([name, entry]) => [name, entry.digest])) });
+    files: Object.fromEntries(Object.entries(value.files).map(([name, entry]) => [name, [entry.digest, entry.stamp]])) });
   return stable(view(current)) === stable(view(snapshot));
-}
-async function remove_index_snapshot(snapshot) {
-  if (!snapshot) return;
-  const directory = snapshot.path, deadline = performance.now() + 1500;
-  // The isolated reader may write bounded local logs. Never recursively follow
-  // anything a native process put in its private directory.
-  try {
-    snapshot.ensure();
-    const names = fs.readdirSync(directory);
-    for (const name of names) {
-      if (!/^(?:daemon\.json|daemon\.toml|reader(?:\.exe)?|serve\.log(?:\.[0-9]+)?)$/.test(name)) throw new Error("Unexpected file in private observation directory");
-      while (true) try { snapshot.unlink(name); break; }
-      catch (error) {
-        if (!(["EPERM", "EACCES", "EBUSY"].includes(error.code) && performance.now() < deadline)) throw error;
-        await sleep(50);
-      }
-    }
-    snapshot.remove();
-  } catch (error) { try { snapshot.close(); } catch {} throw error; }
 }
 function reader_file_identity(file) {
   const actual = resolve(file), stat = fs.statSync(actual, { bigint: true });
@@ -1290,45 +1367,6 @@ function reader_file_identity(file) {
   return [actual, ...[stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].map(String)];
 }
 
-async function copy_index_runtime(config, home, source, destination, timeoutMs, diagnostic, readerId, register, destinationIdentity = null) {
-  let child, timer, monitor, expired = false, output = "", oversized = false;
-  try {
-    child = launch(process.execPath, [fileURLToPath(new URL("./index_copy_worker.mjs", import.meta.url))], {
-      cwd: home, env: native_environment(config), readerJob: process.platform === "win32" ? readerId : randomUUID(), stdio: ["pipe", "pipe", "pipe"],
-    });
-    diagnostic.event("reader_copy_started", { reader: readerId, supervisorPid: child.pid });
-    register(() => stop_child(child, 0));
-    child.stdin.on("error", () => {}); child.stderr.on("data", () => {});
-    child.stdout.setEncoding("utf8"); child.stdout.on("data", chunk => {
-      if (oversized) return;
-      if (output.length + chunk.length > 1024) { oversized = true; output = ""; void stop_child(child, 0).catch(() => {}); return; }
-      output += chunk;
-    });
-    const completion = new Promise((resolve, reject) => { child.once("error", reject); child.once("close", code => resolve(code)); });
-    const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
-      expired = true;
-      void stop_child(child, 0).then(() => reject(new ConfigError("Истекло время подготовки проверенной копии индекса.")), reject);
-    }, timeoutMs); });
-    monitor = setInterval(() => {
-      try { fs.lstatSync(path.join(home, "maintenance.json")); void stop_child(child, 0).catch(() => {}); }
-      catch (error) { if (error.code !== "ENOENT") void stop_child(child, 0).catch(() => {}); }
-    }, 200); monitor.unref?.();
-    child.stdin.end(JSON.stringify({ source, destination, ...(destinationIdentity ? { destinationIdentity } : {}) }));
-    const code = await Promise.race([completion, deadline]);
-    await stop_child(child, 0);
-    if (expired) throw new ConfigError("Истекло время подготовки проверенной копии индекса.");
-    let result; try { result = JSON.parse(output); } catch { /* Invalid output is rejected below. */ }
-    if (code !== 0 || oversized || !/^[0-9a-f]{64}$/.test(result?.digest || "")) throw new ConfigError("Не удалось подготовить проверенную копию индекса.");
-    diagnostic.event("reader_copy_stopped", { reader: readerId, supervisorPid: child.pid });
-    return result.digest;
-  } catch (error) {
-    if (child) {
-      try { await stop_child(child, 0); error.copyStopped = true; diagnostic.event("reader_copy_stopped", { reader: readerId, supervisorPid: child.pid, reason: expired ? "timeout" : "error" }); }
-      catch (cleanup) { diagnostic.event("reader_copy_cleanup_failed", { reader: readerId, error: cleanup }, "error"); throw cleanup; }
-    }
-    throw error;
-  } finally { clearTimeout(timer); clearInterval(monitor); register(null); }
-}
 function daemon_process_identity(pid) {
   try {
     if (process.platform === "win32") return windows_process_identity(pid)?.created || null;
@@ -1457,16 +1495,15 @@ function reader_watch(state, root, previous = null) {
     policy: { edt_repository_ids: profile.policy?.edt_repository_ids || [], unbound_edt_repositories: profile.policy?.unbound_edt_repositories || [] } };
   const grant = values[3] ? JSON.parse(values[3].toString("utf8")) : {};
   const granted = grant?.root === resolve(root) && Array.isArray(grant.components) && grant.components.includes("code-index");
-  return { stamps, binding, grantIdentity: observed[3][1], signature: sha256(stable({ binding, grant: granted,
-    runtime: values[4] ? JSON.parse(values[4].toString("utf8"))["code-index"] || null : null,
-    daemon: values.slice(5, 8).map(value => value ? sha256(value) : "missing") })) };
+  const stableInputs = { binding, grant: granted, runtime: values[4] ? JSON.parse(values[4].toString("utf8"))["code-index"] || null : null };
+  return { stamps, binding, grantIdentity: observed[3][1], stableSignature: sha256(stable(stableInputs)),
+    signature: sha256(stable({ ...stableInputs, daemon: values.slice(5, 8).map(value => value ? sha256(value) : "missing") })) };
 }
 
-// A settings session owns at most one strictly read-only client. The lease and
-// immutable inputs outlive individual health calls and are released only after
-// the complete owned process tree has been confirmed stopped.
+// A settings session owns at most one strictly read-only client. Its lease is
+// released only after the complete owned process tree has stopped.
 export class IndexObserver {
-  constructor(state) { this.state = state; this.entry = null; this.pending = Promise.resolve(); this.closing = null; this.closed = false; this.cleanupError = null; this.closePromise = null; this.cancelCopy = null; }
+  constructor(state) { this.state = state; this.entry = null; this.pending = Promise.resolve(); this.closing = null; this.closed = false; this.cleanupError = null; this.closePromise = null; }
   verifyDaemon(owner, daemon, home) {
     if (home) check_index_observation(home);
     if (process.platform === "linux" && (owner.guardId || owner.guards !== undefined)) {
@@ -1479,7 +1516,18 @@ export class IndexObserver {
     const run = this.pending.then(async () => {
       if (cancelled()) throw new ConfigError("Ожидание наблюдения индекса отменено.");
       try { return await this.run(config, root, data, snapshot); }
-      catch (error) { if (!error.keepReader) await this.retire(this.entry, "invalidated"); throw error; }
+      catch (error) {
+        if (!error.keepReader) await this.retire(this.entry, "invalidated");
+        if (!error.inputsChanged || error.grantRevisionChanged || cancelled() || this.closed) throw error;
+        // A simultaneous cold start can publish daemon files while the first
+        // read-only observation is being prepared. Retry once with fresh
+        // inputs; the settings backend still validates the original scope.
+        const fresh = capture_index_snapshot(this.state, root, data);
+        if (stable(fresh.repositories) !== stable(snapshot.repositories) ||
+            stable(fresh.selection.canonicalPaths) !== stable(snapshot.selection.canonicalPaths)) throw error;
+        const result = await this.run(config, root, data, fresh);
+        return result ? { ...result, observationSnapshot: result.observationSnapshot || fresh } : result;
+      }
     });
     this.pending = run.catch(() => {});
     return run;
@@ -1496,9 +1544,8 @@ export class IndexObserver {
         try { await entry.lease.markClosing(); }
         catch (error) { coordinationFailure = error; entry.diagnostic.event("reader_coordination_failed", { projectRoot: entry.root, reader: entry.lease.id, reason, error }, "error"); }
         await entry.client.close({ grace: 0 }); stopped = true;
+        for (const pin of entry.pins.splice(0).reverse()) pin.close();
         entry.diagnostic.event("reader_stopped", { projectRoot: entry.root, reader: entry.lease.id, reason });
-        await remove_index_snapshot(entry.snapshotDirectory);
-        entry.diagnostic.event("reader_files_removed", { projectRoot: entry.root, reader: entry.lease.id, reason });
         if (coordinationFailure) throw coordinationFailure;
         await entry.lease.close(); leaseClosed = true;
       } catch (error) {
@@ -1509,7 +1556,6 @@ export class IndexObserver {
         // Leave the durable marker as a barrier, but do not leave its socket
         // alive and falsely claim that the reader is still owned and usable.
         if (!leaseClosed) try { await entry.lease.abandon(); } catch { /* The original failure is authoritative. */ }
-        try { entry.snapshotDirectory?.close(); } catch { /* The original failure is authoritative. */ }
         entry.diagnostic.event(stopped && leaseClosed ? "reader_files_cleanup_failed" : "reader_cleanup_failed", { projectRoot: entry.root, reader: entry.lease.id, reason, error: failure }, "error");
         throw failure;
       }
@@ -1521,7 +1567,6 @@ export class IndexObserver {
   close() {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
-    if (this.cancelCopy) void this.cancelCopy().catch(() => {});
     return this.closePromise = (async () => {
       let failure;
       try { await this.retire(); } catch (error) { failure = error; }
@@ -1536,7 +1581,7 @@ export class IndexObserver {
     if (this.cleanupError) throw Object.assign(new ConfigError("Завершение предыдущего читателя индекса не подтверждено."), { outcomeUnknown: true });
     const state = this.state, home = path.join(project_home(state, root), "code-index"), diagnostic = create_diagnostic_logger("index-observer", state);
     await wait_index_observation(home);
-    const watch = reader_watch(state, root, this.entry?.watch);
+    let watch = reader_watch(state, root, this.entry?.watch);
     if (this.entry && this.entry.watch.signature !== watch.signature) {
       await this.retire(this.entry, "inputs_changed");
     }
@@ -1555,11 +1600,36 @@ export class IndexObserver {
         throw Object.assign(new ConfigError("Разрешение изменилось во время наблюдения."), { inputsChanged: true, grantRevisionChanged: true });
     };
     require_preparation(state, root, "code-index");
-    if (snapshot.root !== resolve(root) || !index_snapshot_current(state, root, data, snapshot))
-      throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
+    if (snapshot.root !== resolve(root)) throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
+    let adoptedSnapshot = false;
+    if (!index_snapshot_current(state, root, data, snapshot)) {
+      const current = capture_index_snapshot(state, root, data);
+      if (stable(current.repositories) !== stable(snapshot.repositories) ||
+          stable(current.selection.repositories) !== stable(snapshot.selection.repositories) ||
+          stable(current.selection.canonicalPaths) !== stable(snapshot.selection.canonicalPaths))
+        throw Object.assign(new ConfigError("Состав репозиториев изменился во время проверки."), { inputsChanged: true });
+      snapshot = current; adoptedSnapshot = true;
+      const latest = reader_watch(state, root);
+      if (latest.stableSignature !== watch.stableSignature || stable(latest.grantIdentity) !== stable(watch.grantIdentity))
+        throw Object.assign(new ConfigError("Разрешение или настройки индекса изменились."), { inputsChanged: true });
+      watch = latest;
+    }
+    let health = await daemon_health(home, snapshot);
+    if (!health) {
+      await this.retire();
+      const previous = watch;
+      // launch_command uses only an installed artifact here and coordinates
+      // startup with the project writer lock. It refuses an unknown writer.
+      await launch_command(state, config, "code-index", root, data, false, null, false);
+      const current = reader_watch(state, root);
+      if (current.stableSignature !== previous.stableSignature || stable(current.grantIdentity) !== stable(previous.grantIdentity))
+        throw Object.assign(new ConfigError("Разрешение или настройки индекса изменились во время запуска."), { inputsChanged: true });
+      watch = current;
+      snapshot = capture_index_snapshot(state, root, data); adoptedSnapshot = true;
+      health = await daemon_health(home, snapshot);
+      if (!health) throw new ConfigError("Не удалось подтвердить запущенный демон индекса.");
+    }
     const daemonBytes = snapshot_bytes(snapshot, "daemon.json"), ownerBytes = snapshot_bytes(snapshot, "owner.json"), configBytes = snapshot_bytes(snapshot, "daemon.toml");
-    const health = await daemon_health(home, snapshot);
-    if (!health) { await this.retire(); return null; }
     const owner = ownerBytes ? JSON.parse(ownerBytes.toString("utf8")) : {}, daemon = daemonBytes ? JSON.parse(daemonBytes.toString("utf8")) : {};
     if (!owner.project_root || path_key(owner.project_root) !== path_key(root) || owner.pid !== health.pid)
       throw new ConfigError("Владелец демона проекта не совпадает; повторное использование запрещено");
@@ -1576,123 +1646,71 @@ export class IndexObserver {
     }
     if (!entry) {
       require_protected_process_support();
-      const deadline = performance.now() + 10000; let lease;
-      while (true) {
-        lease = await acquire_reader(state, root, { preparing: true, observerBinding: key,
-          observe: cancelled => this.observe(config, root, data, snapshot, { cancelled }) });
-        if (lease.closing) {
-          if (performance.now() >= deadline) throw new ConfigError("Истекло время завершения предыдущего читателя индекса.");
-          await sleep(50);
-          if (this.closed || reader_watch(state, root, watch).signature !== watch.signature) throw Object.assign(new ConfigError("Настройки наблюдения индекса изменились."), { inputsChanged: true });
-          continue;
-        }
-        if (!lease.joined) break;
-        try {
-          checkAuthority();
-          const result = await observe_reader(lease.joined, key), after = await daemon_health(home, snapshot);
-          checkAuthority();
-          if (this.closed || !after || after.pid !== health.pid || after.started_at !== health.started_at ||
-              this.verifyDaemon(owner, daemon, home) !== identity || !index_snapshot_current(state, root, data, snapshot))
-            throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
-          return result;
-        } catch (error) {
-          if (error.ownerResponded && !error.ownerClosing || error.inputsChanged || performance.now() >= deadline) throw error;
-          const previous = (await active_readers(state, root)).find(reader => reader.id === lease.joined);
-          if (previous && previous.phase !== "closing" && !error.ownerClosing) throw error;
-          if (previous) await sleep(50);
-        }
-      }
-      let client, launching = false, snapshotHome, snapshotDirectory;
+      const lease = await acquire_reader(state, root, { preparing: true });
+      let client, launching = false, pins = [];
       try {
         if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
         await lease.assertAvailable();
         checkAuthority();
-        // Record the possible snapshot before creating anything. If this
-        // process dies during creation, neither Job absence nor a preparing
-        // lease proves that the private files were removed.
-        await lease.arm({ snapshotMayExist: true });
-        checkAuthority();
-        if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
-        snapshotDirectory = private_observation_directory(home); snapshotHome = snapshotDirectory.path;
-        snapshotDirectory.ensure();
-        const target = resolve(owner.executable), runtimeRoot = resolve(path.join(state, "runtime", "code-index"));
-        const access = snapshotDirectory.ioPath, expected = path.basename(path.dirname(target)), readerName = process.platform === "win32" ? "reader.exe" : "reader", reader = path.join(access, readerName);
-        if (!target.startsWith(runtimeRoot + path.sep) || !/^[0-9a-f]{64}$/.test(expected))
-          throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
-        checkAuthority();
-        if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
-        const destinationIdentity = process.platform === "win32" ? snapshotDirectory.createFile(readerName) : null;
-        const sourcePin = process.platform === "win32" ? pin_windows_readonly_file(target) : null;
-        let digest;
-        try {
-          launching = true;
-          digest = await copy_index_runtime(config, home, sourcePin?.path || target, reader, Math.min(component_settings(config, "code-index").timeout_seconds || 30, 25) * 1000,
-            diagnostic, lease.id, cancel => { this.cancelCopy = cancel; }, destinationIdentity);
-        } finally { sourcePin?.close(); }
-        launching = false;
-        if (digest !== expected)
-          throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
-        if (!index_snapshot_current(state, root, data, snapshot) || stable(reader_file_identity(owner.executable)) !== stable(executable))
-          throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
-        snapshotDirectory.ensure();
+        await lease.arm();
+        const target = resolve(owner.executable), configuration = path.join(home, "daemon.toml");
+        // Pin the actual launch inputs where the OS supports it. The same
+        // project files are passed to serve; no executable or config copies
+        // and no temporary observation directory are needed.
         if (process.platform === "win32") {
-          snapshotDirectory.writeFile("daemon.json", daemonBytes);
-          snapshotDirectory.writeFile("daemon.toml", configBytes);
-        } else {
-          fs.writeFileSync(path.join(access, "daemon.json"), daemonBytes, { flag: "wx", mode: 0o600 });
-          fs.writeFileSync(path.join(access, "daemon.toml"), configBytes, { flag: "wx", mode: 0o600 });
+          pins.push(pin_windows_readonly_file(target));
+          pins.push(pin_windows_readonly_file(configuration));
         }
-        const options = component_settings(config, "code-index");
+        if (!owned_executable(state, owner)) throw new ConfigError("Не удалось подтвердить исполняемый файл работающего демона индекса.");
+        if (!index_snapshot_current(state, root, data, snapshot) || stable(reader_file_identity(target)) !== stable(executable))
+          throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
         await lease.assertAvailable();
-        if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
         checkAuthority();
-        snapshotDirectory.ensure();
+        if (this.closed) throw new ConfigError("Сеанс наблюдения индекса закрыт.");
+        const options = component_settings(config, "code-index");
         launching = true;
-        client = new McpClient([reader, "serve", "--config", path.join(access, "daemon.toml")], home,
-          { ...native_environment(config), CODE_INDEX_HOME: access }, options.timeout_seconds || 30, { maxBytes: options.max_response_bytes, readerJob: lease.id });
-        entry = { key, root, identity, daemonStartedAt: health.started_at, executable, lease, client, snapshotHome, snapshotDirectory, diagnostic, watch };
+        client = new McpClient([target, "serve", "--config", configuration], home,
+          { ...native_environment(config), CODE_INDEX_HOME: home }, options.timeout_seconds || 30, { maxBytes: options.max_response_bytes, readerJob: lease.id, readerCompletion: lease.completion });
+        entry = { key, root, identity, daemonStartedAt: health.started_at, executable, lease, client, diagnostic, watch, pins };
+        pins = [];
         this.entry = entry;
         diagnostic.event("reader_started", { projectRoot: root, reader: lease.id, supervisorPid: client.process.pid });
         client.process.once("exit", () => { void this.retire(entry, "supervisor_exited").catch(() => {}); });
+        const invalidate = reason => {
+          entry.invalidation = reason;
+          if (!entry.busy) void this.retire(entry, reason).catch(() => {});
+        };
         entry.timer = setInterval(() => {
           try { check_maintenance(home); }
-          catch { void this.retire(entry, "maintenance").catch(() => {}); return; }
-          try {
-            fs.lstatSync(path.join(home, "operation.lock"));
-            entry.lockSince ||= performance.now();
-            if (performance.now() - entry.lockSince >= 1000) { void this.retire(entry, "index_locked").catch(() => {}); return; }
-          } catch (error) {
-            if (error.code !== "ENOENT") { void this.retire(entry, "index_lock_unknown").catch(() => {}); return; }
-            entry.lockSince = 0;
-          }
+          catch { invalidate("maintenance"); return; }
           try {
             const current = reader_watch(state, root, entry.watch);
-            if (current.signature !== entry.watch.signature) void this.retire(entry, "inputs_changed").catch(() => {});
+            if (current.signature !== entry.watch.signature) invalidate("inputs_changed");
             else entry.watch = current;
-          } catch { void this.retire(entry, "inputs_unknown").catch(() => {}); }
-        }, 500);
+          } catch { invalidate("inputs_unknown"); }
+        }, 1000);
         entry.timer.unref?.();
       } catch (error) {
-        let stopped = !launching || error.notSpawned === true || error.copyStopped === true;
+        let stopped = !launching || error.notSpawned === true;
         try {
           let coordinationFailure;
           try { await lease.markClosing(); } catch (failure) { coordinationFailure = failure; }
           if (client) { await client.close({ grace: 0 }); stopped = true; }
+          for (const pin of pins.reverse()) pin.close();
           if (!stopped || error.cleanupUnconfirmed) throw error;
-          await remove_index_snapshot(snapshotDirectory);
           if (coordinationFailure) throw coordinationFailure;
           await lease.close();
         } catch (cleanup) {
           const failure = cleanup instanceof Error ? cleanup : new Error("Index reader cleanup failed");
           failure.outcomeUnknown = true; failure.cleanupUnconfirmed = true; this.cleanupError = failure;
           try { await lease.abandon(); } catch {}
-          try { snapshotDirectory?.close(); } catch {}
           diagnostic.event("reader_cleanup_failed", { projectRoot: root, reader: lease.id, error: failure }, "error");
           throw failure;
         }
         throw error;
       }
     }
+    entry.busy = true;
     try {
       const options = component_settings(config, "code-index");
       const result = await bounded_probe_client(entry.client, "code-index", root, data, Math.min(options.timeout_seconds || 30, 25) * 1000, snapshot.selection, () => {
@@ -1704,12 +1722,14 @@ export class IndexObserver {
       checkAuthority();
       if (this.entry !== entry || !after || after.pid !== health.pid || after.started_at !== health.started_at ||
           this.verifyDaemon(owner, daemon, home) !== identity ||
+          stable(reader_file_identity(owner.executable)) !== stable(executable) ||
           !index_snapshot_current(state, root, data, snapshot))
         throw Object.assign(new ConfigError("Привязка индекса изменилась во время проверки."), { inputsChanged: true });
+      for (const pin of entry.pins.splice(0).reverse()) pin.close();
       // No kernel creation identity (or server start time) means a future PID
       // might be a replacement. The current observation remains one-shot.
       if (!identity || !health.started_at) await this.retire(entry, "identity_unavailable");
-      return result;
+      return adoptedSnapshot ? { ...result, observationSnapshot: snapshot } : result;
     } catch (error) {
       if (error.grantRevisionChanged && !this.closed && this.entry === entry && !entry.client.error) try {
         const current = reader_watch(state, root, entry.watch);
@@ -1719,6 +1739,9 @@ export class IndexObserver {
       } catch { /* An unknown binding must be retired. */ }
       if (!error.keepReader) await this.retire(entry, "probe_failed");
       throw error;
+    } finally {
+      entry.busy = false;
+      if (entry.invalidation && this.entry === entry) await this.retire(entry, entry.invalidation);
     }
   }
 }
@@ -1768,7 +1791,7 @@ export async function smoke(
     launching = Boolean(lease);
     try {
       client = new McpClient(command, cwd, env, options.timeout_seconds || timeout, { maxBytes: options.max_response_bytes,
-        readerJob: lease?.id || randomUUID() });
+        readerJob: lease?.id || randomUUID(), readerCompletion: lease?.completion });
     } catch (error) { if (error.notSpawned) launching = false; throw error; }
   }
   try {
@@ -1985,7 +2008,7 @@ export async function main() {
       if (component_settings(effective, component).mode === "external") throw new ConfigError("Внешние компоненты запускает пользователь; используйте smoke для проверки подключения");
       grant_preparation(state, root, [component]);
       if (component === "bsl-ls")
-        return (await import("./managed_mcp.mjs")).serve(
+        return serve_managed(
           component,
           root,
           state,

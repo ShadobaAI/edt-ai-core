@@ -1,12 +1,14 @@
 // The private IPC channel is the owner's lifeline. Targets never inherit it.
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
+import fs from "node:fs";
 import { own_windows_tree, join_windows_reader_job } from "./windows_process.mjs";
 import { linux_subreaper, linux_signal_children, linux_terminate_children, linux_finish_daemon_lease, linux_retain_daemon_barrier, linux_pidfd_exited, linux_pidfd_signal, linux_close_fd } from "./unix_process.mjs";
 import { create_diagnostic_logger } from "./diagnostics.mjs";
 
 let child, job, stopping = false, exitCode = 0, escalation, strictLinux = false, draining = false, forwarding = false, daemonGuard = false;
 let ownerFd = null, guardFd = null, guardTimer = null, guardMisses = 0, daemonCommitted = false, guardId = null, guardDisconnected = false, guardKillRequested = false;
+let completionPath = null, completionId = null;
 const finish = () => { clearTimeout(escalation); clearInterval(guardTimer); process.exit(exitCode); };
 const signal_group = signal => {
   try { process.kill(-child.pid, signal); return true; }
@@ -63,6 +65,7 @@ async function drainLinux() {
           if (!linux_pidfd_exited(guardFd)) throw new Error("Daemon outer guard termination is not confirmed");
           linux_finish_daemon_lease(process.cwd(), guardId);
         }
+        if (completionPath) fs.writeFileSync(completionPath, JSON.stringify({ id: completionId, completed: true }), { flag: "wx", mode: 0o600 });
         if (process.connected) return process.send({ readerTree: "terminated" }, () => finish());
         return finish();
       }
@@ -79,7 +82,7 @@ async function drainLinux() {
 process.once("disconnect", () => { guardDisconnected = true; stop(); });
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
-process.on("message", ({ command, args, env, readerJob, forwardIpc, relay, daemonGuard: guard, daemonGuardId, guardPrepare, guardCommit, guardPong, stop: requested }) => {
+process.on("message", ({ command, args, env, readerJob, readerCompletion, forwardIpc, relay, daemonGuard: guard, daemonGuardId, guardPrepare, guardCommit, guardPong, stop: requested }) => {
   if (requested) return stop();
   if (guardPong && daemonGuard) { guardMisses = 0; return; }
   if (guardPrepare && daemonGuard && !stopping) { if (process.connected) process.send({ guardPrepared: true }); return; }
@@ -105,6 +108,7 @@ process.on("message", ({ command, args, env, readerJob, forwardIpc, relay, daemo
     // even descendants spawned by the target's very first instruction.
     if (process.platform === "win32") job = readerJob ? join_windows_reader_job(readerJob, process.pid) : own_windows_tree(process.pid);
     if (process.platform === "linux" && readerJob) { linux_subreaper(); strictLinux = true; }
+    if (readerCompletion && strictLinux) { completionPath = readerCompletion; completionId = readerJob; }
     daemonGuard = guard === true && strictLinux;
     if (daemonGuard) {
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(daemonGuardId || "")) throw new Error("Invalid daemon guard identity");

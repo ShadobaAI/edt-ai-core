@@ -29,7 +29,7 @@ import {
   configuration_root,
   ProfileAmbiguous,
 } from "./project_paths.mjs";
-import { effective_policy } from "./action_policy.mjs";
+import { effective_policy } from "./effective_policy.mjs";
 import { core_version, satisfies_core } from "./compatibility.mjs";
 import { load_manifest, load_manifest_catalog } from "./knowledge.mjs";
 import { local_overrides } from "./project_context.mjs";

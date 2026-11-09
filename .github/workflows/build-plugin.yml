@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
-      - name: Install developer dependencies and bundle runtime libraries
+      - name: Install build dependencies and bundle runtime libraries
         run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'install'], {stdio:'inherit'})
       - name: Node regressions
         run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'test'], {stdio:'inherit'})
@@ -70,7 +70,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           package-manager-cache: false
-      - name: Install developer test dependencies
+      - name: Install build dependencies and bundle runtime libraries
         run: require('node:child_process').execFileSync(process.execPath, ['tools/ci.mjs', 'install'], {stdio:'inherit'})
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

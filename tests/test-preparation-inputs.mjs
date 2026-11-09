@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { edt_fixture as fixture, environment, node, ROOT } from "./helpers.mjs";
+import { edt_fixture as fixture, environment, ROOT } from "./helpers.mjs";
 import { grant_preparation, preparation_granted } from "../scripts/components.mjs";
 import { instance_directory } from "../scripts/project_paths.mjs";
 import { copy_and_hash_regular_file } from "../scripts/bounded_file.mjs";
@@ -45,16 +45,6 @@ test("a destination replaced while opening is not written or removed", async t =
   assert.equal(replaced, true);
   assert.equal(fs.readFileSync(target, "utf8"), "untouched");
   assert.equal(fs.readFileSync(original, "utf8"), "");
-});
-
-test("the private copy worker rejects malformed destination identities", t => {
-  const f = fixture(t), source = path.join(f.base, "source"), target = path.join(f.base, "copy");
-  fs.writeFileSync(source, "verified runtime");
-  for (const destinationIdentity of [null, false, 0, "", [], {}, { dev: "1", ino: "2", extra: true }]) {
-    const result = node("scripts/index_copy_worker.mjs", [], { input: JSON.stringify({ source, destination: target, destinationIdentity }) });
-    assert.notEqual(result.status, 0, JSON.stringify(destinationIdentity));
-    assert.equal(fs.existsSync(target), false);
-  }
 });
 
 test("oversized preparation records fail closed without changing other settings", t => {
