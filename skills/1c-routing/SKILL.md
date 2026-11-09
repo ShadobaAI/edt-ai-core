@@ -17,7 +17,8 @@ runtime execution. A check/finding alone does not switch the task to writing,
 and authoring does not authorize launching an infobase. Check readiness only for
 authorities needed by the dependent action: full environment readiness is not a
 condition for every read. Historical diffs need evidence from the same revision;
-live mutation needs a ready model and current guards; neither replaces the other.
+live mutation needs a ready model and the applicable write preconditions described
+by $1c-code-change; neither replaces the other.
 
 Before acting, account for `knowledge` from `settings.inspect` and the profile:
 `required` defines whether knowledge is mandatory; `dependent_actions` lists

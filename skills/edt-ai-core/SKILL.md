@@ -138,8 +138,10 @@ If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
   Settings-form selection does not bind other MCP sessions. Use core_runtime_tools for
   live schemas and core_runtime_call for a bounded sequential calls batch.
   Supply the same chat projectRoot when host roots are empty. Native permissions,
-  source workflow and action policy apply to every call; group BSL registration
-  and file analysis when the host uses separate connections. Do not spawn shell
+  source workflow and action policy apply to every call. Group BSL registration
+  and file analysis only when proceeding without inspecting the previous result is
+  safe under its live contract; otherwise check it before the dependent call in
+  the same bound session. Do not spawn shell
   relays, change global selection or recommend new chats/restarts for empty roots.
 - Preserve native server instructions/capabilities returned by a new binding and
   reuse them. A project still building needs a later readiness check, not a new

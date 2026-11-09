@@ -8,9 +8,10 @@
 2. Select general and YaXUnit requirements under the single normative workflow.
    Check proposal, declarative registration, export/context, fixture ownership,
    deterministic setup, assertion semantics and fluent hierarchy before writing.
-3. Obtain focused EDT baseline and source guard; change only the assigned test
-   extension through EDT under $1c-code-change. Test-only files do not prove L:
-   assess queries, state and production contracts by actual mechanisms.
+3. Obtain a focused EDT baseline and use applicable write preconditions; change
+   only the assigned test extension through EDT under $1c-code-change. Test-only
+   files do not prove L: assess queries, state and production contracts by actual
+   mechanisms.
 4. On the actual result check affected authoring items, completed proposal/result
    compliance and the same EDT diagnostics. New mechanisms require selection
    review. Runtime pass does not replace normative verification.

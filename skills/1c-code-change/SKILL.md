@@ -1,6 +1,6 @@
 ---
 name: 1c-code-change
-description: Implement or review a scoped 1C source or metadata change through the profile-selected EDT, with guarded writes and diagnostics before and after mutation. Not standalone discovery or API lookup.
+description: Implement or review a scoped 1C source or metadata change through the profile-selected EDT, using available write preconditions and diagnostics before and after mutation. Not standalone discovery or API lookup.
 ---
 
 # 1C code change
@@ -20,10 +20,10 @@ read-only analysis only. EDT is the sole writer and primary validation authority
 
 Choose the mode from the assignment. **Review** checks exact source/diff,
 contracts and applicable requirements with `operation: review`, `phase: result`;
-proposal, write guards, pre-mutation diagnostic baseline and test execution are
+proposal, write preconditions, pre-mutation diagnostic baseline and test execution are
 not prerequisites for ordinary review. Use relevant available diagnostics and
 state their limits; the write sections below apply only to implementation.
-Findings do not authorize fixes. **Implementation** follows proposal → guarded
+Findings do not authorize fixes. **Implementation** follows proposal → EDT
 write → result and applicable checks. Do not affect others' changes or another
 component without the corresponding scope.
 
@@ -150,8 +150,9 @@ contract or retain necessary protection; do not remove it to reduce the diff.
    creation use the available owning scope. Failure to obtain or incompleteness of
    the required baseline blocks writing. Existing findings alone do not prohibit
    an authorized fix: assess their impact on the target and required guarantees.
-   If the current API lacks a needed check, state the coverage limit; stop writing
-   when the required guarantee cannot be ensured without it.
+   If the current API lacks a needed diagnostic check, state the coverage limit;
+   stop writing when a required diagnostic guarantee cannot be ensured without it.
+   Availability of a write precondition is handled separately in step 4.
    Metadata-only changes do not require BSL checks but retain applicable EDT
    metadata checks. Assess finding validity under the shared
    [diagnostics contract](../1c-routing/references/diagnostics.md): primary validation
@@ -161,13 +162,24 @@ contract or retain necessary protection; do not remove it to reduce the diff.
    diagnostics before and after the change; report unavailable checks and coverage.
    It does not replace EDT validation or justify starting an unprepared service
    without the applicable authorization.
-4. Retain the hash/version from the EDT read and pass it to the write guard
-   provided by the live contract. A version conflict requires a new read and
-   reconciliation with the current state; do not bypass it by overwriting or
-   disabling checks. Without a guard, rereading does not provide atomic protection
-   against lost updates. Stop high-risk writing if the necessary compare-and-write
-   guarantee is unavailable. HEAD changes, relevant mutations or contradictions
-   invalidate affected source/hash/readiness facts; refresh only those facts.
+4. Use the preconditions supported by the live contract for the actual write,
+   target and mode. When a relevant hash/version is available, pass the current
+   token if the check applies; use other preconditions according to their actual
+   scope. A parameter accepted but ignored for this target is not a protection.
+   If the operation supports no compare-and-write check, or its token is unavailable,
+   proceed without it when the live contract permits, at every risk level. Do not
+   require a different EDT-MCP, invent a token or ask for separate approval solely
+   because that check is unavailable. If the operation itself requires a token and
+   none can be obtained, report the actual tool limitation.
+   Read the relevant current target or owning context for creation, keep the write
+   scoped and verify its result.
+   Without a compare-and-write check, a reread or post-write verification does not
+   prevent concurrent updates from being overwritten; briefly report that limit in
+   the completion report without treating the absent check as a write error. A
+   reported conflict requires a new read and reconciliation;
+   do not bypass a failed precondition by overwriting or disabling checks. HEAD
+   changes, relevant mutations or contradictions invalidate affected source,
+   precondition and readiness facts; refresh only those facts.
 
 ## Writing and unknown outcomes
 
@@ -185,7 +197,7 @@ Establish the target and existing job state through EDT. If the effect exists,
 verify it; if the outcome remains unknown, stop dependent writes and report the
 uncertainty. Confirmed absence of an effect does not allow retry while the old job
 may still run. A new call is allowed only after resolving the outcome, checking
-the target and refreshing guards.
+the target and refreshing any applicable preconditions.
 
 For a proven pre-write refusal, allow one correction based on the live schema/guide
 or explicit diagnostics, rechecking prerequisites without expanding scope.

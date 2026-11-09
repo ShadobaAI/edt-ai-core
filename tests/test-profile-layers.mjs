@@ -9,6 +9,7 @@ import { project_profile, profile_state } from "../scripts/profile.mjs";
 import { resolved_settings } from "../scripts/project_context.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
+import { McpClient } from "../scripts/mcp_client.mjs";
 
 test("configuration presentation reuses resolved values and reports each saved source without writing", async t => {
   const f=fixture(t);environment(t,f.env);
@@ -33,6 +34,33 @@ test("configuration presentation reuses resolved values and reports each saved s
   assert.equal(source(["components","code-index","version"]),"settings");
   assert.ok(!JSON.stringify(snapshot).includes("not-a-display-value"));
   assert.deepEqual([shared,local,external].map(file=>fs.readFileSync(file,"utf8")),before);
+});
+
+test("settings.read exposes the resolved BSL configuration and its source through MCP", async t => {
+  const f = fixture(t); environment(t, f.env);
+  f.profile.components = { "bsl-ls": { configuration: "shared.json" } }; f.save();
+  const local = path.join(f.root, ".ai/project.local.yaml");
+  dump({ components: { "bsl-ls": { configuration: "local.json" } } }, local);
+  const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], f.root,
+    { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
+  f.clients.push(client); client.roots = []; await client.initialize();
+  const inspection = (await client.call("settings.inspect", { projectRoot: f.root })).structuredContent;
+  assert.equal(inspection.projectSelection.status, "selected");
+  const key = JSON.stringify(["components", "bsl-ls", "configuration"]);
+  const read = async () => (await client.call("settings.read", {})).structuredContent;
+  let result = await read();
+  assert.equal(result.configurationValues.components["bsl-ls"].configuration, "local.json");
+  assert.equal(result.configurationSources[key], "project_local");
+
+  dump({ project: { purpose: "local purpose" } }, local);
+  result = await read();
+  assert.equal(result.configurationValues.components["bsl-ls"].configuration, "shared.json");
+  assert.equal(result.configurationSources[key], "profile");
+
+  dump({ components: { "bsl-ls": { configuration: null } } }, local);
+  result = await read();
+  assert.equal(result.configurationValues.components["bsl-ls"].configuration, null);
+  assert.equal(result.configurationSources[key], "project_local");
 });
 
 test("EDT required flags survive scoped updates, rename, YAML save and import/export of both profile layers", async t => {

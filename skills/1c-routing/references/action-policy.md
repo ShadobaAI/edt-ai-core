@@ -51,7 +51,7 @@ obfuscated shell code.
 
 Ordinary scoped EDT writes, reads, local Git and breakpoint configuration within
 an already authorized scope do not receive an extra gate merely because of a
-mutation flag. Persistent 1C mutation still requires the guarded code-change
+mutation flag. Persistent 1C mutation still follows the code-change
 workflow. Do not read or modify protected source through shell/filesystem.
 To expose a needed group, use supported session toolset enable under
 [toolsets](toolsets.md); do not change user visibility/security settings or

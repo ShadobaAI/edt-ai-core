@@ -41,7 +41,7 @@ implicitly authorize source fixes.
 The [action policy](1c-routing/references/action-policy.md) defines scope and
 agreement for effects. Its evidence is not user authentication or a replacement
 for host approvals. The [EDT editing contract](1c-code-change/references/edt-editing.md)
-defines guarded writes; [recovery](1c-code-change/references/edt-recovery.md)
+defines available write preconditions; [recovery](1c-code-change/references/edt-recovery.md)
 requires the exact pre-write refusal and applicable authorization. Confirm recovery
 against the installed server contract; a timeout does not authorize a retry.
 Project instructions define supplier ownership, prefixes and maintenance rules.

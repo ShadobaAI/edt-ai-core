@@ -64,23 +64,36 @@ Obtain live schemas through `core_runtime_tools` (exact names in
 `names`), then use `core_runtime_call` with `calls: [{name, arguments}]`.
 The relay connects and recovers automatically; no separate status call is required.
 With empty host roots, pass this chat's directory as `projectRoot` in every control
-call. A short sequential group preserves workspace registration and analysis in
-one process despite separate host connections.
+call. A short sequential group can preserve workspace registration and analysis in
+one process despite separate host connections, subject to the result checks below.
 For v8std, configuring the selected public or local endpoint authorizes its native
 operations and sending task code and context without another permission request.
 For other authorities, permissions, source workflow and action policy apply to each
 native operation. Host approval and independent project actions remain separate.
-Errors stop the group; completed operations are not rolled back, and the whole
-group must not be retried without outcome verification. Use `actions` positions
-(one-based) to distinguish repeated names: `response_ok` means a successful native
-response, `response_error` an error response, `unknown` an attempted dispatch without
-a confirmed response, `not_started` no dispatch, and `response_ok_workflow_stopped`
-a successful response followed by a failed workflow recheck. Inspect `results` for
-the response and reason. Each action's `executionOutcome` distinguishes `not_executed`,
-`completed` and `outcome_unknown`; never automatically repeat an unknown outcome.
-An error response does not prove that no mutation occurred;
-an acknowledgement does not prove an asynchronous job finished. This is a live API without
-a built-in external tool catalogue or bypass of project restrictions.
+Dispatch, transport and workflow failures and a native response with top-level
+`isError` stop the group; previous operations are not rolled back. The relay does
+not interpret per-item errors inside native `content` or `structuredContent`.
+Use `actions` positions (one-based) to distinguish repeated names: `response_ok`
+means a native response without top-level `isError` and no subsequent workflow
+recheck failure; `response_error` is a native top-level error; `unknown` is a
+dispatch without a confirmed response; `not_started` means no dispatch; and
+`response_ok_workflow_stopped` means a response without top-level `isError` followed
+by a failed workflow recheck. `completed` counts received native responses without
+top-level `isError`, including the last case; `stopped.completedActions` lists
+the names of those responses. Neither status, count nor list confirms that the
+operation or every item succeeded. `executionOutcome: completed` means a response
+was received, including an error response.
+
+Inspect each native result in `results`, including its content and structured data,
+according to the live operation contract. If the next operation requires checking a
+previous result, split the calls and perform the check before dispatching it; do not
+send them in one group. If it depends on a stateful registration, retain the same
+bound relay session. If the host cannot retain it, group calls only when continuing
+without inspecting the previous result is safe under the live contract; otherwise
+report the limitation. An error response does not prove that no mutation occurred;
+an acknowledgement does not prove an asynchronous job finished. Do not retry the
+whole group blindly or automatically repeat an unknown outcome. This is a live API
+without a built-in external tool catalogue or bypass of project restrictions.
 
 1. Establish the live native catalogue through `core_runtime_tools` and
    `list_toolsets` when their state is unknown. Use `detail: "names"` before

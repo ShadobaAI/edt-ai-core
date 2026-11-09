@@ -15,7 +15,8 @@ Persistent source/metadata changes follow $1c-code-change.
 Establish the actual external-object project, qualified target, linked base
 configuration and application. The linked base does not own the external object;
 a ready file outside an EDT project is a different workflow. Change metadata,
-BSL and forms under shared editing contracts with guards and focused checks.
+BSL and forms under shared editing contracts with applicable preconditions and
+focused checks.
 
 For builds, establish actual effects from the current contract: the dumper may
 prepare or update a build infobase; source permission does not cover this.
@@ -60,8 +61,9 @@ object/image.
 
 Choose revalidation, quick fixes, disk synchronization, project/infobase lifecycle
 and import/export by actual effects. Preview/diagnostics do not authorize applying
-fixes or synchronizing the model to disk. For changes retain targets, guards and
-final verification; do not perform project-wide cleanup for a local error.
+fixes or synchronizing the model to disk. For changes retain targets, applicable
+preconditions and final verification; do not perform project-wide cleanup for a
+local error.
 Configuration comparison follows [comparison](comparison.md).
 
 Use an external AI assistant only on explicit assignment: it consumes additional

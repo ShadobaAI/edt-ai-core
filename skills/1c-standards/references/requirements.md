@@ -18,7 +18,7 @@ unchanged normative text does not need retrieval after a local edit, and changed
 platform context does not invalidate unrelated facts of another artifact.
 Renew expired session refs in the current session; do not repeat the whole
 investigation for that reason. Do not retain stale target verification as
-economy; mandatory readiness, guards and post-validation remain.
+economy; mandatory readiness, applicable write preconditions and post-validation remain.
 Keep bounded evidence in task context and native session refs, without a separate
 persistent reasoning database, transcript or normative-corpus copy. Accepted
 decisions may be recorded in existing owning SDD/ADR under project rules;
@@ -89,7 +89,7 @@ and obtain only new/invalidated text with a reason. References work only in thei
 creating session and may expire; they are not proof tokens.
 
 Proposal does not replace result. If a new mandatory condition appears after
-writing, verify it and, if needed, perform a new guarded correction.
+writing, verify it and, if needed, perform a correction under the code-change workflow.
 EDT diagnostics, query validation and behavioral tests remain independent gates;
 L/M/H does not reduce normative strength. Do not repeat equivalent successful
 calls within a phase unless facts are invalidated.

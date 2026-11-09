@@ -223,7 +223,7 @@ const tools = [
     name, title, description, inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1, description: "Only for an unbound settings screen. A chat's selected root cannot be changed." } }, additionalProperties: false },
     annotations: annotations(false), _meta: shared,
   })),
-  { name: "settings.read", title: "Настройки 1C AI Core", description: "Read plugin settings.",
+  { name: "settings.read", title: "Настройки 1C AI Core", description: "Read settings for the selected project and instance. configurationValues and configurationSources show resolved values and their sources, not proof of application by a running service. Bind this session with settings.inspect first when host roots are empty.",
     inputSchema: empty, outputSchema: { type: "object", required: ["schema", "values"],
       properties: { schema: { type: "object" }, values: { type: "object" } } },
     annotations: annotations(), _meta: shared },

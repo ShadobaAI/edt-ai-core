@@ -27,7 +27,7 @@ for writing. Read-only review does not authorize recovery that retries a writer.
 
 ## Targeted recovery
 
-1. Retain the failed tool, complete original arguments, guards and attempt count
+1. Retain the failed tool, complete original arguments and attempt count
    for the specific intended operation. Confirm the same project's exact
    name/path/open/EDT nature and unchanged binding. A changed binding or lost
    readiness stops dependent actions until mandatory prerequisites are restored.
@@ -46,14 +46,14 @@ for writing. Read-only review does not authorize recovery that retries a writer.
    On timeout, do not start a new revalidation or writer while the prior outcome
    remains unknown.
 4. Through the same EDT, check the exact target: absence for create, current values
-   for modify and applicability of all retained guards. Refresh the required
+   for modify and applicability of any supplied preconditions. Refresh the required
    focused diagnostic baseline. If the effect already exists, verify the result
-   without writing again. Changed state/guards terminate this recovery and require
-   reconciliation under the main workflow; do not change failed arguments within
-   recovery. Counter rules for this transition are defined below.
-5. Retry the unchanged write once, retaining all guards. Confirmed saving and
-   ordinary post-diagnostics/result compliance complete this operation's recovery
-   and allow the task to continue. If the same proven pre-write refusal recurs,
+   without writing again. Changed state/preconditions terminate this recovery and
+   require reconciliation under the main workflow; do not change failed arguments
+   within recovery. Counter rules for this transition are defined below.
+5. Retry the unchanged write once, retaining any supplied preconditions. Confirmed
+   saving and ordinary post-diagnostics/result compliance complete this operation's
+   recovery and allow the task to continue. If the same proven pre-write refusal recurs,
    repeat steps 1–5 within **three recovery attempts total**: at most three writer
    retries after the original refusal. Preserve the counter across turns;
    renaming or restating the same operation does not reset it.
@@ -78,9 +78,9 @@ Do not revalidate preventively after every successful write.
    live schema/guide. Confirm the final rebuild/job outcome and readiness of the
    same project. A clean/rebuild timeout requires checking the existing operation;
    another clean is forbidden. Invalidate affected facts and recheck target,
-   guards and focused baseline. If the effect is absent and original
-   arguments/guards still apply, allow **one final writer retry**. Changed guards
-   require reconciliation rather than automatic payload replacement.
+   supplied preconditions and focused baseline. If the effect is absent and original
+   arguments/preconditions still apply, allow **one final writer retry**. Changed
+   preconditions require reconciliation rather than automatic payload replacement.
    Further refusal or uncertainty stops recovery; neither clean nor the budget
    repeats. If the effect already exists, verify it without another writer.
 
@@ -90,7 +90,7 @@ The maximum writer calls are the original, three retries before clean and one
 after authorized clean. Cascading rename/delete, database/launch and other effects
 retain their own readiness and scope requirements.
 
-Reconciliation follows the main workflow with current source/guards, requirement
+Reconciliation follows the main workflow with current source/preconditions, requirement
 applicability and proposal. Writing a changed payload is not an authorized retry
 under this exception. If reconciliation continues the same intended operation,
 retain its writer count and clean history: a changed hash, new proposal or
