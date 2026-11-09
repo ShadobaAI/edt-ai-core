@@ -94,6 +94,13 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
         fs.readFileSync(path.join(ROOT, file)), `Extracted source differs: ${file}`);
     }
   }
+  f.profile.policy.edt_repository_ids = ["product"];
+  f.save();
+  const policy = spawnSync(process.execPath, [path.join(installed, "scripts/action_policy.mjs"), f.root], {
+    cwd: f.root, env: f.env, encoding: "utf8", windowsHide: true, timeout: 20000,
+  });
+  assert.equal(policy.status, 0, policy.stdout + policy.stderr);
+  assert.deepEqual(JSON.parse(policy.stdout).edt_repository_ids, ["product"]);
   const ambient = path.join(f.base, "unrelated-settings.json");
   fs.writeFileSync(ambient, JSON.stringify({ version: "99.0" }));
   environment(t, { ...f.env, EDT_AI_SETTINGS: ambient });

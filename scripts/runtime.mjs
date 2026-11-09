@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import {
   ROOT,
   ConfigError,
@@ -38,7 +39,7 @@ import {
 } from "./project_paths.mjs";
 import { project_profile, merged_profile } from "./profile.mjs";
 import { effective_settings, external_override_files } from "./project_context.mjs";
-import { safe_error_message, create_diagnostic_logger } from "./diagnostics.mjs";
+import { safe_error_message, create_diagnostic_logger, register_diagnostic_secrets } from "./diagnostics.mjs";
 import { launch, stop_child, alive, which, require_protected_process_support, spawn_guarded_linux } from "./processes.mjs";
 import { extract_binary, zip_entries } from "./archives.mjs";
 import { McpClient } from "./mcp_client.mjs";
@@ -1059,6 +1060,65 @@ export async function launch_command(
     native_environment(config),
   ];
 }
+export async function serve_managed(component, selected, state, config) {
+  const [root, data] = project(selected, config, component === "code-index");
+  config = effective_settings(config, root, data, null, state);
+  register_diagnostic_secrets(config);
+  const diagnostic = create_diagnostic_logger("managed-" + component, state);
+  require_preparation(state, root, component);
+  require_protected_process_support();
+  const lease = component === "code-index" ? await acquire_reader(state, root, { preparing: true }) : null;
+  let launching = false, stopped = false;
+  try {
+    await lease?.assertAvailable();
+    const [command, cwd, env] = await launch_command(state, config, component, root, data, false, null, true, lease?.id);
+    await lease?.assertAvailable();
+    await lease?.arm();
+    launching = Boolean(lease);
+    let child;
+    try { child = launch(command[0], command.slice(1), {
+      cwd,
+      env: env || process.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      readerJob: lease?.id || randomUUID(),
+      ...(lease?.completion ? { readerCompletion: lease.completion } : {}),
+    }); } catch (error) { if (error.notSpawned) launching = false; throw error; }
+    diagnostic.event("process_started", { projectRoot: root, supervisorPid: child.pid, executable: command[0] });
+    let stderrBytes = 0, stderrChunks = 0;
+    child.stderr.on("data", chunk => { stderrBytes += chunk.length; stderrChunks++; });
+    let stopping;
+    const reportShutdown = error => diagnostic.event("process_shutdown_failed", { projectRoot: root, error }, "error");
+    const inputEnded = () => {
+      if (!stopping) { stopping = stop_child(child); void stopping.catch(reportShutdown); }
+    };
+    const terminate = () => { void stop_child(child, 0).catch(reportShutdown); };
+    process.once("SIGTERM", terminate);
+    process.once("SIGINT", terminate);
+    child.stdin.on("error", () => {});
+    process.stdin.pipe(child.stdin);
+    process.stdin.once("end", inputEnded);
+    process.stdin.once("close", inputEnded);
+    process.stdin.once("error", inputEnded);
+    child.stdout.pipe(process.stdout, { end: false });
+    try {
+      const [code] = await once(child, "close");
+      if (stderrChunks) diagnostic.event("runtime_stderr", { projectRoot: root, bytes: stderrBytes, count: stderrChunks });
+      diagnostic.event("process_exited", { projectRoot: root, exitCode: code }, code === 0 ? "info" : "error");
+      return code ?? 1;
+    } finally {
+      process.stdin.unpipe(child.stdin);
+      process.stdin.pause();
+      process.stdin.removeListener("end", inputEnded);
+      process.stdin.removeListener("close", inputEnded);
+      process.stdin.removeListener("error", inputEnded);
+      try { await (stopping || stop_child(child)); stopped = true; }
+      finally { process.removeListener("SIGTERM", terminate); process.removeListener("SIGINT", terminate); }
+    }
+  } finally {
+    if (lease && (!launching || stopped)) await lease.close();
+    else if (lease) await lease.abandon();
+  }
+}
 export function validate_bsl_tools(tools) {
   const required = [
       "register_workspace_folder",
@@ -1937,7 +1997,7 @@ export async function main() {
       if (component_settings(effective, component).mode === "external") throw new ConfigError("Внешние компоненты запускает пользователь; используйте smoke для проверки подключения");
       grant_preparation(state, root, [component]);
       if (component === "bsl-ls")
-        return (await import("./managed_mcp.mjs")).serve(
+        return serve_managed(
           component,
           root,
           state,

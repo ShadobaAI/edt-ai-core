@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { fixture, environment, session, ROOT, protected_process_skip } from "./helpers.mjs";
+import { fixture, environment, session, node, ROOT, protected_process_skip } from "./helpers.mjs";
 import { settings, dump, sleep } from "../scripts/common.mjs";
-import { grant_preparation } from "../scripts/components.mjs";
+import { grant_preparation, preparation_granted } from "../scripts/components.mjs";
 import { instance_directory, sha256 } from "../scripts/project_paths.mjs";
 import { launch_selection, roots_selection } from "../scripts/selection.mjs";
 import { project_home, ensure_installed, artifact, update_component, read_json } from "../scripts/runtime.mjs";
@@ -162,6 +162,68 @@ test("managed relay bounds shutdown of a child that ignores host EOF", { skip: p
   for (let i = 0; i < 100 && alive(ownedPid); i++) await sleep(10);
   assert.equal(alive(ownedPid), false);
 });
+
+test("runtime start CLI serves BSL over stdio with scoped preparation and cleanup", { skip: protected_process_skip }, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  dump({ mcp: { managed: { "bsl-ls": { enabled: true, java: process.execPath, node: process.execPath } } } }, f.env.EDT_AI_SETTINGS);
+  const bytes = Buffer.from("fixture jar"), digest = sha256(bytes), jar = path.join(f.state, "runtime", "bsl-ls", "v1.2.3", digest, "bsl-language-server-exec.jar");
+  fs.mkdirSync(path.dirname(jar), { recursive: true }); fs.writeFileSync(jar, bytes);
+  save_json(path.join(f.state, "runtime-lock.json"), { "bsl-ls": { release: "v1.2.3", sha256: digest, path: path.relative(f.state, jar) } });
+
+  // Keep the real supervisor and BSL proxy; replace only the external JVM.
+  const preload = path.join(f.base, "runtime-start-preload.mjs");
+  const bslPreload = new URL("./fixtures/bsl-spawn.mjs", import.meta.url).href;
+  fs.writeFileSync(preload, `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
+    const spawn=cp.spawn;
+    cp.spawn=(command,args,options)=>path.basename(args?.[0]||'')==='process_supervisor.mjs' ? spawn(command,['--import',import.meta.url,...args],options) : path.basename(args?.[0]||'')==='bsl-ls-proxy.mjs' ? spawn(command,['--import',${JSON.stringify(bslPreload)},...args],options) : spawn(command,args,options);
+    syncBuiltinESMExports();`);
+  assert.equal(preparation_granted(f.state, f.root, "bsl-ls"), false);
+  const c = new McpClient([process.execPath, path.join(ROOT, "scripts/runtime.mjs"), "start", "bsl-ls"], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + pathToFileURL(preload).href }, 10);
+  f.clients.push(c);
+  const initialized = await c.initialize();
+  assert.equal(initialized.serverInfo.name, "bsl-fixture");
+  assert.equal(initialized.cwd, f.root);
+  assert.ok(initialized.launch.includes(jar));
+  assert.equal(preparation_granted(f.state, f.root, "bsl-ls"), true);
+  assert.equal(preparation_granted(f.state, f.base, "bsl-ls"), false);
+  process.env.EDT_AI_INSTANCE = "second";
+  assert.equal(preparation_granted(f.state, f.root, "bsl-ls"), false);
+  process.env.EDT_AI_INSTANCE = f.env.EDT_AI_INSTANCE;
+  assert.ok((await c.request("tools/list")).tools.some(tool => tool.name === "register_workspace_folder"));
+  assert.equal((await c.call("register_workspace_folder", { path: f.root })).path, f.root);
+  await assert.rejects(c.call("register_workspace_folder", { path: f.base }), /path must stay inside/);
+
+  const exited = once(c.process, "close");
+  c.process.stdin.end();
+  let timer;
+  try {
+    const [code] = await Promise.race([exited, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("runtime CLI did not stop after EOF")), 7000); })]);
+    assert.equal(code, 0);
+  } finally { clearTimeout(timer); }
+  for (let i = 0; i < 100 && alive(initialized.pid); i++) await sleep(10);
+  assert.equal(alive(initialized.pid), false);
+});
+
+for (const [label, component] of [["disabled", { enabled: false }], ["external", { mode: "external" }]])
+  test(`runtime start CLI refuses ${label} BSL before granting preparation`, t => {
+    const f = fixture(t); environment(t, f.env); f.save();
+    dump({ mcp: { managed: { "bsl-ls": component } } }, f.env.EDT_AI_SETTINGS);
+    const result = node("scripts/runtime.mjs", ["start", "bsl-ls"], { env: f.env });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.equal(JSON.parse(result.stdout).status, "error");
+    assert.equal(preparation_granted(f.state, f.root, "bsl-ls"), false);
+  });
+
+test("direct managed BSL CLI still requires preparation", t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const result = node("scripts/managed_mcp.mjs", ["--component", "bsl-ls"], { env: f.env });
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.stderr, /Компонент не подготовлен/);
+  assert.equal(preparation_granted(f.state, f.root, "bsl-ls"), false);
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
+});
+
 test("direct managed BSL launch excludes credentials from the native child", { skip: protected_process_skip }, async t => {
   const f = fixture(t); environment(t, f.env);
   f.profile.connections = { openviking: { connection_id: "team" } };

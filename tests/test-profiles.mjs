@@ -28,6 +28,33 @@ import {
 import { reason } from "../scripts/guard.mjs";
 import { casefold } from "../scripts/casefold.mjs";
 
+test("action policy CLI loads the selected project and rejects invalid profiles", t => {
+  const f = fixture(t);
+  f.save();
+  dump({ policy: { edt_repository_ids: ["product"] } }, path.join(f.root, ".ai/project.local.yaml"));
+  const defaults = load(path.join(ROOT, "policy/default.json"));
+  const workflow = "skills/1c-routing/references/action-policy.md";
+  assert.deepEqual(success(node("scripts/action_policy.mjs", [], { env: f.env })), { ...defaults, workflow });
+  const result = node("scripts/action_policy.mjs", [f.root], {
+    env: { ...f.env, EDT_AI_PROJECT_ROOT: f.state },
+  });
+  assert.deepEqual(success(result), { ...defaults, ...f.profile.policy, edt_repository_ids: ["product"], workflow });
+
+  for (const [field, value] of [["allow_shell_source_read", true], ["require_explicit_confirmation", []]]) {
+    f.profile.policy[field] = value;
+    f.save();
+    const rejected = node("scripts/action_policy.mjs", [f.root], { env: f.env });
+    assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+    assert.equal(JSON.parse(rejected.stdout).status, "error");
+    delete f.profile.policy[field];
+  }
+  f.profile.roots.source = ["../outside"];
+  f.save();
+  const escaped = node("scripts/action_policy.mjs", [f.root], { env: f.env });
+  assert.equal(escaped.status, 1, escaped.stdout + escaped.stderr);
+  assert.equal(JSON.parse(escaped.stdout).status, "error");
+});
+
 test("Unicode state-key case folding preserves the former Python contract", () => {
   assert.equal(casefold("Straße ẞ Σς ﬃ İ"), "strasse ss σσ ffi i\u0307");
 });
@@ -544,7 +571,7 @@ test("prepared hooks share their local settings and state while preserving expli
   const plugin = path.join(f.base, "hook-copy");
   const files = ["plugin.json", "vendor/deps.mjs", "settings/defaults.json", "policy/default.json",
     ...["project-profile", "plugin-settings", "project-local"].map(name => `schemas/${name}.schema.json`),
-    ...["project_paths", "casefold", "common", "guard", "profile", "action_policy", "compatibility", "knowledge",
+    ...["project_paths", "casefold", "common", "guard", "profile", "action_policy", "effective_policy", "compatibility", "knowledge",
       "project_context", "directory_context", "diagnostics", "selection"].map(name => `scripts/${name}.mjs`),
     "hooks/guard.mjs", "hooks/session-start.mjs"];
   for (const name of files) {
