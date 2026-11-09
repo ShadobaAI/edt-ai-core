@@ -155,6 +155,16 @@ test("cached host catalogue can discover and call native BSL tools, with validat
   const valid = await batch([{ name: "inspect", arguments: { change: true } }, { name: "later", arguments: {} }]);
   assert.equal(valid.structuredContent.completed, 2);
   assert.equal(valid.structuredContent.results[0].result.structuredContent.pid, valid.structuredContent.results[1].result.structuredContent.pid);
+  // An operation-specific per-item error inside a successful MCP response is
+  // preserved as native data. The generic relay cannot infer its meaning.
+  const partial = await batch([{ name: "partial_failure", arguments: {} }, { name: "inspect", arguments: {} }]);
+  assert.equal(partial.isError, undefined);
+  assert.equal(partial.structuredContent.completed, 2);
+  assert.deepEqual(partial.structuredContent.actions.map(action => action.status), ["response_ok", "response_ok"]);
+  assert.deepEqual(partial.structuredContent.results[0].result.structuredContent.items,
+    [{ name: "first", status: "ok" }, { name: "second", status: "error" }]);
+  assert.equal(partial.structuredContent.results[0].result.content[0].text, "one item failed");
+  assert.ok(partial.structuredContent.results[1].result.structuredContent.pid);
   for (const calls of [
     [{ name: "analyze_workspace", arguments: {} }, { name: "inspect", arguments: {} }],
     [{ name: "inspect", arguments: { change: "wrong type" } }],
@@ -171,6 +181,8 @@ test("cached host catalogue can discover and call native BSL tools, with validat
   assert.equal(failed.structuredContent.completed, 1);
   assert.equal(failed.structuredContent.results.length, 2);
   assert.equal(failed.structuredContent.results[1].result.structuredContent.nativeError, true);
+  assert.deepEqual(failed.structuredContent.actions.map(action => action.status), ["response_ok", "response_error", "not_started"]);
+  assert.equal(failed.structuredContent.actions[1].executionOutcome, "completed");
   const rpc = await batch([{ name: "inspect", arguments: {} }, { name: "rpc_fail", arguments: {} }, { name: "inspect", arguments: {} }]);
   assert.equal(rpc.isError, true);
   assert.equal(rpc.structuredContent.completed, 1);

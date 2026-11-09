@@ -120,7 +120,7 @@ migration_decisions:
     consequences:
       - "Recovery from the exact pre-write EDT model-gate refusal is a shared plugin capability for any project, not a CRM-specific migration exclusion."
       - "Verify create_metadata/modify_metadata refusal against the installed contract; server version is not a recovery entry condition."
-      - "Retain targeted revalidation of only the established owner, target/guard/diagnostic checks and at most three recovery attempts per intended operation."
+      - "Retain targeted revalidation of only the established owner, target, supplied precondition and diagnostic checks, and at most three recovery attempts per intended operation."
       - "After three identical qualifying refusals, allow one clean of the exact project with real user agreement for the same scope and one final retry after confirmed rebuild/readiness."
       - "Timeout, pending write jobs, mutation markers, different refusals or unknown outcomes do not authorize writer retries under this workflow."
     review_contract:

@@ -3,16 +3,18 @@
 Read only the section for the current artifact. Verify parameters and capabilities
 against the assigned EDT's live schemas and `get_tool_guide`. The examples below
 do not establish support for a particular mode in every version. The parent skill
-defines baseline, guards, job handling and result checks.
+defines baseline, applicable preconditions, job handling and result checks.
 
 ## BSL
 
-- Prefer `read_method_source` for a method. Its `contentHash` may cover the entire
-  module: pass the unchanged token as the contract's `expectedHash`; do not
-  calculate it from method text. Do not reuse the old token after a change.
+- Prefer `read_method_source` for a method. If the read provides `contentHash`
+  and the write accepts `expectedHash`, pass the unchanged token. It may cover
+  the entire module, so do not calculate it from method text. Do not reuse the
+  old token after a change. A new module has no existing-content token.
 - When method modes are supported, choose `replaceMethod` for one method,
   `insertBefore`/`insertAfter` beside an established `methodName`, and
-  `searchReplace` for a unique fragment. Retain mandatory anchor and hash guards.
+  `searchReplace` for a unique fragment. Use the anchors and preconditions
+  required or supported by the live operation.
   For method replacement, account for documentation and annotations within the
   replaced span; preserve the name, procedure/function kind and required directives.
   Insertion must not split the adjacent method's annotations/documentation block.
@@ -33,19 +35,20 @@ defines baseline, guards, job handling and result checks.
   for the exact root, then read only needed returned nodes/pointers. A root summary
   is not the full query or all settings. Resolve unknown writable vocabulary
   through supported `options`/guide.
-- Retain the returned `hash` and pass `expectedHash` under the contract;
-  `replace`, `remove` and index-addressed changes require a hash guard.
-  Copy real pointers rather than guessing indices; refresh addresses and guards
-  after writing.
+- When the live contract provides a `hash` and accepts `expectedHash`, retain
+  and pass it. Follow the live operation's requirements for `replace`, `remove`
+  and index-addressed changes. Copy real pointers rather than guessing indices;
+  refresh addresses and applicable preconditions after writing.
 - Prefer `update` for existing nodes and `upsert` for intentional creation.
   `replace` may reset omitted values and collections: the entire replacement
   must be in scope. `remove` requires deletion scope.
 - Establish typed chart and other construct support from the current guide;
   do not turn older-version limits into universal bans. An unavailable mode
   does not authorize generic metadata or file writes in place of DCS.
-- For authorized whole-schema XML transfer, read every `nextOffset` page with an
-  unchanged hash and pass one complete document with the destination hash as
-  specified by the guide. Do not send a single page or mix XML and structured members.
+- For authorized whole-schema XML transfer, read every `nextOffset` page and pass
+  one complete document. When page hashes are provided, do not mix pages with
+  different hashes; pass an available destination precondition as specified by the
+  guide. Do not send a single page or mix XML and structured members.
 - Check affected nodes, preserved settings and the final query when changed.
   This supplements mandatory focused EDT post-validation.
 
@@ -59,12 +62,13 @@ the operation through cascading changes without the corresponding scope.
 Check the live operation's support for the exact nested object and rename mode;
 changing a `name` property is not necessarily a supported rename. If unavailable,
 report the specific limitation and affected operation rather than inventing a
-file-write or delete/recreate workaround. Verify the actual compare-and-write
-guard for metadata properties; a reread cannot make an unguarded write atomic.
-When an authorized write can proceed without a guard, explicitly report the
-affected operation and residual risk of overwriting concurrent changes; include
-that limitation in the completion report. High-risk writes still require the
-compare-and-write guarantee specified by the parent skill.
+file-write or delete/recreate workaround. Use the write's available preconditions
+as specified by the parent skill. A creation precondition asserting that the new
+node does not exist does not check the parent's version or protect later changes
+to the object or its rights. If no compare-and-write check is available for a
+permitted operation, continue without it; a reread cannot make the write atomic.
+Verify the changed properties, membership or rights and any relevant preserved
+state under the live result contract.
 
 For command interfaces, establish the exact address first; after changing, check
 saved visibility, role overrides and order. Do not edit serialized files.

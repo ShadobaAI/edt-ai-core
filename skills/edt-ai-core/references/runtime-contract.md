@@ -74,8 +74,10 @@ prefixes, aliases, ports or a running EDT.
   Relay controls connect prepared managed services automatically; a host tools/list
   refresh or a separate status call is not a prerequisite. Use core_runtime_tools for live schemas and
   core_runtime_call for native calls, with the same chat projectRoot for empty
-  roots. Short sequential batches preserve session-local registrations; native
-  permissions apply to every call. Inspection and
+  roots. Short sequential batches preserve session-local registrations. Group calls
+  only when proceeding is safe without inspecting earlier results; otherwise check
+  the result before a dependent call in the same bound session. Native permissions
+  apply to every call. Inspection and
   operation polling never open settings forms. Open forms only on an explicit
   user request to open/show the settings form. Chat configuration uses the same
   backend without opening UI. For CLI access, pass a JSON request on stdin to

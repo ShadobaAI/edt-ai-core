@@ -147,7 +147,7 @@ write permission. Do not invent `passed` to obtain that response.
    may be reused with the same target/mechanisms. Proposal does not replace result.
    If a new mandatory condition is discovered after writing, do not claim
    completion: verify it and, if needed, perform a corrective change through a new
-   proposal and guarded EDT workflow.
+   proposal and the EDT code-change workflow.
 
 Do not repeat successful equivalent selection/retrieval/compliance within one phase
 without invalidated evidence. Different phases always have separate verification.

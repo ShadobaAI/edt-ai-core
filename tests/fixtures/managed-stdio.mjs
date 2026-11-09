@@ -26,7 +26,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       ? ["tail"]
       : ["inspect", ...(process.env.FIXTURE_BSL_WORKSPACES ?
         ["register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder", "analyze_workspace"] : []),
-        ...(process.env.FIXTURE_RUNTIME_BATCH ? ["fail", "rpc_fail", "slow"] : []),
+        ...(process.env.FIXTURE_RUNTIME_BATCH ? ["fail", "partial_failure", "rpc_fail", "slow"] : []),
         ...(process.env.FIXTURE_CRASH_TOOL ? ["crash"] : []), ...(changed ? ["later"] : [])];
     result = {
       tools: names.map((name) => ({
@@ -45,6 +45,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (message.method === "tools/call") {
     if (params.name === "rpc_fail") { emit({ id: message.id, error: { code: -32002, message: "native RPC failure" } }); return; }
     if (params.name === "fail") { emit({ id: message.id, result: { content: [{ type: "text", text: "native failure" }], structuredContent: { nativeError: true }, isError: true } }); return; }
+    if (params.name === "partial_failure") { emit({ id: message.id, result: { content: [{ type: "text", text: "one item failed" }], structuredContent: { items: [{ name: "first", status: "ok" }, { name: "second", status: "error" }] } } }); return; }
     if (params.name === "crash") { process.exit(7); return; }
     if (params.name === "malformed") { console.log("null"); return; }
     if (params.name === "ask_host") { callbackRequest=message.id; emit({id:"fixture-host-callback",method:"sampling/createMessage",params:{messages:[],maxTokens:10}}); return; }
