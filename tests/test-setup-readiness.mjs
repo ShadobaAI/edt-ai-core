@@ -1698,6 +1698,30 @@ testProtected("separate settings sessions keep independent reusable readers", as
   await second.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
+testProtected("a reusable index reader waits for a short lock and rejects a retained lock", async t => {
+  const { f, backend, home, starts, health, setHealth } = await live_index_fixture(t);
+  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
+  const config = backend.effective(backend.current()), observer = new IndexObserver(f.state), lock = path.join(home, "operation.lock");
+  let release;
+  f.clients.push({ close: async () => { clearTimeout(release); fs.rmSync(lock, { force: true }); } }, observer);
+  assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
+  fs.writeFileSync(lock, String(process.pid), { flag: "wx" });
+  release = setTimeout(() => fs.rmSync(lock, { force: true }), 150);
+  assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
+  assert.equal(starts.length, 1, "a short coordination lock must not replace the reader");
+  fs.writeFileSync(lock, String(process.pid), { flag: "wx" });
+  const rejected = assert.rejects(observer.observe(config, f.root, f.profile), error => error.code === "INDEX_BUSY");
+  const deadline = Date.now() + 10000;
+  while (observer.entry && Date.now() < deadline) await new Promise(done => setTimeout(done, 25));
+  const retired = observer.entry === null;
+  fs.rmSync(lock, { force: true });
+  await rejected;
+  assert.equal(retired, true, "a retained lock must retire the cached reader");
+  assert.equal(starts.length, 1, "a retained lock must not authorize a cached observation");
+  assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
+  assert.equal(starts.length, 2);
+});
+
 testProtected("repeated index checks keep daemon connections bounded and release them", { timeout: 25000 }, async t => {
   const { f, backend, starts, health, setHealth, connections } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
@@ -1991,8 +2015,12 @@ testProtected("an unconfirmed native client shutdown retains the index reader ba
     throw Object.assign(new Error("Owned process termination is not confirmed"), { outcomeUnknown: true });
   });
   await assert.rejects(refresh(), error => error.outcomeUnknown === true && error.cleanupUnconfirmed === true);
-  const directory = path.join(home, "readers"), files = fs.readdirSync(directory);
-  assert.equal(files.length, 1); assert.equal(JSON.parse(fs.readFileSync(path.join(directory, files[0]))).orphanedBarrier, true);
+  const directory = path.join(home, "readers"), files = fs.readdirSync(directory).filter(file => file.endsWith(".json"));
+  assert.equal(files.length, 1);
+  const reader = JSON.parse(fs.readFileSync(path.join(directory, files[0])));
+  assert.equal(reader.orphanedBarrier, true);
+  if (process.platform === "linux")
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(directory, reader.id + ".done"))), { id: reader.id, completed: true });
 });
 
 test("index observation never launches an unapproved, stopped, foreign or modified runtime", async t => {

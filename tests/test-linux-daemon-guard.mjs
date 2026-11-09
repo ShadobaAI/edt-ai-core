@@ -321,6 +321,7 @@ test("a retained project lock blocks observation when the stop barrier cannot be
   assert.throws(() => observer.verifyDaemon(owner, daemon, home), error => error.code === "INDEX_BUSY");
   await assert.rejects(observer.run({}, f.root, {}, {}), error => error.code === "INDEX_BUSY");
   t.mock.restoreAll(); fs.unlinkSync(path.join(home, "operation.lock"));
+  assert.ok(observer.verifyDaemon(owner, daemon, home), "observation resumes after the retained lock is removed");
   await stop_daemon(f.state, f.root); await expectStopped(pins);
 });
 

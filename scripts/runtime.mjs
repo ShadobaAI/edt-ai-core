@@ -551,9 +551,20 @@ function check_maintenance(home, allowOwned = false) {
 }
 function check_index_observation(home) {
   check_maintenance(home);
+  // An unconfirmed daemon stop retains this lock when a separate cleanup
+  // barrier cannot be written. It must also block reuse of an existing reader.
+  const lock = path.join(home, "operation.lock");
+  try { fs.lstatSync(lock); }
+  catch (error) { if (error.code === "ENOENT") return; throw error; }
+  throw Object.assign(new ConfigError("Операция индекса ещё выполняется или её завершение не подтверждено. " + barrier_recovery_hint(lock)), { code: "INDEX_BUSY" });
 }
 async function wait_index_observation(home) {
-  check_index_observation(home);
+  const deadline = performance.now() + 1000;
+  while (true) {
+    try { check_index_observation(home); return; }
+    catch (error) { if (error.code !== "INDEX_BUSY" || performance.now() >= deadline) throw error; }
+    await sleep(25);
+  }
 }
 function begin_maintenance(home, root) {
   check_maintenance(home);
