@@ -148,7 +148,10 @@ test("release data allowlist excludes project bindings, private corpora and loca
   }
   const contaminants = ["profiles/customer/profile.yaml", "profiles/generic-1c/instance.local.yaml",
     "knowledge/private-corpus.yaml", "runtime/owner.yaml", "settings/local.yaml",
-    ".ai/project.yaml", ".codex/config.toml", "hooks/runtime.local.json"];
+    ".ai/project.yaml", ".codex/config.toml", "hooks/runtime.local.json",
+    ".gitnexus/meta.json", "node_modules/dependency-cruiser/package.json",
+    ".dependency-cruiser.cjs", "playwright.config.mjs", "tests/ui-e2e/settings.spec.mjs",
+    "tools/inspect-settings.mjs", "test-results/screenshot.png"];
   for (const name of contaminants) {
     const target = path.join(checkout, name);
     fs.mkdirSync(path.dirname(target), { recursive: true });

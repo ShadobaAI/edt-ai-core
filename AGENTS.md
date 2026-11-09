@@ -43,9 +43,31 @@ Do not pin an external MCP tool catalogue instead of checking its live API.
 Documentation in `docs/` must describe only current functionality, contracts,
 limitations and usage. Do not include project development history or changelogs.
 
+## Development workflow
+
+- At the start of repository code work or review, run
+  `npx -y gitnexus@latest status --json` from the repository root. If the index
+  is missing, stale, or has incompatible analyzer provenance, refresh it with
+  `npx -y gitnexus@latest analyze --index-only` and check its status again.
+  Repeat the check after changes to indexed files before reporting completion.
+  Perform these checks and refreshes without asking the user. If they fail,
+  report the limitation and continue with source-based analysis.
+- Before changing shared code, inspect dependencies and impact with the current
+  GitNexus index when available; verify graph findings against source code,
+  including dynamic dependencies and any reported coverage limits.
+- After changing MCP protocols or tools, run the strict MCP Inspector check.
+- After changing module dependencies, run dependency-cruiser and report any
+  existing or new violations without concealing them.
+- For UI changes, run the relevant Playwright regressions and check behavior in
+  the Codex browser when the actual host is available.
+- Run affected Node tests, review the final diff for unintended changes, and
+  report checks that could not be executed.
+- Do not modify unrelated code or automatically build or publish the plugin.
+
 ## Verification
 
-Initial setup requires Node.js 22+ and dev dependencies:
+Initial setup requires Node.js 22+ and dev dependencies. The additional
+quality tools require Node.js 22.19+ on 22.x, 24.11+ on 24.x, or 26+:
 
 ```sh
 npm ci --ignore-scripts

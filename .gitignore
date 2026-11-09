@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 .build/
 node_modules/
+.gitnexus/
+/playwright-report/
+/test-results/
 /vendor/
 .pytest_cache/
 .DS_Store
