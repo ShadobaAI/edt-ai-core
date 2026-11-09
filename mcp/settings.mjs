@@ -206,7 +206,7 @@ const tools = [
     inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.status", title: "Сводное состояние профиля", description: "Passive profile and local daemon observation. Does not launch services or repeat preparation or probes.",
     inputSchema: { type: "object", properties: { projectRoot: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(), _meta: appOnly },
-  { name: "settings.refresh_readiness", title: "Обновить состояние компонентов", description: "Refresh component status for this exact project and instance. Checks all seven components, or only component when supplied. Local BSL LS reuses its last API evidence while launch inputs remain unchanged; absent or changed evidence requires an explicit check. Observation never starts a JVM, grants permission, downloads, installs, restarts a daemon or rebinds chat connections. Poll settings.operation with the returned id.",
+  { name: "settings.refresh_readiness", title: "Обновить состояние компонентов", description: "Refresh component status for this exact project and instance. Checks all seven components, or only component when supplied. Managed code-index may start its installed project daemon under an existing preparation grant. Local BSL LS reuses its last API evidence while launch inputs remain unchanged. Does not grant permission, download, install or rebind chat connections. Poll settings.operation with the returned id.",
     inputSchema: { type: "object", properties: { scope: { type: "string", minLength: 1 }, component: { enum: ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"] }, automatic: { type: "boolean" } }, required: ["scope"], additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: appOnly },
   { name: "settings.reset_connection", title: "Вернуть наследование подключения", description: "Remove the project-local URL override and inherit the next configured source.",
     inputSchema: { type: "object", required: ["connection"], properties: { connection: { type: "string", enum: ["edt", "v8std", "openviking"] }, expectedRevision: { type: "string", minLength: 1 } }, additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
@@ -214,7 +214,7 @@ const tools = [
     inputSchema: empty, annotations: annotations(), _meta: { ui: { resourceUri: resource, visibility: ["app"] }, "openai/ui": { entrypoints: [{ type: "global" }] } } },
   { name: "settings.inspect", title: "Проверить настройку проекта", description: "Start chat setup here: compact profile validation, effective connections, detected EDT projects/port, managed preparation and next steps in one read-only call. Supply this chat's known projectRoot when host roots are empty. Do not read plugin source or reload an already loaded profile to diagnose setup.",
     inputSchema: inspectInput, annotations: annotations(), _meta: shared },
-  { name: "settings.probe_connections", title: "Проверить компонент или подключения", description: "Check the selected component and cache its scoped result, or check all external connections when component is omitted. YaXUnit checks exact EDT project mappings, client launch configurations and applications against the live API; ready confirms launch settings, never test results. Does not run a client, tests or database updates or change project settings. Reuses local BSL LS evidence until launch inputs change. Invalidated local BSL LS checks require an existing project/instance preparation grant and installed JAR; their temporary JVM closes before completion. Never downloads, installs or restarts a daemon. Testing configuration is distinct from runtime acceptance. Returns an operation ID: poll settings.operation with waitMs=10000; never repeat to wait. This acceptance is separate from current chat relay binding.",
+  { name: "settings.probe_connections", title: "Проверить компонент или подключения", description: "Check the selected component and cache its scoped result, or check all external connections when component is omitted. Managed code-index may start its installed project daemon under an existing preparation grant. YaXUnit checks EDT mappings and launch settings, not test results. Invalidated local BSL LS checks require an existing grant and installed JAR; their temporary JVM closes before completion. Does not download, install or grant permission. Returns an operation ID: poll settings.operation with waitMs=10000. This check is separate from the chat relay binding.",
     inputSchema: { type: "object", properties: { component: { enum: ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"], description: "Check only this component; invalidated local BSL LS evidence may use a temporary JVM under its existing scoped grant. Omit for all external connections." }, connections: { type: "object", properties: { edt: { type: "string" }, v8std: { type: "string" }, openviking: openvikingTransport }, additionalProperties: false, description: "Optional unsaved transport fields to test without persisting them. Empty URLs disconnect transport without changing knowledge requirements." } }, additionalProperties: false }, annotations: { ...annotations(false), openWorldHint: true }, _meta: shared },
   { name: "settings.profile", title: "Настройки проекта", description: "Open the settings form for this chat's selected profile only on an explicit user request to open/show this form. Chat configuration, code analysis and runtime troubleshooting do not authorize opening a form; use settings.inspect instead. Always supply this chat's known projectRoot so the form retains its directory across MCP connections; {} uses host roots when available. Does not reload profiles or borrow another chat's directory.",
     inputSchema: inspectInput, annotations: annotations(), _meta: { ...appTool, "openai/ui": { entrypoints: [{ type: "thread" }] } } },
@@ -288,8 +288,6 @@ const tools = [
   { name: "settings.operation", title: "Состояние операции", description: "Read a running or completed settings operation without retrying it. Results belong to this MCP session and include their original project/instance.",
     inputSchema: { type: "object", properties: { operationId: { type: "string" }, waitMs: { type: "integer", minimum: 0, maximum: 10000, description: "Wait for this operation to finish, up to 10 seconds. Prefer a bounded wait over repeated immediate polls." } }, additionalProperties: false },
     annotations: annotations(), _meta: shared },
-  { name: "settings.check", title: "Проверка готовности", description: "Read the compact profile inspection and saved readiness, like settings.inspect, without opening a form or launching services. Use settings.probe_connections for live external checks, core_runtime_status for the required chat relay, or settings.run_check for authorized preparation.",
-    inputSchema: inspectInput, annotations: annotations(), _meta: shared },
 ];
 const ovIdentity = { url: { type: "string", minLength: 1, maxLength: 2048 }, connectionId: primitive.openvikingConnectionId };
 const ovValues = { type: "object", additionalProperties: false,
@@ -583,12 +581,12 @@ async function call(name, args, meta = {}, requestContext = {}) {
   // App calls may use a fresh MCP connection with empty roots. Carry the
   // invoking chat's explicit scope, never a global last-used profile.
   const requestedRoot = meta?.["1c-ai-core/projectRoot"] ??
-    (["settings.profile", "settings.import", "settings.export", "settings.check"].includes(name) ? args.projectRoot : undefined);
+    (["settings.profile", "settings.import", "settings.export"].includes(name) ? args.projectRoot : undefined);
   if (requestedRoot !== undefined) {
     if (operations.status().status === "running" && !selectedRoot) throw new Error("Дождитесь завершения текущей операции перед привязкой проекта.");
     const selection = explicit_selection({ directory: selectedRoot }, requestedRoot, selectionError);
     if (selection.directory !== selectedRoot) { await dropIndexObserver("project_changed"); selectedRoot = selection.directory; selectionRevision += 1; }
-    rootLocked ||= ["settings.profile", "settings.import", "settings.export", "settings.check"].includes(name) || meta?.["1c-ai-core/navigation"] !== "profiles";
+    rootLocked ||= ["settings.profile", "settings.import", "settings.export"].includes(name) || meta?.["1c-ai-core/navigation"] !== "profiles";
   }
   if (name === "settings.openviking_read" || name === "settings.openviking_save") {
     const { read_openviking_record, save_openviking_record } = await import("../scripts/openviking_store.mjs");
@@ -672,7 +670,7 @@ async function call(name, args, meta = {}, requestContext = {}) {
     await folder_action("open", saved.directory, { select: saved.path });
     return { content: [{ type: "text", text: "Папка диагностики открыта." }] };
   }
-  const readOnlyEntry = ["settings.inspect", "settings.read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.check", "settings.versions"].includes(name);
+  const readOnlyEntry = ["settings.inspect", "settings.read", "settings.status", "settings.open", "settings.profile", "settings.import", "settings.export", "settings.versions"].includes(name);
   if (name === "settings.versions") {
     let cached = versionCatalogs.get(args.component);
     if (args.refresh || !cached || cached.expires < Date.now()) {
@@ -716,7 +714,7 @@ async function call(name, args, meta = {}, requestContext = {}) {
       if (source.startsWith("environment:") || source === "connections_file") view.schema.properties[id + "Url"].readOnly = true;
     return result(view);
   }
-  if (name === "settings.inspect" || name === "settings.check") {
+  if (name === "settings.inspect") {
     if (operations.status().status === "running" && args.projectRoot !== undefined && !selectedRoot)
       throw new Error("Дождитесь завершения текущей операции перед выбором папки.");
     const selection = explicit_selection({ directory: selectedRoot }, args.projectRoot, selectionError);

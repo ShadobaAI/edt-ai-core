@@ -23,12 +23,14 @@ export class McpClient {
       env: env || process.env,
       stdio: ["pipe", "pipe", "pipe"],
       ...(options.readerJob ? { readerJob: options.readerJob } : {}),
+      ...(options.readerCompletion ? { readerCompletion: options.readerCompletion } : {}),
     });
     this.process.stderr.on("data", (chunk) => {
       this.stderr = "[stderr omitted]";
       this.stderrBytes += chunk.length;
       this.options.onStderr?.(chunk);
     });
+    this.process.stderr.on("error", error => this.fail(error));
     this.process.stdin.on("error", () => {});
     this.process.once("error", (error) => this.fail(error));
     this.process.once("close", code =>

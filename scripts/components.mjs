@@ -35,7 +35,7 @@ export const component_settings = (config, id) => config.mcp[COMPONENTS[id].opti
 export const component_enabled = (config, id) => component_settings(config, id).enabled !== false;
 export function binding_fingerprint(config, id, root, profile, reconnect = "", state = state_path(config)) {
   return stable([root, instance_name(), component_settings(config, id),
-    id === "code-index" ? index_repositories(root, profile) : id === "openviking" ? [profile.knowledge,
+    id === "code-index" ? [index_repositories(root, profile), component_settings(config, id).mode === "external" ? null : preparation_granted(state, root, id)] : id === "openviking" ? [profile.knowledge,
       profile.knowledge.manifest ? sha256(fs.readFileSync(inside(root, profile.knowledge.manifest))) : null,
       access_revision(component_settings(config, id), state), publication_revision(component_settings(config, id), state)] : null, reconnect]);
 }

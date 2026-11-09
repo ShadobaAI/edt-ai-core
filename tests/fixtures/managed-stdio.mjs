@@ -1,4 +1,6 @@
 import readline from "node:readline";
+import fs from "node:fs";
+if (process.env.FIXTURE_START_LOG) fs.appendFileSync(process.env.FIXTURE_START_LOG, process.pid + "\n");
 let discoveries = 0,
   changed = false;
 const notifications = [];
@@ -24,7 +26,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       ? ["tail"]
       : ["inspect", ...(process.env.FIXTURE_BSL_WORKSPACES ?
         ["register_workspace_folder", "list_workspace_folders", "unregister_workspace_folder", "analyze_workspace"] : []),
-        ...(process.env.FIXTURE_RUNTIME_BATCH ? ["fail", "rpc_fail", "slow"] : []), ...(changed ? ["later"] : [])];
+        ...(process.env.FIXTURE_RUNTIME_BATCH ? ["fail", "rpc_fail", "slow"] : []),
+        ...(process.env.FIXTURE_CRASH_TOOL ? ["crash"] : []), ...(changed ? ["later"] : [])];
     result = {
       tools: names.map((name) => ({
         name,

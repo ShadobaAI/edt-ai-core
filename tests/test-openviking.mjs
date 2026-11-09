@@ -394,9 +394,9 @@ test("loss of mandatory knowledge during a native write stops the batch and pres
   assert.equal(result.results[0].result.content[0].text, markdown());
   assert.equal(result.results[0].error.outcome, "response_received");
   assert.deepEqual(result.actions, [
-    { position: 1, name: "read", status: "response_ok_workflow_stopped" },
-    { position: 2, name: "read", status: "not_started" },
-    { position: 3, name: "read", status: "not_started" },
+    { position: 1, name: "read", status: "response_ok_workflow_stopped", executionOutcome: "completed" },
+    { position: 2, name: "read", status: "not_started", executionOutcome: "not_executed" },
+    { position: 3, name: "read", status: "not_started", executionOutcome: "not_executed" },
   ]);
   assert.deepEqual(result.stopped.completedActions, ["read"]);
   assert.deepEqual(result.stopped.notStarted, ["read", "read"]);

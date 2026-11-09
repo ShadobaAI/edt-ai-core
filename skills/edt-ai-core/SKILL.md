@@ -131,12 +131,10 @@ If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
 - For any returned operation ID use settings.operation with waitMs=10000 (or a
   shorter bounded wait). Reuse its eventual result; do not repeat the operation,
   run doctor again, poll immediately in a loop or dump full native schemas.
-- Check only necessary chat relays. If their selectedDirectory is empty, pass this
-  chat's known projectRoot to each relay's core_runtime_status once. This binds
-  only that MCP session and preserves host/environment locks and other chats.
-  For prepared managed services, this call connects the scoped process and
-  makes its native API available under the existing preparation permission. It does
-  not require a prior tool-list refresh or another full settings.run_check.
+- Use only necessary chat relays. If host roots are empty, pass this chat's known
+  projectRoot to core_runtime_tools or core_runtime_call. The relay binds and
+  reconnects automatically within the existing preparation permission; neither
+  a status call nor another settings.run_check is required for recovery.
   Settings-form selection does not bind other MCP sessions. Use core_runtime_tools for
   live schemas and core_runtime_call for a bounded sequential calls batch.
   Supply the same chat projectRoot when host roots are empty. Native permissions,

@@ -21,7 +21,9 @@ import {
   RemoteSessionExpired,
   RemoteRpcError,
 } from "./remote_client.mjs";
-import { validate_bsl_tools } from "./runtime.mjs";
+import { validate_bsl_tools, project_home, read_json } from "./runtime.mjs";
+import { pin_windows_process } from "./windows_process.mjs";
+import { linux_process_identity, pin_linux_process } from "./unix_process.mjs";
 import { component_icons } from "./icons.mjs";
 import { launch_selection, roots_selection, explicit_selection } from "./selection.mjs";
 import { COMPONENTS, component_settings, component_enabled, binding_fingerprint, require_preparation, native_environment } from "./components.mjs";
@@ -51,7 +53,8 @@ let client = null,
   toolsRevision = null,
   toolsDirty = false,
   bindingContext = null,
-  connectingClient = null;
+  connectingClient = null,
+  daemonPin = null;
 let boundAliases = new Set();
 const nativeValidators = new Map();
 let selection = launch_selection();
@@ -84,6 +87,8 @@ async function disconnect() {
   stopIdlePolling();
   const knowledgeClosing = workflowKnowledge.close();
   const previous = client;
+  const previousDaemon = daemonPin;
+  daemonPin = null;
   if (previous) diagnostic.event("disconnected", { projectRoot: selected, binding: bindingContext });
   const connecting = connectingClient;
   connectingClient = null;
@@ -95,9 +100,13 @@ async function disconnect() {
   boundAliases.clear();
   nativeValidators.clear();
   if (previous) notifyDiscoveryChanged();
-  if (previous) await previous.close();
-  if (connecting && connecting !== previous) await connecting.close();
-  await knowledgeClosing;
+  try {
+    if (previous) await previous.close();
+    if (connecting && connecting !== previous) await connecting.close();
+  } finally {
+    previousDaemon?.close();
+    await knowledgeClosing;
+  }
 }
 async function requestRoots() {
   finishRoots?.();
@@ -160,6 +169,7 @@ async function refreshNotifiedTools() {
     await refreshTools();
 }
 let bindingPromise = null, generation = 0, hostCapabilities = {}, callbackSequence = 0;
+let failedAttempts = 0, retryAfter = 0;
 const callbacks = new Map(), requests = new Map();
 const requestKey = id => typeof id + ":" + id;
 function callback(message, { signal } = {}) {
@@ -183,7 +193,13 @@ function callback(message, { signal } = {}) {
 }
 async function ensureBinding(refreshSurface = true, retryFailed = true, connect = true) {
   if (closed) throw new Error("Host disconnected");
-  const next = (bindingPromise || Promise.resolve()).catch(() => {}).then(() => bind(refreshSurface, retryFailed, connect));
+  if (bindingPromise) {
+    // Join the in-flight attempt. Revalidate after it finishes, but never let
+    // each waiter repeat the same failed launch.
+    await bindingPromise.catch(() => {});
+    return ensureBinding(refreshSurface, false, connect);
+  }
+  const next = bind(refreshSurface, retryFailed, connect);
   bindingPromise = next;
   try { await next; } finally { if (bindingPromise === next) bindingPromise = null; }
 }
@@ -199,9 +215,34 @@ async function bind(refreshSurface, retryFailed, connect) {
     const reconnect = exists(token) ? JSON.parse(fs.readFileSync(token, "utf8")) : {};
     revision = binding_fingerprint(config, component, root, profile, reconnect[component] || reconnect.id || "");
     if (revision === failedRevision && !retryFailed) return;
+    if (revision === failedRevision && retryAfter > Date.now()) {
+      await new Promise(resolve => setTimeout(resolve, retryAfter - Date.now()));
+      // Re-read the project, grant and effective configuration after waiting.
+      return bind(refreshSurface, retryFailed, connect);
+    }
+    if (client && daemonPin && !daemonPin.alive()) {
+      // Let calls already dispatched through this connection finish. A new
+      // request then reconnects and the managed launcher coordinates recovery.
+      while (!closed && [...requests.values()].some(request => request.client === client))
+        await new Promise(resolve => setTimeout(resolve, 25));
+      await disconnect();
+      if (closed) return;
+      return bind(refreshSurface, retryFailed, connect);
+    }
     if (client && !client.error && revision === currentRevision) {
       if (refreshSurface) { stage = "tools/list"; await refreshNotifiedTools(); }
       return;
+    }
+    if (component === "code-index" && client && !client.error && revision !== currentRevision) {
+      // A maintenance signal or configuration change must not abort a native
+      // request that was already sent. Re-read the binding after it drains.
+      const previous = client;
+      if ([...requests.values()].some(request => request.client === previous)) {
+        while (!closed && client === previous && [...requests.values()].some(request => request.client === previous))
+          await new Promise(resolve => setTimeout(resolve, 25));
+        if (closed) return;
+        return bind(refreshSurface, retryFailed, connect);
+      }
     }
     await disconnect();
     if (closed) return;
@@ -266,9 +307,20 @@ async function bind(refreshSurface, retryFailed, connect) {
       throw error;
     }
     client = candidate;
+    if (component === "code-index" && options.mode !== "external" && ["win32", "linux"].includes(process.platform)) {
+      const owner = read_json(path.join(project_home(state, root), "code-index", "owner.json"), {});
+      if (owner.pid) {
+        const pinned = process.platform === "win32" ? pin_windows_process(owner.pid) : pin_linux_process(owner.pid);
+        const creation = process.platform === "win32" ? pinned.created : linux_process_identity(owner.pid);
+        if (!pinned.alive() || !creation || owner.creation && creation !== owner.creation) { pinned.close(); throw new ConfigError("Демон индекса изменился во время подключения."); }
+        daemonPin = pinned;
+      }
+    }
     boundAliases = new Set((component === "code-index" ? index_repositories(root, profile) : profile.repositories).map(repo => repo.alias));
     connectingClient = null;
     failedRevision = null;
+    failedAttempts = 0;
+    retryAfter = 0;
     lastError = "";
     lastFailure = null;
     bindingContext = {
@@ -284,6 +336,8 @@ async function bind(refreshSurface, retryFailed, connect) {
     notifyDiscoveryChanged();
   } catch (error) {
     await disconnect();
+    failedAttempts = revision !== null && revision === failedRevision ? failedAttempts + 1 : 1;
+    retryAfter = Date.now() + Math.min(5000, 250 * 2 ** Math.min(failedAttempts - 1, 5));
     failedRevision = revision;
     if (revision === null) currentRevision = null;
     if (lastError !== safe_error_message(error)) diagnostic.event("connection_failed", { projectRoot: selected, phase: stage, error }, "error");
@@ -318,7 +372,7 @@ const controlTools = () => [statusTool(), {
 }, {
   name: "core_runtime_call",
   title: "Вызов native API " + component,
-  description: "Call native tools using live schemas from core_runtime_tools. Calls run sequentially in one project-bound connection, sharing the BSL LS process. On failure, remaining calls stop; completed calls are not rolled back. Actions use one-based positions; response_error or unknown does not prove mutation effects. " + (component === "v8std" ? "Configuring the selected v8std endpoint authorizes its native operations and sending task code and context to it; do not request additional v8std permission. Host approval and independent project actions remain separate. " : "Apply native annotations, source workflow and action policy to every call; this wrapper grants no permissions. ") + "With empty roots supply this chat's projectRoot. Never retry a failed batch blindly.",
+  description: "Call native tools using live schemas from core_runtime_tools. Calls run sequentially in one project-bound connection. On failure, remaining calls stop; completed calls are not rolled back. Error executionOutcome is not_executed, completed, or outcome_unknown; a dispatched call with an unknown outcome is never retried automatically. Subsequent requests reconnect when possible. " + (component === "v8std" ? "Configuring the selected v8std endpoint authorizes its native operations and sending task code and context to it; do not request additional v8std permission. Host approval and independent project actions remain separate. " : "Apply native annotations, source workflow and action policy to every call; this wrapper grants no permissions. ") + "With empty roots supply this chat's projectRoot. Never retry a failed batch blindly.",
   inputSchema: { type: "object", properties: {
     projectRoot: rootProperty(),
     calls: { type: "array", minItems: 1, maxItems: 16, items: {
@@ -452,7 +506,7 @@ async function dispatch(message) {
           },
         };
       hostCapabilities = message.params?.capabilities || {};
-      result.instructions = "Call core_runtime_status per binding; pass this chat's projectRoot if roots are empty. Use core_runtime_tools and core_runtime_call for native APIs.";
+      result.instructions = "Use core_runtime_tools and core_runtime_call for native APIs; the relay connects automatically. Pass this chat's projectRoot if roots are empty. core_runtime_status reports the current binding.";
       if (component === "bsl-ls")
         result.instructions +=
           " Discover configuration paths via EDT; register each directory before analysis. Only paths inside this binding are accepted.";
@@ -567,11 +621,17 @@ async function dispatch(message) {
           } catch (error) {
             diagnostic.event("native_request_failed", { requestId: id, callIndex: callIndex + 1, tool: call.name, projectRoot: ownerBinding?.projectRoot,
               phase: dispatched ? "transport" : "dispatch", durationMs: Date.now() - nativeStarted, outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed", error }, "error");
-            const detail = { message: safe_error_message(error), outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) };
+            const detail = { message: safe_error_message(error), outcome: received ? "response_received" : dispatched ? "unknown" : "not_executed",
+              executionOutcome: received ? "completed" : dispatched ? "outcome_unknown" : "not_executed", ...(error.code ? { code: error.code } : {}) };
             if (received) results.at(-1).error = detail;
             else results.push({ name: call.name, error: detail });
-            if (error instanceof RemoteSessionExpired) {
-              await disconnect(); currentRevision = null; lastError = safe_error_message(error);
+            if (error instanceof RemoteSessionExpired && client === owner) {
+              try { await disconnect(); }
+              catch (cleanup) {
+                detail.cleanupUnconfirmed = true;
+                diagnostic.event("connection_cleanup_unconfirmed", { projectRoot: ownerBinding?.projectRoot, error: cleanup }, "error");
+              }
+              currentRevision = null; lastError = safe_error_message(error);
             }
             break;
           }
@@ -582,14 +642,15 @@ async function dispatch(message) {
           const status = !entry ? "not_started" : entry.error?.outcome === "not_executed" ? "not_started"
             : entry.error?.outcome === "unknown" ? "unknown" : entry.result?.isError ? "response_error"
             : entry.error ? "response_ok_workflow_stopped" : "response_ok";
-          return { position: index + 1, name: call.name, status };
+          return { position: index + 1, name: call.name, status,
+            executionOutcome: entry ? entry.error?.executionOutcome || "completed" : "not_executed" };
         });
         result = { content: results.flatMap(entry => [...(entry.result?.content || []), ...(entry.error ? [{ type: "text", text: entry.error.message }] : [])]),
           structuredContent: { binding: ownerBinding, results, actions, completed: results.filter(entry => entry.result && !entry.result.isError).length, requested: params.arguments.calls.length,
             ...(failed ? { stopped: { completedActions: results.filter(entry => entry.result && !entry.result.isError).map(entry => entry.name),
               notStarted: [...results.filter(entry => entry.error?.outcome === "not_executed").map(entry => entry.name), ...params.arguments.calls.slice(results.length).map(entry => entry.name)],
               unknownActions: results.filter(entry => entry.error?.outcome === "unknown").map(entry => entry.name), rollback: "not_performed",
-              instruction: "Stop dependent work. Report completed actions and unknown outcomes; revalidate readiness before continuing. Do not retry mutations blindly." } } : {}) },
+              instruction: "Stop dependent work and report completed actions and unknown outcomes. Subsequent requests reconnect when possible; do not retry unknown mutations blindly." } } : {}) },
           ...(failed ? { isError: true } : {}) };
       } else if (client) {
         // Discovery/status controls remain available to repair setup. Native
@@ -645,7 +706,8 @@ async function dispatch(message) {
   } catch (error) {
     diagnostic.event("request_failed", { requestId: id, method, tool: message.params?.name, projectRoot: selected, durationMs: Date.now() - started, error }, "error");
     if (error instanceof RemoteSessionExpired) {
-      await disconnect();
+      try { await disconnect(); }
+      catch (cleanup) { diagnostic.event("connection_cleanup_unconfirmed", { projectRoot: selected, error: cleanup }, "error"); }
       currentRevision = null;
       lastError = safe_error_message(error);
     }

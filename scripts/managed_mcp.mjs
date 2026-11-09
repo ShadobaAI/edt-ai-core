@@ -27,6 +27,7 @@ export async function serve(component, selected, state, config) {
       env: env || process.env,
       stdio: ["pipe", "pipe", "pipe"],
       readerJob: lease?.id || randomUUID(),
+      ...(lease?.completion ? { readerCompletion: lease.completion } : {}),
     }); } catch (error) { if (error.notSpawned) launching = false; throw error; }
     diagnostic.event("process_started", { projectRoot: root, supervisorPid: child.pid, executable: command[0] });
     let stderrBytes = 0, stderrChunks = 0;

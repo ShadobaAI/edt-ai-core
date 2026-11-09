@@ -15,7 +15,7 @@ overwriting instructions; `settings.import` opens file import and `settings.load
 validates/reloads the existing profile. These operations do not prepare runtimes.
 Existing profiles are discovered automatically at session start and by MCP roots.
 After create/load/import, relay `sessionGuidance`. An empty selectedDirectory is
-repaired by passing the known chat projectRoot to the relevant core_runtime_status,
+resolved by passing the known chat projectRoot to the relevant relay control,
 not by restarting chats. Never create a chat or change global selection automatically. A generic template
 still needs repository mappings and connection configuration before project work.
 Creation also reports projectInstructions.created/preserved; contentValidated=false
@@ -71,8 +71,8 @@ prefixes, aliases, ports or a running EDT.
   project/instance. Profile inspection/create/load/import never provisions services.
   After that preparation, stdio entrypoints install missing verified artifacts
   and start the scoped service on demand.
-  core_runtime_status also connects prepared managed services; a host tools/list
-  refresh is not a prerequisite. Use core_runtime_tools for live schemas and
+  Relay controls connect prepared managed services automatically; a host tools/list
+  refresh or a separate status call is not a prerequisite. Use core_runtime_tools for live schemas and
   core_runtime_call for native calls, with the same chat projectRoot for empty
   roots. Short sequential batches preserve session-local registrations; native
   permissions apply to every call. Inspection and
@@ -97,7 +97,7 @@ prefixes, aliases, ports or a running EDT.
   changes only after success. Select an older release to downgrade. Separate
   check/download/apply/rollback API operations remain available for compatibility.
   For native relays, no third-party release is a capability allowlist. Preserve full native schemas;
-  read core_runtime_status once per new binding for native instructions.
+  use core_runtime_status when native server instructions are needed.
 - The bundled read-only `policy` MCP runs through Node without external setup.
   It selects applicable requirements and validates proposal/result ledgers;
   normative text still comes from v8std through $1c-standards.

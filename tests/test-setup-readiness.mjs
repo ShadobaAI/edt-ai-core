@@ -20,6 +20,7 @@ import { zip } from "../scripts/archives.mjs";
 import { alive } from "../scripts/processes.mjs";
 import { windows_handle_count } from "../scripts/windows_process.mjs";
 import { index_config, installed_runtime, IndexObserver, active_readers, acquire_reader, restart_index } from "../scripts/runtime.mjs";
+import { capture_index_snapshot } from "../scripts/index_snapshot.mjs";
 import { dump } from "../scripts/common.mjs";
 import { project_profile } from "../scripts/profile.mjs";
 import { SettingsOperations } from "../mcp/settings-operations.mjs";
@@ -176,20 +177,26 @@ test("offset periodic refreshes reuse a recent verified receipt from another MCP
   assert.ok(requests.length > count, "manual refresh always performs a new observation");
 });
 
-test("a crashed flight owner is reclaimed and a later refresh can run", async t => {
+test("a joined index check automatically recovers from a crashed flight owner", async t => {
   const { f, backend, url, holdIndex, requests } = await ready_fixture(t);
   await enable_external_index(f, backend, url);
   const gate = holdIndex(), leader = childProcess.spawn(process.execPath, [path.resolve("scripts/settings_backend.mjs")], { env: f.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
   t.after(() => { gate.release(); if (leader.exitCode === null && leader.signalCode === null) leader.kill(); });
   leader.stdin.end(JSON.stringify({ action: "refresh_readiness", scope: f.root + "#first", component: "code-index" }));
   await gate.started;
-  const joined = backend.main({ action: "refresh_readiness", scope: f.root + "#first", component: "code-index" });
+  const joined = ["code-index", "code-index", undefined].map(component =>
+    backend.main({ action: "refresh_readiness", scope: f.root + "#first", ...(component ? { component } : {}) }));
   await new Promise(done => setTimeout(done, 500));
+  const recoveryGate = holdIndex(); t.after(() => recoveryGate.release());
   leader.kill("SIGKILL"); await once(leader, "close");
-  assert.equal((await joined).superseded, true);
+  await recoveryGate.started;
+  await new Promise(done => setTimeout(done, 500));
+  recoveryGate.release();
+  for (const recovered of await Promise.all(joined)) {
+    assert.equal(recovered.superseded, false, JSON.stringify(recovered));
+    assert.equal(recovered.componentChecks.find(item => item.id === "code-index").state, "ready");
+  }
   gate.release();
-  const retried = await backend.main({ action: "refresh_readiness", scope: f.root + "#first", component: "code-index" });
-  assert.equal(retried.superseded, false); assert.equal(retried.componentChecks[0].state, "ready");
   assert.equal(requests.filter(item => item.url === "/index" && item.method === "initialize").length, 2);
 });
 
@@ -731,6 +738,19 @@ test("a foreground marker that cannot be deleted remains a cleanup barrier", asy
   blocked = false; assert.equal(release_foreground_readiness(f.state, marker), true);
 });
 
+test("an uncertain foreground check does not block an independent index observation", async t => {
+  const { f } = await ready_fixture(t), id = randomUUID();
+  const marker = path.join(project_directory(f.state, f.root), "coordination", "first.readiness-active", id);
+  fs.mkdirSync(path.dirname(marker), { recursive: true });
+  fs.writeFileSync(marker, JSON.stringify({ pid: process.pid, id, phase: "cleanup_unknown" }));
+  const operations = new SettingsOperations(async () => ({ checked: true }), () => {}, { stateDirectory: f.state });
+  const context = { projectRoot: f.root, instance: "first" };
+  const job = operations.start("refresh_readiness", { scope: f.root + "#first", component: "code-index" }, context);
+  await job.finished;
+  assert.equal(job.status, "completed"); assert.equal(fs.existsSync(marker), true);
+  assert.throws(() => operations.start("check", {}, context), /не подтверждено/i);
+});
+
 test("a starting marker with a live listener remains an active foreground barrier", async t => {
   const { f } = await ready_fixture(t), id = randomUUID(), marker = begin_foreground_readiness(f.state, f.root, "first", id);
   const listener = await open_reader(id);
@@ -1214,7 +1234,7 @@ test("automatic readiness never prepares unapproved components or downloads miss
   grant_preparation(f.state,f.root,["code-index","bsl-ls"]);
   const file=path.join(instance_directory(f.state,f.root),"first.preparation.json"),before=fs.readFileSync(file);
   const missing=await backend.main({action:"refresh_readiness",scope});
-  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/недоступен|отсутствует/);}
+  for(const component of ["code-index","bsl-ls"]){const item=missing.managed.find(item=>item.name===component);assert.equal(item.ready,false);assert.match(item.detail,/недоступен|отсутствует|не установлен/);}
   assert.deepEqual(fs.readFileSync(file),before);assert.equal(fs.existsSync(path.join(f.state,"runtime-lock.json")),false);
   process.env.EDT_AI_INSTANCE="another";
   const other=await backend.main({action:"refresh_readiness",scope:f.root+"#another"});assert.equal(other.managed.find(item=>item.name==="code-index").state,"stopped");
@@ -1444,22 +1464,19 @@ async function live_index_fixture(t) {
   t.after(() => { daemon.closeAllConnections(); return new Promise(done => daemon.close(done)); });
   fs.writeFileSync(path.join(home, "daemon.json"), JSON.stringify({ pid: process.pid, http_port: daemon.address().port }));
   fs.writeFileSync(path.join(home, "owner.json"), JSON.stringify({ pid: process.pid, project_root: f.root, executable: exe }));
-  const spawn = childProcess.spawn, reader = fileURLToPath(new URL("./fixtures/index-reader.mjs", import.meta.url)), copyWorker = fileURLToPath(new URL("../scripts/index_copy_worker.mjs", import.meta.url)), starts = [], copies = []; let onReaderLaunch, onCopyLaunch;
+  const spawn = childProcess.spawn, reader = fileURLToPath(new URL("./fixtures/index-reader.mjs", import.meta.url)), starts = []; let onReaderLaunch;
   t.mock.method(childProcess, "spawn", (command, args, options) => {
     if (options.cwd !== home) return spawn(command, args, options);
     assert.equal(path.basename(args[0]), "process_supervisor.mjs", "observation must not launch a daemon");
     const child = spawn(command, args, options), send = child.send.bind(child);
     child.send = (message, ...rest) => {
       if (message.command) {
-        if (message.command === process.execPath && message.args[0] === copyWorker) {
-          copies.push(message); message = onCopyLaunch?.(message) || message;
-          return send(message, ...rest);
-        }
         onReaderLaunch?.(message, child);
-        assert.match(path.basename(fs.realpathSync.native(path.dirname(message.command))), /^\.observation-/);
+        assert.equal(message.command, exe);
         assert.deepEqual(fs.readFileSync(message.command), binary);
         assert.equal(message.args[0], "serve"); assert.equal(message.args[1], "--config");
-        assert.equal(fs.realpathSync.native(path.dirname(message.args[2])), fs.realpathSync.native(path.dirname(message.command)));
+        assert.equal(message.args[2], path.join(home, "daemon.toml"));
+        assert.equal(message.env.CODE_INDEX_HOME, home);
         assert.deepEqual(fs.readFileSync(message.args[2]), fs.readFileSync(path.join(home, "daemon.toml")));
         starts.push(message);
         message = { ...message, command: process.execPath, args: [reader], env: { ...message.env, CODE_INDEX_FIXTURE_HOME: home } };
@@ -1478,7 +1495,7 @@ async function live_index_fixture(t) {
     repos: [{ repo: "product", root_path: f.root, path_status: { status }, data_version: { stale } }] });
   const setHealth = (...results) => fs.writeFileSync(path.join(home, "health-fixture.json"), JSON.stringify({ results }));
   const refresh = () => backend.main({ action: "refresh_readiness", scope: f.root + "#first", component: "code-index" });
-  return { f, backend, home, exe, starts, copies, health, setHealth, refresh, onReaderLaunch: callback => { onReaderLaunch = callback; }, onCopyLaunch: callback => { onCopyLaunch = callback; }, connections: () => ({ active: connections, peak: peakConnections }) };
+  return { f, backend, home, exe, starts, health, setHealth, refresh, onReaderLaunch: callback => { onReaderLaunch = callback; }, connections: () => ({ active: connections, peak: peakConnections }) };
 }
 
 test("a replacement index process cannot inherit the previous process API proof", async t => {
@@ -1543,8 +1560,62 @@ testProtected("concurrent local index observations share a single native client"
   assert.equal(starts.length, 1);
 });
 
+test("a joined index check accepts the leader's verified daemon startup", async t => {
+  const { f, home } = await live_index_fixture(t);
+  grant_preparation(f.state, f.root, ["code-index"]);
+  let entered, release, extraProbes = 0;
+  const started = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const leader = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS, {
+    observeIndex: async ({ root, profile }) => {
+      entered(); await gate;
+      // Simulate the daemon files written by a cold start after both checks
+      // have captured the original project binding.
+      fs.appendFileSync(path.join(home, "daemon.json"), " ");
+      return { index_state: "ready", index: { repositories: [] }, observationSnapshot: capture_index_snapshot(f.state, root, profile) };
+    },
+  });
+  const follower = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS, {
+    observeIndex: async () => { extraProbes++; throw new Error("The follower launched a duplicate probe"); },
+  });
+  const request = { action: "refresh_readiness", scope: f.root + "#first", component: "code-index" };
+  const first = leader.main(request); await started;
+  const second = follower.main(request);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a.superseded, false, JSON.stringify(a));
+  assert.equal(b.superseded, false, JSON.stringify(b));
+  assert.equal(b.componentChecks[0].state, "ready");
+  assert.equal(extraProbes, 0);
+});
+
+test("joined index checks reject a configuration change during daemon startup", async t => {
+  const { f, backend, home } = await live_index_fixture(t);
+  grant_preparation(f.state, f.root, ["code-index"]);
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const leader = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS, {
+    observeIndex: async ({ root, profile }) => {
+      entered(); await gate;
+      fs.appendFileSync(path.join(home, "daemon.json"), " ");
+      return { index_state: "ready", index: { repositories: [] }, observationSnapshot: capture_index_snapshot(f.state, root, profile) };
+    },
+  });
+  const request = { action: "refresh_readiness", scope: f.root + "#first", component: "code-index" };
+  const first = leader.main(request); await started;
+  const second = new SettingsBackend().main(request);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await backend.main({ action: "update", set: { codeIndexEnabled: false } });
+  release();
+  for (const result of await Promise.all([first, second])) assert.equal(result.superseded, true, JSON.stringify(result));
+});
+
 test("Windows observer cleans up when the source runtime already has a writer", { skip: process.platform !== "win32" }, async t => {
-  const { f, backend, home, exe, starts, copies, health, setHealth } = await live_index_fixture(t);
+  const { f, backend, home, exe, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state), config = backend.effective(backend.current());
   f.clients.push(observer);
@@ -1553,217 +1624,78 @@ test("Windows observer cleans up when the source runtime already has a writer", 
   finally { fs.closeSync(writer); }
   assert.deepEqual(await active_readers(f.state, f.root), []);
   assert.deepEqual(fs.readdirSync(home).filter(name => name.startsWith(".observation-")), []);
-  assert.equal(starts.length, 0); assert.equal(copies.length, 0);
+  assert.equal(starts.length, 0);
   assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+  assert.equal(starts.length, 1);
+});
+
+test("Linux rejects a runtime changed during a live index check", { skip: process.platform !== "linux" }, async t => {
+  const { f, backend, exe, health, setHealth } = await live_index_fixture(t);
+  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
+  const observer = new IndexObserver(f.state), original = fs.readFileSync(exe), request = McpClient.prototype.request;
+  f.clients.push(observer);
+  let changed = false;
+  t.mock.method(McpClient.prototype, "request", function (method, params, options) {
+    if (!changed && method === "tools/call" && params?.name === "health") { changed = true; fs.writeFileSync(exe, "changed runtime"); }
+    return request.call(this, method, params, options);
+  });
+  try {
+    await assert.rejects(observer.observe(backend.effective(backend.current()), f.root, f.profile), /исполняемый файл|изменилась/);
+    assert.equal(changed, true);
+  } finally { fs.writeFileSync(exe, original); }
+});
+
+test("Linux retries an index observation if its configuration changes and is restored", { skip: process.platform !== "linux" }, async t => {
+  const { f, backend, home, starts, health, setHealth } = await live_index_fixture(t);
+  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
+  const observer = new IndexObserver(f.state), request = McpClient.prototype.request, file = path.join(home, "daemon.toml");
+  const original = fs.readFileSync(file); let changed = false;
+  f.clients.push(observer);
+  t.mock.method(McpClient.prototype, "request", function (method, params, options) {
+    const result = request.call(this, method, params, options);
+    if (!changed && method === "tools/call" && params?.name === "health") {
+      changed = true; fs.writeFileSync(file, "temporary configuration"); fs.writeFileSync(file, original);
+    }
+    return result;
+  });
+  assert.equal((await observer.observe(backend.effective(backend.current()), f.root, f.profile)).index_state, "ready");
+  assert.equal(changed, true);
+  assert.equal(starts.length, 2, "the observation that used changing inputs must be discarded and repeated");
 });
 
 testProtected("a session reuses one verified native reader and rehashes only on a new launch", async t => {
-  const { f, backend, home, starts, copies, health, setHealth } = await live_index_fixture(t);
+  const { f, backend, home, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), observer = new IndexObserver(f.state);
   f.clients.push(observer); t.after(() => observer.close());
   for (let i = 0; i < 3; i++) assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+  assert.equal(starts.length, 1);
   const readers = await active_readers(f.state, f.root); assert.equal(readers.length, 1);
   const [reader] = readers;
-  assert.equal(reader.snapshotMayExist, true);
+  assert.equal(reader.snapshotMayExist, undefined);
   const owner = path.join(home, "owner.json"), changed = JSON.parse(fs.readFileSync(owner, "utf8")); changed.generation = randomUUID(); fs.writeFileSync(owner, JSON.stringify(changed));
   assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 2); assert.equal(copies.length, 2);
+  assert.equal(starts.length, 2);
   await observer.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-testProtected("replacing and restoring the runtime at dispatch cannot change the verified reader image", async t => {
-  const { f, backend, exe, starts, health, setHealth, onReaderLaunch } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const original = fs.readFileSync(exe), backup = exe + ".backup"; let swapped = false;
-  onReaderLaunch(message => {
-    fs.renameSync(exe, backup); fs.writeFileSync(exe, "untrusted replacement");
-    try { assert.deepEqual(fs.readFileSync(message.command), original); swapped = true; }
-    finally { fs.rmSync(exe, { force: true }); fs.renameSync(backup, exe); }
-  });
-  const observer = new IndexObserver(f.state), config = backend.effective(backend.current());
-  f.clients.push(observer); t.after(() => observer.close());
-  assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(swapped, true); assert.equal(starts.length, 1);
-});
-
-test("Windows protects the reader copy and pins its directory", { skip: process.platform !== "win32" }, async t => {
-  const { f, backend, health, setHealth } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const observer = new IndexObserver(f.state); f.clients.push(observer); t.after(() => observer.close());
-  assert.equal((await observer.observe(backend.effective(backend.current()), f.root, f.profile)).index_state, "ready");
-  const directory = observer.entry.snapshotHome, reader = path.join(directory, "reader.exe"),
-    files = [reader, path.join(directory, "daemon.json"), path.join(directory, "daemon.toml")];
-  assert.throws(() => fs.renameSync(directory, directory + ".moved"), /EPERM|EACCES|EBUSY|access|permission/i);
-  for (const file of files) assert.throws(() => fs.renameSync(file, file + ".moved"), /EPERM|EACCES|EBUSY|access|permission/i);
-  const parent = path.dirname(directory);
-  assert.throws(() => fs.renameSync(parent, parent + ".moved"), /EPERM|EACCES|EBUSY|access|permission/i);
-  const intermediate = path.dirname(parent);
-  assert.throws(() => fs.renameSync(intermediate, intermediate + ".moved"), /EPERM|EACCES|EBUSY|access|permission/i);
-  const k = createRequire(import.meta.url)(path.join(ROOT, "vendor/native", `win32_${process.arch}`, "koffi.node"));
-  const adv = k.load("advapi32.dll"), kernel = k.load("kernel32.dll");
-  const open = adv.func("int __stdcall OpenProcessToken(void *process, uint32_t access, _Out_ void **token)"),
-    info = adv.func("int __stdcall GetTokenInformation(void *token, int kind, _Out_ void *buffer, uint32_t size, _Out_ uint32_t *needed)"),
-    get = adv.func("uint32_t __stdcall GetNamedSecurityInfoW(str16 file, int type, uint32_t info, _Out_ void **owner, void *group, _Out_ void **dacl, void *sacl, _Out_ void **descriptor)"),
-    aclInfo = adv.func("int __stdcall GetAclInformation(void *acl, _Out_ void *information, uint32_t size, int kind)"),
-    aceAt = adv.func("int __stdcall GetAce(void *acl, uint32_t index, _Out_ void **ace)"), equal = adv.func("int __stdcall EqualSid(void *left, void *right)"),
-    current = kernel.func("void * __stdcall GetCurrentProcess()"), close = kernel.func("int __stdcall CloseHandle(void *handle)"), free = kernel.func("void * __stdcall LocalFree(void *pointer)");
-  const token = [null], userBuffer = Buffer.alloc(4096), needed = [0]; assert.ok(open(current(), 8, token));
-  try {
-    assert.ok(info(token[0], 1, userBuffer, userBuffer.length, needed)); const user = k.decode(userBuffer, "void *");
-    for (const target of [directory, ...files]) {
-      const owner = [null], dacl = [null], descriptor = [null]; assert.equal(get(target, 1, 5, owner, null, dacl, null, descriptor), 0);
-      try {
-        assert.ok(equal(owner[0], user), `owner differs from the token user: ${path.basename(target)}`); const data = Buffer.alloc(12); assert.ok(aclInfo(dacl[0], data, data.length, 2)); assert.equal(data.readUInt32LE(0), 1);
-        const ace = [null]; assert.ok(aceAt(dacl[0], 0, ace));
-        const header = Buffer.from(k.decode(ace[0], "uint8_t", 4)), bytes = Buffer.from(k.decode(ace[0], "uint8_t", header.readUInt16LE(2)));
-        assert.equal(bytes[0], 0); assert.ok(equal(bytes.subarray(8), user));
-      } finally { if (descriptor[0]) free(descriptor[0]); }
-    }
-    assert.ok(userBuffer.length > 0); // Keep the backing TOKEN_USER buffer alive while using its SID pointer.
-  } finally { close(token[0]); }
-});
-
-testProtected("a replaced observation directory cannot redirect cleanup", { skip: process.platform === "win32" }, async t => {
-  const { f, backend, health, setHealth } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const observer = new IndexObserver(f.state); t.after(async () => { await observer.close().catch(() => {}); });
-  assert.equal((await observer.observe(backend.effective(backend.current()), f.root, f.profile)).index_state, "ready");
-  const directory = observer.entry.snapshotHome, moved = directory + ".moved", victim = path.join(f.base, "victim");
-  fs.mkdirSync(victim); const target = path.join(victim, "daemon.json"); fs.writeFileSync(target, "untouched");
-  fs.renameSync(directory, moved); fs.symlinkSync(victim, directory, "dir");
-  await assert.rejects(observer.close(), /Private observation directory changed/);
-  assert.equal(fs.readFileSync(target, "utf8"), "untouched");
-  const readers = await active_readers(f.state, f.root); assert.equal(readers.length, 1); assert.equal(readers[0].orphaned, true);
-  await assert.rejects(acquire_reader(f.state, f.root), /Не подтверждено завершение предыдущего читателя/);
-});
-
-test("replacing the observation directory during copy cannot redirect the reader", { skip: process.platform !== "linux" }, async t => {
-  const { f, backend, home, starts, health, setHealth, onCopyLaunch } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const observer = new IndexObserver(f.state); f.clients.push(observer);
-  const victim = path.join(f.base, "copy-victim"); fs.mkdirSync(victim);
-  const marker = path.join(victim, "daemon.json"); fs.writeFileSync(marker, "untouched");
-  let swapped = false;
-  onCopyLaunch(() => {
-    const name = fs.readdirSync(home).find(item => item.startsWith(".observation-"));
-    const original = path.join(home, name); fs.renameSync(original, original + ".moved"); fs.symlinkSync(victim, original, "dir"); swapped = true;
-  });
-  try {
-    await assert.rejects(observer.observe(backend.effective(backend.current()), f.root, f.profile), /Private observation directory changed/);
-    assert.equal(swapped, true); assert.equal(starts.length, 0);
-    assert.equal(fs.readFileSync(marker, "utf8"), "untouched"); assert.deepEqual(fs.readdirSync(victim), ["daemon.json"]);
-    const readers = await active_readers(f.state, f.root); assert.equal(readers.length, 1); assert.equal(readers[0].orphaned, true);
-    await assert.rejects(acquire_reader(f.state, f.root), /Не подтверждено завершение предыдущего читателя/);
-  } finally { observer.cleanupError = null; }
-});
-
-testProtected("temporary snapshot cleanup errors are retried without retaining a reader lease", async t => {
-  const { f, backend, health, setHealth } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const observer = new IndexObserver(f.state); f.clients.push(observer); t.after(() => observer.close());
-  assert.equal((await observer.observe(backend.effective(backend.current()), f.root, f.profile)).index_state, "ready");
-  const snapshot = observer.entry.snapshotDirectory, unlink = snapshot.unlink; let attempts = 0;
-  snapshot.unlink = name => {
-    if (/^reader/.test(name) && attempts++ === 0) throw Object.assign(new Error("temporarily locked"), { code: "EBUSY" });
-    return unlink(name);
-  };
-  await observer.close(); assert.equal(attempts, 2);
-  assert.deepEqual(await active_readers(f.state, f.root), []);
-});
-
-testProtected("snapshot cleanup failure blocks repeated readers even after the process exits", async t => {
+testProtected("separate settings sessions keep independent reusable readers", async t => {
   const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const observer = new IndexObserver(f.state), config = backend.effective(backend.current());
-  f.clients.push(observer); t.after(() => observer.close());
-  assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  const snapshot = observer.entry.snapshotDirectory, unlink = snapshot.unlink;
-  snapshot.unlink = name => { if (/^reader/.test(name)) throw Object.assign(new Error("persistent file lock"), { code: "EACCES" }); return unlink(name); };
-  try {
-    await assert.rejects(observer.retire(), error => error.outcomeUnknown === true && /persistent file lock/.test(error.message));
-    const readers = await active_readers(f.state, f.root);
-    assert.equal(readers.length, 1); assert.equal(readers[0].orphaned, true);
-    await assert.rejects(observer.observe(config, f.root, f.profile), /Завершение предыдущего читателя индекса не подтверждено/);
-    process.env.EDT_AI_INSTANCE = "second"; grant_preparation(f.state, f.root, ["code-index"]);
-    const other = new IndexObserver(f.state); f.clients.push(other);
-    await assert.rejects(other.observe(backend.effective(backend.current()), f.root, f.profile), /Не подтверждено завершение предыдущего читателя/);
-    assert.equal(starts.length, 1);
-  } finally { process.env.EDT_AI_INSTANCE = "first"; observer.cleanupError = null; }
-});
-
-testProtected("snapshot cleanup failure before runtime validation retains a project-wide barrier", async t => {
-  const { f, backend, home, starts, health, setHealth } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const outside = path.join(f.base, "foreign-index"), ownerFile = path.join(home, "owner.json"), owner = JSON.parse(fs.readFileSync(ownerFile, "utf8"));
-  fs.writeFileSync(outside, "fixture"); owner.executable = outside; fs.writeFileSync(ownerFile, JSON.stringify(owner));
-  const readdir = fs.readdirSync;
-  const failure = t.mock.method(fs, "readdirSync", (directory, ...args) => {
-    if (path.basename(String(directory)).startsWith(".observation-")) throw Object.assign(new Error("fixture snapshot failure"), { code: "EACCES" });
-    return readdir(directory, ...args);
-  });
-  const observer = new IndexObserver(f.state); f.clients.push(observer);
-  try {
-    await assert.rejects(observer.observe(backend.effective(backend.current()), f.root, f.profile), error => error.outcomeUnknown === true && error.cleanupUnconfirmed === true);
-    const readers = await active_readers(f.state, f.root); assert.equal(readers.length, 1); assert.equal(readers[0].orphaned, true);
-    process.env.EDT_AI_INSTANCE = "second";
-    await assert.rejects(acquire_reader(f.state, f.root), /Не подтверждено завершение предыдущего читателя/);
-    assert.equal(starts.length, 0);
-  } finally { process.env.EDT_AI_INSTANCE = "first"; failure.mock.restore(); observer.cleanupError = null; }
-});
-
-testProtected("failed snapshot initialization preserves the reader barrier without a snapshot object", { skip: process.platform === "win32" }, async t => {
-  const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const open = fs.openSync, remove = fs.rmdirSync;
-  const pinFailure = t.mock.method(fs, "openSync", (file, ...args) => {
-    if (typeof file === "string" && path.basename(file).startsWith(".observation-")) throw Object.assign(new Error("fixture pin failure"), { code: "EMFILE" });
-    return open(file, ...args);
-  });
-  const removeFailure = t.mock.method(fs, "rmdirSync", (file, ...args) => {
-    if (typeof file === "string" && path.basename(file).startsWith(".observation-")) throw Object.assign(new Error("fixture cleanup failure"), { code: "EACCES" });
-    return remove(file, ...args);
-  });
-  const observer = new IndexObserver(f.state); f.clients.push(observer);
-  try {
-    await assert.rejects(observer.observe(backend.effective(backend.current()), f.root, f.profile), error => error.outcomeUnknown === true && error.cleanupUnconfirmed === true);
-    const readers = await active_readers(f.state, f.root); assert.equal(readers.length, 1); assert.equal(readers[0].orphaned, true);
-    process.env.EDT_AI_INSTANCE = "second";
-    await assert.rejects(acquire_reader(f.state, f.root), /Не подтверждено завершение предыдущего читателя/);
-    assert.equal(starts.length, 0);
-  } finally { process.env.EDT_AI_INSTANCE = "first"; pinFailure.mock.restore(); removeFailure.mock.restore(); observer.cleanupError = null; }
-});
-
-testProtected("separate observers share at most one read-only reader for the same project and instance", async t => {
-  const { f, backend, starts, copies, health, setHealth, onReaderLaunch } = await live_index_fixture(t);
-  const children = [], overlaps = [];
-  onReaderLaunch((_message, child) => {
-    overlaps.push(children.some(previous => previous.exitCode === null && previous.signalCode === null));
-    children.push(child);
-  });
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), first = new IndexObserver(f.state), second = new IndexObserver(f.state);
-  f.clients.push(second, first);
-  t.after(async () => { await second.close(); await first.close(); });
+  f.clients.push(first, second);
   for (let i = 0; i < 8; i++) {
     const observer = i % 2 ? second : first;
     assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-    assert.equal((await active_readers(f.state, f.root)).length, 1);
+    assert.equal((await active_readers(f.state, f.root)).length, Math.min(i + 1, 2));
   }
-  const events = read_diagnostic_logs(f.state).events.filter(event => event.component === "index-observer")
-    .map(({ event, detail }) => ({ event, reason: detail?.reason }));
-  // The conservative lock watcher may retire an idle reader if even this
-  // test's active_readers call holds the project lock for over a second under
-  // load. Replacement is safe only after that reader has stopped.
-  const stopped = events.filter(event => event.event === "reader_stopped");
-  assert.ok(overlaps.every(value => !value), JSON.stringify(events));
-  assert.ok(stopped.every(event => event.reason === "index_locked"), JSON.stringify(events));
-  assert.equal(copies.length, starts.length, JSON.stringify(events));
-  // After a lock-triggered handoff either observer can own the shared reader.
-  await second.close(); assert.ok((await active_readers(f.state, f.root)).length <= 1);
-  await first.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
+  assert.equal(starts.length, 2);
+  const otherId = second.entry.lease.id;
+  await first.close();
+  assert.deepEqual((await active_readers(f.state, f.root)).map(reader => reader.id), [otherId]);
+  assert.equal((await second.observe(config, f.root, f.profile)).index_state, "ready");
+  assert.equal(starts.length, 2);
+  await second.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
 testProtected("repeated index checks keep daemon connections bounded and release them", { timeout: 25000 }, async t => {
@@ -1784,10 +1716,10 @@ testProtected("failed reader cleanup leaves an orphan barrier and does not leave
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), observer = new IndexObserver(f.state);
   assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  const close = McpClient.prototype.close;
+  const failedClient = observer.entry.client, close = McpClient.prototype.close;
   t.mock.method(McpClient.prototype, "close", async function (...args) {
     await close.apply(this, args);
-    throw Object.assign(new Error("termination confirmation failed"), { outcomeUnknown: true });
+    if (this === failedClient) throw Object.assign(new Error("termination confirmation failed"), { outcomeUnknown: true });
   });
   const closing = observer.close(); assert.equal(observer.close(), closing);
   await assert.rejects(closing, /termination confirmation failed/);
@@ -1795,11 +1727,11 @@ testProtected("failed reader cleanup leaves an orphan barrier and does not leave
   const readers = await active_readers(f.state, f.root);
   assert.equal(readers.length, 1); assert.equal(readers[0].orphaned, true);
   const other = new IndexObserver(f.state);
-  await assert.rejects(other.observe(config, f.root, f.profile), /Не подтверждено завершение/);
+  assert.equal((await other.observe(config, f.root, f.profile)).index_state, "ready");
   await other.close();
 });
 
-testProtected("a closing reader is replaced only after its process and lease are closed", async t => {
+testProtected("a closing reader does not block a different session", async t => {
   const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), first = new IndexObserver(f.state), second = new IndexObserver(f.state);
@@ -1815,14 +1747,12 @@ testProtected("a closing reader is replaced only after its process and lease are
   });
   const closing = first.close(); await blocked;
   const pending = second.observe(config, f.root, f.profile);
-  await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(starts.length, 1, "a replacement cannot start before the first reader is closed");
-  release(); await closing;
   assert.equal((await pending).index_state, "ready");
-  assert.equal(starts.length, 2);
+  assert.equal(starts.length, 2, "the independent reader can start while the first closes");
+  release(); await closing;
 });
 
-testProtected("a session hands off a reader even when closing starts before the marker changes", async t => {
+testProtected("an independent reader starts while another reader's close is delayed", async t => {
   const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const config = backend.effective(backend.current()), first = new IndexObserver(f.state), second = new IndexObserver(f.state);
@@ -1835,10 +1765,8 @@ testProtected("a session hands off a reader even when closing starts before the 
   first.entry.lease.markClosing = async () => { entered(); await gate; return mark(); };
   const closing = first.close(); await blocked;
   const pending = second.observe(config, f.root, f.profile);
-  await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(starts.length, 1);
-  release(); await closing;
   assert.equal((await pending).index_state, "ready"); assert.equal(starts.length, 2);
+  release(); await closing;
 });
 
 for (const change of ["disable", "revoke"]) testProtected(`an idle index reader closes when its ${change} input changes`, async t => {
@@ -1854,7 +1782,7 @@ for (const change of ["disable", "revoke"]) testProtected(`an idle index reader 
 });
 
 testProtected("unrelated settings do not restart or rehash an idle index reader", async t => {
-  const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
+  const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
   f.clients.push(observer); t.after(() => observer.close());
@@ -1864,11 +1792,11 @@ testProtected("unrelated settings do not restart or rehash an idle index reader"
   await new Promise(resolve => setTimeout(resolve, 900));
   assert.equal((await active_readers(f.state, f.root)).length, 1);
   assert.equal((await observer.observe(backend.effective(backend.current()), f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+  assert.equal(starts.length, 1);
 });
 
 testProtected("an unrelated BSL runtime update does not restart or rehash the index reader", async t => {
-  const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
+  const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
   f.clients.push(observer); t.after(() => observer.close());
@@ -1877,11 +1805,11 @@ testProtected("an unrelated BSL runtime update does not restart or rehash the in
   fs.writeFileSync(path.join(f.state, "runtime-lock.json"), JSON.stringify({ "bsl-ls": { release: "fixture" } }));
   await new Promise(resolve => setTimeout(resolve, 900));
   assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+  assert.equal(starts.length, 1);
 });
 
 testProtected("granting BSL preparation preserves index readiness and its live reader", async t => {
-  const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
+  const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
   f.clients.push(observer); t.after(() => observer.close());
@@ -1892,11 +1820,11 @@ testProtected("granting BSL preparation preserves index readiness and its live r
   assert.equal(read_component_checks(f.state, config, f.profile).find(item => item.id === "code-index").state, "ready");
   await new Promise(resolve => setTimeout(resolve, 900));
   assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+  assert.equal(starts.length, 1);
 });
 
 testProtected("an unrelated grant during an index check discards the result but keeps its reader", async t => {
-  const { f, backend, starts, copies, health, setHealth } = await live_index_fixture(t);
+  const { f, backend, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const observer = new IndexObserver(f.state);
   f.clients.push(observer); t.after(() => observer.close());
@@ -1914,7 +1842,7 @@ testProtected("an unrelated grant during an index check discards the result but 
   await assert.rejects(pending, error => error.inputsChanged === true);
   assert.equal((await active_readers(f.state, f.root)).length, 1);
   assert.equal((await observer.observe(config, f.root, f.profile)).index_state, "ready");
-  assert.equal(starts.length, 1); assert.equal(copies.length, 1);
+  assert.equal(starts.length, 1);
 });
 
 testProtected("a synchronous reader spawn failure does not leave an orphan barrier", async t => {
@@ -1932,57 +1860,8 @@ testProtected("a synchronous reader spawn failure does not leave an orphan barri
   assert.deepEqual(await active_readers(f.state, f.root), []);
 });
 
-testProtected("a timed-out copy worker and detached child exit before releasing the lease", { timeout: 20000 }, async t => {
-  const { f, backend, starts, copies, health, setHealth, onCopyLaunch } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const settings = backend.current(); settings.mcp.managed["code-index"].timeout_seconds = 2;
-  fs.writeFileSync(f.env.EDT_AI_SETTINGS, JSON.stringify(settings));
-  const marker = path.join(f.base, "copy-hang-pids.json"), fixtureFile = fileURLToPath(new URL("./fixtures/index-copy-hang.mjs", import.meta.url));
-  onCopyLaunch(message => ({ ...message, args: [fixtureFile], env: { ...message.env, EDT_AI_TEST_HANG_MARKER: marker } }));
-  const observer = new IndexObserver(f.state); f.clients.push(observer);
-  const observation = observer.observe(backend.effective(backend.current()), f.root, f.profile);
-  for (let i = 0; i < 300 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.ok(fs.existsSync(marker), "copy fixture and detached child must start");
-  const pids = Object.values(JSON.parse(fs.readFileSync(marker, "utf8")));
-  await assert.rejects(observation, /Истекло время подготовки/);
-  assert.ok(pids.every(pid => !alive(pid)), "copy worker and its descendant must both stop");
-  assert.equal(starts.length, 0); assert.equal(copies.length, 1);
-  assert.deepEqual(await active_readers(f.state, f.root), []);
-});
-
-testProtected("closing the observer cancels an in-progress copy tree", { timeout: 15000 }, async t => {
-  const { f, backend, starts, health, setHealth, onCopyLaunch } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const marker = path.join(f.base, "cancel-copy-pids.json"), fixtureFile = fileURLToPath(new URL("./fixtures/index-copy-hang.mjs", import.meta.url));
-  onCopyLaunch(message => ({ ...message, args: [fixtureFile], env: { ...message.env, EDT_AI_TEST_HANG_MARKER: marker } }));
-  const observer = new IndexObserver(f.state); f.clients.push(observer);
-  const observation = observer.observe(backend.effective(backend.current()), f.root, f.profile);
-  const rejected = assert.rejects(observation, /проверенную копию|сеанс|завершения/i);
-  for (let i = 0; i < 300 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.ok(fs.existsSync(marker)); const pids = Object.values(JSON.parse(fs.readFileSync(marker, "utf8")));
-  await observer.close(); await rejected;
-  assert.ok(pids.every(pid => !alive(pid))); assert.equal(starts.length, 0);
-  assert.deepEqual(await active_readers(f.state, f.root), []);
-});
-
-testProtected("index maintenance stops a running copy tree before restarting the daemon", { timeout: 15000 }, async t => {
-  const { f, backend, starts, health, setHealth, onCopyLaunch } = await live_index_fixture(t);
-  grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
-  const marker = path.join(f.base, "maintenance-copy-pids.json"), fixtureFile = fileURLToPath(new URL("./fixtures/index-copy-hang.mjs", import.meta.url));
-  onCopyLaunch(message => ({ ...message, args: [fixtureFile], env: { ...message.env, EDT_AI_TEST_HANG_MARKER: marker } }));
-  const observer = new IndexObserver(f.state), config = backend.effective(backend.current()); f.clients.push(observer);
-  const observation = observer.observe(config, f.root, f.profile), rejected = assert.rejects(observation);
-  for (let i = 0; i < 300 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 10));
-  assert.ok(fs.existsSync(marker)); const pids = Object.values(JSON.parse(fs.readFileSync(marker, "utf8"))), calls = [];
-  await restart_index(f.state, config, f.root, f.profile, { installed: async () => "fixture", stop: async () => calls.push("stop"),
-    restart: async () => calls.push("restart"), smoke: async () => ({ index_ready: true }) });
-  await rejected; assert.ok(pids.every(pid => !alive(pid)));
-  assert.deepEqual(calls, ["stop", "restart"]); assert.equal(starts.length, 0);
-  assert.deepEqual(await active_readers(f.state, f.root), []);
-});
-
 test("repeated index reader lifecycles do not accumulate process handles or descriptors", { timeout: 30000, skip: process.platform === "darwin" }, async t => {
-  const { f, backend, home, starts, copies, health, setHealth } = await live_index_fixture(t);
+  const { f, backend, home, starts, health, setHealth } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const count = () => process.platform === "win32" ? windows_handle_count() : fs.readdirSync("/proc/self/fd").length;
   const before = count(), config = backend.effective(backend.current());
@@ -1992,8 +1871,8 @@ test("repeated index reader lifecycles do not accumulate process handles or desc
     await observer.close(); assert.deepEqual(await active_readers(f.state, f.root), []);
   }
   await new Promise(resolve => setTimeout(resolve, 200));
-  assert.equal(starts.length, 6); assert.equal(copies.length, 6);
-  assert.ok(count() - before <= 8, "reader and copy worker handles must be released");
+  assert.equal(starts.length, 6);
+  assert.ok(count() - before <= 8, "reader handles must be released");
   assert.deepEqual(fs.readdirSync(home).filter(name => name.startsWith(".observation-")), []);
 });
 

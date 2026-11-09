@@ -10,12 +10,13 @@ const limit = 1024 * 1024;
 
 function snapshot_file(file) {
   const value = read_regular_file(file, limit);
-  return value ? { digest: sha256(value.bytes), bytes: value.bytes.toString("base64") } : { digest: "missing", bytes: null };
+  return value ? { digest: sha256(value.bytes), bytes: value.bytes.toString("base64"),
+    stamp: [value.stat.dev, value.stat.ino, value.stat.size, value.stat.mtimeNs, value.stat.ctimeNs].map(String) }
+    : { digest: "missing", bytes: null, stamp: null };
 }
 
-// Capture the bytes that the native client will actually receive, along with
-// the same descriptor inventory used in the component fingerprint. A later
-// A→B→A replacement of the originals cannot alter this snapshot.
+// Capture input bytes and repository inventory for before/after validation.
+// The native client reads the existing project files, not these in-memory bytes.
 export function capture_index_snapshot(state, root, profile) {
   const home = path.join(project_directory(state, root), "code-index"), repositories = repository_projects(root, profile.repositories);
   const selection = index_selection(root, profile, repositories);

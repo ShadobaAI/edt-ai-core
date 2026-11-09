@@ -387,16 +387,17 @@ test("readiness inspection and operation polling return data without settings UI
   const f = fixture(t); f.save();
   const client = await unbound(t, f);
   const tools = (await client.request("tools/list")).tools;
-  for (const name of ["settings.inspect", "settings.check", "settings.probe_connections", "settings.run_check", "settings.operation", "settings.create", "settings.load"])
+  for (const name of ["settings.inspect", "settings.probe_connections", "settings.run_check", "settings.operation", "settings.create", "settings.load"])
     assert.equal(tools.find(tool => tool.name === name)._meta.ui.resourceUri, undefined, name);
-  const checked = (await client.call("settings.check", { projectRoot: f.root })).structuredContent;
+  assert.equal(tools.some(tool => tool.name === "settings.check"), false);
+  const checked = (await client.call("settings.inspect", { projectRoot: f.root })).structuredContent;
   assert.equal(checked.profile.status, "loaded");
   assert.deepEqual(checked.nextSteps, ["configure_connections", "prepare_managed_with_authorization"]);
   assert.equal(checked.mode, undefined);
   assert.equal((await client.call("settings.operation", {})).structuredContent.status, "idle");
   assert.deepEqual(fs.readdirSync(f.state).filter(name => name !== "diagnostics"), []);
   const other = path.join(f.base, "other"); fs.mkdirSync(other);
-  await assert.rejects(client.call("settings.check", { projectRoot: other }), /закреплён/);
+  await assert.rejects(client.call("settings.inspect", { projectRoot: other }), /закреплён/);
 });
 
 async function endpoint(t, root, getProjects = () => [{ name: "Product", path: root, open: true, state: "ready", edtProject: true }]) {
@@ -818,6 +819,95 @@ test("explicit managed binding preserves the public catalogue and honors the pre
   await client.call("core_runtime_status", {});
   assert.ok((await client.call("core_runtime_tools", {})).structuredContent.tools.some(tool => tool.name === "inspect"));
   assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, true);
+});
+
+test("a crashed managed reader reconnects once for concurrent calls without affecting another relay", { timeout: 30000 }, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  grant_preparation(f.state, f.root, ["code-index"]);
+  const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href, starts = path.join(f.base, "starts.log");
+  const env = { ...f.env, NODE_OPTIONS: [process.env.NODE_OPTIONS, "--import " + preload].filter(Boolean).join(" "),
+    FIXTURE_CRASH_TOOL: "1", FIXTURE_START_LOG: starts };
+  const makeRelay = async () => {
+    const client = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "code-index"], f.root, env, 15);
+    f.clients.push(client); await client.initialize(); return client;
+  };
+  const [first, second] = await Promise.all([makeRelay(), makeRelay()]);
+  const call = async client => (await client.call("core_runtime_call", { calls: [{ name: "inspect", arguments: {} }] })).structuredContent.results[0].result.structuredContent.pid;
+  const [firstPid, secondPid] = await Promise.all([call(first), call(second)]);
+  assert.notEqual(firstPid, secondPid);
+  const crashed = await first.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "crash", arguments: {} }] } });
+  assert.equal(crashed.isError, true);
+  assert.equal(crashed.structuredContent.results[0].error.executionOutcome, "outcome_unknown");
+  const recovered = await Promise.all(Array.from({ length: 6 }, () => call(first)));
+  assert.ok(recovered.every(pid => pid === recovered[0] && pid !== firstPid));
+  assert.equal(await call(second), secondPid);
+  assert.equal(fs.readFileSync(starts, "utf8").trim().split("\n").length, 3);
+});
+
+test("a reused daemon without a stored creation time is still monitored", { skip: !["win32", "linux"].includes(process.platform), timeout: 20000 }, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  grant_preparation(f.state, f.root, ["code-index"]);
+  const { project_home, save_json } = await import("../scripts/runtime.mjs");
+  const owner = path.join(project_home(f.state, f.root), "code-index", "owner.json");
+  const daemon = async () => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+    const stopped = new Promise(resolve => child.once("close", resolve));
+    await once(child, "spawn");
+    const close = async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await stopped; };
+    f.clients.push({ close });
+    return { child, close };
+  };
+  const firstDaemon = await daemon(); save_json(owner, { pid: firstDaemon.child.pid });
+  const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href, starts = path.join(f.base, "starts.log");
+  const client = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "code-index"], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + preload, FIXTURE_START_LOG: starts }, 15);
+  f.clients.push(client); await client.initialize();
+  const call = async () => (await client.call("core_runtime_call", { calls: [{ name: "inspect", arguments: {} }] })).structuredContent.results[0].result.structuredContent.pid;
+  const originalReader = await call();
+  await firstDaemon.close();
+  const nextDaemon = await daemon(); save_json(owner, { pid: nextDaemon.child.pid });
+  const readers = await Promise.all([call(), call(), call()]);
+  assert.ok(readers.every(pid => pid === readers[0] && pid !== originalReader));
+  assert.equal(fs.readFileSync(starts, "utf8").trim().split("\n").length, 2);
+});
+
+test("a maintenance reconnect waits for an active native request", { timeout: 20000 }, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  grant_preparation(f.state, f.root, ["code-index"]);
+  const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href;
+  const client = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "code-index"], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + preload, FIXTURE_RUNTIME_BATCH: "1", FIXTURE_SLOW_STARTED: "1" }, 15);
+  f.clients.push(client); await client.initialize();
+  const initial = (await client.call("core_runtime_status", {})).structuredContent.binding.connectionId;
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  client.options.onNotification = message => { if (message.method === "notifications/progress" && message.params.progressToken === "fixture-slow") entered(); };
+  const slow = client.call("core_runtime_call", { calls: [{ name: "slow", arguments: {} }] });
+  await started;
+  const { signal_component } = await import("../scripts/runtime.mjs");
+  signal_component(f.state, f.root, "code-index");
+  const reconnected = client.call("core_runtime_status", {});
+  const result = await slow;
+  assert.equal(result.structuredContent.completed, 1, JSON.stringify(result));
+  const next = (await reconnected).structuredContent;
+  assert.equal(next.ready, true);
+  assert.notEqual(next.binding.connectionId, initial);
+});
+
+test("a managed relay stops using a revoked preparation grant and reconnects after it is restored", { timeout: 20000 }, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  grant_preparation(f.state, f.root, ["code-index"]);
+  const preload = new URL("./fixtures/managed-spawn.mjs", import.meta.url).href;
+  const client = new McpClient([process.execPath, path.join(ROOT, "scripts/lazy_mcp.mjs"), "--component", "code-index"], f.root,
+    { ...f.env, NODE_OPTIONS: "--import " + preload }, 15);
+  f.clients.push(client); await client.initialize();
+  const call = () => client.call("core_runtime_call", { calls: [{ name: "inspect", arguments: {} }] });
+  assert.equal((await call()).structuredContent.completed, 1);
+  const { instance_directory } = await import("../scripts/project_paths.mjs");
+  fs.unlinkSync(path.join(instance_directory(f.state, f.root), "first.preparation.json"));
+  await assert.rejects(call(), /не подготовлен/i);
+  grant_preparation(f.state, f.root, ["code-index"]);
+  assert.equal((await call()).structuredContent.completed, 1);
 });
 
 test("v8std binding never sends the local project directory, including unsolicited roots callbacks", async t => {

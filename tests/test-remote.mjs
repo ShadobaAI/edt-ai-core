@@ -449,8 +449,9 @@ test("relay reports local HTTP contract failure before dispatch without inventin
   const result = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "change", arguments: { value: "x" } }] } });
   assert.equal(result.isError, true);
   assert.equal(result.structuredContent.results[0].error.outcome, "not_executed");
+  assert.equal(result.structuredContent.results[0].error.executionOutcome, "not_executed");
   assert.match(result.structuredContent.results[0].error.message, /Incompatible native HTTP contract/);
-  assert.deepEqual(result.structuredContent.actions, [{ position: 1, name: "change", status: "not_started" }]);
+  assert.deepEqual(result.structuredContent.actions, [{ position: 1, name: "change", status: "not_started", executionOutcome: "not_executed" }]);
   assert.equal(e.calls.filter(call => call.message.method === "tools/call").length, 0);
 });
 
@@ -474,15 +475,62 @@ test("batch summaries distinguish repeated calls, server errors and unknown outc
     const response = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls } });
     assert.equal(response.isError, true);
     assert.deepEqual(response.structuredContent.actions, [
-      { position: 1, name: "change", status: "response_ok" },
-      { position: 2, name: "change", status: expected },
-      { position: 3, name: "change", status: "not_started" },
+      { position: 1, name: "change", status: "response_ok", executionOutcome: "completed" },
+      { position: 2, name: "change", status: expected, executionOutcome: expected === "unknown" ? "outcome_unknown" : "completed" },
+      { position: 3, name: "change", status: "not_started", executionOutcome: "not_executed" },
     ]);
     assert.deepEqual(dispatched, [1, 2]);
     assert.equal(response.structuredContent.stopped.rollback, "not_performed");
     if (expected === "response_error") assert.equal(response.structuredContent.results[1].result.content[0].text, "specific refusal");
-    else assert.equal(response.structuredContent.results[1].error.outcome, "unknown");
+    else {
+      assert.equal(response.structuredContent.results[1].error.outcome, "unknown");
+      assert.equal(response.structuredContent.results[1].error.executionOutcome, "outcome_unknown");
+    }
   }
+});
+
+test("concurrent callers share a failed connection attempt and a later request retries", { timeout: 15000 }, async t => {
+  const f = fixture(t); let fail = true, entered, release;
+  const started = new Promise(resolve => { entered = resolve; }), held = new Promise(resolve => { release = resolve; });
+  t.after(() => release());
+  const e = await endpoint(t, async ({ message, reply, error }) => {
+    if (message.method === "server/discover" && fail) { entered(); await held; return error(-32000, 503); }
+    if (message.method === "server/discover") return reply({ supportedVersions: ["2026-07-28"], capabilities: {} });
+    return reply({ tools: [{ name: "inspect", inputSchema: { type: "object" } }] });
+  });
+  f.profile.connections = { edt: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const requests = Array.from({ length: 8 }, () => client.call("core_runtime_status", {}));
+  await started; release();
+  assert.ok((await Promise.all(requests)).every(result => result.structuredContent.ready === false));
+  assert.equal(e.calls.filter(call => call.message.method === "server/discover").length, 1);
+  fail = false;
+  assert.equal((await client.call("core_runtime_status", {})).structuredContent.ready, true);
+  assert.equal(e.calls.filter(call => call.message.method === "server/discover").length, 2);
+});
+
+test("an expired external session reports the unknown call even if session cleanup is unconfirmed", async t => {
+  const f = fixture(t); let initialized = 0, calls = 0;
+  const e = await endpoint(t, ({ req, res, message, reply, error }) => {
+    if (req.method === "DELETE") return res.writeHead(404).end();
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } }, 200, { "Mcp-Session-Id": "fixture-" + ++initialized });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: [{ name: "change", inputSchema: { type: "object" } }] });
+    if (++calls === 1) return error(-32000, 404);
+    return reply({ content: [], structuredContent: { accepted: true } });
+  });
+  f.profile.connections = { edt: { url: e.url } }; f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const args = { calls: [{ name: "change", arguments: {} }] };
+  const failed = await client.request("tools/call", { name: "core_runtime_call", arguments: args });
+  assert.equal(failed.isError, true);
+  assert.equal(failed.structuredContent.actions[0].executionOutcome, "outcome_unknown");
+  assert.equal(failed.structuredContent.results[0].error.cleanupUnconfirmed, true);
+  assert.equal(calls, 1, "the dispatched operation was not repeated");
+  const next = await client.call("core_runtime_call", args);
+  assert.equal(next.structuredContent.actions[0].executionOutcome, "completed");
+  assert.equal(calls, 2); assert.equal(initialized, 2);
 });
 
 test("relay validates native calls using the schema's declared JSON Schema dialect", async t => {

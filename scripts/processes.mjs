@@ -13,8 +13,9 @@ export function require_protected_process_support() {
   if (process.platform === "darwin") throw Object.assign(new Error("Безопасное управление деревом локального компонента на macOS пока недоступно."), { code: "PROCESS_CONTAINMENT_UNAVAILABLE", notSpawned: true });
 }
 export function launch(command, args = [], options = {}) {
-  const { sessionOwned = true, readerJob = null, forwardIpc = false, daemonGuard = false, daemonGuardId = null, ...spawnOptions } = options;
+  const { sessionOwned = true, readerJob = null, readerCompletion = null, forwardIpc = false, daemonGuard = false, daemonGuardId = null, ...spawnOptions } = options;
   if (readerJob && !sessionOwned) throw new Error("A reader job requires session ownership");
+  if (readerCompletion && (!readerJob || process.platform !== "linux" || !path.isAbsolute(readerCompletion))) throw new Error("Invalid reader completion receipt");
   if (forwardIpc && !sessionOwned) throw new Error("Forwarded IPC requires session ownership");
   if (daemonGuard && (process.platform !== "linux" || !readerJob || !sessionOwned)) throw new Error("A daemon guard requires a protected Linux supervisor");
   let job = null;
@@ -44,7 +45,7 @@ export function launch(command, args = [], options = {}) {
       if (["terminated", "not_started"].includes(message.readerTree)) lifecycle.readerTree = message.readerTree;
       if (message.error) child.emit("error", Object.assign(new Error(message.error.message), message.error)); });
     if (child.pid) try {
-      child.send({ command, args, env, ...(readerJob ? { readerJob } : {}), ...(forwardIpc ? { forwardIpc: true } : {}), ...(daemonGuard ? { daemonGuard: true, daemonGuardId } : {}) }, error => {
+      child.send({ command, args, env, ...(readerJob ? { readerJob } : {}), ...(readerCompletion ? { readerCompletion } : {}), ...(forwardIpc ? { forwardIpc: true } : {}), ...(daemonGuard ? { daemonGuard: true, daemonGuardId } : {}) }, error => {
         if (error && child.exitCode === null && child.signalCode === null) child.emit("error", error);
       });
     } catch (error) {
