@@ -1983,7 +1983,7 @@ test("an index daemon changed and restored before commit cannot prove the origin
 });
 
 test("a daemon swapped after probe dispatch cannot prove the original daemon ready", async t => {
-  const { f, backend, home, health, setHealth, refresh } = await live_index_fixture(t);
+  const { f, backend, home, starts, health, setHealth, refresh } = await live_index_fixture(t);
   grant_preparation(f.state, f.root, ["code-index"]); setHealth(health());
   const file = path.join(home, "daemon.json"), reachable = fs.readFileSync(file, "utf8");
   const original = JSON.stringify({ ...JSON.parse(reachable), http_port: 1 }); fs.writeFileSync(file, original);
@@ -2001,7 +2001,16 @@ test("a daemon swapped after probe dispatch cannot prove the original daemon rea
     try { return await invoke(request, progress, context); }
     finally { fs.writeFileSync(file, original); }
   };
-  const result = await refresh(); assert.equal(swaps, 1); assert.equal(result.superseded, true);
+  const result = await refresh(); assert.equal(swaps, 1);
+  if (protected_process_skip) {
+    // macOS refuses to launch a local reader, so no successful observation can be superseded.
+    assert.equal(result.superseded, false);
+    assert.equal(result.componentChecks[0]?.state, "error");
+    assert.match(result.componentChecks[0]?.detail, /Безопасное управление деревом/);
+    assert.equal(starts.length, 0);
+  } else {
+    assert.equal(result.superseded, true);
+  }
   const saved = (await backend.main({ action: "read" })).componentChecks.find(item => item.id === "code-index");
   assert.notEqual(saved?.state, "ready");
 });
