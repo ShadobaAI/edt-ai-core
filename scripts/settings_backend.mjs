@@ -89,8 +89,8 @@ function index_observation_detail(state) {
     not_verified: "API индекса не подтвердил актуальность каждого репозитория." })[state] || "API индекса вернул неподдерживаемое состояние.";
 }
 
-// Ensure the local layer is ignored before writing it. Keep existing rules,
-// including negations, and append our rule last so it remains effective.
+// Ensure the local layer is ignored before writing it. Retain an existing
+// exact rule unless a later negation might override it.
 function local_ignore_plan(root) {
   const nominal = path.join(root, ".ai", ".gitignore"), target = inside(root, ".ai/.gitignore");
   const stat = fs.lstatSync(nominal, { throwIfNoEntry: false });
@@ -107,8 +107,12 @@ function local_ignore_plan(root) {
     if (result.status === 0) throw new ConfigError(".ai/project.local.yaml уже отслеживается Git; правило игнорирования его не защитит. Уберите файл из индекса самостоятельно.");
     gitVerified = result.status === 1;
   }
-  const next = original.split(/\r?\n/).filter(line => line.trim() && !line.trimStart().startsWith("#")).at(-1)?.trim() === "/project.local.yaml"
-    ? original : original + (original && !original.endsWith("\n") ? "\n" : "") + "/project.local.yaml\n";
+  let protectedByRule = false;
+  for (const line of original.split(/\r?\n/)) {
+    if (line.startsWith("!")) protectedByRule = false;
+    else if (/^\/?project\.local\.yaml *$/.test(line)) protectedByRule = true;
+  }
+  const next = protectedByRule ? original : original + (original && !original.endsWith("\n") ? "\n" : "") + "/project.local.yaml\n";
   return { target, previous, next, changed: next !== original,
     gitWarning: repository && !gitVerified ? "Не удалось проверить индекс Git: правило игнорирования не защищает уже отслеживаемый файл project.local.yaml. Проверьте индекс самостоятельно." : null };
 }

@@ -111,6 +111,61 @@ test("project import works before a profile exists", async t => {
   assert.equal(project_profile(f.root).profile_id,f.profile.profile_id);
 });
 
+for (const method of ["transfer", "editor", "update", "rename"]) test(`local write through ${method} leaves the default ignore rule unchanged`, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  assert.equal(spawnSync("git", ["init", "-q", f.root]).status, 0);
+  const ignore = path.join(f.root, ".ai/.gitignore"), original = "project.local.yaml\n";
+  fs.writeFileSync(ignore, original);
+  assert.equal(spawnSync("git", ["-C", f.root, "add", "--", ".ai/.gitignore"]).status, 0);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS), local = "connections:\n  edt:\n    url: http://localhost:8123/mcp\n";
+  if (method === "rename") await backend.main({ action: "rename_profile", projectId: "local-name", expectedRevision: backend.edit_revision() });
+  else if (method === "update") await backend.main({ action: "update", scope: "project_local", set: { edtUrl: "http://localhost:8123/mcp" } });
+  else if (method === "editor") {
+    const edit = await backend.main({ action: "edit", format: "yaml", layerScope: "project_local" });
+    const args = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text: local };
+    const preview = await backend.main({ action: "preview", ...args });
+    assert.equal(preview.gitignoreChange, null);
+    await backend.main({ action: "apply", ...args, revision: preview.revision });
+  } else {
+    const context = await backend.main({ action: "transfer_context" });
+    const args = { baseRevision: context.baseRevision, documents: { project_local: local } };
+    const preview = await backend.main({ action: "transfer_preview", ...args });
+    assert.equal(preview.gitignoreChange, null);
+    await backend.main({ action: "transfer_apply", ...args, revision: preview.revision, replace: true });
+  }
+  assert.equal(fs.readFileSync(ignore, "utf8"), original);
+  assert.equal(spawnSync("git", ["-C", f.root, "diff", "--exit-code", "--", ".ai/.gitignore"]).status, 0);
+  assert.equal(spawnSync("git", ["-C", f.root, "check-ignore", "-q", ".ai/project.local.yaml"]).status, 0);
+});
+
+for (const { name, original, changed } of [
+  { name: "unanchored rule before unrelated rules", original: "project.local.yaml\r\ncache/\r\n# retained\r\n", changed: false },
+  { name: "anchored rule before unrelated rules", original: "/project.local.yaml\n*.log\n", changed: false },
+  { name: "rule without a final newline", original: "project.local.yaml", changed: false },
+  { name: "rule with trailing spaces", original: "project.local.yaml   \n", changed: false },
+  { name: "restored ignore after a negation", original: "!*.yaml\nproject.local.yaml\nother/\n", changed: false },
+  { name: "wildcard negation after the ignore", original: "project.local.yaml\n!*.yaml", changed: true },
+  { name: "anchored negation after the ignore", original: "project.local.yaml\n!/project.local.yaml\n", changed: true },
+  { name: "leading space in an anchored rule", original: " /project.local.yaml\n", changed: true },
+]) test(`local write handles ${name}`, async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  assert.equal(spawnSync("git", ["init", "-q", f.root]).status, 0);
+  const ignore = path.join(f.root, ".ai/.gitignore"); fs.writeFileSync(ignore, original);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  await backend.main({ action: "update", scope: "project_local", set: { edtUrl: "http://localhost:8123/mcp" } });
+  assert.equal(fs.readFileSync(ignore, "utf8"), changed ? original + (original.endsWith("\n") ? "" : "\n") + "/project.local.yaml\n" : original);
+  assert.equal(spawnSync("git", ["-C", f.root, "check-ignore", "-q", ".ai/project.local.yaml"]).status, 0);
+});
+
+test("local write keeps an existing ignore rule outside a Git repository", async t => {
+  const f = fixture(t); environment(t, f.env); f.save();
+  const ignore = path.join(f.root, ".ai/.gitignore"), original = "project.local.yaml\n";
+  fs.writeFileSync(ignore, original);
+  const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
+  await backend.main({ action: "update", scope: "project_local", set: { edtUrl: "http://localhost:8123/mcp" } });
+  assert.equal(fs.readFileSync(ignore, "utf8"), original);
+});
+
 for (const method of ["transfer", "editor", "update", "rename"]) test(`first local write through ${method} preserves existing Git rules and ignores the local layer`, async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   assert.equal(spawnSync("git", ["init", "-q", f.root]).status, 0);
