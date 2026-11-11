@@ -28,8 +28,20 @@ try {
   const preload = path.join(temp, "guard.mjs");
   fs.writeFileSync(
     preload,
-    `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module';
-for(const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSync']) { const original=cp[name]; cp[name]=function(command,...args) { const options=args.find(value=>value&&typeof value==='object'&&!Array.isArray(value))||{}; if(name==='exec'||name==='execSync'||options.shell||/^(python[0-9.]*|py|powershell|pwsh|bash|sh)(?:\\.exe|\\.cmd)?$/i.test(path.basename(String(command)))) throw new Error('Forbidden runtime: '+command); if(command==='git')command=process.env.CORE_GIT_EXECUTABLE; return original.call(this,command,...args); }; } syncBuiltinESMExports();`,
+    `import cp from 'node:child_process'; import path from 'node:path'; import {syncBuiltinESMExports} from 'node:module'; import {promisify} from 'node:util';
+for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSync']) {
+  const wrap = original => function(command, ...args) {
+    const options = args.find(value => value && typeof value === 'object' && !Array.isArray(value)) || {};
+    if (name === 'exec' || name === 'execSync' || options.shell || /^(python[0-9.]*|py|powershell|pwsh|bash|sh)(?:\\.exe|\\.cmd)?$/i.test(path.basename(String(command)))) throw new Error('Forbidden runtime: ' + command);
+    if (command === 'git') command = process.env.CORE_GIT_EXECUTABLE;
+    return original.call(this, command, ...args);
+  };
+  const original = cp[name], guarded = wrap(original);
+  // Preserve execFile's output object and child handle without bypassing the guard.
+  if (original[promisify.custom]) guarded[promisify.custom] = wrap(original[promisify.custom]);
+  cp[name] = guarded;
+}
+syncBuiltinESMExports();`,
   );
   const result = spawnSync(node, process.argv.slice(2), {
     env: {

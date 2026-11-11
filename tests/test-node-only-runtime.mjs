@@ -8,6 +8,50 @@ import test from "node:test";
 
 const wrapper = fileURLToPath(new URL("../tools/without-shells.mjs", import.meta.url));
 
+function run_guarded(t, source) {
+  const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "core child process Юникод ")));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const script = path.join(temp, "inspect.mjs");
+  fs.writeFileSync(script, source);
+  const result = spawnSync(process.execPath, [wrapper, script], {
+    encoding: "utf8", windowsHide: true, shell: false, timeout: 30000,
+  });
+  assert.equal(result.error, undefined, result.error?.message);
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+}
+
+test("Node-only wrapper preserves promisified execFile output, errors and child handles", t => {
+  run_guarded(t, `
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const execute = promisify(execFile);
+const script = "process.stdout.write('output'); process.stderr.write('diagnostic');";
+const pending = execute(process.execPath, ['-e', script]);
+assert.deepEqual(await pending, { stdout: 'output', stderr: 'diagnostic' });
+assert.equal(typeof pending.child?.kill, 'function');
+await assert.rejects(execute(process.execPath, ['-e', script + 'process.exitCode = 17;']),
+  { code: 17, stdout: 'output', stderr: 'diagnostic' });
+process.env.CORE_GIT_EXECUTABLE = process.execPath;
+assert.equal((await execute('git', ['--version'])).stdout.trim(), process.version);
+`);
+});
+
+test("Node-only wrapper keeps shell restrictions on promisified process calls", t => {
+  run_guarded(t, `
+import assert from 'node:assert/strict';
+import { exec, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+for (const execute of [execFile, promisify(execFile)]) {
+  for (const command of ['python', 'py', 'powershell.exe', 'pwsh', 'bash', 'sh'])
+    await assert.rejects(async () => execute(command, ['--version']), /Forbidden runtime/);
+  await assert.rejects(async () => execute(process.execPath, ['--version'], { shell: true }), /Forbidden runtime/);
+}
+for (const execute of [exec, promisify(exec)])
+  await assert.rejects(async () => execute(process.execPath), /Forbidden runtime/);
+`);
+});
+
 for (const status of [0, 17]) {
   test(`Node-only wrapper cleans its executable after child exit ${status}`, (t) => {
     const temp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "core runtime Юникод ")));
