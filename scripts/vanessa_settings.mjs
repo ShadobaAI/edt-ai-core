@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
-import { ConfigError, ROOT, atomic_write, check_schema, inside, operation_lock, stable } from "./common.mjs";
+import { ConfigError, ROOT, check_schema, inside, operation_lock, stable } from "./common.mjs";
+import { private_atomic_write } from "./openviking_store.mjs";
 import { project_profile } from "./profile.mjs";
 import { contained, instance_name, resolve, sha256 } from "./project_paths.mjs";
 import { read_regular_file } from "./bounded_file.mjs";
@@ -62,19 +63,48 @@ export function read_vanessa_profile(root) {
 function ensure_git_ignored(file) {
   let directory = path.dirname(file);
   while (!fs.existsSync(directory) && path.dirname(directory) !== directory) directory = path.dirname(directory);
-  let ancestor = directory, found = false;
+  let ancestor = directory;
+  const repositories = [];
   while (true) {
-    if (fs.existsSync(path.join(ancestor, ".git"))) { found = true; break; }
+    if (fs.existsSync(path.join(ancestor, ".git"))) repositories.push(ancestor);
     if (path.dirname(ancestor) === ancestor) break;
     ancestor = path.dirname(ancestor);
   }
-  if (!found) return;
+  if (!repositories.length) return;
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_")));
-  const git = args => spawnSync("git", ["--no-optional-locks", "-C", directory, ...args, "--", file], { env, windowsHide: true, shell: false, timeout: 3000, encoding: "utf8" });
-  const tracked = git(["ls-files", "--error-unmatch"]);
-  if (tracked.status === 0) throw new ConfigError("Runtime-профиль отслеживается Git. Уберите его из индекса перед сохранением.");
-  if (tracked.status !== 1) throw new ConfigError("Не удалось проверить индекс Git для runtime-профиля.");
-  if (git(["check-ignore", "-q"]).status !== 0) throw new ConfigError("Исключите runtime-профиль из Git перед сохранением: он содержит пароли.");
+  const git = (repo, args, literal = false, files = [file]) => spawnSync("git", ["--no-optional-locks", ...(literal ? ["--literal-pathspecs"] : []), "-C", repo, ...args, "--", ...files], { env, windowsHide: true, shell: false, timeout: 3000, maxBuffer: 32 * 1024 * 1024 });
+  for (const repo of repositories) {
+    let tracked;
+    if (process.platform === "win32") {
+      // Git's literal and icase pathspecs do not implement Windows filesystem
+      // identity (including Unicode case aliases). Read bounded, NUL-delimited
+      // index names instead; an incomplete/undecodable index must fail closed.
+      const listing = git(repo, ["ls-files", "--cached", "-z"], false, []);
+      if (listing.error || listing.status !== 0) throw new ConfigError("Не удалось проверить индекс Git для runtime-профиля.");
+      let names;
+      try { names = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(listing.stdout); }
+      catch { throw new ConfigError("Не удалось прочитать имена файлов из индекса Git."); }
+      if (names && !names.endsWith("\0")) throw new ConfigError("Не удалось полностью прочитать индекс Git.");
+      const expected = relative(repo, file), folded = expected.toUpperCase();
+      tracked = names.split("\0").some(name => {
+        if (!name) return false;
+        if (name === expected) return true;
+        // Folding selects candidates only. Confirm existing files through the
+        // filesystem so distinct files in case-sensitive directories stay distinct.
+        if (name.toUpperCase() !== folded) return false;
+        const indexedFile = resolve(path.join(repo, name));
+        // Two missing spellings cannot be distinguished through realpath.
+        // Refuse the ambiguous alias before creating a file with credentials.
+        return indexedFile === file || !fs.existsSync(indexedFile) && !fs.existsSync(file);
+      });
+    } else {
+      const result = git(repo, ["ls-files", "--error-unmatch"], true);
+      if (result.error || ![0, 1].includes(result.status)) throw new ConfigError("Не удалось проверить индекс Git для runtime-профиля.");
+      tracked = result.status === 0;
+    }
+    if (tracked) throw new ConfigError("Runtime-профиль отслеживается Git. Уберите его из индекса перед сохранением.");
+  }
+  if (git(repositories[0], ["check-ignore", "-q"]).status !== 0) throw new ConfigError("Исключите runtime-профиль из Git перед сохранением: он содержит пароли.");
 }
 
 export async function save_vanessa_profile(state, root, profile, expectedRevision) {
@@ -91,7 +121,7 @@ export async function save_vanessa_profile(state, root, profile, expectedRevisio
     if (snapshot(root).revision !== item.revision) throw new ConfigError("Профиль изменился во время сохранения.");
     const content = JSON.stringify(profile, null, 2) + "\n";
     if (Buffer.byteLength(content) > maxBytes) throw new ConfigError("Runtime-профиль превышает 64 КиБ.");
-    atomic_write(item.file, content, Boolean(item.bytes));
+    private_atomic_write(item.file, content, Boolean(item.bytes));
     return { status: "saved", path: item.file, revision: snapshot(root).revision };
   });
 }

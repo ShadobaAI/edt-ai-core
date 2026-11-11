@@ -20,6 +20,7 @@ const setupMethods = new Set([
   "open_directory", "update", "preview", "apply", "export_diagnostics", "diagnostics",
   "open_diagnostics_directory", "edit", "document", "operation", "check", "run_check", "rebuild_index", "restart_index", "updates", "versions",
   "pick_java", "check_java", "pick_import_file", "pick_view_directory", "import_file", "rename_profile", "openviking_read", "openviking_save",
+  "vanessa_read", "vanessa_save", "vanessa_prepare", "vanessa_start",
   "document_fields", "document_patch", "transfer_export", "transfer_decode", "transfer_context", "transfer_preview", "transfer_apply", "export_log",
 ]);
 function setup_control(name) {

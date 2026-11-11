@@ -3767,8 +3767,8 @@ test("inherited URLs can be edited from their displayed value without saving unc
   await ui.elements.get("probeButton").onclick();assert.equal(probed,shared);assert.equal(updates.length,0);
   field.focus();field.events.focus();assert.equal(field.value,shared);assert.equal(ui.elements.get("saveButton").disabled,true);
   field.value=shared.replace("shared","temporary");field.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);assert.equal(field.attributes["data-inherited"],"false");
-  field.value=shared;field.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(field.attributes["data-inherited"],"true");
-  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,shared,"refresh keeps the inherited value editable while focused");
+  field.value=shared;field.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);assert.equal(field.attributes["data-inherited"],"false");
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,shared,"refresh keeps the explicitly edited value while focused");
   field.value="";field.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(field.value,"");
   ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,"","refresh must not refill a field while the user is replacing its inherited value");
   ui.elements.get("connectionLocalButton").focus();field.events.blur();assert.equal(field.value,"");assert.equal(field.placeholder,shared);
@@ -3804,7 +3804,8 @@ test("inherited OpenViking fields preserve record identity and numeric probe val
   await ui.elements.get("probeButton").onclick();assert.equal(probed.connections,undefined);
   timeout.value="31";timeout.events.input();assert.equal(timeout.attributes["data-inherited"],"false");await ui.elements.get("probeButton").onclick();
   assert.deepEqual(JSON.parse(JSON.stringify(probed.connections.openviking)),{timeout_seconds:31});
-  timeout.value="30";timeout.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(timeout.attributes["data-inherited"],"true");
+  timeout.value="30";timeout.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);assert.equal(timeout.attributes["data-inherited"],"false");
+  ui.elements.get("componentDiscard").onclick();assert.equal(ui.elements.get("saveButton").disabled,true);
   ui.elements.get("probeButton").focus();timeout.events.blur();assert.equal(timeout.value,"");assert.equal(timeout.placeholder,"30");
 });
 
@@ -3822,9 +3823,9 @@ test("Java checks use the inherited executable while selected paths become edita
   const field=ui.elements.get("bslLsJava");assert.equal(field.value,"");assert.equal(field.placeholder,java);field.focus();field.events.focus();assert.equal(field.value,java);assert.equal(field.attributes["data-inherited"],"true");
   await ui.elements.get("checkJavaButton").onclick();assert.equal(command,java);assert.equal(ui.elements.get("saveJavaButton").disabled,true);
   field.value=java.replace("LocalJava","ProjectJava");field.events.input();assert.equal(field.attributes["data-inherited"],"false");assert.equal(ui.elements.get("saveJavaButton").disabled,false);
-  field.value=java;field.events.input();assert.equal(field.attributes["data-inherited"],"true");assert.equal(ui.elements.get("saveJavaButton").disabled,true);
+  field.value=java;field.events.input();assert.equal(field.attributes["data-inherited"],"false");assert.equal(ui.elements.get("saveJavaButton").disabled,false);
   await ui.elements.get("pickJavaButton").onclick();assert.equal(field.value,java);assert.equal(ui.elements.get("saveJavaButton").disabled,false,"explicitly choosing the inherited Java path can create an override");
-  field.events.input();assert.equal(ui.elements.get("saveJavaButton").disabled,true);chosen=picked;
+  field.events.input();assert.equal(ui.elements.get("saveJavaButton").disabled,false);chosen=picked;
   await ui.elements.get("pickJavaButton").onclick();assert.equal(field.value,picked);assert.equal(ui.elements.get("saveJavaButton").disabled,false);
 });
 

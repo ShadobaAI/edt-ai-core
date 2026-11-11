@@ -182,6 +182,8 @@ test("KORA blocks every workflow phase and cannot borrow general setup readiness
   assert.equal(guard({ cwd: f.root, tool_name: "mcp__1c-ai-settings__settings.execute_bsl", tool_input: {} }).hookSpecificOutput.permissionDecision, "deny");
   assert.equal(guard({ cwd: f.root, tool_name: "mcp__custom__core_runtime_status", tool_input: {} }).hookSpecificOutput.permissionDecision, "deny");
   assert.deepEqual(guard({ cwd: f.root, tool_name: "mcp__edt__core_runtime_status", tool_input: {} }), {});
+  for (const method of ["vanessa_read", "vanessa_save", "vanessa_prepare", "vanessa_start"])
+    assert.deepEqual(guard({ cwd: f.root, tool_name: "mcp__1c-ai-settings__settings." + method, tool_input: {} }), {}, method);
   f.profile.knowledge.required = false; f.save();
   assert.deepEqual(guard({ cwd: f.root, tool_name: "mcp__1c-ai-settings__settings.inspect", tool_input: {} }), {});
   assert.deepEqual(guard({ cwd: f.root, tool_name: "mcp__1c_ai_settings__settings_profile", tool_input: {} }), {});

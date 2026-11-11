@@ -23,7 +23,7 @@ async function openEdt(page) {
   return app;
 }
 
-test("edits the local Vanessa profile through grouped fields and reviews the launch target", async ({ page }) => {
+function seedVanessa() {
   const shared = path.join(host.project, ".ai/project.yaml"), file = path.join(host.project, ".ai/vanessa.local.json");
   const project = load(shared);
   project.testing.vanessa = true;
@@ -34,6 +34,11 @@ test("edits the local Vanessa profile through grouped fields and reviews the lau
     runtime: { epf: "../vanessa.epf" }, manager: { infobase: { type: "server", server: "localhost", database: "manager" }, user: user("Manager") },
     infobase: { type: "file", path: "../base" }, users: { TestClient: user("Client") },
     mcp: { serverName: "vanessa", url: "http://127.0.0.1:19876/mcp", port: 19876 }, features: "../features", results: "../results" }));
+  return file;
+}
+
+test("edits the local Vanessa profile through grouped fields and reviews the launch target", async ({ page }) => {
+  const file = seedVanessa();
   await page.reload();
   const app = page.frameLocator("#app");
   await expect(app.locator("#headerProjectName")).toHaveText("Product");
@@ -70,6 +75,55 @@ test("edits the local Vanessa profile through grouped fields and reviews the lau
   expect(JSON.parse(start.arguments.authorization.scope).projectRoot).toBe(host.project);
   expect(JSON.parse(start.arguments.authorization.scope).clientName).toBe("Operator");
   expect(start.arguments.expectedRevision).toMatch(/^[a-f0-9]{64}$/);
+});
+
+test("keeps keyboard focus through Vanessa field and client changes", async ({ page }) => {
+  seedVanessa();
+  await page.reload();
+  const app = page.frameLocator("#app");
+  await app.getByRole("button", { name: "Открыть настройки Vanessa" }).click();
+  await app.locator("#vanessaProfileLoad").click();
+  const mode = app.getByLabel("Способ запуска", { exact: true });
+  await mode.focus();
+  await mode.selectOption("navigationUrl");
+  await expect(mode).toBeFocused();
+  await mode.press("Tab");
+  await expect(app.getByLabel("Навигационная ссылка обработки", { exact: true })).toBeFocused();
+  const base = app.getByLabel("База менеджера: тип", { exact: true });
+  await base.focus();
+  await base.selectOption("file");
+  await expect(base).toBeFocused();
+  await base.press("Tab");
+  await expect(app.getByLabel("База менеджера: путь", { exact: true })).toBeFocused();
+
+  await expect(app.getByRole("button", { name: "Удалить пользователя TestClient", exact: true })).toBeDisabled();
+  await app.getByLabel("Имя нового профиля клиента").fill("Operator");
+  await app.getByRole("button", { name: "Добавить пользователя", exact: true }).click();
+  await expect(app.getByLabel("Operator: пользователь", { exact: true })).toBeFocused();
+  await app.getByRole("button", { name: "Переместить пользователя Operator вверх", exact: true }).click();
+  await expect(app.getByLabel("Operator: пользователь", { exact: true })).toBeFocused();
+  await app.getByRole("button", { name: "Удалить пользователя Operator", exact: true }).click();
+  await expect(app.getByLabel("TestClient: пользователь", { exact: true })).toBeFocused();
+  await expect(app.getByRole("button", { name: "Удалить пользователя TestClient", exact: true })).toBeDisabled();
+  await app.locator("#vanessaProfileDiscard").click();
+  await expect(app.getByLabel("Идентификатор профиля", { exact: true })).toBeFocused();
+  expect(host.calls.some(call => call.name === "settings.vanessa_save")).toBe(false);
+});
+
+test("fits long Vanessa client names on a narrow viewport", async ({ page }) => {
+  const file = seedVanessa(), profile = JSON.parse(fs.readFileSync(file, "utf8"));
+  const name = "ДлинноеИмяКлиента".repeat(12);
+  profile.users[name] = { name: "Operator", password: "", interface: "taxi" };
+  fs.writeFileSync(file, JSON.stringify(profile));
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.reload();
+  const app = page.frameLocator("#app");
+  await app.getByRole("button", { name: "Открыть настройки Vanessa" }).click();
+  await app.locator("#vanessaProfileLoad").click();
+  await expect(app.getByLabel(name + ": пользователь", { exact: true })).toBeVisible();
+  expect(await app.locator("#testingDialog").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await app.getByRole("button", { name: "Удалить пользователя " + name, exact: true }).click();
+  await expect(app.getByLabel("TestClient: пользователь", { exact: true })).toBeFocused();
 });
 
 test("initializes the MCP App and reads the real settings server", async ({ page }) => {
@@ -148,6 +202,32 @@ test("edits an inherited EDT URL in place and restores inheritance", async ({ pa
   await expect(input).toHaveAttribute("data-inherited", "true");
   await expect(save).toBeDisabled();
   expect(fs.readFileSync(shared)).toEqual(sharedBefore);
+});
+
+test("edits and removes a shared URL masked by a local override", async ({ page }) => {
+  const shared = path.join(host.project, ".ai/project.yaml"), local = path.join(host.project, ".ai/project.local.yaml");
+  const profile = load(shared), localUrl = "http://localhost:2222/mcp";
+  profile.connections = { ...profile.connections, edt: { url: "http://localhost:1111/mcp" } };
+  dump(profile, shared); dump({ connections: { edt: { url: localUrl } } }, local);
+  await page.reload();
+  await expect(page.frameLocator("#app").locator("#headerProjectName")).toHaveText("Product");
+  const app = await openEdt(page), input = app.locator("#edtUrl"), save = app.locator("#saveButton");
+  await app.locator("#connectionSharedButton").click();
+  await input.click();
+  await expect(input).toHaveValue(localUrl); await expect(save).toBeDisabled();
+  await input.fill("http://localhost:3333/mcp"); await input.fill(localUrl);
+  await expect(save).toBeEnabled(); await save.click();
+  await expect.poll(() => load(shared).connections?.edt?.url).toBe(localUrl);
+  expect(load(local).connections.edt.url).toBe(localUrl);
+
+  await input.click(); await input.fill(""); await expect(save).toBeEnabled(); await save.click();
+  await expect.poll(() => load(shared).connections?.edt?.url).toBeUndefined();
+  expect(load(local).connections.edt.url).toBe(localUrl);
+
+  await input.click(); await input.fill("http://localhost:3333/mcp"); await input.fill(localUrl);
+  await expect(save).toBeEnabled(); await save.click();
+  await expect.poll(() => load(shared).connections?.edt?.url).toBe(localUrl);
+  expect(load(local).connections.edt.url).toBe(localUrl);
 });
 
 test("edits an inherited numeric OpenViking setting after clearing it", async ({ page }) => {
