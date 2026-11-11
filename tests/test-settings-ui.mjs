@@ -164,7 +164,7 @@ function liveStatusScreen({hold=false,running=false}={}) {
   return {ui,current,requests,release:()=>release(),fail:message=>{failure=message;},holdNext:()=>{gate=new Promise(done=>{release=done;});},failPoll:value=>{pollFailure=value;},holdPoll:()=>{pollGate=new Promise(done=>{releasePoll=done;});},releasePoll:()=>releasePoll()};
 }
 
-test("the header beside the project shows profile facts and all seven canonical component states on every tab",async()=>{
+test("the header keeps all component states but shows only issues and active work on every tab",async()=>{
   const f=liveStatusScreen();f.current.profile.repositories=[{id:"shared"}];
   f.current.profileDirectoryContext={edt:{projectCount:4},git:{status:"detected",branch:"feature/header"}};
   await f.ui.flush();
@@ -174,9 +174,12 @@ test("the header beside the project shows profile facts and all seven canonical 
   for(const item of f.ui.context.catalogItems(f.current)){
     const badge=badges.children.find(badge=>badge.attributes["data-component"]===item.id);
     assert.equal(badge.attributes["data-state"],item.state);assert.ok(badge.textContent.startsWith(item.name+": "));
+    if(["ready","disabled"].includes(item.state)&&!item.issue)assert.equal(badge.hidden,true);
+    if(item.issue||["checking","indexing","preparing","building"].includes(item.state))assert.equal(badge.hidden,false);
     if(item.id==="yaxunit")assert.match(badge.textContent,/Требуется проверка настроек/);
     if(item.id==="vanessa")assert.match(badge.textContent,/Менеджер доступен/);
   }
+  assert.ok(badges.children.some(badge=>badge.hidden));
   const requests=f.requests.length;
   for(const tab of ["check","editor","support"]){f.ui.context.show(tab);assert.equal(f.ui.elements.get("headerProfileSummary").hidden,false);assert.equal(badges.children.length,7);}
   assert.equal(f.requests.length,requests,"rendering the summary must not initiate additional component checks");

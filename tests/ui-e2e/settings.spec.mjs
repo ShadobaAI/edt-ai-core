@@ -98,9 +98,11 @@ test("saves a local connection and discards a later draft", async ({ page }) => 
   await app.locator("#componentDialogClose").click();
   await expect(app.locator("#componentCloseConfirm")).toBeVisible();
   await app.locator("#componentCloseStay").click();
-  await app.locator("#componentDiscard").locator("xpath=ancestor::details").locator("summary").first().click();
+  await expect(app.locator("#connectionDiagnostics")).not.toHaveAttribute("open");
+  await expect(app.locator("#componentDiscard")).toBeVisible();
   await app.locator("#componentDiscard").click();
   await expect(app.locator("#edtUrl")).toHaveValue("http://127.0.0.1:8123/mcp");
+  await expect(app.locator("#edtUrl")).toBeFocused();
   await app.locator("#componentDialogClose").click();
   await expect(app.locator("#componentDialog")).toBeHidden();
   expect(load(local).connections.edt.url).toBe("http://127.0.0.1:8123/mcp");
@@ -236,12 +238,50 @@ test("views another project without changing the chat project", async ({ page })
   await expect(app.locator("#viewOnlyHint")).toBeHidden();
 });
 
+test("opens a profile section once, edits its fields and restores it after search", async ({ page }) => {
+  const app = page.frameLocator("#app"), shared = path.join(host.project, ".ai/project.yaml");
+  await app.locator("#editorTab").click();
+  const section = app.locator("#jsonTree > details").filter({ hasText: "Тестирование" });
+  await section.locator(":scope > summary").click();
+  const field = app.getByLabel("testing.yaxunit", { exact: true });
+  await expect(field).toBeVisible();
+  await field.selectOption({ label: "true" });
+  await expect(app.getByLabel("testing.yaxunit", { exact: true }).locator("option:checked")).toHaveText("true");
+  await expect(section).toHaveAttribute("open");
+  const search = app.locator("#editorSearch");
+  await search.fill("testing.yaxunit");
+  await expect(app.getByLabel("testing.yaxunit", { exact: true })).toBeVisible();
+  await search.press("Escape");
+  await expect(section).toHaveAttribute("open");
+  await expect(app.getByLabel("testing.yaxunit", { exact: true }).locator("option:checked")).toHaveText("true");
+  expect(load(shared).testing.yaxunit).toBe(false);
+});
+
+test("discards a managed component draft without opening diagnostics", async ({ page }) => {
+  const app = page.frameLocator("#app");
+  await app.getByRole("button", { name: "Открыть настройки Code Index" }).click();
+  const control = app.locator("#codeIndexEnabled"), discard = app.locator("#managedDiscardButton");
+  const before = await control.isChecked();
+  await expect(discard).toBeHidden();
+  await control.click();
+  await expect(discard).toBeVisible();
+  await expect(app.locator("#managedDiagnostics")).not.toHaveAttribute("open");
+  await discard.click();
+  await expect(control).toHaveJSProperty("checked", before);
+  await expect(control).toBeFocused();
+  await expect(discard).toBeHidden();
+  expect(host.calls.filter(call => call.name === "settings.update")).toHaveLength(0);
+});
+
 test("fits the form and component dialog on a narrow viewport", async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 375, height: 812 });
   const app = await openEdt(page);
   const frame = page.frame({ url: /\/settings$/ });
   expect(frame).toBeTruthy();
   expect(await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await app.locator("#edtUrl").fill("http://localhost:8123/mcp");
+  await expect(app.locator("#componentDiscard")).toBeVisible();
+  expect(await app.locator("#componentDialog").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
   const dialog = await app.locator("#componentDialog").boundingBox();
   expect(dialog.x).toBeGreaterThanOrEqual(0);
   expect(dialog.x + dialog.width).toBeLessThanOrEqual(375);
