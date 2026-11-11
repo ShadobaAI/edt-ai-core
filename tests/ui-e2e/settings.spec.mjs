@@ -58,6 +58,75 @@ test("saves a local connection and discards a later draft", async ({ page }) => 
   expect(host.calls.filter(call => call.name === "settings.update")).toHaveLength(1);
 });
 
+test("edits an inherited EDT URL in place and restores inheritance", async ({ page }) => {
+  const shared = path.join(host.project, ".ai/project.yaml"), local = path.join(host.project, ".ai/project.local.yaml");
+  const profile = load(shared), inherited = "http://localhost:8765/mcp", changed = "http://localhost:19801/mcp";
+  profile.connections = { ...profile.connections, edt: { url: inherited } };
+  dump(profile, shared);
+  const sharedBefore = fs.readFileSync(shared);
+  await page.reload();
+  await expect(page.frameLocator("#app").locator("#headerProjectName")).toHaveText("Product");
+  const app = await openEdt(page), input = app.locator("#edtUrl"), save = app.locator("#saveButton");
+  await app.locator("#connectionLocalButton").click();
+  await expect(input).toHaveValue("");
+  await expect(input).toHaveAttribute("placeholder", inherited);
+  await expect(input).toHaveAttribute("data-inherited", "true");
+  const hintColor = await input.evaluate(el => getComputedStyle(el, "::placeholder").color);
+  await input.click();
+  await expect(input).toHaveValue(inherited);
+  expect(await input.evaluate(el => getComputedStyle(el).color)).toBe(hintColor);
+  await expect(save).toBeDisabled();
+  await app.locator("#connectionLocalButton").focus();
+  await expect(input).toHaveValue("");
+  await input.click();
+  await input.evaluate(el => { const at = el.value.indexOf("8765"); el.setSelectionRange(at, at + 4); });
+  await page.keyboard.type("19801");
+  await expect(input).toHaveValue(changed);
+  await expect(input).toHaveAttribute("data-inherited", "false");
+  expect(await input.evaluate(el => getComputedStyle(el).color)).not.toBe(hintColor);
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect.poll(() => fs.existsSync(local) && load(local).connections?.edt?.url).toBe(changed);
+  await expect(input).toHaveAttribute("data-inherited", "false");
+  expect(fs.readFileSync(shared)).toEqual(sharedBefore);
+
+  await input.fill("");
+  await save.click();
+  await expect.poll(() => load(local).connections?.edt?.url).toBeUndefined();
+  await expect(input).toHaveAttribute("placeholder", inherited);
+  await expect(input).toHaveAttribute("data-inherited", "true");
+  await expect(save).toBeDisabled();
+  expect(fs.readFileSync(shared)).toEqual(sharedBefore);
+});
+
+test("edits an inherited numeric OpenViking setting after clearing it", async ({ page }) => {
+  const shared = path.join(host.project, ".ai/project.yaml"), local = path.join(host.project, ".ai/project.local.yaml");
+  const profile = load(shared);
+  profile.connections = { ...profile.connections, openviking: { enabled: true, url: "http://localhost:18193/mcp", timeout_seconds: 30 } };
+  dump(profile, shared);
+  const sharedBefore = fs.readFileSync(shared);
+  await page.reload();
+  await expect(page.frameLocator("#app").locator("#headerProjectName")).toHaveText("Product");
+  const app = page.frameLocator("#app");
+  await app.getByRole("button", { name: "Открыть настройки OpenViking" }).click();
+  await app.locator("#connectionLocalButton").click();
+  const timeout = app.locator("#openvikingTimeout");
+  await expect(timeout).toHaveAttribute("placeholder", "30");
+  await timeout.click();
+  await expect(timeout).toHaveValue("30");
+  await timeout.press("Control+A");
+  await timeout.press("Backspace");
+  await expect(timeout).toHaveValue("");
+  await expect(app.locator("#saveButton")).toBeDisabled();
+  await page.frame({ url: /\/settings$/ }).evaluate(() => renderCurrent(currentData, { preserveDraft: true }));
+  await expect(timeout).toHaveValue("");
+  await page.keyboard.type("45");
+  await expect(timeout).toHaveValue("45");
+  await app.locator("#saveButton").click();
+  await expect.poll(() => fs.existsSync(local) && load(local).connections?.openviking?.timeout_seconds).toBe(45);
+  expect(fs.readFileSync(shared)).toEqual(sharedBefore);
+});
+
 for (const selectedScope of ["profile", "project_local"]) test(`refreshes EDT port locally when ${selectedScope} is selected`, async ({ page }) => {
   const local = path.join(host.project, ".ai/project.local.yaml");
   const shared = path.join(host.project, ".ai/project.yaml");
