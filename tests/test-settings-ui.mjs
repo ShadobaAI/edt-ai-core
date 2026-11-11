@@ -227,6 +227,13 @@ test("Vanessa status shows the observed manager and expires without probing",asy
   assert.equal(f.requests.length,count);
 });
 
+test("a successful Vanessa manager start refreshes that component",async()=>{
+  const f=liveStatusScreen();await f.ui.flush();await f.ui.flush();
+  const count=f.requests.length,operation={id:"manager-start",action:"vanessa_start",status:"completed",projectRoot:f.current.values.projectRoot,instance:f.current.instance,result:{status:"started"}};
+  await f.ui.context.pollOperation(operation.id,null,operation);await f.ui.flush();await f.ui.flush();
+  assert.ok(f.requests.slice(count).some(item=>item.name==="settings.refresh_readiness"&&item.component==="vanessa"));
+});
+
 test("server component statuses outrank stale setup and refresh preserves card focus",async()=>{
   const f=liveStatusScreen(),ids=["edt","v8std","openviking","code-index","bsl-ls","yaxunit","vanessa"];
   f.ui.document.hidden=true;

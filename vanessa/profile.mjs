@@ -64,6 +64,11 @@ export function loadProfile(file, expectedHash, clientName) {
   if (expectedHash !== undefined && (!/^[a-f0-9]{64}$/.test(expectedHash) || digest(bytes) !== expectedHash)) fail("Профиль запуска изменился после разрешения; опишите и проверьте новую цель");
   let raw;
   try { raw = JSON.parse(bytes.toString("utf8").replace(/^\uFEFF/, "")); } catch { fail("Некорректный файл JSON"); }
+  return parseProfile(raw, file, clientName);
+}
+// Validate an in-memory draft against the same contract as the runtime, while
+// resolving its paths relative to its eventual file rather than a temp file.
+export function parseProfile(raw, file, clientName) {
   const base = path.dirname(file);
   object(raw, ["version", "id", "projectRoot", "platform", "runtime", "manager", "infobase", "users", "mcp", "features", "results", "stateDir", "limits"], "profile");
   if (raw.version !== 1) fail("Неподдерживаемая версия профиля");

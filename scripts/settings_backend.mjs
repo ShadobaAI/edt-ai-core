@@ -897,6 +897,15 @@ export class SettingsBackend {
   }
   async main(request, reportProgress = () => {}, { includeYaxunit = false, observationContext = null, flightRecoveryBudget = 1 } = {}) {
     const action = request.action;
+    if (["vanessa_read", "vanessa_save", "vanessa_prepare", "vanessa_start"].includes(action)) {
+      const root = this.current().active_project;
+      if (!root) throw new ConfigError("Выберите папку проекта.");
+      const api = await import("./vanessa_settings.mjs");
+      if (action === "vanessa_read") return api.read_vanessa_profile(root);
+      if (action === "vanessa_save") return api.save_vanessa_profile(this.STATE, root, request.profile, request.expectedRevision);
+      if (action === "vanessa_prepare") return api.prepare_vanessa_start(root, this.CONFIG);
+      return api.start_vanessa(this.STATE, root, this.CONFIG, request.authorization, request.expectedRevision);
+    }
     if (action === "transfer_context") {
       const config = this.current(), root = config.active_project;
       if (!root || request.projectRoot !== undefined && configuration_root(request.projectRoot) !== root) throw new ConfigError("Выберите проект текущего чата.");

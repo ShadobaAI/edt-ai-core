@@ -23,6 +23,55 @@ async function openEdt(page) {
   return app;
 }
 
+test("edits the local Vanessa profile through grouped fields and reviews the launch target", async ({ page }) => {
+  const shared = path.join(host.project, ".ai/project.yaml"), file = path.join(host.project, ".ai/vanessa.local.json");
+  const project = load(shared);
+  project.testing.vanessa = true;
+  project.testing.vanessa_config = { repository_id: "product", runtime_profile: ".ai/vanessa.local.json", features: "features", results: "results", server_name: "vanessa" };
+  dump(project, shared);
+  const user = name => ({ name, password: "private-secret", interface: "taxi" });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, id: "ui-tests", projectRoot: "..", platform: "../1cv8c.exe",
+    runtime: { epf: "../vanessa.epf" }, manager: { infobase: { type: "server", server: "localhost", database: "manager" }, user: user("Manager") },
+    infobase: { type: "file", path: "../base" }, users: { TestClient: user("Client") },
+    mcp: { serverName: "vanessa", url: "http://127.0.0.1:19876/mcp", port: 19876 }, features: "../features", results: "../results" }));
+  await page.reload();
+  const app = page.frameLocator("#app");
+  await expect(app.locator("#headerProjectName")).toHaveText("Product");
+  await app.getByRole("button", { name: "Открыть настройки Vanessa" }).click();
+  await app.locator("#vanessaProfileLoad").click();
+  await expect(app.getByText("Менеджер тестирования", { exact: true })).toBeVisible();
+  await expect(app.getByText("Пользователи тестового клиента", { exact: true })).toBeVisible();
+  await expect(app.getByLabel("Менеджер: пароль")).toHaveAttribute("type", "password");
+  await app.getByLabel("Идентификатор профиля").fill("edited-profile");
+  await app.getByLabel("Имя нового профиля клиента").fill("Operator");
+  await app.getByRole("button", { name: "Добавить пользователя" }).click();
+  await app.getByLabel("Operator: пользователь").fill("Оператор");
+  await app.getByLabel("Operator: пароль").fill("another-private-secret");
+  await app.getByRole("button", { name: "Переместить пользователя Operator вверх" }).click();
+  await page.setViewportSize({ width: 480, height: 900 });
+  expect(await app.locator("#testingDialog").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await app.locator("#vanessaProfileSave").click();
+  await expect.poll(() => JSON.parse(fs.readFileSync(file, "utf8")).users.Operator?.name).toBe("Оператор");
+  expect(JSON.parse(fs.readFileSync(file, "utf8")).id).toBe("edited-profile");
+  expect(Object.keys(JSON.parse(fs.readFileSync(file, "utf8")).users)[0]).toBe("Operator");
+  await app.locator("#vanessaStartButton").click();
+  await expect(app.locator("#vanessaStartConfirm")).toBeVisible();
+  await expect(app.locator("#vanessaStartTarget")).toContainText("edited-profile");
+  await expect(app.locator("#vanessaStartTarget")).toContainText("manager");
+  await expect(app.locator("#vanessaStartTarget")).not.toContainText("private-secret");
+  await app.locator("#vanessaStartCancel").click();
+  expect(host.calls.some(call => call.name === "settings.vanessa_start")).toBe(false);
+  host.failNext("settings.vanessa_start", "Тестовая остановка до запуска процесса.");
+  await app.locator("#vanessaStartButton").click();
+  await app.locator("#vanessaStartConfirmButton").click();
+  await expect(app.locator("#testingDialogNotice")).toContainText("Тестовая остановка до запуска процесса");
+  const start = host.calls.find(call => call.name === "settings.vanessa_start");
+  expect(start.arguments.authorization.effects).toEqual(["launch"]);
+  expect(JSON.parse(start.arguments.authorization.scope).projectRoot).toBe(host.project);
+  expect(JSON.parse(start.arguments.authorization.scope).clientName).toBe("Operator");
+  expect(start.arguments.expectedRevision).toMatch(/^[a-f0-9]{64}$/);
+});
+
 test("initializes the MCP App and reads the real settings server", async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.hostMessages.map(message => message.method)))
     .toContain("ui/initialize");
