@@ -271,6 +271,10 @@ const tools = [
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
   { name: "settings.edit", title: "Загрузить настройки для редактирования", description: "Read one project YAML document with its baseRevision for preview/apply.",
     inputSchema: { type: "object", required: ["layerScope", "format"], properties: { layerScope: { type: "string", enum: ["profile", "project_local"] }, format: { type: "string", const: "yaml" } }, additionalProperties: false }, annotations: annotations(), _meta: shared },
+  { name: "settings.vanessa_read", title: "Открыть профиль Vanessa", description: "Read the selected project's local Vanessa runtime profile in the settings app only. Credentials are returned only to the app.", inputSchema: empty, annotations: annotations(), _meta: appOnly },
+  { name: "settings.vanessa_save", title: "Сохранить профиль Vanessa", description: "Validate and save the selected project's local runtime profile with its exact revision. The profile must be outside Git tracking and ignored.", inputSchema: { type: "object", properties: { profile: { type: "object" }, expectedRevision: { type: "string", minLength: 1 } }, required: ["profile", "expectedRevision"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
+  { name: "settings.vanessa_prepare", title: "Подготовить запуск менеджера Vanessa", description: "Describe the saved project's exact manager launch target and scope without launching it.", inputSchema: empty, annotations: annotations(), _meta: appOnly },
+  { name: "settings.vanessa_start", title: "Запустить менеджер Vanessa", description: "Launch the manager for the prepared profile using the shared action policy and existing Vanessa checks. Returns an operation ID; poll settings.operation.", inputSchema: { type: "object", properties: { authorization: preparationAuthorization, expectedRevision: { type: "string", minLength: 1 } }, required: ["authorization", "expectedRevision"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.document", title: "Просмотреть документ профиля", description: "Read a history profile document in the settings app without selecting it for chat operations. Does not write or launch services.",
     inputSchema: { type: "object", required: ["projectRoot"], properties: { projectRoot: { type: "string", minLength: 1 }, layerScope: { type: "string", enum: ["profile", "project_local"] } }, additionalProperties: false }, annotations: annotations(), _meta: appOnly },
   { name: "settings.document_fields", title: "Поля документа", description: "Parse a YAML draft and return its current project schema without writing files.",
@@ -308,7 +312,7 @@ function backend(action, args, context = { projectRoot: selectedRoot, selectedDi
     const protectedRead = Boolean(readDeadline && action === "read"), owner = randomUUID();
     // These operations may deliberately create a daemon that outlives this
     // backend. A strict reader job cannot safely perform that handoff.
-    const createsDaemon = ["check", "updates", "restart_index", "rebuild_index"].includes(action);
+    const createsDaemon = ["check", "updates", "restart_index", "rebuild_index", "vanessa_start"].includes(action);
     const supervised = protectedRead || process.platform !== "darwin" && !createsDaemon;
     const forwardIpc = Boolean(onProgress || observerToken);
     const options = {
@@ -726,7 +730,7 @@ async function call(name, args, meta = {}, requestContext = {}) {
     return result({ ...snapshot, readiness: publicResult(snapshot.readiness), componentChecks: publicResult(snapshot.componentChecks) }, `Профиль: ${snapshot.profile.status}. Следующие шаги: ${snapshot.nextSteps.join(", ") || "нет"}.`);
   }
   if (selectionError && !readOnlyEntry) throw new Error(selectionError);
-  const duringRefresh = ["settings.edit", "settings.preview", "settings.import_file", "settings.update", "settings.reset_connection", "settings.rename_profile", "settings.create", "settings.load", "settings.apply", "settings.open_directory", "settings.run_check", "settings.probe_connections", "settings.rebuild_index", "settings.restart_index", "settings.updates"].includes(name);
+  const duringRefresh = ["settings.edit", "settings.preview", "settings.import_file", "settings.update", "settings.reset_connection", "settings.rename_profile", "settings.create", "settings.load", "settings.apply", "settings.open_directory", "settings.run_check", "settings.probe_connections", "settings.rebuild_index", "settings.restart_index", "settings.updates", "settings.vanessa_read", "settings.vanessa_save", "settings.vanessa_prepare", "settings.vanessa_start"].includes(name);
   const parallelObservation = name === "settings.refresh_readiness" && ["check", "rebuild_index", "restart_index", "updates"].includes(operations.status().action);
   if (operations.status().status === "running" && !readOnlyEntry && !(operations.status().action === "refresh_readiness" && duringRefresh) && !parallelObservation) throw new Error(
     operations.status().action === "pick_directory"
@@ -826,6 +830,15 @@ async function call(name, args, meta = {}, requestContext = {}) {
     if (!selectedRoot) throw new Error("Выберите папку проекта.");
     const data = await backend("edit", args);
     return { ...result(data), _meta: { data } };
+  }
+  if (["settings.vanessa_read", "settings.vanessa_save", "settings.vanessa_prepare", "settings.vanessa_start"].includes(name)) {
+    if (!selectedRoot) throw new Error("Выберите папку проекта.");
+    const action = name.slice("settings.".length), revision = selectionRevision;
+    const context = { projectRoot: selectedRoot, selectedDirectory: selectedRoot, rootLocked, instance: process.env.EDT_AI_INSTANCE || "default" };
+    if (action === "vanessa_start") return result(operations.status(operations.start(action, args, context).id));
+    const data = await (action === "vanessa_save" ? operations.execute(action, args, context) : backend(action, args, context));
+    if (revision !== selectionRevision) throw new Error("Проект изменился. Откройте профиль заново.");
+    return { content: [{ type: "text", text: action === "vanessa_save" ? "Профиль Vanessa сохранён." : "Профиль Vanessa открыт." }], _meta: { data } };
   }
   const actions = { "settings.reset_connection": "reset_connection", "settings.update": "update", "settings.preview": "preview", "settings.apply": "apply", "settings.run_check": "check", "settings.refresh_readiness": "refresh_readiness", "settings.rebuild_index": "rebuild_index", "settings.restart_index": "restart_index", "settings.updates": "updates", "settings.create": "create", "settings.load": "load", "settings.rename_profile": "rename_profile" };
   if (!actions[name]) throw new Error("Неизвестный инструмент");

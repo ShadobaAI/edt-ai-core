@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { stringify } from "../vendor/deps.mjs";
 import { read_project_archive, write_project_archive } from "./archives.mjs";
 import {
   ConfigError,
@@ -23,6 +22,8 @@ import {
   safe_profile_dictionary_path,
   object,
   stable,
+  stringify_yaml,
+  stringify_yaml_document,
   entrypoint,
 } from "./common.mjs";
 import {
@@ -142,6 +143,22 @@ function rollback_layer(target, previous, expected, wrote, ignorePlan, error, ba
 }
 import { diagnostic_failure, environment_compatibility, safe_error_message, sanitize_setup_result } from "./diagnostics.mjs";
 
+function yaml_fragment(value) {
+  const text = stringify_yaml(value, { flow: true });
+  if (text === undefined) throw new ConfigError("Некорректное значение поля.");
+  return text.replace(/\n$/, "");
+}
+function yaml_entry(operation, key, flow = false) {
+  if (flow && operation.kind === "append") return yaml_fragment(operation.value);
+  const entry = operation.kind === "append" ? [operation.value] : Object.defineProperty({}, key, {
+    value: operation.value, enumerable: true, configurable: true, writable: true,
+  });
+  const text = stringify_yaml(entry, { flow, fragment: true });
+  if (text === undefined) throw new ConfigError("Некорректное значение поля.");
+  const result = text.replace(/\n$/, "");
+  return flow ? result.slice(2, -2) : result;
+}
+
 // Field edits operate on the supplied draft. Unrelated source is kept intact.
 // Shared aliases are detached when necessary so editing one field cannot
 // silently change another field that happens to reference the same anchor.
@@ -171,8 +188,7 @@ export function patch_yaml_draft(text, operation) {
       let value = data; for (const part of alias.path) value = value?.[part];
       // Merge aliases are not represented as a `<<` property by toJS.
       if (value === undefined && anchorPaths.has(alias.node.source)) { value = data; for (const part of anchorPaths.get(alias.node.source)) value = value?.[part]; }
-      let replacement; try { replacement = JSON.stringify(value); } catch { throw new ConfigError("Не удалось безопасно отделить циклическую YAML-ссылку."); }
-      if (replacement === undefined) throw new ConfigError("Не удалось безопасно отделить YAML-ссылку.");
+      let replacement; try { replacement = yaml_fragment(value); } catch { throw new ConfigError("Не удалось безопасно отделить циклическую YAML-ссылку."); }
       expanded = expanded.slice(0,alias.node.range[0]) + replacement + expanded.slice(alias.node.range[1]);
     }
     const result = patch_yaml_draft(bom + expanded, operation);
@@ -211,7 +227,7 @@ export function patch_yaml_draft(text, operation) {
       // Removing an explicit override reveals the merged value, rather than
       // removing the effective key from the document altogether.
       const after = parse_yaml_document(source); after.deleteIn(keys);
-      let effective = parse(after.toString()); for (const part of keys.slice(0,-1)) effective = effective?.[part];
+      let effective = parse(stringify_yaml_document(after)); for (const part of keys.slice(0,-1)) effective = effective?.[part];
       if (effective && Object.hasOwn(effective,key)) Object.defineProperty(parent,key,{value:effective[key],enumerable:true,configurable:true,writable:true});
     }
   }
@@ -234,7 +250,7 @@ export function patch_yaml_draft(text, operation) {
     else if (operation.kind === "append") collection.add(changed.createNode(operation.value));
     else if (operation.kind === "set") changed.setIn(keys,operation.value);
     else throw new ConfigError("Недопустимое изменение поля.");
-    const rendered = changed.toString(), parsed = parse_yaml_document(rendered), renderedNode = targetPath.length ? parsed.getIn(targetPath,true) : parsed.contents;
+    const rendered = stringify_yaml_document(changed), parsed = parse_yaml_document(rendered), renderedNode = targetPath.length ? parsed.getIn(targetPath,true) : parsed.contents;
     if (!renderedNode?.range) throw new ConfigError("Не удалось подготовить коллекцию YAML.");
     const [newStart,newEnd] = renderedNode.range, lineStart = (value,offset) => value.lastIndexOf("\n",offset-1)+1;
     const oldIndent = source.slice(lineStart(source,start),start).match(/^ */)?.[0] || "", newIndent = rendered.slice(lineStart(rendered,newStart),newStart).match(/^ */)?.[0] || "";
@@ -270,9 +286,11 @@ export function patch_yaml_draft(text, operation) {
     if (ranges.every(([a, b]) => Number.isInteger(a) && Number.isInteger(b) && a >= start && b <= end && a <= b)) {
       let body = source.slice(start, end), replacement;
       if (operation.kind === "append" || operation.kind === "set" && !existsKey) {
-        const addition = operation.kind === "append" ? JSON.stringify(operation.value) : JSON.stringify(key) + ": " + JSON.stringify(operation.value);
-        const close = body.length - 1;
-        replacement = body.slice(0, close) + (ranges.length ? ", " : "") + addition + body.slice(close);
+        if (!ranges.length) replacement = yaml_fragment(next);
+        else {
+          const addition = yaml_entry(operation, key, true), close = body.length - 1;
+          replacement = body.slice(0, close) + ", " + addition + body.slice(close);
+        }
       } else if (ranges.length) {
         const index = Array.isArray(parent) ? Number(key) : node.items.findIndex(item => item.key?.value === key);
         if (index >= 0 && index < ranges.length) {
@@ -314,7 +332,7 @@ export function patch_yaml_draft(text, operation) {
       let result;
       if (operation.kind === "append" || operation.kind === "set" && !existsKey) {
         const separator = /(?:\r\n|\n|\r)$/.test(old) ? "" : newline;
-        const addition = operation.kind === "append" ? "- " + JSON.stringify(operation.value) : JSON.stringify(key) + ": " + JSON.stringify(operation.value);
+        const addition = yaml_entry(operation, key).replace(/\n/g, newline + indent);
         result = bom + source.slice(0, end) + separator + indent + addition + newline + source.slice(end);
       } else {
         const index = Array.isArray(parent) ? Number(key) : node.items.findIndex(item => item.key?.value === key);
@@ -343,7 +361,7 @@ export function patch_yaml_draft(text, operation) {
       if (result && matches(result)) return { text: result, reformatted: false };
     }
   }
-  if (next !== null && typeof next === "object" && /[#&*]/.test(old)) {
+  if (next !== null && typeof next === "object" && Array.isArray(node.items) && /[#&*]/.test(old)) {
     // Adding a member to a block collection does not require reserializing its
     // existing members or their comments. Other structural edits remain
     // conservative until their source ranges can be retained safely.
@@ -351,15 +369,21 @@ export function patch_yaml_draft(text, operation) {
       const lineStart = source.lastIndexOf("\n", start - 1) + 1, indent = source.slice(lineStart, start);
       if (/^ *$/.test(indent)) {
         const newline = source.includes("\r\n") ? "\r\n" : "\n", separator = /(?:\r\n|\n|\r)$/.test(old) ? "" : newline;
-        const addition = operation.kind === "append" ? "- " + JSON.stringify(operation.value) : JSON.stringify(key) + ": " + JSON.stringify(operation.value);
+        const addition = yaml_entry(operation, key).replace(/\n/g, newline + indent);
         const result = bom + source.slice(0, end) + separator + indent + addition + newline + source.slice(end);
         if (matches(result)) return { text: result, reformatted: false };
       }
     }
     return patchCollectionAst();
   }
-  const replacement = JSON.stringify(next);
-  if (replacement === undefined) throw new ConfigError("Некорректное значение поля.");
+  let replacement = yaml_fragment(next);
+  if (next !== null && typeof next === "object" && !node.flow && Array.isArray(node.items)) {
+    const indent = source.slice(source.lastIndexOf("\n", start - 1) + 1, start);
+    if (/^ *$/.test(indent)) {
+      const newline = source.includes("\r\n") ? "\r\n" : "\n";
+      replacement = stringify_yaml(next, { fragment: true }).replace(/\n$/, "").replace(/\n/g, newline + indent);
+    }
+  }
   const trailingLineEnd = old.match(/(?:\r\n|\r|\n)$/)?.[0] || "";
   const result = bom + source.slice(0, start) + replacement + trailingLineEnd + source.slice(end);
   // Reject surprising YAML constructs rather than silently editing a different value.
@@ -400,7 +424,7 @@ const restore = (file, previous) => {
   else atomic_write(file, previous);
 };
 function patch_yaml_document(original, desired) {
-  if (original === null) return stringify(desired, { schema: "yaml-1.1" });
+  if (original === null) return stringify_yaml(desired);
   let text = original ?? "{}\n";
   const visit = (before, after, keys = []) => {
     if (object(before) && object(after)) {
@@ -873,6 +897,15 @@ export class SettingsBackend {
   }
   async main(request, reportProgress = () => {}, { includeYaxunit = false, observationContext = null, flightRecoveryBudget = 1 } = {}) {
     const action = request.action;
+    if (["vanessa_read", "vanessa_save", "vanessa_prepare", "vanessa_start"].includes(action)) {
+      const root = this.current().active_project;
+      if (!root) throw new ConfigError("Выберите папку проекта.");
+      const api = await import("./vanessa_settings.mjs");
+      if (action === "vanessa_read") return api.read_vanessa_profile(root);
+      if (action === "vanessa_save") return api.save_vanessa_profile(this.STATE, root, request.profile, request.expectedRevision);
+      if (action === "vanessa_prepare") return api.prepare_vanessa_start(root, this.CONFIG);
+      return api.start_vanessa(this.STATE, root, this.CONFIG, request.authorization, request.expectedRevision);
+    }
     if (action === "transfer_context") {
       const config = this.current(), root = config.active_project;
       if (!root || request.projectRoot !== undefined && configuration_root(request.projectRoot) !== root) throw new ConfigError("Выберите проект текущего чата.");
@@ -918,7 +951,7 @@ export class SettingsBackend {
         if (request.includeCommandsAndComments === true) {
           for (const line of raw.split(/\r?\n/)) { const comment = line.match(/(?:^|\s)#(.*)$/); if (comment) { inspect(comment[1]); if (/\b(?:password|passwd|pwd|secret|token|credential|api[-_]?key|authorization)\s+\S+/i.test(comment[1])) throw new ConfigError("В комментарии обнаружен возможный секрет. Удалите его перед экспортом."); } }
           output[scope] = raw;
-        } else output[scope] = stringify(document, { schema: "yaml-1.1" });
+        } else output[scope] = stringify_yaml(document);
       }
       if (revision !== this.edit_revision()) throw new ConfigError("Настройки изменились во время экспорта.");
       if (request.scope === "both") return { filename: "1c-ai-core-project.zip", base64: Buffer.from(write_project_archive({ ".ai/project.yaml": output.profile, ".ai/project.local.yaml": output.project_local })).toString("base64") };

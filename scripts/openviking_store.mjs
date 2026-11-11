@@ -1,4 +1,4 @@
-// User-owned connection records. A record is never part of project settings.
+// User-owned connection records and the shared private-file writer.
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -288,30 +288,53 @@ export function private_observation_directory(parent) {
     throw error;
   }
 }
-function private_atomic_write_windows(file, contents) {
-  const temporary = path.join(path.dirname(file), `.core-${randomUUID()}.tmp`);
+function private_atomic_write_windows(file, contents, overwrite) {
+  // A protected file DACL alone does not prevent DELETE_CHILD through a writable
+  // parent. Keep the staging directory and all its ancestors pinned until the
+  // private file has been published and the staging entry has been removed.
+  const directory = private_observation_directory(path.dirname(file));
+  const temporary = path.join(directory.ioPath, `.core-${randomUUID()}.tmp`);
+  const destination = path.join(path.dirname(directory.path), path.basename(file));
   let created = false;
   try {
-    with_windows_identity(false, (api, _sid, descriptor) => {
+    with_windows_identity(false, (api, sid, descriptor) => {
       const attributes = { nLength: api.securityAttributesSize, lpSecurityDescriptor: descriptor, bInheritHandle: 0 };
-      const handle = api.createFile(temporary, 0x40000000, 0, attributes, 1, 0x80, null);
+      const handle = api.createFile(temporary, 0x40020000, 0, attributes, 1, 0x80, null);
       if (!handle || BigInt.asIntN(64, api.koffi.address(handle)) === -1n)
-        throw new Error("Не удалось создать защищённый файл OpenViking (" + api.error() + ").");
+        throw new Error("Не удалось создать защищённый файл (" + api.error() + ").");
       created = true;
-      if (!api.close(handle)) throw new Error("Не удалось закрыть файл OpenViking (" + api.error() + ").");
+      try { verify_private_handle(api, handle, sid, false); }
+      finally { if (!api.close(handle)) throw new Error("Не удалось закрыть защищённый файл (" + api.error() + ")."); }
     });
     // Fail closed before putting any values on disk if the filesystem did not
     // honour the requested owner or cannot enforce the protected DACL.
     restrict_windows(temporary, false);
+    directory.ensure();
     fs.writeFileSync(temporary, contents, { flag: "r+" });
-    for (let attempt = 0; ; attempt++) {
-      try { fs.renameSync(temporary, file); break; }
-      catch (error) {
-        if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt === 5) throw error;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+    directory.ensure();
+    if (!overwrite) fs.linkSync(temporary, destination);
+    else {
+      for (let attempt = 0; ; attempt++) {
+        try { fs.renameSync(temporary, destination); break; }
+        catch (error) {
+          if (!["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt === 5) throw error;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10 * 2 ** attempt);
+        }
       }
     }
-  } finally { if (created) fs.rmSync(temporary, { force: true }); }
+  } finally {
+    let failure;
+    try { if (created) fs.rmSync(temporary, { force: true }); } catch (error) { failure = error; }
+    try { directory.remove(); } catch (error) { failure ||= error; }
+    try { directory.close(); } catch (error) { failure ||= error; }
+    if (failure) throw Object.assign(new Error("Private file staging cleanup is not confirmed"),
+      { outcomeUnknown: true, cleanupUnconfirmed: true, cause: failure });
+  }
+}
+export function private_atomic_write(file, contents, overwrite = true) {
+  if (process.platform !== "win32") return atomic_write(file, contents, overwrite);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  return private_atomic_write_windows(file, contents, overwrite);
 }
 function secure_directory(state) {
   const directory = path.join(state, "openviking-private");
@@ -361,8 +384,7 @@ export async function save_openviking_record(url, connectionId, values, expected
     if (read(state, key).revision !== expectedRevision) throw new Error("Запись OpenViking изменена в другом окне. Откройте её заново.");
     const revision = randomUUID(), contents = JSON.stringify({ version: 1, identity: key, revision, values }) + "\n";
     if (Buffer.byteLength(contents) > 2 * 1024 * 1024) throw new Error("Запись OpenViking слишком велика.");
-    if (process.platform === "win32") private_atomic_write_windows(record_path(state, key), contents);
-    else atomic_write(record_path(state, key), contents);
+    private_atomic_write(record_path(state, key), contents);
     return { revision };
   }, 5);
 }

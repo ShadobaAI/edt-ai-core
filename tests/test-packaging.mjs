@@ -199,7 +199,13 @@ test("preview ordinals count develop push runs separately per source version and
     { id: 5, run_number: 2, event: "pull_request", head_branch: "develop", head_sha: sha(5) },
   ];
   environment(t, { ...f.env, GITHUB_RUN_ID: "3", GITHUB_SHA: sha(3) });
-  const exec = args => args[0] === "gh" ? JSON.stringify({ workflow_runs: runs }) : JSON.stringify({ name: "1c-ai-core", version: args[2].startsWith(sha(2)) ? "9.9.9" : base });
+  const exec = args => {
+    if (args[0] === "gh") {
+      assert.ok(args.includes("--jq"), "Filter workflow metadata before it reaches Node's bounded stdout buffer");
+      return JSON.stringify({ workflow_runs: runs });
+    }
+    return JSON.stringify({ name: "1c-ai-core", version: args[2].startsWith(sha(2)) ? "9.9.9" : base });
+  };
   assert.equal(preview_number(exec), 2);
   process.env.GITHUB_RUN_ID = "1"; process.env.GITHUB_SHA = sha(1);
   assert.equal(preview_number(exec), 1);
@@ -210,6 +216,39 @@ test("preview ordinals count develop push runs separately per source version and
   assert.equal(satisfies_core(">=1.2.3 <2.0.0", "1.2.3-preview.1"), true);
   assert.throws(() => satisfies_core(">=1.2.3", "1.2.3-preview.0"));
 });
+
+test("preview history retains every page, deduplicates overlapping runs and keeps rerun ordinals", t => {
+  const f = fixture(t), base = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"))).version;
+  const sha = n => n.toString(16).padStart(40, "0");
+  const runs = Array.from({ length: 151 }, (_, index) => {
+    const n = 151 - index;
+    return { id: n, run_number: n, event: n === 149 ? "pull_request" : "push",
+      head_branch: n === 148 ? "main" : "develop", head_sha: sha(n), conclusion: "failure" };
+  });
+  const pages = [runs.slice(0, 100), runs.slice(99)], requested = [];
+  environment(t, { ...f.env, GITHUB_RUN_ID: "150", GITHUB_SHA: sha(150) });
+  const exec = args => {
+    if (args[0] === "gh") {
+      const page = Number(new URL(args[2], "https://api.github.com/").searchParams.get("page"));
+      requested.push(page);
+      return JSON.stringify({ workflow_runs: pages[page - 1] });
+    }
+    return JSON.stringify({ name: "1c-ai-core", version: args[2].startsWith(sha(147)) ? "9.9.9" : base });
+  };
+  assert.equal(preview_number(exec), 147);
+  assert.equal(preview_number(exec), 147);
+  assert.deepEqual(requested, [1, 2, 1, 2]);
+  assert.throws(() => preview_number(args => {
+    if (args[0] === "gh" && args[2].endsWith("page=2")) throw new Error("History page unavailable");
+    return exec(args);
+  }), /History page unavailable/);
+});
+
+for (const workflow_runs of [null, {}, "invalid"]) test(`preview history rejects a non-array page: ${JSON.stringify(workflow_runs)}`, t => {
+  const f = fixture(t); environment(t, { ...f.env, GITHUB_RUN_ID: "1" });
+  assert.throws(() => preview_number(() => JSON.stringify({ workflow_runs })), /Invalid workflow runs response/);
+});
+
 test("preview package is checked and coexists with stable in the marketplace", async t => {
   const f = fixture(t), base = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"))).version;
   const bare = path.join(f.base, "store.git"), checkout = path.join(f.base, "catalog");

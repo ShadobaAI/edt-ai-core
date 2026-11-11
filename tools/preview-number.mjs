@@ -8,7 +8,12 @@ export function preview_number(exec = (args) => run_sync(args[0], args.slice(1))
   if (!/^\d+$/.test(id || "")) throw new Error("Missing preview run ID");
   const runs = new Map();
   for (let page = 1; ; page++) {
-    const response = JSON.parse(exec(["gh", "api", `repos/ShadobaAI/edt-ai-core/actions/workflows/build-plugin.yml/runs?per_page=100&page=${page}`]));
+    // Select fields inside gh: full run metadata can exceed Node's stdout buffer.
+    // Preserve invalid page types so the existing response check still rejects them.
+    const response = JSON.parse(exec([
+      "gh", "api", `repos/ShadobaAI/edt-ai-core/actions/workflows/build-plugin.yml/runs?per_page=100&page=${page}`,
+      "--jq", '{workflow_runs: (.workflow_runs | if type == "array" then map({id, event, head_branch, head_sha, run_number}) else . end)}',
+    ]));
     if (!Array.isArray(response.workflow_runs)) throw new Error("Invalid workflow runs response");
     for (const run of response.workflow_runs) runs.set(String(run.id), run);
     if (response.workflow_runs.length < 100) break;

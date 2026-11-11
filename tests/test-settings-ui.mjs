@@ -164,7 +164,7 @@ function liveStatusScreen({hold=false,running=false}={}) {
   return {ui,current,requests,release:()=>release(),fail:message=>{failure=message;},holdNext:()=>{gate=new Promise(done=>{release=done;});},failPoll:value=>{pollFailure=value;},holdPoll:()=>{pollGate=new Promise(done=>{releasePoll=done;});},releasePoll:()=>releasePoll()};
 }
 
-test("the header beside the project shows profile facts and all seven canonical component states on every tab",async()=>{
+test("the header keeps all component states but shows only issues and active work on every tab",async()=>{
   const f=liveStatusScreen();f.current.profile.repositories=[{id:"shared"}];
   f.current.profileDirectoryContext={edt:{projectCount:4},git:{status:"detected",branch:"feature/header"}};
   await f.ui.flush();
@@ -174,9 +174,12 @@ test("the header beside the project shows profile facts and all seven canonical 
   for(const item of f.ui.context.catalogItems(f.current)){
     const badge=badges.children.find(badge=>badge.attributes["data-component"]===item.id);
     assert.equal(badge.attributes["data-state"],item.state);assert.ok(badge.textContent.startsWith(item.name+": "));
+    if(["ready","disabled"].includes(item.state)&&!item.issue)assert.equal(badge.hidden,true);
+    if(item.issue||["checking","indexing","preparing","building"].includes(item.state))assert.equal(badge.hidden,false);
     if(item.id==="yaxunit")assert.match(badge.textContent,/Требуется проверка настроек/);
     if(item.id==="vanessa")assert.match(badge.textContent,/Менеджер доступен/);
   }
+  assert.ok(badges.children.some(badge=>badge.hidden));
   const requests=f.requests.length;
   for(const tab of ["check","editor","support"]){f.ui.context.show(tab);assert.equal(f.ui.elements.get("headerProfileSummary").hidden,false);assert.equal(badges.children.length,7);}
   assert.equal(f.requests.length,requests,"rendering the summary must not initiate additional component checks");
@@ -225,6 +228,13 @@ test("Vanessa status shows the observed manager and expires without probing",asy
   assert.equal(headerState(f.ui,"Vanessa"),"Менеджер недоступен");
   assert.equal(f.ui.elements.get("testingDialogDiagnostic").textContent,"Менеджер недоступен");
   assert.equal(f.requests.length,count);
+});
+
+test("a successful Vanessa manager start refreshes that component",async()=>{
+  const f=liveStatusScreen();await f.ui.flush();await f.ui.flush();
+  const count=f.requests.length,operation={id:"manager-start",action:"vanessa_start",status:"completed",projectRoot:f.current.values.projectRoot,instance:f.current.instance,result:{status:"started"}};
+  await f.ui.context.pollOperation(operation.id,null,operation);await f.ui.flush();await f.ui.flush();
+  assert.ok(f.requests.slice(count).some(item=>item.name==="settings.refresh_readiness"&&item.component==="vanessa"));
 });
 
 test("server component statuses outrank stale setup and refresh preserves card focus",async()=>{
@@ -2609,19 +2619,92 @@ test("an unchecked connection is not reported as stale or disconnected", async (
   assert.match(text,/Нет данных подключения/);assert.doesNotMatch(text,/Проверка устарела|Нет подключения/);
 });
 
-test("EDT port suggestion is adjacent, explicit, and saves only the instance URL", async () => {
-  let saved,applied=false;
+for (const selectedScope of ["profile", "project_local"]) test(`EDT port suggestion switches to local settings from ${selectedScope}`, async () => {
   const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  const sharedUrl="http://localhost:8765/mcp",localPath="C:/fixture/project/.ai/project.local.yaml",updates=[];
+  const current={...read,settingsRevision:"before",values:{...read.values,edtUrl:sharedUrl,bslLsEnabled:false},connectionSources:{edt:"profile"},
+    layerValues:{profile:{edtUrl:sharedUrl},project_local:{}},writePaths:{profile:"C:/fixture/project/.ai/project.yaml",project_local:localPath},edtPortSuggestion:suggestion};
   const ui=screen(async(name,args)=>{
-    if(name==="settings.read")return {...read,values:{...read.values,edtUrl:applied?suggestion.url:"http://localhost:8765/mcp"},edtPortSuggestion:applied?null:suggestion};
-    if(name==="settings.update"){saved=args.set;applied=true;return {};}
+    if(name==="settings.read")return current;
+    if(name==="settings.update"){
+      updates.push(args);Object.assign(current.layerValues[args.scope],args.set);
+      if(args.set.edtUrl){current.values.edtUrl=args.set.edtUrl;current.connectionSources.edt=args.scope;current.edtPortSuggestion=null;}
+      current.settingsRevision="after";return {savedTo:current.writePaths[args.scope],settingsRevision:current.settingsRevision};
+    }
     throw new Error(name);
   });await ui.flush();assert.equal(ui.elements.get("edtPortHint").hidden,false);
-  assert.match(ui.elements.get("edtPortText").textContent,/19801.*8765/);
-  ui.elements.get("v8stdUrl").value="http://localhost:9000/mcp";ui.elements.get("v8stdUrl").events.input();
+  const hintText=ui.elements.get("edtPortText").textContent;
+  ui.elements.get("connectionScope").value=selectedScope;ui.elements.get("connectionScope").events.change();
+  ui.elements.get("componentLocalButton").onclick();ui.elements.get("bslLsEnabled").checked=true;ui.elements.get("bslLsEnabled").events.change();
   await ui.elements.get("useEdtPortButton").onclick();
-  assert.equal(JSON.stringify(saved),JSON.stringify({edtUrl:suggestion.url}));
-  assert.equal(ui.elements.get("edtPortHint").hidden,true);assert.equal(ui.elements.get("v8stdUrl").value,"http://localhost:9000/mcp");
+  assert.equal(updates.length,1);assert.equal(updates[0].scope,"project_local");assert.equal(updates[0].expectedRevision,"before");
+  assert.match(hintText,/19801.*8765.*локальн/i);
+  assert.equal(JSON.stringify(updates[0].set),JSON.stringify({edtUrl:suggestion.url}));
+  assert.equal(current.layerValues.profile.edtUrl,sharedUrl);assert.equal(current.layerValues.project_local.edtUrl,suggestion.url);
+  assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.equal(ui.elements.get("edtPortHint").hidden,true);
+  assert.equal(ui.elements.get("connectionLocalButton").attributes["aria-pressed"],"true");
+  assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"false");
+  assert.match(ui.elements.get("connectionDestination").textContent,/project\.local\.yaml/);
+  assert.equal(ui.elements.get("edtUrl").value,suggestion.url);assert.equal(ui.elements.get("bslLsEnabled").checked,true);
+  assert.match(ui.elements.get("status").textContent,/Локальные настройки/);assert.match(ui.elements.get("status").textContent,/project\.local\.yaml/);
+  ui.elements.get("connectionSharedButton").onclick();assert.equal(ui.elements.get("connectionScope").value,"profile");
+  ui.elements.get("connectionLocalButton").onclick();assert.equal(ui.elements.get("connectionScope").value,"project_local");
+  await ui.elements.get("saveComponentsButton").onclick();
+  assert.equal(updates.length,2);assert.equal(updates[1].scope,"project_local");assert.equal(updates[1].expectedRevision,"after");
+  assert.equal(JSON.stringify(updates[1].set),JSON.stringify({bslLsEnabled:true}));
+});
+
+test("EDT port update does not move a shared connection draft to local settings", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  let updates=0;
+  const current={...read,values:{...read.values,edtUrl:"http://localhost:8765/mcp"},connectionSources:{edt:"profile"},edtPortSuggestion:suggestion};
+  const ui=screen(async name=>{if(name==="settings.read")return current;if(name==="settings.update"){updates++;return {};}throw new Error(name);});
+  await ui.flush();assert.equal(ui.elements.get("connectionScope").value,"profile");
+  ui.elements.get("v8stdUrl").value="http://localhost:9000/mcp";ui.elements.get("v8stdUrl").events.input();
+  assert.equal(ui.elements.get("useEdtPortButton").disabled,true);
+  assert.match(ui.elements.get("edtPortText").textContent,/Сохраните или отмените черновик/);
+  await ui.elements.get("useEdtPortButton").onclick();
+  assert.equal(updates,0);assert.equal(ui.elements.get("connectionScope").value,"profile");
+  assert.equal(ui.elements.get("v8stdUrl").value,"http://localhost:9000/mcp");
+});
+
+test("EDT port update preserves other connection drafts already in local settings", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"},updates=[];
+  let current={...read,settingsRevision:"before",values:{...read.values,edtUrl:"http://localhost:8765/mcp"},edtPortSuggestion:suggestion};
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return current;
+    if(name==="settings.update"){updates.push(args);current={...current,settingsRevision:"after",edtPortSuggestion:null};return {settingsRevision:"after"};}
+    throw new Error(name);
+  });await ui.flush();ui.elements.get("connectionLocalButton").onclick();
+  ui.elements.get("v8stdUrl").value="http://localhost:9000/mcp";ui.elements.get("v8stdUrl").events.input();
+  assert.equal(ui.elements.get("useEdtPortButton").disabled,false);await ui.elements.get("useEdtPortButton").onclick();
+  assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.equal(ui.elements.get("v8stdUrl").value,"http://localhost:9000/mcp");
+  await ui.elements.get("saveButton").onclick();assert.equal(updates.length,2);assert.equal(updates[1].scope,"project_local");
+  assert.equal(updates[1].expectedRevision,"after");assert.equal(JSON.stringify(updates[1].set),JSON.stringify({v8stdUrl:"http://localhost:9000/mcp"}));
+});
+
+test("a failed EDT port update leaves the shared scope selected", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  const ui=screen(async name=>{if(name==="settings.read")return {...read,edtPortSuggestion:suggestion};if(name==="settings.update")throw new Error("Настройки изменились после загрузки.");throw new Error(name);});
+  await ui.flush();assert.equal(ui.elements.get("connectionScope").value,"profile");await ui.elements.get("useEdtPortButton").onclick();
+  assert.equal(ui.elements.get("connectionScope").value,"profile");assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"true");
+  assert.equal(ui.elements.get("edtPortHint").hidden,false);assert.match(ui.elements.get("status").textContent,/изменились/);
+});
+
+test("a late EDT port update does not switch the scope of another project", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  let current={...read,instance:"first",values:{...read.values,edtUrl:"http://localhost:8765/mcp"},connectionSources:{edt:"profile"},edtPortSuggestion:suggestion};
+  let releaseUpdate,updateStarted;const started=new Promise(resolve=>{updateStarted=resolve;});
+  const ui=screen(async name=>{
+    if(name==="settings.read")return current;
+    if(name==="settings.update"){updateStarted();await new Promise(resolve=>{releaseUpdate=resolve;});return {};}
+    throw new Error(name);
+  });await ui.flush();
+  const saving=ui.elements.get("useEdtPortButton").onclick();await started;
+  current={...read,instance:"second",values:{...read.values,projectRoot:"C:/other",edtUrl:"http://localhost:9000/mcp"},connectionSources:{edt:"profile"}};
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(ui.elements.get("connectionScope").value,"profile");
+  releaseUpdate();await saving;
+  assert.equal(ui.elements.get("connectionScope").value,"profile");assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"true");
 });
 
 test("EDT port suggestion never overwrites a draft or accepts a changed preference", async () => {
@@ -3662,7 +3745,7 @@ test("connection scope defaults follow only the fields of the opened server", as
   assert.equal(ui.elements.get("v8stdUrl").value,"");
 });
 
-test("inherited URLs are placeholders, probes use their value, and only explicit edits are saved", async () => {
+test("inherited URLs can be edited from their displayed value without saving unchanged hints", async () => {
   const shared="http://shared/mcp",local="http://local/mcp",updates=[];
   const current={...read,instance:"first",values:{...read.values,edtUrl:shared},connectionSources:{edt:"profile"},
     layerValues:{profile:{edtUrl:shared},project_local:{}},writePaths:{profile:"C:/project/.ai/project.yaml",project_local:"C:/project/.ai/project.local.yaml"}};
@@ -3680,16 +3763,22 @@ test("inherited URLs are placeholders, probes use their value, and only explicit
     throw new Error(name);
   });await ui.flush();ui.context.openConnectionDialog(ui.context.catalogItems(current).find(item=>item.id==="edt"),null);
   const field=ui.elements.get("edtUrl");assert.equal(field.value,shared);
-  ui.elements.get("connectionLocalButton").onclick();assert.equal(field.value,"");assert.equal(field.placeholder,shared);assert.equal(ui.elements.get("saveButton").disabled,true);
+  ui.elements.get("connectionLocalButton").focus();ui.elements.get("connectionLocalButton").onclick();assert.equal(field.value,"");assert.equal(field.placeholder,shared);assert.equal(field.attributes["data-inherited"],"true");assert.equal(ui.elements.get("saveButton").disabled,true);
   await ui.elements.get("probeButton").onclick();assert.equal(probed,shared);assert.equal(updates.length,0);
-  field.value="temporary";field.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);
-  field.value="";field.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(field.placeholder,shared);
+  field.focus();field.events.focus();assert.equal(field.value,shared);assert.equal(ui.elements.get("saveButton").disabled,true);
+  field.value=shared.replace("shared","temporary");field.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);assert.equal(field.attributes["data-inherited"],"false");
+  field.value=shared;field.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);assert.equal(field.attributes["data-inherited"],"false");
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,shared,"refresh keeps the explicitly edited value while focused");
+  field.value="";field.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(field.value,"");
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,"","refresh must not refill a field while the user is replacing its inherited value");
+  ui.elements.get("connectionLocalButton").focus();field.events.blur();assert.equal(field.value,"");assert.equal(field.placeholder,shared);
+  field.focus();field.events.focus();assert.equal(field.value,shared);
   field.value=local;field.events.input();await ui.elements.get("saveButton").onclick();
   assert.equal(updates.length,1);assert.equal(updates[0].scope,"project_local");assert.equal(updates[0].set.edtUrl,local);assert.equal(field.value,local);
-  ui.elements.get("connectionSharedButton").onclick();assert.equal(current.layerValues.profile.edtUrl,shared);assert.equal(field.value,"");assert.equal(field.placeholder,local);
+  ui.elements.get("connectionSharedButton").focus();ui.elements.get("connectionSharedButton").onclick();assert.equal(current.layerValues.profile.edtUrl,shared);assert.equal(field.value,"");assert.equal(field.placeholder,local);
   field.value="http://draft/mcp";field.events.input();ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(field.value,"http://draft/mcp");
   ui.elements.get("componentDiscard").onclick();assert.equal(field.value,"");assert.equal(field.placeholder,local);
-  ui.elements.get("connectionLocalButton").onclick();field.value="";field.events.input();await ui.elements.get("saveButton").onclick();
+  ui.elements.get("connectionLocalButton").focus();ui.elements.get("connectionLocalButton").onclick();field.value="";field.events.input();await ui.elements.get("saveButton").onclick();
   assert.deepEqual(Array.from(updates.at(-1).unset),["edtUrl"]);assert.equal(updates.at(-1).set.edtUrl,undefined);
   assert.equal(current.values.edtUrl,shared);assert.equal(field.value,"");assert.equal(field.placeholder,shared);assert.equal(ui.elements.get("saveButton").disabled,true);
   ui.elements.get("connectionSharedButton").onclick();assert.equal(field.value,shared);
@@ -3710,27 +3799,33 @@ test("inherited OpenViking fields preserve record identity and numeric probe val
   assert.equal(ui.elements.get("openvikingUrl").value,"");assert.equal(ui.elements.get("openvikingUrl").placeholder,url);
   assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext("ovIdentity()",ui.context))),{url,connectionId:"team"});
   ui.elements.get("connectionSharedButton").onclick();
-  const timeout=ui.elements.get("openvikingTimeout");assert.equal(timeout.value,"");assert.equal(timeout.placeholder,"30");
+  const timeout=ui.elements.get("openvikingTimeout");assert.equal(timeout.value,"");assert.equal(timeout.placeholder,"30");timeout.focus();timeout.events.focus();assert.equal(timeout.value,"30");assert.equal(timeout.attributes["data-inherited"],"true");
   assert.equal(vm.runInContext('transportValue("openvikingMaxResponseBytes")',ui.context),4096);
   await ui.elements.get("probeButton").onclick();assert.equal(probed.connections,undefined);
-  timeout.value="31";timeout.events.input();await ui.elements.get("probeButton").onclick();
+  timeout.value="31";timeout.events.input();assert.equal(timeout.attributes["data-inherited"],"false");await ui.elements.get("probeButton").onclick();
   assert.deepEqual(JSON.parse(JSON.stringify(probed.connections.openviking)),{timeout_seconds:31});
-  timeout.value="";timeout.events.input();assert.equal(ui.elements.get("saveButton").disabled,true);assert.equal(timeout.placeholder,"30");
+  timeout.value="30";timeout.events.input();assert.equal(ui.elements.get("saveButton").disabled,false);assert.equal(timeout.attributes["data-inherited"],"false");
+  ui.elements.get("componentDiscard").onclick();assert.equal(ui.elements.get("saveButton").disabled,true);
+  ui.elements.get("probeButton").focus();timeout.events.blur();assert.equal(timeout.value,"");assert.equal(timeout.placeholder,"30");
 });
 
 test("Java checks use the inherited executable while selected paths become editable drafts", async () => {
   const java="C:/LocalJava/bin/java.exe",picked="C:/PickedJava/bin/java.exe",current={...read,instance:"first",values:{...read.values,bslLsJava:java},managedValueSources:{bslLsJava:"project_local"},
     layerValues:{profile:{bslLsJava:"old-java"},project_local:{bslLsJava:java},global:{bslLsJava:"java"}}};
-  let command,action;
+  let command,action,chosen=java;
   const ui=screen(async(name,args)=>{
     if(["settings.read","settings.status"].includes(name))return current;
     if(name==="settings.check_java"){command=args.command;action="check_java";return {id:"java-hint",status:"running"};}
     if(name==="settings.pick_java"){action="pick_java";return {id:"java-hint",status:"running"};}
-    if(name==="settings.operation")return {id:"java-hint",action,projectRoot:current.values.projectRoot,instance:"first",status:"completed",result:{path:action==="pick_java"?picked:java,version:"21"}};
+    if(name==="settings.operation")return {id:"java-hint",action,projectRoot:current.values.projectRoot,instance:"first",status:"completed",result:{path:action==="pick_java"?chosen:java,version:"21"}};
     throw new Error(name);
   });await ui.flush();ui.elements.get("javaSharedButton").onclick();
-  const field=ui.elements.get("bslLsJava");assert.equal(field.value,"");assert.equal(field.placeholder,java);
+  const field=ui.elements.get("bslLsJava");assert.equal(field.value,"");assert.equal(field.placeholder,java);field.focus();field.events.focus();assert.equal(field.value,java);assert.equal(field.attributes["data-inherited"],"true");
   await ui.elements.get("checkJavaButton").onclick();assert.equal(command,java);assert.equal(ui.elements.get("saveJavaButton").disabled,true);
+  field.value=java.replace("LocalJava","ProjectJava");field.events.input();assert.equal(field.attributes["data-inherited"],"false");assert.equal(ui.elements.get("saveJavaButton").disabled,false);
+  field.value=java;field.events.input();assert.equal(field.attributes["data-inherited"],"false");assert.equal(ui.elements.get("saveJavaButton").disabled,false);
+  await ui.elements.get("pickJavaButton").onclick();assert.equal(field.value,java);assert.equal(ui.elements.get("saveJavaButton").disabled,false,"explicitly choosing the inherited Java path can create an override");
+  field.events.input();assert.equal(ui.elements.get("saveJavaButton").disabled,false);chosen=picked;
   await ui.elements.get("pickJavaButton").onclick();assert.equal(field.value,picked);assert.equal(ui.elements.get("saveJavaButton").disabled,false);
 });
 
@@ -3841,7 +3936,7 @@ test("component card input, save, clear and scope events restore inheritance thr
   const edit=(id,value)=>{const field=ui.elements.get(id);field.value=String(value);field.events.input();};
   for(const [id,fields]of [["edt",[["edtUrl","url","http://localhost:18291/mcp"]]],["v8std",[["v8stdUrl","url","http://localhost:18292/mcp"]]],
     ["openviking",[["openvikingUrl","url","http://localhost:18293/mcp"],["openvikingTimeout","timeout_seconds",45],["openvikingMaxResponseBytes","max_response_bytes",8192],["openvikingConnectionId","connection_id","local"]]]]){
-    ui.context.openConnectionDialog(item(id),null);ui.elements.get("connectionLocalButton").onclick();
+    ui.context.openConnectionDialog(item(id),null);ui.elements.get("connectionLocalButton").focus();ui.elements.get("connectionLocalButton").onclick();
     for(const [field,member,value]of fields){assert.equal(ui.elements.get(field).value,"");assert.equal(ui.elements.get(field).placeholder,String(f.profile.connections[id][member]));edit(field,value);}
     assert.equal(ui.elements.get("saveButton").disabled,false);
     ui.elements.get("connectionSharedButton").onclick();assert.equal(ui.elements.get("connectionScope").value,"project_local","a draft must block scope switching");
@@ -3852,7 +3947,7 @@ test("component card input, save, clear and scope events restore inheritance thr
     assert.equal(Object.keys(update.set).length,0);assert.deepEqual(Array.from(update.unset),fields.map(([field])=>field));
     for(const [field,member]of fields){assert.equal(load(localFile).connections?.[id]?.[member],undefined);assert.equal(ui.elements.get(field).value,"");assert.equal(ui.elements.get(field).placeholder,String(f.profile.connections[id][member]));}
     assert.equal(ui.elements.get("saveButton").disabled,true);assert.deepEqual(fs.readFileSync(sharedFile),original);
-    ui.elements.get("connectionSharedButton").onclick();
+    ui.elements.get("connectionSharedButton").focus();ui.elements.get("connectionSharedButton").onclick();
     for(const [field,member]of fields)assert.equal(ui.elements.get(field).value,String(f.profile.connections[id][member]));
     ui.elements.get("componentDialog").close();
   }
@@ -3933,6 +4028,7 @@ test("environment URLs remain read-only and explain the higher-priority source",
   ui.elements.get("connectionScope").value = "profile"; ui.elements.get("connectionScope").events.change();
   assert.equal(ui.elements.get("edtUrl").value, "");assert.equal(ui.elements.get("edtUrl").placeholder,"http://env/mcp");
   assert.equal(ui.elements.get("edtUrl").readOnly, true);
+  ui.elements.get("edtUrl").focus();ui.elements.get("edtUrl").events.focus();assert.equal(ui.elements.get("edtUrl").value, "");
   assert.match(ui.elements.get("edtSource").textContent, /Действует: http:\/\/env\/mcp — переменная окружения EDT_AI_EDT_URL.*приоритет выше/);
 });
 
