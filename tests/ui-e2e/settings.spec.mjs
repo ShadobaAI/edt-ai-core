@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
-import { load } from "../../scripts/common.mjs";
+import { dump, load } from "../../scripts/common.mjs";
 import { startHost } from "./host.mjs";
 
 let host;
@@ -56,6 +56,39 @@ test("saves a local connection and discards a later draft", async ({ page }) => 
   await expect(app.locator("#componentDialog")).toBeHidden();
   expect(load(local).connections.edt.url).toBe("http://127.0.0.1:8123/mcp");
   expect(host.calls.filter(call => call.name === "settings.update")).toHaveLength(1);
+});
+
+for (const selectedScope of ["profile", "project_local"]) test(`refreshes EDT port locally when ${selectedScope} is selected`, async ({ page }) => {
+  const local = path.join(host.project, ".ai/project.local.yaml");
+  const shared = path.join(host.project, ".ai/project.yaml");
+  const profile = load(shared);
+  profile.connections = { ...profile.connections, edt: { url: "http://localhost:8765/mcp" } };
+  dump(profile, shared);
+  if (selectedScope === "project_local") dump({ connections: { edt: { url: "http://localhost:8765/mcp" }, v8std: { url: "http://localhost:9000/mcp" } } }, local);
+  const sharedBefore = fs.readFileSync(shared);
+  const prefs = path.join(host.project, ".metadata/.plugins/org.eclipse.core.runtime/.settings/com.ditrix.edt.mcp.server.prefs");
+  fs.mkdirSync(path.dirname(prefs), { recursive: true });
+  fs.writeFileSync(prefs, "mcpServerPort=19801\n");
+
+  await page.reload();
+  await expect(page.frameLocator("#app").locator("#headerProjectName")).toHaveText("Product");
+  const app = await openEdt(page);
+  await app.locator(selectedScope === "profile" ? "#connectionSharedButton" : "#connectionLocalButton").click();
+  await expect(app.locator("#edtPortText")).toContainText("локальные настройки");
+  await app.locator("#useEdtPortButton").click();
+  await expect.poll(() => fs.existsSync(local) && load(local).connections?.edt?.url).toBe("http://localhost:19801/mcp");
+  await expect(app.locator("#edtPortHint")).toBeHidden();
+  await expect(app.locator("#componentDialogStatus")).toContainText("Локальные настройки");
+  await expect(app.locator("#connectionLocalButton")).toHaveAttribute("aria-pressed", "true");
+  await expect(app.locator("#connectionSharedButton")).toHaveAttribute("aria-pressed", "false");
+  await expect(app.locator("#connectionDestination")).toContainText("project.local.yaml");
+  await expect(app.locator("#edtUrl")).toHaveValue("http://localhost:19801/mcp");
+  expect(fs.readFileSync(shared)).toEqual(sharedBefore);
+  if (selectedScope === "project_local") expect(load(local).connections.v8std.url).toBe("http://localhost:9000/mcp");
+  const updates = host.calls.filter(call => call.name === "settings.update");
+  expect(updates).toHaveLength(1);
+  expect(updates[0].arguments.scope).toBe("project_local");
+  expect(updates[0].arguments.set).toEqual({ edtUrl: "http://localhost:19801/mcp" });
 });
 
 test("shows an MCP failure and preserves the unsaved draft", async ({ page }) => {

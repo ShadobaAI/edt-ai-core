@@ -2609,19 +2609,92 @@ test("an unchecked connection is not reported as stale or disconnected", async (
   assert.match(text,/Нет данных подключения/);assert.doesNotMatch(text,/Проверка устарела|Нет подключения/);
 });
 
-test("EDT port suggestion is adjacent, explicit, and saves only the instance URL", async () => {
-  let saved,applied=false;
+for (const selectedScope of ["profile", "project_local"]) test(`EDT port suggestion switches to local settings from ${selectedScope}`, async () => {
   const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  const sharedUrl="http://localhost:8765/mcp",localPath="C:/fixture/project/.ai/project.local.yaml",updates=[];
+  const current={...read,settingsRevision:"before",values:{...read.values,edtUrl:sharedUrl,bslLsEnabled:false},connectionSources:{edt:"profile"},
+    layerValues:{profile:{edtUrl:sharedUrl},project_local:{}},writePaths:{profile:"C:/fixture/project/.ai/project.yaml",project_local:localPath},edtPortSuggestion:suggestion};
   const ui=screen(async(name,args)=>{
-    if(name==="settings.read")return {...read,values:{...read.values,edtUrl:applied?suggestion.url:"http://localhost:8765/mcp"},edtPortSuggestion:applied?null:suggestion};
-    if(name==="settings.update"){saved=args.set;applied=true;return {};}
+    if(name==="settings.read")return current;
+    if(name==="settings.update"){
+      updates.push(args);Object.assign(current.layerValues[args.scope],args.set);
+      if(args.set.edtUrl){current.values.edtUrl=args.set.edtUrl;current.connectionSources.edt=args.scope;current.edtPortSuggestion=null;}
+      current.settingsRevision="after";return {savedTo:current.writePaths[args.scope],settingsRevision:current.settingsRevision};
+    }
     throw new Error(name);
   });await ui.flush();assert.equal(ui.elements.get("edtPortHint").hidden,false);
-  assert.match(ui.elements.get("edtPortText").textContent,/19801.*8765/);
-  ui.elements.get("v8stdUrl").value="http://localhost:9000/mcp";ui.elements.get("v8stdUrl").events.input();
+  const hintText=ui.elements.get("edtPortText").textContent;
+  ui.elements.get("connectionScope").value=selectedScope;ui.elements.get("connectionScope").events.change();
+  ui.elements.get("componentLocalButton").onclick();ui.elements.get("bslLsEnabled").checked=true;ui.elements.get("bslLsEnabled").events.change();
   await ui.elements.get("useEdtPortButton").onclick();
-  assert.equal(JSON.stringify(saved),JSON.stringify({edtUrl:suggestion.url}));
-  assert.equal(ui.elements.get("edtPortHint").hidden,true);assert.equal(ui.elements.get("v8stdUrl").value,"http://localhost:9000/mcp");
+  assert.equal(updates.length,1);assert.equal(updates[0].scope,"project_local");assert.equal(updates[0].expectedRevision,"before");
+  assert.match(hintText,/19801.*8765.*локальн/i);
+  assert.equal(JSON.stringify(updates[0].set),JSON.stringify({edtUrl:suggestion.url}));
+  assert.equal(current.layerValues.profile.edtUrl,sharedUrl);assert.equal(current.layerValues.project_local.edtUrl,suggestion.url);
+  assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.equal(ui.elements.get("edtPortHint").hidden,true);
+  assert.equal(ui.elements.get("connectionLocalButton").attributes["aria-pressed"],"true");
+  assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"false");
+  assert.match(ui.elements.get("connectionDestination").textContent,/project\.local\.yaml/);
+  assert.equal(ui.elements.get("edtUrl").value,suggestion.url);assert.equal(ui.elements.get("bslLsEnabled").checked,true);
+  assert.match(ui.elements.get("status").textContent,/Локальные настройки/);assert.match(ui.elements.get("status").textContent,/project\.local\.yaml/);
+  ui.elements.get("connectionSharedButton").onclick();assert.equal(ui.elements.get("connectionScope").value,"profile");
+  ui.elements.get("connectionLocalButton").onclick();assert.equal(ui.elements.get("connectionScope").value,"project_local");
+  await ui.elements.get("saveComponentsButton").onclick();
+  assert.equal(updates.length,2);assert.equal(updates[1].scope,"project_local");assert.equal(updates[1].expectedRevision,"after");
+  assert.equal(JSON.stringify(updates[1].set),JSON.stringify({bslLsEnabled:true}));
+});
+
+test("EDT port update does not move a shared connection draft to local settings", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  let updates=0;
+  const current={...read,values:{...read.values,edtUrl:"http://localhost:8765/mcp"},connectionSources:{edt:"profile"},edtPortSuggestion:suggestion};
+  const ui=screen(async name=>{if(name==="settings.read")return current;if(name==="settings.update"){updates++;return {};}throw new Error(name);});
+  await ui.flush();assert.equal(ui.elements.get("connectionScope").value,"profile");
+  ui.elements.get("v8stdUrl").value="http://localhost:9000/mcp";ui.elements.get("v8stdUrl").events.input();
+  assert.equal(ui.elements.get("useEdtPortButton").disabled,true);
+  assert.match(ui.elements.get("edtPortText").textContent,/Сохраните или отмените черновик/);
+  await ui.elements.get("useEdtPortButton").onclick();
+  assert.equal(updates,0);assert.equal(ui.elements.get("connectionScope").value,"profile");
+  assert.equal(ui.elements.get("v8stdUrl").value,"http://localhost:9000/mcp");
+});
+
+test("EDT port update preserves other connection drafts already in local settings", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"},updates=[];
+  let current={...read,settingsRevision:"before",values:{...read.values,edtUrl:"http://localhost:8765/mcp"},edtPortSuggestion:suggestion};
+  const ui=screen(async(name,args)=>{
+    if(name==="settings.read")return current;
+    if(name==="settings.update"){updates.push(args);current={...current,settingsRevision:"after",edtPortSuggestion:null};return {settingsRevision:"after"};}
+    throw new Error(name);
+  });await ui.flush();ui.elements.get("connectionLocalButton").onclick();
+  ui.elements.get("v8stdUrl").value="http://localhost:9000/mcp";ui.elements.get("v8stdUrl").events.input();
+  assert.equal(ui.elements.get("useEdtPortButton").disabled,false);await ui.elements.get("useEdtPortButton").onclick();
+  assert.equal(ui.elements.get("connectionScope").value,"project_local");assert.equal(ui.elements.get("v8stdUrl").value,"http://localhost:9000/mcp");
+  await ui.elements.get("saveButton").onclick();assert.equal(updates.length,2);assert.equal(updates[1].scope,"project_local");
+  assert.equal(updates[1].expectedRevision,"after");assert.equal(JSON.stringify(updates[1].set),JSON.stringify({v8stdUrl:"http://localhost:9000/mcp"}));
+});
+
+test("a failed EDT port update leaves the shared scope selected", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  const ui=screen(async name=>{if(name==="settings.read")return {...read,edtPortSuggestion:suggestion};if(name==="settings.update")throw new Error("Настройки изменились после загрузки.");throw new Error(name);});
+  await ui.flush();assert.equal(ui.elements.get("connectionScope").value,"profile");await ui.elements.get("useEdtPortButton").onclick();
+  assert.equal(ui.elements.get("connectionScope").value,"profile");assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"true");
+  assert.equal(ui.elements.get("edtPortHint").hidden,false);assert.match(ui.elements.get("status").textContent,/изменились/);
+});
+
+test("a late EDT port update does not switch the scope of another project", async () => {
+  const suggestion={configuredPort:8765,detectedPort:19801,url:"http://localhost:19801/mcp"};
+  let current={...read,instance:"first",values:{...read.values,edtUrl:"http://localhost:8765/mcp"},connectionSources:{edt:"profile"},edtPortSuggestion:suggestion};
+  let releaseUpdate,updateStarted;const started=new Promise(resolve=>{updateStarted=resolve;});
+  const ui=screen(async name=>{
+    if(name==="settings.read")return current;
+    if(name==="settings.update"){updateStarted();await new Promise(resolve=>{releaseUpdate=resolve;});return {};}
+    throw new Error(name);
+  });await ui.flush();
+  const saving=ui.elements.get("useEdtPortButton").onclick();await started;
+  current={...read,instance:"second",values:{...read.values,projectRoot:"C:/other",edtUrl:"http://localhost:9000/mcp"},connectionSources:{edt:"profile"}};
+  ui.context.renderCurrent(current,{preserveDraft:true});assert.equal(ui.elements.get("connectionScope").value,"profile");
+  releaseUpdate();await saving;
+  assert.equal(ui.elements.get("connectionScope").value,"profile");assert.equal(ui.elements.get("connectionSharedButton").attributes["aria-pressed"],"true");
 });
 
 test("EDT port suggestion never overwrites a draft or accepts a changed preference", async () => {

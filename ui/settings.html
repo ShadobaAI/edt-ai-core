@@ -189,6 +189,7 @@ function maybeLoadOvRecord(){
   const key=ovKey();ovRecordLoading=loadOvRecord().catch(error=>{if(key===ovKey())$("openvikingRecordStatus").textContent=userMessage(error.message);}).finally(()=>{ovRecordLoading=null;if(key!==ovKey())maybeLoadOvRecord();});
 }
 const connectionFields=["edtUrl","v8stdUrl",...openvikingFields],componentFields=["codeIndexEnabled","bslLsEnabled"];
+const connectionScopeHasDraft=()=>connectionFields.some(field=>dirtyFields.has(field))||ovRecordDirty;
 const scopeFields={connectionScope:connectionFields,componentScope:componentFields,javaScope:["bslLsJava"]};
 const scopeButtons={connectionScope:{profile:"connectionSharedButton",project_local:"connectionLocalButton"},componentScope:{profile:"componentSharedButton",project_local:"componentLocalButton"},javaScope:{profile:"javaSharedButton",project_local:"javaLocalButton",global:"javaGlobalButton"}};
 const selectedScopes=Object.fromEntries(Object.keys(scopeFields).map(id=>[id,$(id).value]));
@@ -1058,11 +1059,11 @@ function syncControls(){
   $("editorMode").disabled||=fieldsPatchPending||!$("settingsText").value||draftRoot;
   $("editorSearch").disabled||=!$("settingsText").value||draftRoot;$("editorTransferActions").hidden=Boolean(testingComponent);
   $("reviewEditButton").disabled||=Boolean(treeErrors.size);
-  const portSuggestion=currentData?.edtPortSuggestion;
+  const portSuggestion=currentData?.edtPortSuggestion,portScopeBlocked=$("connectionScope").value!=="project_local"&&connectionScopeHasDraft();
   $("edtPortHint").hidden=!portSuggestion||currentData?.viewOnly||!loaded;
-  $("edtPortText").textContent=portSuggestion?"В настройках workspace EDT порт "+portSuggestion.detectedPort+", в URL — "+portSuggestion.configuredPort+". Проверьте, что это нужный экземпляр EDT.":"";
+  $("edtPortText").textContent=portSuggestion?"В настройках workspace EDT порт "+portSuggestion.detectedPort+", в URL — "+portSuggestion.configuredPort+". Проверьте, что это нужный экземпляр EDT. Новый адрес будет сохранён в локальные настройки, и форма переключится на них."+(portScopeBlocked?" Сохраните или отмените черновик подключения перед обновлением порта.":""):"";
   $("useEdtPortButton").hidden=$("edtUrl").readOnly;
-  $("useEdtPortButton").disabled||=!portSuggestion||blocked||dirtyFields.has("edtUrl");
+  $("useEdtPortButton").disabled||=!portSuggestion||blocked||dirtyFields.has("edtUrl")||portScopeBlocked;
   $("editorSharedButton").disabled=$("editorDocument").disabled;$("editorLocalButton").disabled=$("editorDocument").disabled;
   $("editorFieldsButton").disabled=$("editorMode").disabled;$("editorYamlButton").disabled=$("editorMode").disabled;
   $("editorSharedButton").setAttribute("aria-pressed",String(editorDocument==="profile"));$("editorLocalButton").setAttribute("aria-pressed",String(editorDocument==="project_local"));
@@ -1518,9 +1519,12 @@ $("saveButton").onclick=()=>busy("Сохраняем подключения…",
 $("useEdtPortButton").onclick=()=>busy("Обновляем локальный порт EDT…",async()=>{
   const expected=currentData?.edtPortSuggestion,current=await refresh(),suggestion=current.edtPortSuggestion;
   if($("edtUrl").readOnly||dirtyFields.has("edtUrl"))throw new Error("Сначала сохраните или отмените введённый адрес EDT.");
+  if($("connectionScope").value!=="project_local"&&connectionScopeHasDraft())throw new Error("Сохраните или отмените черновик подключения перед обновлением порта.");
   if(!suggestion||suggestion.url!==expected?.url)throw new Error("Настройки EDT изменились. Проверьте обновлённую подсказку рядом с URL.");
-  const patch={set:{edtUrl:suggestion.url}},scope=$("connectionScope").value,path=currentData?.writePaths?.[scope];
-  const result=await tool("settings.update",{...patch,scope,...expectedSettingsRevision()});settingsSaved(result,[]);await refresh();notice(settingsSaveMessage(result,patch,scope,path)+"\nПроверьте подключение.");
+  const patch={set:{edtUrl:suggestion.url}},scope="project_local",path=currentData?.writePaths?.[scope],root=current.values?.projectRoot,instance=current.instance;
+  const result=await tool("settings.update",{...patch,scope,...expectedSettingsRevision()});settingsSaved(result,[]);
+  if(!disposed&&!pendingScope&&currentData?.values?.projectRoot===root&&currentData?.instance===instance)changeSettingsScope("connectionScope",scope);
+  await refresh();notice(settingsSaveMessage(result,patch,scope,path)+"\nПроверьте подключение.");
 }).catch(()=>{});
 $("saveComponentsButton").onclick=()=>busy("Сохраняем компоненты…",async()=>{
   const patch=settingsPatch(componentFields),fields=[...Object.keys(patch.set),...(patch.unset||[])],scope=$("componentScope").value,path=currentData?.writePaths?.[scope];
