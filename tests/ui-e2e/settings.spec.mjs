@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { test, expect } from "@playwright/test";
-import { dump, load } from "../../scripts/common.mjs";
+import { canonical_yaml, dump, load } from "../../scripts/common.mjs";
 import { startHost } from "./host.mjs";
 
 let host;
@@ -161,6 +161,94 @@ test("saves a local connection and discards a later draft", async ({ page }) => 
   await expect(app.locator("#componentDialog")).toBeHidden();
   expect(load(local).connections.edt.url).toBe("http://127.0.0.1:8123/mcp");
   expect(host.calls.filter(call => call.name === "settings.update")).toHaveLength(1);
+});
+
+for (const selectedScope of ["profile", "project_local"]) test(`saves a detected EDT address to ${selectedScope} without editing it`, async ({ page }) => {
+  const shared = path.join(host.project, ".ai/project.yaml"), local = path.join(host.project, ".ai/project.local.yaml");
+  const profile = load(shared), v8std = "http://10.10.0.10:8766/mcp";
+  profile.connections = { v8std: { url: v8std } }; dump(profile, shared);
+  const sharedBefore = fs.readFileSync(shared);
+  const localV8std = "http://127.0.0.1:8766/mcp";
+  if (selectedScope === "project_local") dump({ connections: { v8std: { url: localV8std } } }, local);
+  const localBefore = fs.existsSync(local) ? fs.readFileSync(local) : null;
+  const prefs = path.join(host.project, ".metadata/.plugins/org.eclipse.core.runtime/.settings/com.ditrix.edt.mcp.server.prefs");
+  fs.mkdirSync(path.dirname(prefs), { recursive: true });
+  fs.writeFileSync(prefs, "eclipse.preferences.version=1\n");
+
+  await page.reload();
+  await expect(page.frameLocator("#app").locator("#headerProjectName")).toHaveText("Product");
+  const app = await openEdt(page), input = app.locator("#edtUrl"), save = app.locator("#saveButton");
+  const detected = "http://127.0.0.1:8765/mcp";
+  await expect(app.locator("#connectionSharedButton")).toHaveAttribute("aria-pressed", "true");
+  await expect(input).toHaveValue(detected);
+  await expect(app.locator("#edtSource")).toContainText("настройки EDT");
+  await expect(save).toBeEnabled();
+  await expect(app.locator("#componentDiscard")).toBeHidden();
+  await expect(app.locator("#unsavedHint")).toBeHidden();
+  expect(load(shared).connections.edt).toBeUndefined();
+  expect(host.calls.filter(call => call.name === "settings.update")).toHaveLength(0);
+
+  await app.locator("#componentDialogClose").click();
+  await expect(app.locator("#componentDialog")).toBeHidden();
+  await expect(app.locator("#componentCloseConfirm")).toBeHidden();
+  expect(load(shared).connections.edt).toBeUndefined();
+  if (localBefore) expect(fs.readFileSync(local)).toEqual(localBefore);
+  else expect(fs.existsSync(local)).toBe(false);
+  expect(host.calls.filter(call => call.name === "settings.update")).toHaveLength(0);
+  await openEdt(page);
+  await app.locator("#connectionLocalButton").click();
+  await expect(save).toBeEnabled();
+  await expect(app.locator("#componentDiscard")).toBeHidden();
+  await expect(app.locator("#unsavedHint")).toBeHidden();
+  await page.keyboard.press("Escape");
+  await expect(app.locator("#componentDialog")).toBeHidden();
+  await expect(app.locator("#componentCloseConfirm")).toBeHidden();
+  expect(host.calls.filter(call => call.name === "settings.update")).toHaveLength(0);
+  await openEdt(page);
+  await input.fill("");
+  await expect(save).toBeDisabled();
+  await app.locator("#connectionSharedButton").focus();
+  await expect(input).toHaveAttribute("placeholder", detected);
+  await expect(save).toBeEnabled();
+  await input.focus();
+  await expect(input).toHaveValue(detected);
+  await expect(save).toBeEnabled();
+
+  await app.locator("#connectionLocalButton").click();
+  await expect(save).toBeEnabled();
+  if (selectedScope === "profile") await app.locator("#connectionSharedButton").click();
+  await expect(save).toBeEnabled();
+  await expect(app.locator("#edtSource")).toContainText(selectedScope === "profile" ? "общий профиль" : "локальные настройки");
+  await save.click();
+  const target = selectedScope === "profile" ? shared : local;
+  await expect.poll(() => fs.existsSync(target) && load(target).connections?.edt?.url).toBe(detected);
+  await expect(save).toBeDisabled();
+  expect(load(shared).connections.v8std.url).toBe(v8std);
+  if (selectedScope === "profile") expect(fs.existsSync(local)).toBe(false);
+  else { expect(fs.readFileSync(shared)).toEqual(sharedBefore); expect(load(local).connections.v8std.url).toBe(localV8std); }
+  const updates = host.calls.filter(call => call.name === "settings.update");
+  expect(updates).toHaveLength(1);
+  expect(updates[0].arguments.scope).toBe(selectedScope);
+  expect(updates[0].arguments.set).toEqual({ edtUrl: detected });
+  expect(updates[0].arguments.expectedRevision).toMatch(/^[a-f0-9]{64}$/);
+});
+
+for (const selectedScope of ["profile", "project_local"]) test(`refuses to save a detected EDT address to ${selectedScope} after the workspace port changes`, async ({ page }) => {
+  const shared = path.join(host.project, ".ai/project.yaml"), local = path.join(host.project, ".ai/project.local.yaml");
+  const prefs = path.join(host.project, ".metadata/.plugins/org.eclipse.core.runtime/.settings/com.ditrix.edt.mcp.server.prefs");
+  fs.mkdirSync(path.dirname(prefs), { recursive: true });
+  fs.writeFileSync(prefs, "mcpServerPort=8765\n");
+  await page.reload();
+  await expect(page.frameLocator("#app").locator("#headerProjectName")).toHaveText("Product");
+  const app = await openEdt(page);
+  await expect(app.locator("#edtUrl")).toHaveValue("http://127.0.0.1:8765/mcp");
+  if (selectedScope === "project_local") await app.locator("#connectionLocalButton").click();
+  await expect(app.locator("#saveButton")).toBeEnabled();
+  fs.writeFileSync(prefs, "mcpServerPort=19801\n");
+  await app.locator("#saveButton").click();
+  await expect(app.locator("#componentDialogStatus")).toContainText("Настройки изменились");
+  expect(load(shared).connections?.edt).toBeUndefined();
+  expect(fs.existsSync(local)).toBe(false);
 });
 
 test("edits an inherited EDT URL in place and restores inheritance", async ({ page }) => {
@@ -335,6 +423,50 @@ test("opens a profile section once, edits its fields and restores it after searc
   await expect(section).toHaveAttribute("open");
   await expect(app.getByLabel("testing.yaxunit", { exact: true }).locator("option:checked")).toHaveText("true");
   expect(load(shared).testing.yaxunit).toBe(false);
+});
+
+test("previews the exact block YAML that the editor saves", async ({ page }) => {
+  const app = page.frameLocator("#app"), shared = path.join(host.project, ".ai/project.yaml");
+  const original = fs.readFileSync(shared, "utf8");
+  await app.locator("#editorTab").click();
+  await app.locator("#editorYamlButton").click();
+  const editor = app.locator("#settingsText");
+  await expect(editor).toBeVisible();
+  const draft = original + '\nconnections: {edt: {url: "http://localhost:8765/mcp"}} # retained\n';
+  await editor.fill(draft);
+  await app.locator("#reviewEditButton").click();
+  await expect(app.locator("#preview")).toBeVisible();
+  const details = app.locator("#previewTextDiff details");
+  await details.locator("summary").click();
+  const formatted = await details.locator("pre").nth(1).textContent();
+  expect(formatted).toBe(canonical_yaml(draft));
+  expect(formatted).toContain('  edt:\n    url: "http://localhost:8765/mcp"');
+  expect(formatted).toContain("# retained");
+  await app.locator("#replace").check();
+  await app.locator("#applyButton").click();
+  await expect.poll(() => fs.readFileSync(shared, "utf8")).toBe(formatted);
+});
+
+for (const scope of ["profile", "project_local"]) test(`shows final YAML for an equivalent ${scope} draft without file changes`, async ({ page }) => {
+  const app = page.frameLocator("#app"), target = path.join(host.project, ".ai", scope === "profile" ? "project.yaml" : "project.local.yaml");
+  if (scope === "project_local") {
+    dump({ connections: { edt: { url: "http://localhost:8765/mcp" } } }, target);
+    await page.reload();
+    await expect(app.locator("#headerProjectName")).toHaveText("Product");
+  }
+  const original = fs.readFileSync(target, "utf8"), draft = JSON.stringify(load(target));
+  expect(canonical_yaml(draft)).toBe(original);
+  await app.locator("#editorTab").click();
+  await app.locator("#editorYamlButton").click();
+  await expect(app.locator("#settingsText")).toHaveValue(original.trimEnd() + "\n");
+  await app.locator("#settingsText").fill(draft);
+  await app.locator("#reviewEditButton").click();
+  await expect(app.locator("#preview")).toBeVisible();
+  const details = app.locator("#previewTextDiff details");
+  await details.locator("summary").click();
+  await expect(details.locator("pre").last()).toHaveText(original);
+  expect(fs.readFileSync(target, "utf8")).toBe(original);
+  expect(host.calls.some(call => call.name === "settings.apply")).toBe(false);
 });
 
 test("discards a managed component draft without opening diagnostics", async ({ page }) => {

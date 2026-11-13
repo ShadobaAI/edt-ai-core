@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import { parseDocument, stringify, Ajv2020 } from "../vendor/deps.mjs";
 import {
@@ -76,6 +77,64 @@ export function parse(text) {
   catch { throw Object.assign(new ConfigError("Некорректный документ YAML; фрагмент исходного текста скрыт"), { code: "INVALID_DOCUMENT" }); }
   if (!object(value)) throw new ConfigError("Ожидался объект");
   return value;
+}
+// Normalize every persisted project YAML document without expanding aliases or
+// discarding comments. Reparse before returning so style changes cannot alter
+// the document's values or bypass the usual alias limit.
+export function canonical_yaml(text) {
+  if (typeof text !== "string" || Buffer.byteLength(text) > 2 * 1024 * 1024)
+    throw new ConfigError("Документ превышает 2 МиБ.");
+  const original = parse(text), doc = parse_yaml_document(text);
+  const comments = document => {
+    const lines = [];
+    const collect = node => {
+      if (!node || typeof node !== "object") return;
+      for (const field of ["commentBefore", "comment"])
+        if (typeof node[field] === "string") lines.push(...node[field].split("\n").filter(line => line.length));
+      if (Object.hasOwn(node, "key") && Object.hasOwn(node, "value")) { collect(node.key); collect(node.value); }
+      else if (Array.isArray(node.items)) for (const child of node.items) collect(child);
+    };
+    collect(document); collect(document.contents);
+    return lines.sort();
+  };
+  const originalComments = comments(doc);
+  const visit = (node, key = false) => {
+    if (!node || typeof node !== "object") return;
+    if (node.constructor?.name === "Scalar") {
+      node.source = undefined;
+      node.format = undefined;
+      node.minFractionDigits = undefined;
+      node.type = typeof node.value === "string" && !key ? "QUOTE_DOUBLE" : undefined;
+    } else if (Object.hasOwn(node, "key") && Object.hasOwn(node, "value")) {
+      visit(node.key, true);
+      visit(node.value);
+    } else if (Array.isArray(node.items)) {
+      // YAML has no block notation for an empty map or sequence.
+      node.flow = node.items.length === 0;
+      for (const child of node.items) visit(child);
+    }
+  };
+  let previous = text, current = doc;
+  try {
+    // The YAML library can reattach a trailing flow comment on the first pass.
+    // Repeat until those comments and indentation no longer move.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      visit(current.contents);
+      const result = stringify_yaml_document(current);
+      if (Buffer.byteLength(result) > 2 * 1024 * 1024)
+        throw Object.assign(new ConfigError("Документ превышает 2 МиБ после форматирования."), { code: "YAML_FORMAT_SIZE" });
+      const next = parse_yaml_document(result), value = next.toJS({ maxAliasCount: 100 });
+      if (!object(value) || !isDeepStrictEqual(original, value) || !isDeepStrictEqual(originalComments, comments(next)))
+        throw new Error("round-trip mismatch");
+      if (result === previous) return result;
+      previous = result;
+      current = next;
+    }
+  } catch (error) {
+    if (error?.code === "YAML_FORMAT_SIZE") throw error;
+    throw new ConfigError("Не удалось безопасно привести документ к единому формату YAML.");
+  }
+  throw new ConfigError("Не удалось безопасно привести документ к единому формату YAML.");
 }
 export const load = (file) => parse(fs.readFileSync(file, "utf8"));
 const ajv = new Ajv2020({

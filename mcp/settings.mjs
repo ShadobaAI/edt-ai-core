@@ -250,12 +250,12 @@ const tools = [
     name, title, description: `${title}. Open the project transfer dialog on explicit user request. This does not import or export by itself.`,
     inputSchema: inspectInput, annotations: annotations(), _meta: appTool,
   })),
-  { name: "settings.preview", title: "Проверить файл", description: "Preview one project YAML document without writing.",
+  { name: "settings.preview", title: "Проверить файл", description: "Preview one project YAML document without writing. The formatted YAML to be saved is returned only in app metadata.",
     inputSchema: { type: "object", required: ["text", "mode", "baseRevision", "layerScope"], properties: {
       ...editArguments,
       text: { type: "string", maxLength: 2097152 }, projectRoot: { type: "string" } }, additionalProperties: false },
     annotations: annotations(), _meta: shared },
-  { name: "settings.apply", title: "Сохранить профиль", description: "Apply a reviewed project YAML document.",
+  { name: "settings.apply", title: "Сохранить профиль", description: "Apply a reviewed project document in the canonical YAML block format.",
     inputSchema: { type: "object", required: ["text", "revision", "mode", "baseRevision", "layerScope"], properties: {
       ...editArguments,
       text: { type: "string", maxLength: 2097152 }, projectRoot: { type: "string" },
@@ -859,6 +859,10 @@ async function call(name, args, meta = {}, requestContext = {}) {
   if (revision === selectionRevision && !rootLocked && !selectionError && data.values && Object.hasOwn(data.values, "projectRoot")) {
     if (selectedRoot !== (data.values.projectRoot || null)) await dropIndexObserver("project_changed");
     selectedRoot = data.values.projectRoot || null;
+  }
+  if (name === "settings.preview") {
+    const { formattedText, ...summary } = data;
+    return { ...result(summary), _meta: { data: { ...summary, formattedText } } };
   }
   return result({ ...data, ...(["settings.create", "settings.load"].includes(name) ? { mode: "profile" } : {}) },
     ["settings.create", "settings.load"].includes(name) ? JSON.stringify(data) : name === "settings.apply" ? args.mode === "layer" ? "Настройки сохранены." : "Настройки импортированы." : "Готово");

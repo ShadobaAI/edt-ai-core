@@ -5,7 +5,7 @@ import test from "node:test";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { fixture, environment, session, dialog_session } from "./helpers.mjs";
-import { dump, load, parse } from "../scripts/common.mjs";
+import { canonical_yaml, dump, load, parse } from "../scripts/common.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
 import { java_info, java_in_directory } from "../scripts/runtime.mjs";
@@ -15,7 +15,7 @@ import { which } from "../scripts/processes.mjs";
 import { save_export_to_path } from "../scripts/settings_export.mjs";
 import { stringify } from "yaml";
 
-for (const layerScope of ["profile", "project_local"]) test(`YAML ${layerScope} editor preserves exact text, backs up and rejects stale previews`, async t => {
+for (const layerScope of ["profile", "project_local"]) test(`YAML ${layerScope} editor previews formatted text, backs up and rejects stale previews`, async t => {
   const f = fixture(t); f.save();
   const target = path.join(f.root, ".ai", layerScope === "profile" ? "project.yaml" : "project.local.yaml");
   if (layerScope === "project_local") fs.writeFileSync(target, "# local comment\ncomponents: {}\n");
@@ -25,11 +25,12 @@ for (const layerScope of ["profile", "project_local"]) test(`YAML ${layerScope} 
   const edit = (await client.call("settings.edit", { layerScope, format: "yaml" }))._meta.data;
   assert.equal(edit.text, before);
   const request = { mode: "layer", layerScope, baseRevision: edit.baseRevision, text: before + "\n# trailing comment\n" };
-  const preview = (await client.call("settings.preview", request)).structuredContent;
+  const reply = await client.call("settings.preview", request), preview = reply.structuredContent;
   assert.equal(preview.textChanged, true);
+  assert.equal(reply._meta.data.formattedText, canonical_yaml(request.text));
   await assert.rejects(client.call("settings.apply", { ...request, text: request.text + "# changed\n", revision: preview.revision, replace: true }), /предпросмотра/);
   const applied = (await client.call("settings.apply", { ...request, revision: preview.revision, replace: true })).structuredContent;
-  assert.equal(fs.readFileSync(target, "utf8"), request.text);
+  assert.equal(fs.readFileSync(target, "utf8"), reply._meta.data.formattedText);
   assert.equal(fs.readFileSync(applied.backup, "utf8"), before);
   if (layerScope === "project_local") assert.equal(path.relative(f.state, applied.backup).startsWith(".."), false);
   await assert.rejects(client.call("settings.preview", request), /изменились/);
@@ -70,9 +71,10 @@ test("YAML editor repairs a malformed shared profile without losing its backup",
   const edit = (await client.call("settings.edit", { layerScope: "profile", format: "yaml" }))._meta.data;
   assert.equal(edit.text, "broken: [\n");
   const request = { mode: "layer", layerScope: "profile", baseRevision: edit.baseRevision, text: valid };
-  const preview = (await client.call("settings.preview", request)).structuredContent;
+  const reply = await client.call("settings.preview", request), preview = reply.structuredContent;
   const result = (await client.call("settings.apply", { ...request, revision: preview.revision, replace: true })).structuredContent;
-  assert.equal(fs.readFileSync(target, "utf8"), valid);
+  assert.equal(fs.readFileSync(target, "utf8"), canonical_yaml(valid));
+  assert.equal(fs.readFileSync(target, "utf8"), reply._meta.data.formattedText);
   assert.equal(fs.readFileSync(result.backup, "utf8"), edit.text);
 });
 
@@ -281,7 +283,7 @@ for (const existing of [false, true]) test(`rename makes no persistent writes fo
   assert.equal(fs.existsSync(path.join(f.state, "operation.lock")), false);
 });
 
-test("repeated renames preserve unrelated local settings, comments, field order, BOM and mixed line endings", async t => {
+test("repeated renames preserve unrelated settings and comments in canonical YAML", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const local = path.join(f.root, ".ai/project.local.yaml"), shared = path.join(f.root, ".ai/project.yaml"), sharedBefore = fs.readFileSync(shared);
   const original = '\uFEFF# local comment\r\ncomponents:\r\n  bsl-ls: {java: "custom-java"} # retained\nproject:\r\n  purpose: local purpose\r\n  id: "old-name" # project label\r\n# trailing comment\n';
@@ -291,8 +293,14 @@ test("repeated renames preserve unrelated local settings, comments, field order,
   for (const projectId of ["new-name", "next-name"]) {
     const result = await backend.main({ action: "rename_profile", projectId, expectedRevision: backend.edit_revision() });
     assert.equal(fs.readFileSync(result.backup, "utf8"), before);
-    const after = before.replace(/"(?:old|new)-name"/, `"${projectId}"`);
-    assert.equal(fs.readFileSync(local, "utf8"), after);
+    const after = fs.readFileSync(local, "utf8"), expected = parse(before);
+    expected.project.id = projectId;
+    assert.deepEqual(parse(after), expected);
+    assert.equal(after, canonical_yaml(after));
+    for (const comment of ["# local comment", "# retained", "# project label", "# trailing comment"]) assert.match(after, new RegExp(comment));
+    assert.ok(after.indexOf("components:") < after.indexOf("project:"));
+    assert.ok(after.indexOf("purpose:") < after.indexOf("id:"));
+    assert.doesNotMatch(after, /\r|^\uFEFF/);
     const read = await backend.main({ action: "read" });
     assert.equal(read.profile.projectId, projectId);
     assert.equal(read.values.bslLsJava, "custom-java");

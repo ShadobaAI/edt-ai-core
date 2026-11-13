@@ -5,7 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { fixture, environment, session, ROOT } from "./helpers.mjs";
-import { dump, load, parse } from "../scripts/common.mjs";
+import { canonical_yaml, dump, load, parse } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
@@ -986,9 +986,10 @@ test("settings UI saves, previews a local document, and renames through the real
   const comparison = ui.elements.get("previewTextDiff").children[0];
   assert.match(comparison.children[2].textContent, /connections:/);
   assert.match(comparison.children[4].textContent, /# keep this comment/);
+  assert.equal(comparison.children[4].textContent, canonical_yaml(updated));
   await ui.elements.get("applyButton").onclick();
   assert.equal(load(local).components["bsl-ls"].java, "fixture-java");
-  assert.equal(fs.readFileSync(local, "utf8"), updated.replace(/\n/g, "\r\n"));
+  assert.equal(fs.readFileSync(local, "utf8"), comparison.children[4].textContent);
 
   ui.elements.get("connectionSharedButton").onclick();
   ui.elements.get("componentSharedButton").onclick();
@@ -1015,7 +1016,9 @@ test("settings UI saves, previews a local document, and renames through the real
     assert.equal(ui.elements.get("profileHistory").children[0].children[0].children[0].textContent, projectId);
     const saved = parse(updated); saved.project = { id: projectId };
     assert.deepEqual(load(local), saved);
-    assert.match(fs.readFileSync(local, "utf8"), /# keep this comment\r\n/);
+    const renamedText = fs.readFileSync(local, "utf8");
+    assert.match(renamedText, /# keep this comment\n/);
+    assert.equal(renamedText, canonical_yaml(renamedText));
     const snapshot = (await client.call("settings.read", {})).structuredContent;
     assert.equal(snapshot.profileHistory.find(item => item.projectRoot === f.root).projectId, projectId);
     await ui.context.refresh();
@@ -3782,6 +3785,23 @@ test("inherited URLs can be edited from their displayed value without saving unc
   assert.deepEqual(Array.from(updates.at(-1).unset),["edtUrl"]);assert.equal(updates.at(-1).set.edtUrl,undefined);
   assert.equal(current.values.edtUrl,shared);assert.equal(field.value,"");assert.equal(field.placeholder,shared);assert.equal(ui.elements.get("saveButton").disabled,true);
   ui.elements.get("connectionSharedButton").onclick();assert.equal(field.value,shared);
+});
+
+test("detected EDT saving responds immediately to clearing, blurring and refocusing the field", async () => {
+  const detected="http://127.0.0.1:8765/mcp",current={...read,instance:"first",settingsRevision:"saved",
+    values:{...read.values,edtUrl:detected},connectionSources:{edt:"edt_workspace"},layerValues:{profile:{},project_local:{}}};
+  const ui=screen(async name=>{if(["settings.read","settings.status"].includes(name))return current;throw new Error(name);});
+  await ui.flush();ui.context.openConnectionDialog(ui.context.catalogItems(current).find(item=>item.id==="edt"),null);
+  const field=ui.elements.get("edtUrl"),save=ui.elements.get("saveButton"),source=ui.elements.get("edtSource");
+  assert.equal(save.disabled,false);
+  field.value="";field.events.input();assert.equal(save.disabled,true);
+  ui.elements.get("connectionSharedButton").focus();field.events.blur();
+  assert.equal(save.disabled,false,"leaving the empty inherited field restores explicit saving without a timer");
+  assert.match(source.textContent,/«Сохранить» запишет обнаруженный адрес/);
+  field.focus();field.events.focus();assert.equal(field.value,detected);assert.equal(save.disabled,false);
+  assert.equal(ui.elements.get("componentDiscard").hidden,true);
+  assert.equal(ui.elements.get("unsavedHint").hidden,true);
+  assert.equal(ui.calls.some(call=>call.params?.name==="settings.update"),false);
 });
 
 test("inherited OpenViking fields preserve record identity and numeric probe values", async () => {
