@@ -18,6 +18,12 @@ Do not infer routing from directory proximity. Do not read or modify protected
 source through shell/file tools; `code-index` and BSL LS are for authorized
 read-only analysis only. EDT is the sole writer and primary validation authority.
 
+Apply the shared [engineering quality criteria](references/quality.md) to the
+affected mechanisms and task criteria; read only the relevant sections. Prefer
+a readable, maintainable solution that meets the assignment and its necessary
+guarantees. Reducing diagnostic counts is not an independent goal unless the
+assignment specifically requests diagnostic cleanup.
+
 Choose the mode from the assignment. **Review** checks exact source/diff,
 contracts and applicable requirements with `operation: review`, `phase: result`;
 proposal, write preconditions, pre-mutation diagnostic baseline and test execution are
@@ -108,6 +114,11 @@ every imagined failure impossible. Low probability does not negate a reachable
 critical failure. Do not swallow exceptions without correct recovery, a contextual
 message or necessary compensation; fallback must not present failure as success
 or violate integrity and idempotency.
+For optional investigation, tests or refactoring, identify the material decision
+or guarantee the work can change and weigh its expected benefit against added
+complexity and maintenance cost. Stop when evidence is sufficient; speculative
+improvements do not require exhaustive checks or artificial alternatives.
+This does not remove applicable mandatory checks or reachable critical risks.
 Apply the check when choosing a solution and again against the actual diff:
 check every added nontrivial branch and abstraction against its basis.
 Do not turn a local task into a general framework; remove excess complexity
@@ -216,11 +227,11 @@ policy and existing permission for the same scope.
 
 After each confirmed change, including recovery, perform the same focused EDT
 diagnostics and applicable artifact checks.
-Compare against the baseline by code, message, object and location, accounting
-for line shifts. Distinguish new, existing, resolved, proven false-positive,
-infrastructure and uncertain findings. Do not hide diagnostics; a false positive
-requires confirmation from current source/metadata context. New unresolved defects
-and unreliable mandatory post-validation block confirmation of completion.
+Compare with the task's original baseline and assess findings under the shared
+[diagnostics contract](../1c-routing/references/diagnostics.md). An intermediate
+result does not turn task-new findings into legacy. Decide material findings by
+their applicability and consequences, including the cost of a proposed correction;
+an advisory warning alone does not require a rewrite.
 
 Verify the actual result against retained requirements and task criteria;
 compare the diff against the reuse and sufficiency checks above.
@@ -252,8 +263,10 @@ substantial findings, reused APIs/settings, why new code/adaptation was needed,
 actual checks with their kind and scope, remaining gaps and truly necessary user
 decisions. Do not list every statement or present a procedure log as the result;
 honor the user's requested brevity.
-Do not present partial validation, an unknown outcome or an unperformed check as
-confirmed completion.
+State `accepted`, `rework_required` or `unverified` under the shared diagnostic
+and quality criteria, with material remaining findings and verification limits.
+Do not present an unknown outcome, a missing mandatory check or a material
+unverified requirement as confirmed completion.
 Offer useful repeatable experience for separate team review/publish, without
 automatically writing to OpenViking or publishing. Reporting incorrect material
 needs only its ID/URI, revision/snapshot, verifiable discrepancy and evidence

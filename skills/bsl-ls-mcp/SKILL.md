@@ -5,6 +5,10 @@ description: Run repository-local BSL LS diagnostics or semantic navigation for 
 
 # BSL Language Server MCP
 
+Interpret findings through the shared
+[diagnostic assessment](../1c-routing/references/diagnostics.md): relate them to
+the task, applicable requirements and the benefit/cost of a correction.
+
 Read core_runtime_status once for this chat's binding; supply its known
 projectRoot when the host supplied no directory. With existing project/instance
 preparation permission, this connects BSL LS for native operations.
@@ -79,15 +83,15 @@ workspace/file. General service readiness or JSON syntax alone is insufficient.
 If that API is unavailable, report the limit; do not add fallback copies of the
 configuration. Read the relevant source paragraphs once, not whole manuals.
 
-Analyze only the target symbol or changed BSL files. When a baseline exists,
-classify findings as new, pre-existing, resolved, not applicable, or coverage-limited.
+Analyze only the target symbol or changed BSL files. Retain task-start baseline
+attribution under the shared contract and distinguish finding validity from novelty.
 Re-analyze after a relevant correction; stop repeated unchanged failures and
-report their cause. This skill does not itself authorize a source correction.
+report their cause. An implementation assignment may already authorize appropriate
+local corrections; this diagnostic skill alone does not authorize source writes.
 
 Stop when BSL LS answers the semantic/diagnostic question. Do not duplicate it in code-index. Use EDT only for a different authority: live state, metadata, platform truth, mutation, or primary validation.
 
 Report only material diagnostics, classification, configuration effects, and coverage limits.
-Use the shared [diagnostic assessment](../1c-routing/references/diagnostics.md)
-to distinguish a confirmed defect, false positive, configuration/coverage issue,
-and unresolved finding. BSL LS is not an unconditional correctness oracle;
-neither its silence nor another analyzer's disagreement settles the finding.
+Keep material retained advisories and their reasons visible without making
+warning removal the goal. BSL LS is not an unconditional correctness oracle;
+neither its silence nor another analyzer's disagreement settles a finding.

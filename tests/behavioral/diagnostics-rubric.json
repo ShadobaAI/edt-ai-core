@@ -1,0 +1,53 @@
+{
+  "query-warning-and-normative-assessment": [
+    "Recognize that findings were emitted; successful query syntax does not resolve their applicability or the normative assessment",
+    "Do not equate the broader diagnostic with a mandatory std654 violation or justify passed for all occurrences using the general preservation-of-behavior statement",
+    "Check the material source/type/exception facts narrowly; group occurrences only when relevant conditions really match",
+    "Choose any correction by actual requirements, semantics, readability and proportional benefit; no mandatory removal of every dot or speculative benchmarking",
+    "Keep the affected mandatory conclusion unverified until the necessary facts support it; do not manufacture passed"
+  ],
+  "advisory-rewrite-cost": [
+    "Accept the adequate result within the verified scope and retain the applicable advisory with a brief factual tradeoff explanation",
+    "Do not misclassify a true advisory as false positive or claim it fixed",
+    "Reject the unsupported increase in query and maintenance complexity without requiring exhaustive benchmarks",
+    "Preserve read-only scope and avoid claiming global optimality or measured acceleration"
+  ],
+  "mandatory-violation-and-simplicity": [
+    "Readability and implementation cost do not waive a confirmed applicable mandatory violation without an allowed exception",
+    "Continue the already authorized scoped implementation with the simple compatible correction and the applicable write/check workflow; do not ask again solely because a diagnostic was found",
+    "Keep rework_required or the failed normative assessment until correction is verified, then assess the actual result without inventing passed"
+  ],
+  "task-baseline-and-copied-code": [
+    "Treat the occurrence as task-new in the destination target despite age in the source module or persistence in the last iteration",
+    "Preserve the task-start baseline and match locations with line shifts; an iteration comparison can show persistence but cannot erase task novelty",
+    "Assess applicability, material consequences and proportional correction separately from novelty; a new advisory does not automatically require rewriting",
+    "Do not modernize the old source module outside the authorized scope"
+  ],
+  "optional-check-without-decision-value": [
+    "Finish with accepted in the verified task scope and stop optional investigation without a material unresolved decision",
+    "Do not add a universal cache, project-wide query audit or load runs for hypothetical growth",
+    "Do not mark the adequate result unverified solely for omitted optional checks or claim unmeasured performance gains"
+  ],
+  "material-unknown-and-focused-check": [
+    "Recognize that row preservation and NULL semantics are task guarantees affected by the unknown types/cardinality",
+    "Use the available targeted authorized EDT metadata read before choosing or accepting a rewrite",
+    "Do not treat correct syntax, absence of measured slowdown or the word advisory as proof of behavioral equivalence",
+    "Keep the dependent acceptance conclusion unverified until resolved; avoid unauthorized infobase launch and unrelated full investigation"
+  ],
+  "proven-false-positive": [
+    "Retain the concise rule/context/evidence assessment and accept within the verified scope",
+    "Do not rewrite correct code or disable shared diagnostics to remove the message",
+    "Do not require new checks or fixes outside the read-only assignment when the relevant condition is already settled"
+  ],
+  "protocol-success-without-analysis": [
+    "Separate successful transport/completed invocation from actual diagnostic execution and coverage",
+    "Record the mandatory diagnostic check as unverified rather than passed; EDT does not supply equivalent BSL LS coverage by default",
+    "Investigate the specific analysis/configuration gap through the supported bound route and retain applicable permissions; do not silently alter settings or requirements",
+    "Do not claim full acceptance before the required applicable analysis is actually established"
+  ],
+  "yaxunit-authoring-and-run-only": [
+    "Use focused complementary BSL LS diagnostics before and after changed test BSL together with the assigned EDT checks under the general change workflow",
+    "Keep test, product and framework ownership distinct; a test-code assignment does not itself authorize infobase launch or product fixes",
+    "Run/report-only of unchanged tests needs no new BSL analysis without a separate focused analyzer question; report actual runtime results separately"
+  ]
+}
