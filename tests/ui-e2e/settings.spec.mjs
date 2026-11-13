@@ -425,6 +425,127 @@ test("opens a profile section once, edits its fields and restores it after searc
   expect(load(shared).testing.yaxunit).toBe(false);
 });
 
+for (const scope of ["profile", "project_local"]) test(`saves ${scope} YAML directly without a review or replacement step`, async ({ page }) => {
+  const app = page.frameLocator("#app"), shared = path.join(host.project, ".ai/project.yaml"), local = path.join(host.project, ".ai/project.local.yaml");
+  const target = scope === "profile" ? shared : local, other = scope === "profile" ? local : shared;
+  const otherBefore = fs.existsSync(other) ? fs.readFileSync(other) : null;
+  await app.locator("#editorTab").click();
+  if (scope === "project_local") await app.locator("#editorLocalButton").click();
+  await app.locator("#editorYamlButton").click();
+  const editor = app.locator("#settingsText"), save = app.locator("#applyButton");
+  await expect(editor).toBeVisible();
+  await expect(save).toBeDisabled();
+  const draft = scope === "profile" ? fs.readFileSync(shared, "utf8").replace(/purpose:[^\r\n]*/, "purpose: Прямое редактирование YAML")
+    : "connections:\n  edt:\n    url: http://localhost:8765/mcp\n# local comment\n";
+  await editor.fill(draft);
+  await expect(save).toBeEnabled();
+  await expect(app.locator("#preview")).toBeHidden();
+  if (scope === "project_local") await editor.press("Control+s");
+  else await save.click();
+  await expect.poll(() => fs.existsSync(target) && fs.readFileSync(target, "utf8")).toBe(canonical_yaml(draft));
+  await expect(app.locator("#status")).toContainText("Настройки сохранены");
+  await expect(save).toBeDisabled();
+  await expect(app.locator("#preview")).toBeHidden();
+  expect(host.calls.filter(call => call.name === "settings.apply")).toHaveLength(1);
+  expect(host.calls.filter(call => call.name === "settings.preview")).toHaveLength(1);
+  const applied = host.calls.find(call => call.name === "settings.apply");
+  expect(applied.arguments.layerScope).toBe(scope);
+  expect(applied.arguments.replace).toBe(true);
+  if (otherBefore) expect(fs.readFileSync(other)).toEqual(otherBefore);
+  else expect(fs.existsSync(other)).toBe(false);
+});
+
+test("saves the formatting shown by an optional preview without editing the document", async ({ page }) => {
+  const app = page.frameLocator("#app"), shared = path.join(host.project, ".ai/project.yaml");
+  const original = JSON.stringify(load(shared));
+  fs.writeFileSync(shared, original);
+  await page.reload();
+  await expect(app.locator("#headerProjectName")).toHaveText("Product");
+  await app.locator("#editorTab").click();
+  await app.locator("#editorYamlButton").click();
+  await expect(app.locator("#applyButton")).toBeDisabled();
+  await app.locator("#reviewEditButton").click();
+  await expect(app.locator("#applyButton")).toBeEnabled();
+  await expect(app.locator("#editorDiscardButton")).toBeEnabled();
+  host.failNext("settings.preview", "Тестовый отказ проверки.");
+  await app.locator("#applyButton").click();
+  await expect(app.locator("#status")).toContainText("Тестовый отказ проверки");
+  await expect(app.locator("#applyButton")).toBeEnabled();
+  await expect(app.locator("#editorDiscardButton")).toBeEnabled();
+  expect(fs.readFileSync(shared, "utf8")).toBe(original);
+  host.failNext("settings.apply", "Тестовый отказ записи.");
+  await app.locator("#applyButton").click();
+  await expect(app.locator("#status")).toContainText("Тестовый отказ записи");
+  await expect(app.locator("#applyButton")).toBeEnabled();
+  await expect(app.locator("#editorDiscardButton")).toBeEnabled();
+  expect(fs.readFileSync(shared, "utf8")).toBe(original);
+  await app.locator("#supportTab").click();
+  await app.locator("#editorTab").click();
+  await expect(app.locator("#preview")).toBeHidden();
+  await app.locator("#applyButton").click();
+  await expect.poll(() => fs.readFileSync(shared, "utf8")).toBe(canonical_yaml(original));
+  await expect(app.locator("#applyButton")).toBeDisabled();
+  await app.locator("#reviewEditButton").click();
+  await expect(app.locator("#preview")).toBeVisible();
+  await expect(app.locator("#applyButton")).toBeDisabled();
+  await expect(app.locator("#unsavedHint")).toBeHidden();
+  await app.locator("#editSettingsButton").click();
+  await expect(app.locator("#preview")).toBeHidden();
+});
+
+test("saves Git ignore protection shown by a local preview without editing YAML", async ({ page }) => {
+  const app = page.frameLocator("#app"), local = path.join(host.project, ".ai/project.local.yaml"), ignore = path.join(host.project, ".ai/.gitignore");
+  dump({ project: { purpose: "Local purpose" } }, local);
+  const original = fs.readFileSync(local, "utf8");
+  expect(fs.existsSync(ignore)).toBe(false);
+  await page.reload();
+  await expect(app.locator("#headerProjectName")).toHaveText("Product");
+  await app.locator("#editorTab").click();
+  await app.locator("#editorLocalButton").click();
+  await app.locator("#reviewEditButton").click();
+  await expect(app.locator("#applyButton")).toBeEnabled();
+  await app.locator("#applyButton").click();
+  await expect(app.locator("#status")).toContainText("Настройки сохранены");
+  expect(fs.readFileSync(ignore, "utf8")).toContain("/project.local.yaml");
+  expect(fs.readFileSync(local, "utf8")).toBe(original);
+});
+
+test("keeps an invalid YAML draft and saves it after correction", async ({ page }) => {
+  const app = page.frameLocator("#app"), shared = path.join(host.project, ".ai/project.yaml"), original = fs.readFileSync(shared, "utf8");
+  await app.locator("#editorTab").click();
+  await app.locator("#editorYamlButton").click();
+  const editor = app.locator("#settingsText"), save = app.locator("#applyButton");
+  for (const draft of ["project: [", original + "\nunexpected_setting: true\n"]) {
+    await editor.fill(draft);
+    await save.click();
+    await expect(app.locator("#editorValidation")).toHaveClass(/error/);
+    await expect(save).toBeEnabled();
+    await expect(editor).toHaveValue(draft);
+    expect(fs.readFileSync(shared, "utf8")).toBe(original);
+    expect(host.calls.some(call => call.name === "settings.apply")).toBe(false);
+  }
+  const corrected = original + "\n# corrected draft\n";
+  await editor.fill(corrected);
+  await save.click();
+  await expect.poll(() => fs.readFileSync(shared, "utf8")).toBe(canonical_yaml(corrected));
+  await expect(save).toBeDisabled();
+});
+
+test("keeps external changes and the editor draft when its base revision is stale", async ({ page }) => {
+  const app = page.frameLocator("#app"), shared = path.join(host.project, ".ai/project.yaml"), original = fs.readFileSync(shared, "utf8");
+  await app.locator("#editorTab").click();
+  await app.locator("#editorYamlButton").click();
+  const draft = original + "\n# unsaved draft\n", external = original + "\n# external change\n";
+  await app.locator("#settingsText").fill(draft);
+  fs.writeFileSync(shared, external);
+  await app.locator("#applyButton").click();
+  await expect(app.locator("#editorValidation")).toHaveClass(/error/);
+  await expect(app.locator("#settingsText")).toHaveValue(draft);
+  await expect(app.locator("#applyButton")).toBeEnabled();
+  expect(fs.readFileSync(shared, "utf8")).toBe(external);
+  expect(host.calls.some(call => call.name === "settings.apply")).toBe(false);
+});
+
 test("previews the exact block YAML that the editor saves", async ({ page }) => {
   const app = page.frameLocator("#app"), shared = path.join(host.project, ".ai/project.yaml");
   const original = fs.readFileSync(shared, "utf8");
@@ -442,7 +563,6 @@ test("previews the exact block YAML that the editor saves", async ({ page }) => 
   expect(formatted).toBe(canonical_yaml(draft));
   expect(formatted).toContain('  edt:\n    url: "http://localhost:8765/mcp"');
   expect(formatted).toContain("# retained");
-  await app.locator("#replace").check();
   await app.locator("#applyButton").click();
   await expect.poll(() => fs.readFileSync(shared, "utf8")).toBe(formatted);
 });

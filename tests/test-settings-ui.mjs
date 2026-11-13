@@ -879,7 +879,6 @@ test("YaXUnit and Vanessa save from their dialogs through the real YAML preview/
     assert.equal(toggle.type,"checkbox");assert.equal(toggle.attributes.role,"switch");
     toggle.checked=true;await toggle.onchange();
     await ui.elements.get("reviewEditButton").onclick(); assert.equal(ui.elements.get("preview").hidden, false);
-    ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
     await ui.elements.get("applyButton").onclick();
     assert.equal(load(path.join(f.root, ".ai/project.yaml")).testing[id], true, ui.elements.get("status").textContent + "\n" + ui.elements.get("editorValidation").textContent);
     assert.match(fs.readFileSync(path.join(f.root, ".ai/project.yaml"), "utf8"), /unrelated draft comment/);
@@ -1032,7 +1031,6 @@ test("settings UI saves, previews a local document, and renames through the real
   ui.elements.get("settingsText").value = JSON.stringify(sharedDocument, null, 2);
   ui.elements.get("settingsText").events.input();
   await ui.elements.get("reviewEditButton").onclick();
-  ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
   const localBefore = fs.readFileSync(local);
   await ui.elements.get("applyButton").onclick();
   assert.equal(load(shared).project.id, "explicit-shared-name");
@@ -1594,7 +1592,7 @@ test("discarding a document restores its loaded text without clearing other draf
   assert.equal(ui.elements.get("settingsText").value,original);assert.equal(vm.runInContext('dirtyFields.has("edtUrl")',ui.context),true);
 });
 
-test("scope switch saves only after preview and confirmation", async () => {
+test("scope switch saves and opens the requested document in one action", async () => {
   const backend=new SettingsBackend("unused-state","unused-settings"),edits=[];
   const ui=screen(async(name,args)=>{
     if(name==="settings.read"||name==="settings.status")return read;
@@ -1608,9 +1606,96 @@ test("scope switch saves only after preview and confirmation", async () => {
   ui.elements.get("settingsText").value="project:\n  id: changed\n";ui.elements.get("settingsText").events.input();
   ui.elements.get("editorDocument").value="project_local";ui.elements.get("editorDocument").events.change();
   ui.elements.get("editorSwitchSave").onclick();await ui.flush();await ui.flush();
-  assert.equal(ui.elements.get("preview").hidden,false);assert.equal(edits.length,0);assert.equal(ui.elements.get("editorDocument").value,"profile");
-  await ui.elements.get("applyButton").onclick();await ui.flush();
+  assert.equal(ui.elements.get("preview").hidden,true);
   assert.equal(edits.length,1);assert.equal(ui.elements.get("editorDocument").value,"project_local");assert.equal(ui.elements.get("settingsText").value,"{}\n");
+});
+
+for (const change of ["text", "gitignore", "none"]) test(`optional preview handles ${change} changes without a manual edit`, async () => {
+  const original = change === "text" ? "project: {id: old}\n" : "project:\n  id: \"old\"\n";
+  const formatted = canonical_yaml(original), applied = [];
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text: original, format: "yaml", baseRevision: "base", layerScope: args.layerScope };
+    if (name === "settings.document_fields") return { schema: { type: "object" }, value: parse(args.text) };
+    if (name === "settings.preview") return { repositories: [], revision: "preview", formattedText: formatted,
+      textChanged: change === "text", gitignoreChange: change === "gitignore" ? { beforeText: "", afterText: ".ai/project.local.yaml\n" } : null };
+    if (name === "settings.apply") { applied.push(args); return {}; }
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("editSettingsButton").onclick(); await ui.flush();
+  assert.equal(ui.elements.get("applyButton").disabled, true);
+  await ui.elements.get("reviewEditButton").onclick();
+  assert.equal(ui.elements.get("preview").hidden, false);
+  assert.equal(Boolean(ui.context.hasProfileDraft()), change !== "none");
+  assert.equal(ui.elements.get("applyButton").disabled, change === "none");
+  assert.equal(ui.elements.get("editorDiscardButton").disabled, change === "none");
+  if (change !== "none") {
+    await ui.elements.get("applyButton").onclick();
+    assert.equal(applied.length, 1); assert.equal(applied[0].text, original);
+    assert.equal(Boolean(ui.context.hasProfileDraft()), false);
+    await ui.elements.get("reviewEditButton").onclick();
+    ui.elements.get("editorDiscardButton").onclick();
+    assert.equal(ui.elements.get("preview").hidden, true);
+    assert.equal(Boolean(ui.context.hasProfileDraft()), false);
+  } else {
+    await ui.elements.get("editSettingsButton").onclick();
+    assert.equal(ui.elements.get("preview").hidden, true);
+    await ui.elements.get("reviewEditButton").onclick();
+    ui.elements.get("editorLocalButton").onclick(); await ui.flush(); await ui.flush();
+    assert.equal(Boolean(ui.elements.get("editorSwitchDialog").open), false);
+    assert.equal(ui.elements.get("editorDocument").value, "project_local");
+  }
+});
+
+for (const failure of ["preview", "apply"]) for (const change of ["text", "gitignore"]) test(`failed ${failure} preserves ${change} preview changes for retry or discard`, async () => {
+  const original = "project: {id: old}\n";
+  let failWrite = true, applied = 0, reviewed = false;
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text: original, format: "yaml", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return { schema: { type: "object" }, value: parse(args.text) };
+    if (name === "settings.preview") {
+      if (reviewed && failWrite && failure === "preview") throw new Error("Preview failed");
+      reviewed = true;
+      return { repositories: [], revision: "preview", formattedText: canonical_yaml(original),
+        textChanged: change === "text", gitignoreChange: change === "gitignore" ? { beforeText: "", afterText: "/project.local.yaml\n" } : null };
+    }
+    if (name === "settings.apply") { applied++; if (failWrite) throw new Error("Write failed"); return {}; }
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("editSettingsButton").onclick(); await ui.flush();
+  await ui.elements.get("reviewEditButton").onclick();
+  await ui.elements.get("applyButton").onclick();
+  assert.equal(applied, failure === "apply" ? 1 : 0); assert.equal(ui.elements.get("settingsText").value, original);
+  assert.equal(Boolean(ui.context.hasProfileDraft()), true);
+  assert.equal(ui.elements.get("applyButton").disabled, false);
+  assert.equal(ui.elements.get("editorDiscardButton").disabled, false);
+  ui.context.show("support"); ui.context.show("editor");
+  assert.equal(ui.elements.get("preview").hidden, true);
+  failWrite = false; await ui.elements.get("applyButton").onclick();
+  assert.equal(applied, failure === "apply" ? 2 : 1); assert.equal(Boolean(ui.context.hasProfileDraft()), false);
+});
+
+test("the save shortcut uses the physical key with a Russian keyboard layout and ignores repeats during a save", async () => {
+  let applied = 0, prevented = 0, release;
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text: "project: {}\n", format: "yaml", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return { schema: {}, value: parse(args.text) };
+    if (name === "settings.preview") return new Promise(resolve => { release = () => resolve({ repositories: [], revision: "preview" }); });
+    if (name === "settings.apply") { applied++; return {}; }
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("editSettingsButton").onclick();
+  ui.elements.get("settingsText").value += "# edited\n"; ui.elements.get("settingsText").events.input();
+  const event = { key: "ы", code: "KeyS", ctrlKey: true, preventDefault() { prevented++; } };
+  ui.elements.get("editorControls").events.keydown(event); await ui.flush();
+  ui.elements.get("editorControls").events.keydown(event); await ui.flush();
+  assert.equal(prevented, 2);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.preview").length, 1);
+  assert.equal(ui.elements.get("editorDiscardButton").disabled, true);
+  release(); await ui.flush(); await ui.flush();
+  assert.equal(applied, 1);
 });
 
 test("validation errors appear beside the affected field and in the general status", async () => {
@@ -2284,13 +2369,13 @@ for (const startFailed of [false, true]) test(`a late probe ${startFailed ? "req
   assert.equal(f.ui.elements.get("componentDialogDiagnostic").textContent, "Проверка устарела");
 });
 
-test("manual settings require a fresh preview after editing and apply the reviewed text", async () => {
-  const text = "project: {}\n";
+test("saving validates the current draft even after an optional preview", async () => {
+  const text = "project: {}\n", edited = "project: {id: edited}\n";
   const ui = screen(async (name, args) => {
     if(name === "settings.read") return read;
     if(name === "settings.edit") return { text, format: "yaml", layerScope: "profile", baseRevision: "loaded" };
     if(name === "settings.preview") { assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); return { revision: "reviewed", projectRoot: read.values.projectRoot, repositories: [], openviking: { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 4, max_response_bytes: 4096 } }; }
-    if(name === "settings.apply") { assert.equal(args.text, text); assert.equal(args.revision, "reviewed"); assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); return {}; }
+    if(name === "settings.apply") { assert.equal(args.text, edited); assert.equal(args.revision, "reviewed"); assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); assert.equal(args.replace, true); return {}; }
     throw new Error(name);
   });
   await ui.flush();
@@ -2299,11 +2384,11 @@ test("manual settings require a fresh preview after editing and apply the review
   await ui.elements.get("reviewEditButton").onclick();
   assert.equal(ui.elements.get("preview").hidden, false);
   assert.equal(ui.elements.get("openvikingStatus").textContent, "Включён: https://knowledge.example/mcp · 4 с · 4096 байт");
-  ui.elements.get("settingsText").events.input();
+  ui.elements.get("settingsText").value = edited; ui.elements.get("settingsText").events.input();
+  assert.equal(ui.elements.get("preview").hidden, true);
+  assert.equal(ui.elements.get("applyButton").disabled, false);
   await ui.elements.get("applyButton").onclick();
-  assert.equal(ui.calls.filter(call => call.params?.name === "settings.apply").length, 0);
-  await ui.elements.get("reviewEditButton").onclick();
-  await ui.elements.get("applyButton").onclick();
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.preview").length, 2);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.apply").length, 1);
   assert.equal(ui.elements.get("settingsText").value, text);
 });
@@ -4349,7 +4434,6 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
     const input = treeInputs(ui).find(input => input.attributes?.["aria-label"] === "testing." + id);
     input.checked = true; await input.onchange();
     await ui.elements.get("reviewEditButton").onclick();
-    ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
     save = ui.elements.get("applyButton"); notice = ui.elements.get("testingDialogNotice");
   }
   assert.equal(save.disabled, false);
