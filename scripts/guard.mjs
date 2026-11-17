@@ -91,11 +91,15 @@ export function reason(event, delegatedKnowledge = false) {
       "write_file",
       "list_directory",
     ]);
-  const indexed = /code[_-]index/i.test(name) && Object.hasOwn(args, "repo"),
-    generic = filesystem.has(bare) || /filesystem.*__/i.test(name);
-  if (!generic && !indexed) return null;
-  if (indexed && !data.repositories.some((repo) => repo.alias === args.repo))
-    return "Псевдоним code-index отсутствует в выбранном профиле проекта";
+  if (/code[_-]index/i.test(name)) {
+    const repo = Object.hasOwn(args, "repo"), repos = Object.hasOwn(args, "repos");
+    if (repos && (repo || !Array.isArray(args.repos) || !args.repos.length))
+      return "Для code-index укажите один repo или непустой список repos";
+    const aliases = repos ? args.repos : repo ? [args.repo] : [];
+    if (aliases.some(alias => !data.repositories.some(repository => repository.alias === alias)))
+      return "Псевдоним code-index отсутствует в выбранном профиле проекта";
+  }
+  const generic = filesystem.has(bare) || /filesystem.*__/i.test(name);
   if (!generic) return null;
   const protectedPaths = [
     ...new Set([...data.roots.protected, ...data.roots.source]),

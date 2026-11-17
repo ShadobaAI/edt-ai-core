@@ -20,7 +20,7 @@ const truncateUtf8 = (text, limit) => {
   return result;
 };
 
-test("model-visible plugin catalogue stays bounded after native discovery", async t => {
+test("manifest MCP servers use lowercase names and keep their model-visible catalogue bounded", async t => {
   const f = fixture(t);
   const server = createServer(async (request, response) => {
     let text = ""; for await (const part of request) text += part;
@@ -45,6 +45,8 @@ test("model-visible plugin catalogue stays bounded after native discovery", asyn
   const entries = Object.entries(JSON.parse(fs.readFileSync(path.join(ROOT, "mcp.json"), "utf8")).mcpServers);
   let total = 0;
   for (const [name, entry] of entries) {
+    assert.equal(name, name.toLowerCase(), name);
+    assert.equal(Object.hasOwn(entry, "env_vars"), false, name);
     assert.equal(entry.type, "stdio", `Add budget coverage for ${name}'s transport`);
     const command = entry.command === "node" ? process.execPath : entry.command;
     const args = entry.args.map(arg => arg.replaceAll("${PLUGIN_ROOT}", ROOT));
@@ -53,6 +55,12 @@ test("model-visible plugin catalogue stays bounded after native discovery", asyn
       { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
     f.clients.push(client); client.roots = [];
     const init = await client.initialize();
+    assert.equal(init.serverInfo.title, name);
+    assert.equal(init.serverInfo.name, init.serverInfo.name.toLowerCase(), name);
+    if (name === "1c-ai-settings") {
+      const discovery = await client.request("server/discover");
+      assert.equal(discovery._meta["io.modelcontextprotocol/serverInfo"].title, name);
+    }
     const initial = (await client.request("tools/list")).tools;
     if (isRelay) {
       assert.equal((await client.call("core_runtime_status", { projectRoot: f.root })).structuredContent.ready, true);
@@ -76,6 +84,7 @@ test("model-visible plugin catalogue stays bounded after native discovery", asyn
       total += bytes;
     }
   }
+  assert.equal(fs.existsSync(path.join(f.state, "runtime-lock.json")), false);
   // Other agent plugins share Codex's budget; this cannot guarantee their fit.
   assert.ok(total < 58000, `initial catalogue estimate is ${total} bytes`);
 });

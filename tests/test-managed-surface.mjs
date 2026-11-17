@@ -89,11 +89,13 @@ test("managed stdio relay preserves schemas/results and refreshes discovery only
   assert.equal(inspect.annotations.readOnlyHint, true);
   assert.equal(inspect.outputSchema.type, "object");
   const before = (await client.call("inspect", {})).structuredContent;
-  for (let i = 0; i < 3; i++)
-    assert.deepEqual(
-      (await client.call("inspect", {})).structuredContent,
-      before,
-    );
+  const refused = await client.request("tools/call", { name: "core_runtime_call", arguments: {
+    calls: [{ name: "inspect", arguments: { repo: "foreign", change: true } }],
+  } });
+  assert.equal(refused.isError, true);
+  assert.equal(refused.structuredContent.actions[0].executionOutcome, "not_executed");
+  assert.match(refused.structuredContent.results[0].error.message, /alias is outside/);
+  assert.deepEqual((await client.call("inspect", {})).structuredContent, before);
   assert.equal(before.rows_elided_already_delivered, 3);
   assert.equal(before.response_sections_omitted, true);
   await client.call("inspect", { change: true });
@@ -199,12 +201,4 @@ test("cached host catalogue can discover and call native BSL tools, with validat
   assert.equal(native.notifications.find(n => n.method === "notifications/cancelled").params.requestId, native.upstreamId);
   assert.equal(stopped.structuredContent.results[1].error.outcome, "not_executed");
   await assert.rejects(client.call("core_runtime_call", { projectRoot: f.state, calls: [{ name: "inspect", arguments: {} }] }), /закреплён/);
-});
-
-test("native call envelope preserves code-index profile alias checks", async t => {
-  const f = fixture(t); environment(t, f.env); f.save(); grant_preparation(f.state, f.root, ["code-index"]);
-  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "code-index"], f, { NODE_OPTIONS: "--import " + preload });
-  const result = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name: "inspect", arguments: { repo: "foreign" } }] } });
-  assert.equal(result.isError, true);
-  assert.match(result.structuredContent.results[0].error.message, /alias is outside/);
 });

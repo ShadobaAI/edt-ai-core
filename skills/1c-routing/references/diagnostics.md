@@ -12,6 +12,26 @@ correct required behavior, readability and maintainability. Diagnostic reduction
 is useful when it improves those properties or fulfills a mandatory condition;
 it is not a separate cleanup assignment.
 
+## Choosing a scoped EDT check
+
+Use `get_project_errors` directly when affected modules or metadata owners
+are known. Prefer exact `modulePaths` or `objectFqns` where supported and pass
+the project explicitly. `modulePaths` excludes markers without a module and
+intersects with `objectFqns`. Use owner scope when metadata markers are required.
+Check unresolved/unsupported addresses and coverage before accepting a clean
+result. Follow pagination only as far as the required evidence demands.
+Use `get_problem_summary` with an applicable grouping/filter for counts or
+triage in an unknown area. A filtered or incomplete page supports conclusions
+only about its coverage.
+
+Use `get_check_description` for an unfamiliar check ID. Apply a quick fix only
+when its exact occurrence, variant and effect are within the change scope.
+Targeted revalidation refreshes stale markers when needed. `project_checks`
+can change check settings. Use its read modes for inspection. For
+`revalidate_objects`, confirm the intended FQNs were found and validation
+completed before reading their markers. Check missing or skipped FQNs.
+Apply the shared action policy to settings changes.
+
 ## Context and settings
 
 For substantial findings retain source and rule code, severity/type,

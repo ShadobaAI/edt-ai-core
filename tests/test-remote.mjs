@@ -5,7 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { fixture, session } from "./helpers.mjs";
+import { edt_fixture, fixture, session } from "./helpers.mjs";
 import { dump, sleep, settings } from "../scripts/common.mjs";
 import { smoke } from "../scripts/runtime.mjs";
 import { reconnect_file } from "../scripts/project_paths.mjs";
@@ -156,6 +156,65 @@ test("external code-index preparation checks scoped health without installing a 
   unhealthy = true;
   await assert.rejects(smoke(f.state, config, f.root, f.profile, "code-index", 5), error =>
     error.remote === true && /Проверка состояния code-index не удалась.*текст внешней ошибки скрыт/.test(error.message) && !error.message.includes("health unavailable"));
+});
+
+test("code-index dispatch confines native repository selectors to advertised profile aliases", async t => {
+  const f = edt_fixture(t), extension = path.join(f.root, "Extension");
+  fs.mkdirSync(extension);
+  fs.writeFileSync(path.join(extension, ".project"), "<projectDescription><name>Extension</name></projectDescription>");
+  f.profile.repositories.push({ id: "extension", path: "Extension", alias: "extension", edt_project: "Extension" });
+  const repo = { type: "string" }, repos = { type: "array", items: repo, minItems: 1, maxItems: 8 };
+  const e = await endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") return reply({ tools: [
+      { name: "list_files", inputSchema: { type: "object", properties: { repo, repos } } },
+      { name: "get_function", inputSchema: { type: "object", properties: { repo } } },
+      { name: "health", inputSchema: { type: "object" } },
+    ] });
+    return reply({ content: [], structuredContent: { received: message.params.arguments } });
+  });
+  f.profile.components = { "code-index": { mode: "external", url: e.url } };
+  f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "code-index"], f);
+  const batch = (name, args) => client.request("tools/call", { name: "core_runtime_call", arguments: {
+    compact: true, calls: [{ name, arguments: args }],
+  } });
+  const dispatched = () => e.calls.filter(call => call.message.method === "tools/call").length;
+  for (const [name, args, expected] of [
+    ["list_files", { repo: "outside" }, /outside the selected project profile/],
+    ["list_files", { repo: "pro*" }, /outside the selected project profile/],
+    ["list_files", { repos: ["product", "outside"] }, /only exact aliases/],
+    ["list_files", { repos: ["product", "ext?"] }, /only exact aliases/],
+    ["list_files", { repo: "product", repos: ["extension"] }, /either repo or repos/],
+    ["list_files", { repos: [] }, /only exact aliases/],
+    ["list_files", { repos: "product" }, /only exact aliases/],
+    ["list_files", {}, /explicit repository selector/],
+    ["get_function", { repos: ["product"] }, /does not advertise repos/],
+    ["health", { repo: "product" }, /does not advertise repo/],
+    ["unadvertised", {}, /Unknown native tool/],
+  ]) {
+    const rejected = await batch(name, args);
+    assert.equal(rejected.isError, true);
+    assert.equal(rejected.structuredContent.actions[0].executionOutcome, "not_executed");
+    assert.match(rejected.structuredContent.results[0].error.message, expected);
+    assert.equal(dispatched(), 0);
+  }
+  // The direct route must enforce the same boundary, including the external
+  // server's default selector and its advertised tool names.
+  await assert.rejects(client.call("list_files", { repos: ["product", "outside"] }), /only exact aliases/);
+  await assert.rejects(client.call("list_files", {}), /explicit repository selector/);
+  await assert.rejects(client.call("unadvertised", {}), /Unknown native tool/);
+  assert.equal(dispatched(), 0);
+
+  const args = { repos: ["extension", "product"] };
+  const result = await batch("list_files", args);
+  assert.ok(!result.isError, JSON.stringify(result.structuredContent));
+  assert.deepEqual(result.structuredContent.results[0].result.structuredContent.received, args);
+  assert.deepEqual((await client.call("get_function", { repo: "product" })).structuredContent.received, { repo: "product" });
+  assert.deepEqual((await client.call("health", {})).structuredContent.received, {});
+  assert.equal(dispatched(), 3);
 });
 
 test("a component observation bounds the whole multi-request MCP probe", async t => {
@@ -456,7 +515,7 @@ test("relay reports local HTTP contract failure before dispatch without inventin
 });
 
 test("batch summaries distinguish repeated calls, server errors and unknown outcomes", async t => {
-  const f = fixture(t); let mode = "error", dispatched = [];
+  const f = fixture(t); let mode = "error", malformed, dispatched = [];
   const e = await endpoint(t, ({ res, message, reply, error }) => {
     if (message.method === "server/discover") return error(-32601);
     if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: {} } });
@@ -464,15 +523,31 @@ test("batch summaries distinguish repeated calls, server errors and unknown outc
     if (message.method === "tools/list") return reply({ tools: [{ name: "change", inputSchema: { type: "object", properties: { step: { type: "integer" } }, required: ["step"] } }] });
     dispatched.push(message.params.arguments.step);
     if (message.params.arguments.step === 2 && mode === "unknown") return res.destroy();
+    if (message.params.arguments.step === 2 && mode === "malformed") return reply(malformed);
     if (message.params.arguments.step === 2) return reply({ isError: true, content: [{ type: "text", text: "specific refusal" }] });
     return reply({ content: [{ type: "text", text: "accepted" }] });
   });
   f.profile.connections = { edt: { url: e.url } }; f.save();
   const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
   const calls = [1, 2, 3].map(step => ({ name: "change", arguments: { step } }));
-  for (const expected of ["response_error", "unknown"]) {
-    mode = expected === "unknown" ? "unknown" : "error"; dispatched = [];
-    const response = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls } });
+  const invalidContents = [
+    { type: "text", text: "invalid envelope" },
+    [null],
+    [{ type: "text", text: null }],
+    [{ type: "text", text: "result", annotations: { priority: 2 } }],
+    [{ type: "text", text: "result", _meta: "invalid metadata" }],
+    [{ type: "image", mimeType: "image/png", data: "invalid base64" }],
+  ];
+  for (const scenario of [
+    { mode: "error", expected: "response_error" },
+    { mode: "unknown", expected: "unknown" },
+    ...invalidContents.map(content => ({ mode: "malformed", expected: "unknown", content })),
+    { mode: "malformed", expected: "unknown", compact: true, content: invalidContents[0] },
+  ]) {
+    mode = scenario.mode; dispatched = [];
+    const { expected, compact } = scenario;
+    malformed = { content: scenario.content };
+    const response = await client.request("tools/call", { name: "core_runtime_call", arguments: { calls, compact } });
     assert.equal(response.isError, true);
     assert.deepEqual(response.structuredContent.actions, [
       { position: 1, name: "change", status: "response_ok", executionOutcome: "completed" },
@@ -480,11 +555,13 @@ test("batch summaries distinguish repeated calls, server errors and unknown outc
       { position: 3, name: "change", status: "not_started", executionOutcome: "not_executed" },
     ]);
     assert.deepEqual(dispatched, [1, 2]);
+    assert.equal(response.structuredContent.results[0].result.content[0].text, "accepted");
     assert.equal(response.structuredContent.stopped.rollback, "not_performed");
     if (expected === "response_error") assert.equal(response.structuredContent.results[1].result.content[0].text, "specific refusal");
     else {
       assert.equal(response.structuredContent.results[1].error.outcome, "unknown");
       assert.equal(response.structuredContent.results[1].error.executionOutcome, "outcome_unknown");
+      if (mode === "malformed") assert.match(response.structuredContent.results[1].error.message, /Invalid native tool result/);
     }
   }
 });
@@ -823,6 +900,207 @@ test("pagination enforces identity, continuation, cursor and item limits", async
     /Incomplete.*pagination/,
   );
 });
+test("EDT discovery reuses exact schemas and refreshes the complete snapshot after disclosure", async t => {
+  const f = fixture(t);
+  const definition = (name, inputSchema = { type: "object" }) => ({ name, inputSchema });
+  let visible = false, schema = { type: "object" }, changeDuringList = false, incomplete = false;
+  const e = await endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize")
+      return reply({ protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: true } }, serverInfo: { name: "edt", version: "fixture" } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") {
+      if (message.params.cursor) {
+        if (incomplete) return reply({ tools: [], hasMore: true });
+        if (changeDuringList) {
+          changeDuringList = false;
+          return res.writeHead(200, { "Content-Type": "text/event-stream" }).end(
+            'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n' +
+            'data: ' + JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { tools: [] } }) + '\n\n',
+          );
+        }
+        return reply({ tools: visible ? [definition("read_method_source", schema)] : [] });
+      }
+      return reply({ tools: [definition("list_toolsets"), definition("enable_toolset")], nextCursor: "tail" });
+    }
+    if (message.params.name === "list_toolsets")
+      return reply({ content: [], structuredContent: { progressiveDisclosure: true, toolsets: [
+        { id: "code", visible, tools: ["read_method_source", "disabled_tool"] },
+      ] } });
+    if (message.params.name === "enable_toolset") {
+      visible = true;
+      // Shared visibility took effect, but its response did not arrive.
+      return res.destroy();
+    }
+    return error(-32601);
+  });
+  f.profile.connections = { edt: { url: e.url } };
+  f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const lists = () => e.calls.filter(call => call.message.method === "tools/list").length;
+  const discover = async args => (await client.call("core_runtime_tools", args)).structuredContent;
+  assert.equal((await discover({ names: ["list_toolsets"] })).tools[0].name, "list_toolsets");
+  assert.equal(lists(), 2, "cold targeted discovery reads each page once");
+  await discover({ names: ["list_toolsets"] });
+  assert.equal(lists(), 2);
+  await assert.rejects(discover({ names: ["read_method_source"], refresh: false }), /not advertised.*read_method_source/);
+  assert.equal(lists(), 2);
+
+  const call = (name, args) => client.request("tools/call", { name: "core_runtime_call", arguments: { calls: [{ name, arguments: args }] } });
+  const groups = (await call("list_toolsets", {})).structuredContent.results[0].result.structuredContent.toolsets;
+  assert.equal(groups[0].visible, false);
+  assert.equal((await call("enable_toolset", { toolsets: [groups[0].id] })).structuredContent.actions[0].executionOutcome, "outcome_unknown");
+  assert.deepEqual((await discover({ names: ["read_method_source"] })).tools[0].inputSchema, schema);
+  assert.equal(lists(), 4, "uncertain disclosure invalidates without replay");
+  assert.equal(e.calls.filter(entry => entry.message.params?.name === "enable_toolset").length, 1);
+  await assert.rejects(discover({ names: ["disabled_tool", "absent_tool"] }), /not advertised.*disabled_tool, absent_tool/);
+  assert.equal(lists(), 6);
+
+  schema = { type: "object", required: ["methodNames"] };
+  assert.deepEqual((await discover({ names: ["read_method_source"] })).tools[0].inputSchema, { type: "object" });
+  changeDuringList = true;
+  await assert.rejects(discover({ names: ["read_method_source"], refresh: true }), /catalogue changed during discovery/);
+  assert.deepEqual((await discover({ names: ["read_method_source"] })).tools[0].inputSchema, schema);
+  assert.equal(lists(), 10);
+  incomplete = true;
+  await assert.rejects(discover({ names: ["read_method_source"], refresh: true }), /Incomplete tools\/list page/);
+  incomplete = false;
+  await discover({ names: ["read_method_source"], refresh: false });
+  assert.equal(lists(), 14, "partial refresh is invalidated even without a notification");
+});
+
+test("catalogue refresh races leave dispatched EDT work intact and expiry rebinds the next request", { timeout: 15000 }, async t => {
+  const f = fixture(t);
+  let writeStarted = Promise.withResolvers(), finishWrite = Promise.withResolvers();
+  t.after(() => finishWrite.resolve());
+  let refreshMode = "valid", initializations = 0;
+  const callbackReplies = [];
+  const e = await endpoint(t, async ({ req, res, message, reply, error }) => {
+    const changed = result => res.writeHead(200, { "Content-Type": "text/event-stream" }).end(
+      'data: {"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n\n' +
+      'data: ' + JSON.stringify({ jsonrpc: "2.0", id: message.id, result }) + '\n\n',
+    );
+    if (req.method === "DELETE") return res.writeHead(204).end();
+    if (message.id === "retired-callback" && !message.method) {
+      callbackReplies.push(message);
+      return res.writeHead(202).end();
+    }
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize") return reply({ protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: true } } },
+      200, { "MCP-Session-Id": "edt-session-" + ++initializations });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list") {
+      if (!message.params.cursor) return reply({ tools: ["write_module_source", "notify_change"].map(name => ({ name, inputSchema: { type: "object" } })), nextCursor: "tail" });
+      if (refreshMode === "changing") return changed({ tools: [] });
+      if (refreshMode === "expired") {
+        refreshMode = "valid";
+        return error(-32000, 404);
+      }
+      return reply({ tools: [] });
+    }
+    if (message.params.name === "notify_change") return changed({ content: [] });
+    writeStarted.resolve();
+    await finishWrite.promise;
+    const result = { content: [{ type: "text", text: "method saved" }] };
+    if (initializations === 2) {
+      return res.writeHead(200, { "Content-Type": "text/event-stream" }).end([
+        { method: "notifications/resources/updated", params: { uri: "fixture://retired" } },
+        { method: "sampling/createMessage", id: "retired-callback", params: {} },
+        { id: message.id, result },
+      ].map(frame => "data: " + JSON.stringify({ jsonrpc: "2.0", ...frame }) + "\n\n").join(""));
+    }
+    return reply(result);
+  });
+  f.profile.connections = { edt: { url: e.url } };
+  f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const forwarded = [];
+  client.options.onNotification = event => { if (event.params?.uri === "fixture://retired") forwarded.push(event.method); };
+  client.options.onRequest = event => { forwarded.push(event.method); return {}; };
+  const call = name => client.call("core_runtime_call", { calls: [{ name, arguments: {} }] });
+  const write = call("write_module_source");
+  // Observe early rejection while the fixture still holds the response.
+  write.catch(() => {});
+  await writeStarted.promise;
+  await call("notify_change");
+  refreshMode = "changing";
+  await assert.rejects(client.call("core_runtime_tools", { names: ["write_module_source"] }), /catalogue changed during discovery/);
+  finishWrite.resolve();
+  const original = (await write).structuredContent;
+  assert.equal(original.results[0].result.content[0].text, "method saved");
+  assert.equal(original.actions[0].executionOutcome, "completed");
+  assert.equal(initializations, 1);
+  assert.equal(e.calls.filter(call => call.method === "DELETE").length, 0);
+
+  refreshMode = "valid";
+  writeStarted = Promise.withResolvers();
+  finishWrite = Promise.withResolvers();
+  const admitted = client.request("tools/call", { name: "core_runtime_call", arguments: {
+    calls: [{ name: "write_module_source", arguments: {} }],
+  } });
+  admitted.catch(() => {});
+  await writeStarted.promise;
+  refreshMode = "expired";
+  await assert.rejects(client.call("core_runtime_tools", { refresh: true }), /Incomplete tools\/list pagination/);
+  const recovered = (await client.call("core_runtime_tools", { names: ["write_module_source"] })).structuredContent;
+  assert.notEqual(recovered.binding.connectionId, original.binding.connectionId);
+  assert.equal(initializations, 2);
+  assert.equal(e.calls.filter(call => call.method === "DELETE").length, 0);
+  finishWrite.resolve();
+  const oldSession = (await admitted).structuredContent;
+  assert.equal(oldSession.binding.connectionId, original.binding.connectionId);
+  assert.equal(oldSession.results[0].result.content[0].text, "method saved");
+  assert.equal(oldSession.actions[0].status, "response_ok_workflow_stopped");
+  assert.equal(oldSession.actions[0].executionOutcome, "completed");
+  assert.deepEqual(forwarded, []);
+  assert.match(callbackReplies[0]?.error?.message ?? "", /Project binding changed/);
+  assert.equal(e.calls.filter(call => call.message.params?.name === "write_module_source").length, 2);
+});
+
+test("compact native results retain job IDs, resource pages and errors without duplicate JSON", async t => {
+  const f = fixture(t);
+  const job = { success: true, jobId: "job-7", status: "running" };
+  const partial = { hasMore: true, nextOffset: 7 };
+  const resource = { type: "resource", annotations: { priority: 0.5, audience: ["assistant"] },
+    resource: { uri: "guide://job", mimeType: "text/markdown", text: "## First page" } };
+  const payloads = {
+    update_database: { content: [{ type: "text", text: '{ "jobId": "job-7", "status": "running", "success": true }' }], structuredContent: job },
+    get_job_status: { content: [{ type: "text", text: "## Job job-7\nState: RUNNING" }] },
+    get_tool_guide: { content: [resource], structuredContent: partial },
+    refused: { content: [{ type: "text", text: "Refused before modifying the target" }], structuredContent: { success: false }, isError: true },
+  };
+  const e = await endpoint(t, ({ res, message, reply, error }) => {
+    if (message.method === "server/discover") return error(-32601);
+    if (message.method === "initialize")
+      return reply({ protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "edt", version: "legacy" } });
+    if (message.method.startsWith("notifications/")) return res.writeHead(202).end();
+    if (message.method === "tools/list")
+      return reply({ tools: Object.keys(payloads).map(name => ({ name, inputSchema: { type: "object" } })) });
+    return reply(payloads[message.params.name]);
+  });
+  f.profile.connections = { edt: { url: e.url } };
+  f.save();
+  const client = await session(t, "scripts/lazy_mcp.mjs", ["--component", "edt"], f);
+  const call = (calls, compact) => client.request("tools/call", { name: "core_runtime_call", arguments: { calls, compact } });
+  const update = { name: "update_database", arguments: {} };
+  const full = await call([update], false);
+  assert.deepEqual(full.content, payloads.update_database.content);
+  assert.deepEqual(full.structuredContent.results[0].result, payloads.update_database);
+  const queued = await call([update], true);
+  assert.deepEqual(queued.content, []);
+  assert.deepEqual(queued.structuredContent.results[0].result, { content: [], structuredContent: job });
+  const status = await call([
+    { name: "get_job_status", arguments: { jobId: queued.structuredContent.results[0].result.structuredContent.jobId } },
+    { name: "get_tool_guide", arguments: {} },
+    { name: "refused", arguments: {} },
+    update,
+  ], true);
+  assert.equal(status.isError, true);
+  assert.deepEqual(status.structuredContent.results.map(entry => entry.result), [payloads.get_job_status, payloads.get_tool_guide, payloads.refused]);
+  assert.deepEqual(status.structuredContent.actions.map(action => action.status), ["response_ok", "response_ok", "response_error", "not_started"]);
+  assert.ok(Buffer.byteLength(JSON.stringify(queued)) < Buffer.byteLength(JSON.stringify(full)));
+});
+
 test("lazy relay preserves paginated tools/results, bounded discovery and independent project contracts", async (t) => {
   const f = fixture(t),
     enabled = new Set(),
@@ -900,11 +1178,9 @@ test("lazy relay preserves paginated tools/results, bounded discovery and indepe
   const before = e.calls.filter(
     (x) => x.message.method === "tools/list",
   ).length;
-  for (let i = 0; i < 3; i++) {
-    const result = await a.call("inspect", { context: "project A" });
-    assert.equal(result.structuredContent.rows_elided_already_delivered, 3);
-    assert.equal(result.structuredContent.context, "project A");
-  }
+  const result = await a.call("inspect", { context: "project A" });
+  assert.equal(result.structuredContent.rows_elided_already_delivered, 3);
+  assert.equal(result.structuredContent.context, "project A");
   assert.equal(
     e.calls.filter((x) => x.message.method === "tools/list").length,
     before,
@@ -918,7 +1194,6 @@ test("lazy relay preserves paginated tools/results, bounded discovery and indepe
   assert.notEqual(statusA.binding.connectionId, statusB.binding.connectionId);
   assert.match(statusA.serverContract.instructions, /mcp/);
   const token = reconnect_file(f.state, f.root);
-  const env = { ...process.env.EDT_AI_INSTANCE }; // token name belongs to this fixture's first instance
   const firstToken = path.join(path.dirname(token), "first.reconnect.json");
   fs.mkdirSync(path.dirname(firstToken), { recursive: true });
   fs.writeFileSync(firstToken, '{"id":"changed"}');

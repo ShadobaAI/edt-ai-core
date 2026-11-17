@@ -65,10 +65,10 @@ another chat before correcting the actual connection problem.
   requires a reviewed preview and backup. A stale revision
   requires a fresh document and reconciliation, never an automatic retry.
 - For supplied portable YAML or ZIP files use the settings.import transfer dialog.
-  For a simple connection/component change use settings.update
-  with changed fields only; respect read-only/environment/connection-file sources.
-  Both form entrypoints, chat tools and the Node CLI use SettingsBackend with
-  the same selected root, instance and precedence. OpenViking transport fields
+  For a simple connection/component change use `settings.update` with changed
+  fields only. Choose the authorized save layer under the
+  [settings contract](references/runtime-contract.md#settings-layers).
+  Respect environment and connection-file overrides. OpenViking transport fields
   are openvikingEnabled/Url/Timeout/MaxResponseBytes/ConnectionId. Shared OpenViking credentials and signed confirmations are entered in the settings form and never in project profiles or ordinary agent responses.
   OpenViking is optional and disabled by default. Its enabled flag is independent
   of the URL: to connect under the user's request, explicitly set
@@ -97,7 +97,7 @@ the assigned MCP endpoint, collection IDs/URIs and external access/publication c
 Connect that existing server; do not install OpenViking, create a corpus, index,
 publish, guess a URL or substitute another authority when readiness fails.
 Use edit/preview/apply to set the project knowledge contract and update for
-instance transport. Preserve unrelated fields and existing overrides. Missing
+the authorized transport layer. Preserve unrelated fields and overrides. Missing
 inputs remain explicit blockers; an empty endpoint never disables requirements.
 If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
 
@@ -131,18 +131,10 @@ If knowledge stays disabled, do not probe OpenViking or claim corpus coverage.
 - For any returned operation ID use settings.operation with waitMs=10000 (or a
   shorter bounded wait). Reuse its eventual result; do not repeat the operation,
   run doctor again, poll immediately in a loop or dump full native schemas.
-- Use only necessary chat relays. If host roots are empty, pass this chat's known
-  projectRoot to core_runtime_tools or core_runtime_call. The relay binds and
-  reconnects automatically within the existing preparation permission; neither
-  a status call nor another settings.run_check is required for recovery.
-  Settings-form selection does not bind other MCP sessions. Use core_runtime_tools for
-  live schemas and core_runtime_call for a bounded sequential calls batch.
-  Supply the same chat projectRoot when host roots are empty. Native permissions,
-  source workflow and action policy apply to every call. Group BSL registration
-  and file analysis only when proceeding without inspecting the previous result is
-  safe under its live contract; otherwise check it before the dependent call in
-  the same bound session. Do not spawn shell
-  relays, change global selection or recommend new chats/restarts for empty roots.
+- Use the [relay controls](../1c-routing/references/toolsets.md#calling-the-relay)
+  in this chat. They reconnect within existing preparation permission.
+  Settings-form selection does not bind other MCP sessions. Resolve empty host
+  roots with this chat's known `projectRoot`.
 - Preserve native server instructions/capabilities returned by a new binding and
   reuse them. A project still building needs a later readiness check, not a new
   installation. Distinguish saved settings, preparation, external acceptance and

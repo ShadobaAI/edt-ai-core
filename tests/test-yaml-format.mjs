@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { canonical_yaml, parse, stringify_yaml } from "../scripts/common.mjs";
 import { SettingsBackend } from "../scripts/settings_backend.mjs";
-import { environment, fixture, node, session, success } from "./helpers.mjs";
+import { environment, fixture, node, success } from "./helpers.mjs";
 
 test("equivalent YAML and JSON documents use one block format", () => {
   const input = '{"project":{"id":"bit"},"connections":{"edt":{"url":"http://localhost:8765/mcp"}},"repositories":[{"id":"bf","enabled":true}],"empty":{"object":{},"array":[]}}';
@@ -102,23 +102,6 @@ test("global settings also use block YAML when the selected file has a YAML exte
   assert.match(saved, /# retained component/);
 });
 
-for (const scope of ["profile", "project_local"]) test(`the ${scope} editor previews and saves the same formatted YAML`, async t => {
-  const f = fixture(t); environment(t, f.env); f.save();
-  const target = path.join(f.root, ".ai", scope === "profile" ? "project.yaml" : "project.local.yaml");
-  if (scope === "project_local") fs.writeFileSync(target, "# local\n{}\n");
-  const before = fs.readFileSync(target, "utf8"), backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
-  const edit = await backend.main({ action: "edit", layerScope: scope, format: "yaml" });
-  const draft = (scope === "profile" ? edit.text : "# local\n") + 'connections: {edt: {url: "http://localhost:8765/mcp"}}\n';
-  const request = { mode: "layer", layerScope: scope, baseRevision: edit.baseRevision, text: draft };
-  const preview = await backend.main({ action: "preview", ...request });
-  assert.equal(preview.formattedText, canonical_yaml(draft));
-  assert.match(preview.formattedText, /edt:\n    url: "http:\/\/localhost:8765\/mcp"/);
-  await assert.rejects(backend.main({ action: "apply", ...request, text: draft + "\n", revision: preview.revision, replace: true }), /предпросмотра/);
-  const applied = await backend.main({ action: "apply", ...request, revision: preview.revision, replace: true });
-  assert.equal(fs.readFileSync(target, "utf8"), preview.formattedText);
-  assert.equal(fs.readFileSync(applied.backup, "utf8"), before);
-});
-
 test("import preview and comment-preserving export use the saved YAML format", async t => {
   const f = fixture(t); environment(t, f.env); f.save();
   const backend = new SettingsBackend(f.state, f.env.EDT_AI_SETTINGS);
@@ -136,19 +119,4 @@ test("import preview and comment-preserving export use the saved YAML format", a
   const exported = await backend.main({ action: "transfer_export", scope: "profile", includeCommandsAndComments: true });
   assert.equal(exported.text, fs.readFileSync(shared, "utf8"));
   assert.match(exported.text, /^# kept/);
-});
-
-test("the formatted editor preview is app-only metadata", async t => {
-  const f = fixture(t); f.save();
-  const client = await session(t, "mcp/settings.mjs", [], f);
-  const edit = (await client.call("settings.edit", { layerScope: "project_local", format: "yaml" }))._meta.data;
-  const text = '# private-comment-marker\nconnections: {edt: {url: "http://localhost:8765/mcp"}}\n';
-  const request = { mode: "layer", layerScope: "project_local", baseRevision: edit.baseRevision, text };
-  const preview = await client.call("settings.preview", request);
-  assert.equal(preview._meta.data.formattedText, canonical_yaml(text));
-  assert.doesNotMatch(JSON.stringify(preview.structuredContent), /private-comment-marker|formattedText/);
-  const applied = await client.call("settings.apply", { ...request, revision: preview.structuredContent.revision });
-  assert.doesNotMatch(JSON.stringify(applied.structuredContent), /private-comment-marker|formattedText/);
-  const operation = await client.call("settings.operation", {});
-  assert.doesNotMatch(JSON.stringify(operation.structuredContent), /private-comment-marker|formattedText/);
 });

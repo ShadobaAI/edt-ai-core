@@ -5,19 +5,14 @@
 The selected directory's profile, project-local settings and explicit connection
 file or environment overrides determine the
 assigned endpoint. Do not embed addresses, checkouts, server versions or operation
-catalogues in the skill. For a new binding read `core_runtime_status`:
-`binding` identifies project/instance/endpoint; `serverContract` supplies negotiated
-connection instructions and capabilities. This establishes MCP availability, not
-article presence or corpus completeness. Choose capabilities by purpose, description
-and live schema; do not guess names. Configuring the selected public or local
-endpoint is the user's agreement to its operations and to sending task code and
-context. Do not request separate permission for v8std calls. Host approval and
-authorization for independent project actions remain separate.
-Inspect `nativeCatalog` and, on failure, `failure.stage`/`failure.category` and
-`detail`: connection, catalogue, schema validation, actual reading and policy are
-separate checks. An empty catalogue or a connected status does not establish that
-the needed read or workflow is usable. Report the failing operation and binding;
-do not treat setup readiness as proof of this session's relay.
+catalogues in the skill. Discover needed schemas through the
+[relay controls](../../1c-routing/references/toolsets.md#calling-the-relay).
+For missing binding details, negotiated instructions or connection diagnosis, use
+`core_runtime_status`: `binding` identifies project/instance/endpoint and
+`serverContract` gives native instructions and capabilities. On failure inspect
+`nativeCatalog`, `failure.stage`, `failure.category` and `detail` as available.
+Report the failing operation and binding. Verify article availability and coverage
+through the actual retrieval response.
 
 Reuse discovery in the current binding. Refresh after endpoint changes,
 reconnection, capability-change notifications, incompatible responses or explicit
@@ -88,8 +83,9 @@ Do not substitute SDK version for corpus revision. If the server does not report
 document/corpus revision, mark it unknown; a text hash confirms specific bytes,
 not server freshness. Reuse is then limited to the current task with unchanged
 connection and no contradictions; a new task or reconnection requires current
-reads of needed selectors. Confirmed corpus changes require refreshing dependent
-selection and text.
+reads of needed selectors. After a confirmed corpus change, use the
+[assessment freshness rules](requirements.md#assessment-freshness) for affected
+text and applicability.
 
 Shared unchanged text may be reused across scopes only with confirmed endpoint,
 corpus identity and revision. Snippet/context responses, sourceRef, project

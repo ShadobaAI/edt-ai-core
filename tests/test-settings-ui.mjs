@@ -15,6 +15,9 @@ import { save_component_checks } from "../scripts/setup_readiness.mjs";
 
 const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const compiledScript = new vm.Script(script, { filename: "ui/settings.html" });
+const controlMarkup = [...html.matchAll(/<(\w+)[^>]*\bid="([^"]+)"/g)];
+const selectDefaults = [...html.matchAll(/<select\b[^>]*\bid="([^"]+)"[^>]*>\s*<option value="([^"]+)"/g)];
 const componentName = card => card.children[0].children[0].children[0].textContent;
 const componentButton = card => card.children[0].children.at(-1);
 const headerState = (ui,name) => ui.elements.get("headerComponentStatuses").children.find(item=>item.textContent.startsWith(name+": "))?.textContent.slice(name.length+2);
@@ -82,8 +85,8 @@ function screen(handler, options = {}) {
     focus() { document.activeElement = this; }
     getBoundingClientRect() { return { height: options.height?.() ?? 500 }; }
   }
-  for (const match of html.matchAll(/<(\w+)[^>]*\bid="([^"]+)"/g)) { const element = new Element(match[1]); element.id = match[2]; elements.set(match[2], element); }
-  for(const match of html.matchAll(/<select\b[^>]*\bid="([^"]+)"[^>]*>\s*<option value="([^"]+)"/g))elements.get(match[1]).value=match[2];
+  for (const [, tag, id] of controlMarkup) { const element = new Element(tag); element.id = id; elements.set(id, element); }
+  for (const [, id, value] of selectDefaults) elements.get(id).value = value;
   const parent = { postMessage(request) {
     calls.push(request);
     if (!request.id) return;
@@ -121,7 +124,7 @@ function screen(handler, options = {}) {
     getComputedStyle: () => ({ paddingTop: "20px", paddingBottom: "20px" }),
     ResizeObserver: class { constructor(callback) { observedResize = callback; } observe() {} },
     Blob, TextDecoder, URL: { createObjectURL: blob => { blobs.push(blob); return "blob:fixture"; }, revokeObjectURL() {} } });
-  vm.runInContext(script, context);
+  compiledScript.runInContext(context);
   vm.runInContext(`configureNavigation(${JSON.stringify(options.navigation || "profiles")})`, context);
   const flush = () => new Promise(resolve => setImmediate(resolve));
   return { context, elements, timers, calls, downloads, blobs, flush, document, lifecycle, documentEvents, media, resize: () => observedResize(),
@@ -2292,48 +2295,55 @@ function isolatedProbeScreen(source, { delayed = false, failed = false, startFai
   };
   const close = id => ui.elements.get(item(id).kind === "external" ? "componentDialogClose" : item(id).kind === "managed" ? "managedDialogClose" : "testingDialogClose").onclick();
   const diagnostic = id => ui.elements.get(item(id).kind === "external" ? "probeResult" : item(id).kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent;
+  const notice = id => ui.elements.get(item(id).kind === "external" ? "componentDialogStatus" : item(id).kind === "managed" ? "managedDialogNotice" : "testingDialogNotice");
   const probe = id => ui.elements.get(item(id).kind === "external" ? "probeButton" : item(id).kind === "managed" ? "managedProbeButton" : "testingProbeButton").onclick();
-  return { ui, current, ids, item, open, close, diagnostic, probe, finish: () => finish() };
+  return { ui, current, item, open, close, diagnostic, notice, probe, finish: () => finish() };
 }
 
-for (const source of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"]) {
-  test(`a completed ${source} probe stays isolated when opening every other component`, async () => {
+// All component IDs are tested for probe routing above. The late-result handler
+// is shared, with distinct diagnostics and notices for the three dialog types.
+for (const [source, peer, other] of [
+  ["edt", "v8std", "code-index"],
+  ["code-index", "bsl-ls", "yaxunit"],
+  ["yaxunit", "vanessa", "edt"],
+]) {
+  test(`a completed ${source} probe stays isolated when opening ${peer} or ${other}`, async () => {
     const f = isolatedProbeScreen(source); await f.ui.flush(); await f.open(source); await f.probe(source);
     assert.match(f.diagnostic(source), new RegExp("Результат проверки " + source));
     f.close(source);
     assert.equal(f.ui.elements.get("probeResult").hidden, true);
     assert.equal(f.ui.elements.get("probeResult").textContent, "");
-    for (const target of f.ids.filter(id => id !== source)) {
+    for (const target of [peer, other]) {
       await f.open(target);
-      assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
-      assert.doesNotMatch(f.diagnostic(target), /Результат проверки/);
+      const expected = "Собственная диагностика " + target;
+      assert.equal(f.diagnostic(target), expected);
       await f.ui.context.refresh();
-      assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
+      assert.equal(f.diagnostic(target), expected);
       f.close(target);
     }
     await f.open(source); assert.match(f.diagnostic(source), new RegExp("Результат проверки " + source));
     assert.equal(f.ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   });
 
-  for (const failed of [false, true]) test(`a late ${failed ? "failed" : "completed"} ${source} probe cannot overwrite another component dialog`, async () => {
-    const f = isolatedProbeScreen(source, { delayed: true, failed }), target = source === "v8std" ? "edt" : "v8std";
+  for (const [outcome, target, options, message] of [
+    ["completion", peer, { delayed: true }, "Результат проверки "],
+    ["operation error", other, { delayed: true, failed: true }, "Ошибка проверки "],
+    ["request error", peer, { startFailed: true }, "Ошибка проверки "],
+  ]) test(`a late ${source} probe ${outcome} cannot overwrite the ${target} dialog`, async () => {
+    const f = isolatedProbeScreen(source, options);
     await f.ui.flush(); await f.open(source); const checking = f.probe(source); await f.ui.flush();
-    f.close(source); await f.open(target); f.finish(); await checking;
-    assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
-    assert.doesNotMatch(f.ui.elements.get("componentDialogStatus").textContent, new RegExp("Ошибка проверки " + source));
-    f.close(target); await f.open(source);
-    assert.match(f.diagnostic(source), new RegExp((failed ? "Ошибка проверки " : "Результат проверки ") + source));
+    f.close(source); await f.open(target);
+    const notice = f.notice(target), previous = { text: notice.textContent, hidden: notice.hidden };
+    f.finish(); await checking;
+    assert.equal(f.diagnostic(target), "Собственная диагностика " + target);
+    assert.equal(notice.textContent, previous.text);
+    assert.equal(notice.hidden, previous.hidden);
+    f.close(target);
+    assert.equal(notice.hidden, true);
+    assert.equal(notice.textContent, "");
+    await f.open(source);
+    assert.match(f.diagnostic(source), new RegExp(message + source));
     assert.equal(f.ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
-  });
-
-  test(`a late ${source} probe request error stays in its component`, async () => {
-    const f = isolatedProbeScreen(source, { startFailed: true }), target = source === "v8std" ? "edt" : "v8std";
-    await f.ui.flush(); await f.open(source); const checking = f.probe(source); await f.ui.flush();
-    f.close(source); await f.open(target); f.finish(); await checking;
-    assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
-    assert.doesNotMatch(f.ui.elements.get("componentDialogStatus").textContent, new RegExp("Ошибка проверки " + source));
-    f.close(target); await f.open(source);
-    assert.match(f.diagnostic(source), new RegExp("Ошибка проверки " + source));
   });
 }
 
@@ -4451,18 +4461,6 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
   const next = structuredClone(current); next.values.projectRoot = "C:/fixture/other";
   ui.context.renderCurrent(next);
   assert.equal(notice.hidden, true); assert.equal(notice.textContent, "");
-});
-
-for (const [source, target, noticeId] of [["code-index", "bsl-ls", "managedDialogNotice"], ["yaxunit", "vanessa", "testingDialogNotice"]]) test(`a late ${source} error cannot replace the ${target} operation notice`, async () => {
-  const f = isolatedProbeScreen(source, { startFailed: true }); await f.ui.flush(); await f.open(source);
-  const checking = f.probe(source); await f.ui.flush();
-  f.close(source); await f.open(target);
-  const notice = f.ui.elements.get(noticeId);
-  assert.ok(notice);
-  const message = notice.textContent, hidden = notice.hidden;
-  f.finish(); await checking;
-  assert.equal(notice.textContent, message); assert.equal(notice.hidden, hidden);
-  f.close(target); assert.equal(notice.hidden, true); assert.equal(notice.textContent, "");
 });
 
 for (const expanded of [false, true]) test(`a rolling journal tail preserves the visible record with ancestor-relative offsets${expanded ? " in the full dialog" : ""}`, async () => {

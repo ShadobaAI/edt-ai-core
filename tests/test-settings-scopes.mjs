@@ -24,15 +24,23 @@ for (const layerScope of ["profile", "project_local"]) test(`YAML ${layerScope} 
   const client = await session(t, "mcp/settings.mjs", [], f);
   const edit = (await client.call("settings.edit", { layerScope, format: "yaml" }))._meta.data;
   assert.equal(edit.text, before);
-  const request = { mode: "layer", layerScope, baseRevision: edit.baseRevision, text: before + "\n# trailing comment\n" };
+  const text = before + '\n# private-comment-marker\nconnections: {edt: {url: "http://localhost:8765/mcp"}}\n';
+  const request = { mode: "layer", layerScope, baseRevision: edit.baseRevision, text };
   const reply = await client.call("settings.preview", request), preview = reply.structuredContent;
   assert.equal(preview.textChanged, true);
-  assert.equal(reply._meta.data.formattedText, canonical_yaml(request.text));
+  assert.equal(reply._meta.data.formattedText, canonical_yaml(text));
+  assert.match(reply._meta.data.formattedText, /edt:\n    url: "http:\/\/localhost:8765\/mcp"/);
+  assert.doesNotMatch(JSON.stringify(preview), /private-comment-marker|formattedText/);
   await assert.rejects(client.call("settings.apply", { ...request, text: request.text + "# changed\n", revision: preview.revision, replace: true }), /предпросмотра/);
   const applied = (await client.call("settings.apply", { ...request, revision: preview.revision, replace: true })).structuredContent;
+  assert.doesNotMatch(JSON.stringify(applied), /private-comment-marker|formattedText/);
   assert.equal(fs.readFileSync(target, "utf8"), reply._meta.data.formattedText);
   assert.equal(fs.readFileSync(applied.backup, "utf8"), before);
-  if (layerScope === "project_local") assert.equal(path.relative(f.state, applied.backup).startsWith(".."), false);
+  if (layerScope === "project_local") {
+    assert.equal(path.relative(f.state, applied.backup).startsWith(".."), false);
+    const operation = await client.call("settings.operation", {});
+    assert.doesNotMatch(JSON.stringify(operation.structuredContent), /private-comment-marker|formattedText/);
+  }
   await assert.rejects(client.call("settings.preview", request), /изменились/);
 });
 

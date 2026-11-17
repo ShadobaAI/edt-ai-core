@@ -522,7 +522,11 @@ test("guard rejects reads, writes, patches, traversal, broad discovery, shell an
     ["exec_command", { cmd: "node -v", workdir: "." }],
     ["exec", { code: "tools.exec_command(...)" }],
     ["mcp__code_index.search", { repo: "foreign" }],
+    ["mcp__code_index.search", { repos: ["product", "foreign"] }],
+    ["mcp__code_index.search", { repos: "product" }],
+    ["mcp__code_index.search", { repo: "product", repos: ["product"] }],
     ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: { repo: "product" } }, { name: "search", arguments: { repo: "foreign" } }] }],
+    ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: { repos: ["product", "prod*"] } }] }],
     ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: null }] }],
   ])
     assert.ok(reason({ cwd: f.root, tool_name, tool_input }), tool_name);
@@ -536,6 +540,7 @@ test("guard rejects reads, writes, patches, traversal, broad discovery, shell an
     ["mcp__edt.read", { path: "src/a.bsl" }],
     ["mcp__code_index.search", { repo: "product" }],
     ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: { repo: "product" } }] }],
+    ["mcp__code_index__core_runtime_call", { calls: [{ name: "search", arguments: { repos: ["product"] } }] }],
     ["exec_command", { cmd: "node -v", workdir: "docs" }],
   ])
     assert.equal(

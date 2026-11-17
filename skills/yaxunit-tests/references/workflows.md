@@ -15,15 +15,8 @@
 4. On the actual result check affected authoring items, completed proposal/result
    compliance and the same EDT diagnostics. New mechanisms require selection
    review. Runtime pass does not replace normative verification.
-5. For necessary authorized execution read the live `run_yaxunit_tests` guide:
-   choose exact project, launch configuration and minimal module/test filter.
-   Establish database-update, test-data-write, client-launch/restart effects and
-   user agreement under shared action policy. Do not run the entire extension
-   by default.
-6. Run once, retain `jobId` and follow that job through supported status.
-   Timeout does not authorize rerun; first establish outcome/state.
-   Match results to the same project/filter/run, counts and actual assertions.
-   Unexpected zero counts, skipped/unfinished runs or missing reports are not pass.
+5. When behavioral verification needs execution, use
+   [Run and report](#run-and-report) within the authorized runtime scope.
 
 ## Design/review
 
@@ -33,19 +26,35 @@ or fixes. Missing runtime does not stop available static checks.
 Apply general oneC workflow and test patterns to the same subject/phase;
 do not send `debug` or `migrate` as operation to a oneC selector lacking those values.
 
-## Run/report/debug
+## Run and report
 
-Run/report-only uses the established test scope without authoring gates until test
-changes are needed. Distinguish the confirmed current run's report from old files.
-Retain results/reference in `yaxunit_config.results`; state actual counts, time,
-selected filter and job ID; exclude credentials.
+For execution use the live `run_yaxunit_tests` guide. Choose the exact project,
+launch configuration and the smallest filter that covers the needed tests.
+Check database update, test-data writes and client launch/restart effects under
+the shared [action policy](../../1c-routing/references/action-policy.md).
+Run once and use a final report in the response directly. For a pending result,
+follow the [original job](../../1c-routing/references/runtime.md#background-jobs-and-infobases).
+For an unknown outcome, use the [relay rules](../../1c-routing/references/toolsets.md#calling-the-relay).
+
+For report-only read the requested existing run report, using
+`testing.yaxunit_config.results` to locate saved reports when applicable.
+
+For any report, match the exact run, project, filter and completed assertions.
+Report counts, time and run/job ID when available. Unexpected zero counts,
+skipped or unfinished runs and missing reports cannot confirm a pass.
+
+## Debug
 
 Before changing code classify failure: test, product, data/environment or runner.
 Debug without fix permission remains diagnostics. Restart and data modification
 retain action policy regardless of mode name.
 Read only source needed for that cause. Testability obstacles follow
 [testability](testability.md); they do not expand production permission.
-For debug read the shared [runtime contract](../../1c-routing/references/runtime.md).
+For debug use the live `run_yaxunit_tests` guide and `debug: true` when supported.
+Use the debug launch handle from the response or the original pending job.
+Pass that handle's target to the advertised `wait_for_break`. Verify test
+acceptance from the final report of that run. Use the
+[runtime contract](../../1c-routing/references/runtime.md).
 Do not disable break-on-error globally as a routine prerequisite.
 Preserve original breakpoints and restore the actual prior state of temporary changes.
 
