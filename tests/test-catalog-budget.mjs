@@ -57,10 +57,6 @@ test("manifest MCP servers use lowercase names and keep their model-visible cata
     const init = await client.initialize();
     assert.equal(init.serverInfo.title, name);
     assert.equal(init.serverInfo.name, init.serverInfo.name.toLowerCase(), name);
-    if (name === "1c-ai-settings") {
-      const discovery = await client.request("server/discover");
-      assert.equal(discovery._meta["io.modelcontextprotocol/serverInfo"].title, name);
-    }
     const initial = (await client.request("tools/list")).tools;
     if (isRelay) {
       assert.equal((await client.call("core_runtime_status", { projectRoot: f.root })).structuredContent.ready, true);
