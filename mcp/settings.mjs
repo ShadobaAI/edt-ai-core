@@ -949,11 +949,10 @@ async function dispatch(message) {
   }
   if (message.method === "notifications/roots/list_changed") { requestRoots(); return; }
   if (!Object.hasOwn(message, "id")) return;
-  // Discovery reports the supported legacy versions even to modern probes.
-  // Project selection and operation ownership still require the connection-
-  // scoped initialize handshake; no stateless tool calls are enabled.
+  // Reject discovery so clients retry with initialize, which establishes the
+  // session used for project selection and operation ownership.
   const requested = message.params?._meta?.["io.modelcontextprotocol/protocolVersion"];
-  if (message.method !== "server/discover" && requested && !protocols.includes(requested)) {
+  if (message.method === "server/discover" || (requested && !protocols.includes(requested))) {
     write({ id: message.id, error: { code: -32601,
       message: "Session-scoped settings require the initialize handshake." } });
     return;
@@ -964,10 +963,6 @@ async function dispatch(message) {
       data = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0],
         instructions: "Start with settings.inspect; supply this chat's projectRoot if roots are empty. Forms and preparation require authorization.",
         serverInfo: { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version, icons: plugin_icons() },
-        capabilities: { tools: {}, resources: {} } };
-    } else if (message.method === "server/discover") {
-      data = { resultType: "complete", supportedVersions: protocols,
-        _meta: { "io.modelcontextprotocol/serverInfo": { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version } },
         capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "ping") data = {};
     else if (message.method === "tools/list") data = { tools };
