@@ -37,6 +37,12 @@ export function parseInfobase(value) {
   if (fields.srvr && fields.ref && !fields.file) return { type: "server", server: fields.srvr, database: fields.ref };
   return null;
 }
+
+const vanessaExtAliases = new Map([
+  ["истина", true], ["true", true], ["yes", true],
+  ["ложь", false], ["false", false], ["no", false]
+]);
+
 export function parseEnvironment(result) {
   const text = toolText(result);
   if (!text?.startsWith("# Данные об окружении\n")) return null;
@@ -45,7 +51,8 @@ export function parseEnvironment(result) {
   const runtimeVersion = scalar(text, "Версия")?.replace(/^ver /, "");
   const mcpVersion = scalar(text, "Версия MCP");
   const managerInfobase = parseInfobase(scalar(text, "Строка соединения с информационной базой"));
-  const vanessaExt = yesNo(scalar(text, "Включено использование внешней компоненты VanessaExt"));
+  const vanessaExtValue = scalar(text, "Включено использование внешней компоненты VanessaExt");
+  const vanessaExt = vanessaExtAliases.get(vanessaExtValue?.toLowerCase()) ?? yesNo(vanessaExtValue);
   if (!runtimeVersion?.trim() || !mcpVersion?.trim() || !managerInfobase || vanessaExt === null) return null;
   return { runtimeVersion, mcpVersion, platformVersion: scalar(text, "Платформа") ?? null, managerInfobase, vanessaExt };
 }
