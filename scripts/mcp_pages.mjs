@@ -13,7 +13,7 @@ export async function all_pages(client, method, key, { maxPages = 128, maxItems 
       );
     } catch (error) {
       if (cursor !== undefined)
-        throw new Error(`Incomplete ${method} pagination: ${error.message}`);
+        throw new Error(`Incomplete ${method} pagination: ${error.message}`, { cause: error });
       throw error;
     }
     if (!Array.isArray(result?.[key]))

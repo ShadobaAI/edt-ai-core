@@ -21,7 +21,9 @@ route. Do not enable capabilities or change production/core for test convenience
 
 `code-index` finds definitions and real usages; EDT confirms live state, unknown
 installed signatures, performs all writes, primary diagnostics and
-`run_yaxunit_tests`. BSL LS is needed only for a separate focused analyzer question.
+`run_yaxunit_tests`. For changed test BSL, use the enabled and prepared BSL LS
+before and after changes under $1c-code-change. Run/report-only needs no new BSL
+analysis unless a separate focused analyzer question requires it.
 `v8std` supplies known pattern/API contracts; do not duplicate sufficient reference
 by checking every signature in EDT. Resolve version contradictions first.
 

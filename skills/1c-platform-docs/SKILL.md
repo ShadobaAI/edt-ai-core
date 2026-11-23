@@ -5,21 +5,25 @@ description: Verify 1C platform APIs and compatibility through the profile-selec
 
 # 1C platform and BSP documentation
 
+Apply $1c-routing for knowledge gates and live capability discovery.
+
 ## Platform reference
 
-Use the assigned EDT project from the profile and establish its exact scope and
-readiness before dependent calls. HelpSearchServer / `1c-docs-mcp` is excluded
-from the core workflow, including as a supplementary provider in CRM.
-Resolve capability availability through `$1c-routing`: profile authority names
-do not enable a disabled transport or prove that a live documentation API exists.
+Use the assigned EDT binding and verified project mapping. Check model readiness when
+verification needs the live model, for example at a source position.
+HelpSearchServer / `1c-docs-mcp` is excluded from this workflow.
 
 Check the installed tool schema/guide before using the parameter examples below.
 For member discovery use a narrow concise inventory first; when the question
 already identifies the member, skip that inventory. For exact API contracts,
 call EDT `get_platform_documentation` with
-`projectName` and `responseFormat="detailed"`. Narrow by `memberName` and
-`memberType` when the question concerns one member; use `category="builtin"`
-for a global function. Language keywords are not global functions: use only an
+`responseFormat="detailed"` where supported. For types, pass `projectName` for
+version scope and use `memberName` and `memberType` for one member.
+For global functions use `category="builtin"` and the function name in
+`typeName`. Some versions ignore `projectName` for built-ins and use the first
+loaded project or latest platform. If project applicability matters and the
+lookup does not prove it, verify at an appropriate source position or report the
+gap. For language keywords use an
 applicable read interface exposed by the current EDT tool guide for them. An
 unsupported parameter requires the documented equivalent or a reported gap,
 not repeated speculative calls.
@@ -52,8 +56,7 @@ implementation and acceptance of that route remain separate from this exclusion.
 BSP is a library, not the built-in platform. Use the profile's bounded
 `code-index` route for installed definitions and real usages; EDT supplies missing
 live-project facts. Enabled knowledge cards may help locate a candidate when
-their provenance and version are known. Apply the profile's required knowledge
-gate from `$1c-routing` before dependent work, including all workflow in KORA.
+their provenance and version are known.
 An unresolved installed-version or contract mismatch remains a reported gap.
 If code-index is disabled or unavailable, do not install/enable it implicitly or
 replace broad indexed discovery with EDT. Request only a necessary live fact

@@ -396,6 +396,17 @@ try {
   recordOwnership(profile, "idle", "fixture-version", "manager-session-1");
   assert.equal(ownRecording(profile, "manager-session-1"), null);
   assert.deepEqual(parseEnvironment(wire.environment), { runtimeVersion: "1.2.043.45", mcpVersion: "1.31", platformVersion: "8.5.1.1423", vanessaExt: true, managerInfobase: { type: "server", server: "localhost", database: "ui-demo" } });
+  const environmentWithVanessaExt = value => wire.response(wire.environment.content[0].text.replace(
+    "Включено использование внешней компоненты VanessaExt: Да",
+    `Включено использование внешней компоненты VanessaExt: ${value}`
+  ));
+  for (const [value, enabled] of [
+    ["Да", true], ["Истина", true], ["Yes", true], ["True", true],
+    ["Нет", false], ["Ложь", false], ["No", false], ["False", false]
+  ]) {
+    assert.equal(parseEnvironment(environmentWithVanessaExt(value))?.vanessaExt, enabled, value);
+  }
+  assert.equal(parseEnvironment(environmentWithVanessaExt("Неизвестно")), null);
   assert.deepEqual(parseEnvironment(wire.response(wire.environment.content[0].text.replace("Это Vanessa Automation Single", "Это обычная Vanessa Automation"))), parseEnvironment(wire.environment));
   assert.equal(parseEnvironment(wire.response(wire.environment.content[0].text.replace("Это Vanessa Automation Single", "Это Vanessa Automation Single\n- Это обычная Vanessa Automation"))), null);
   assert.deepEqual(parseState(wire.state), { connected: false, running: false, recording: false });

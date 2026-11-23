@@ -218,6 +218,11 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
       const client = new McpClient([node, ...args], temp, env, 20);
       client.roots = [];
       try {
+        if (name === "1c-ai-settings") {
+          await assert.rejects(client.request("server/discover", {
+            _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
+          }), { code: -32601 });
+        }
         const initialized = await client.initialize();
         assert.ok(initialized.serverInfo);
         assert.equal(name, name.toLowerCase());
@@ -231,9 +236,6 @@ for (const name of ['spawn','spawnSync','exec','execSync','execFile','execFileSy
           assert.deepEqual(app._meta["openai/ui"].entrypoints, [{ type: "global" }]);
           assert.equal(initialized.capabilities.extensions?.["openai/settings"], undefined);
           assert.equal(initialized.capabilities.experimental?.["openai/settings"], undefined);
-          const discovery = await client.request("server/discover");
-          assert.equal(discovery._meta["io.modelcontextprotocol/serverInfo"].title, name);
-          assert.equal(discovery.capabilities.extensions?.["openai/settings"], undefined);
           assert.equal(tools.some(tool => ["settings.native_read", "settings.manage"].includes(tool.name)), false);
           assert.equal((await client.call(app.name, {})).structuredContent.navigation, "profiles");
           assert.deepEqual(tools.find(tool => tool.name === "settings.profile")._meta["openai/ui"].entrypoints, [{ type: "thread" }]);

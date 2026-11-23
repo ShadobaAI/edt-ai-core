@@ -76,7 +76,7 @@ dialog{color:var(--text);background:var(--bg);border:1px solid var(--line);borde
 </nav>
 <div id="viewOnlyHint" class="notice-box view-only" hidden>Режим просмотра. Для редактирования откройте этот проект в Codex.</div>
 <section id="profilePanel" role="tabpanel" aria-labelledby="checkTab">
-<div id="connectionSettingsHolder" hidden><div id="connectionSettings"><div class="component-layout external-layout"><section id="connectionTransportPanel" class="component-panel"><div class="component-panel-head"><h3>Подключение MCP</h3><div class="scope-toolbar"><div class="segmented" role="group" aria-label="Область подключений" aria-describedby="connectionDestination connectionScopeHint"><button id="connectionSharedButton" aria-pressed="false">Общий · Git</button><button id="connectionLocalButton" aria-pressed="true">Локальный</button></div><select id="connectionScope" hidden aria-label="Область подключений"><option value="project_local">Локальные настройки проекта</option><option value="profile">Профиль проекта</option></select></div></div><p id="connectionDestination" class="path"></p><p id="connectionScopeHint" class="muted" role="status"></p><details class="scope-help"><summary>Чем отличаются области?</summary><p><strong>Общий · Git</strong> — настройки команды в <code>.ai/project.yaml</code>.</p><p><strong>Локальный</strong> — переопределения в <code>.ai/project.local.yaml</code>, для всех экземпляров этого проекта; файл не передаётся через Git.</p><p>Локальные настройки имеют приоритет над общими. Действующее значение из другой области показано серым. Нажмите на поле, измените значение и сохраните его в выбранную область.</p><p>Внешний файл подключений и переменные окружения могут переопределять значения проекта.</p></details>
+<div id="connectionSettingsHolder" hidden><div id="connectionSettings"><div class="component-layout external-layout"><section id="connectionTransportPanel" class="component-panel"><div class="component-panel-head"><h3>Подключение MCP</h3><div class="scope-toolbar"><div class="segmented" role="group" aria-label="Область подключений" aria-describedby="connectionDestination connectionScopeHint"><button id="connectionSharedButton" aria-pressed="false">Общий · Git</button><button id="connectionLocalButton" aria-pressed="true">Локальный</button></div><select id="connectionScope" hidden aria-label="Область подключений"><option value="project_local">Локальные настройки проекта</option><option value="profile">Профиль проекта</option></select></div></div><p id="connectionDestination" class="path"></p><p id="connectionScopeHint" class="muted" role="status"></p><details class="scope-help"><summary>Чем отличаются области?</summary><p><strong>Общий · Git</strong> — настройки команды в <code>.ai/project.yaml</code>.</p><p><strong>Локальный</strong> — переопределения в <code>.ai/project.local.yaml</code>, для всех экземпляров этого проекта; файл не передаётся через Git.</p><p>Локальные настройки имеют приоритет над общими. Действующее значение из другой области показано серым. Измените поле и сохраните его в выбранную область. Обнаруженный адрес EDT можно сохранить в выбранную область без изменения.</p><p>Внешний файл подключений и переменные окружения могут переопределять значения проекта.</p></details>
 <div class="connection-field" id="edtField"><label class="field" for="edtUrl">EDT<small>Проект и платформа 1С</small></label><input id="edtUrl" type="text" placeholder="URL сервера EDT MCP" autocomplete="off" aria-describedby="edtSource"><div id="edtSource" class="source-line"></div><div id="edtPortHint" class="source-line" role="status" hidden><span id="edtPortText"></span> <button id="useEdtPortButton" class="text-button">Обновить порт</button></div></div>
 <div class="connection-field" id="v8stdField"><label class="field" for="v8stdUrl">v8std<small>Стандарты разработки</small></label><input id="v8stdUrl" type="text" placeholder="URL сервера v8std MCP" autocomplete="off" aria-describedby="v8stdConsent v8stdSource"><div id="v8stdConsent" class="source-line">Подключение разрешает операции сервера и передачу ему кода и контекста задачи.</div><div id="v8stdSource" class="source-line"></div></div>
 <div class="connection-field" id="openvikingField"><label class="field" for="openvikingUrl">OpenViking<small>Необязательный сервер знаний</small></label><input id="openvikingUrl" type="text" placeholder="URL внешнего сервера MCP" autocomplete="off" aria-describedby="openvikingSource"><div id="openvikingSource" class="source-line"></div><div id="openvikingUsage"><label class="replace source-line" for="openvikingEnabled"><input id="openvikingEnabled" type="checkbox" aria-describedby="openvikingEnabledSource"><span>Использовать OpenViking</span></label><div id="openvikingEnabledSource" class="source-line"></div></div></div>
@@ -107,10 +107,10 @@ dialog{color:var(--text);background:var(--bg);border:1px solid var(--line);borde
 <section id="editorPanel" role="tabpanel" aria-labelledby="editorTab" hidden>
 <div id="editorControlsHolder"><div id="editorControls"><div class="editor-segments"><div id="editorTransferActions" class="catalog-tools" role="group" aria-label="Перенос профилей"><button id="openImportButton">Импорт</button><button id="openExportButton"><svg class="icon" aria-hidden="true"><use href="#i-down"/></svg>Экспорт YAML</button></div></div>
 <div hidden><select id="editorDocument" aria-label="Область профиля"><option value="project_local">Локальные настройки проекта</option><option value="profile" selected>Профиль проекта</option></select><label for="editorMode">Вид</label><select id="editorMode"><option value="tree">Поля</option><option value="text">YAML</option></select></div>
-<div class="editor-shell"><div class="editor-head"><div class="editor-identity"><strong id="editorTitle">Общий профиль проекта</strong><div id="editorDestination" class="path"></div></div><div class="segmented" role="group" aria-label="Область профиля"><button id="editorSharedButton" aria-pressed="true">Общий · Git</button><button id="editorLocalButton" aria-pressed="false">Локальный</button></div><div class="editor-search"><input id="editorSearch" type="text" placeholder="Поиск по настройкам" aria-label="Поиск по настройкам" aria-controls="jsonTree settingsText" aria-describedby="editorSearchStatus" autocomplete="off" spellcheck="false" title="Enter — следующее совпадение; Shift+Enter — предыдущее; Escape — очистить поиск"></div><div class="editor-view-controls"><div class="segmented" role="group" aria-label="Режим редактора"><button id="editorFieldsButton" aria-pressed="true">Поля</button><button id="editorYamlButton" aria-pressed="false">YAML</button></div></div></div><div class="editor-body"><p id="editorOriginNote" class="editor-origin-note">Редактируется только выбранный файл. Источники ниже относятся к сохранённым значениям. Удаление локального поля возвращает наследование.</p><p id="editorSearchStatus" class="muted editor-search-status" role="status" aria-live="polite" hidden></p><div id="jsonTree" class="json-tree" aria-label="Поля настроек" hidden></div><textarea id="settingsText" wrap="off" spellcheck="false" aria-label="Редактор настроек YAML" placeholder="Загрузите текущий документ для редактирования"></textarea><p id="editorValidation" class="editor-validation" role="status" aria-live="polite"></p></div><div class="editor-footer"><span id="editorDraftStatus" class="editor-draft">Без изменений</span><div class="catalog-tools"><button id="editSettingsButton">Перечитать документ</button><button id="editorDiscardButton">Отменить изменения</button><button id="reviewEditButton" class="primary" title="Проверить YAML и черновик перед сохранением" aria-label="Проверить изменения YAML перед сохранением"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>Проверить изменения</button></div></div><div id="editorReview"><div class="review-area" id="preview" hidden><h2>Проверенные изменения</h2><div class="row"><strong>Профиль</strong><span id="previewProfile"></span></div><div id="previewRoot" class="path"></div><ul id="repositories"></ul><div id="importEffects" class="muted"></div><div id="previewTextDiff"></div>
+<div class="editor-shell"><div class="editor-head"><div class="editor-identity"><strong id="editorTitle">Общий профиль проекта</strong><div id="editorDestination" class="path"></div></div><div class="segmented" role="group" aria-label="Область профиля"><button id="editorSharedButton" aria-pressed="true">Общий · Git</button><button id="editorLocalButton" aria-pressed="false">Локальный</button></div><div class="editor-search"><input id="editorSearch" type="text" placeholder="Поиск по настройкам" aria-label="Поиск по настройкам" aria-controls="jsonTree settingsText" aria-describedby="editorSearchStatus" autocomplete="off" spellcheck="false" title="Enter — следующее совпадение; Shift+Enter — предыдущее; Escape — очистить поиск"></div><div class="editor-view-controls"><div class="segmented" role="group" aria-label="Режим редактора"><button id="editorFieldsButton" aria-pressed="true">Поля</button><button id="editorYamlButton" aria-pressed="false">YAML</button></div></div></div><div class="editor-body"><p id="editorOriginNote" class="editor-origin-note">Редактируется только выбранный файл. Источники ниже относятся к сохранённым значениям. Удаление локального поля возвращает наследование.</p><p id="editorSearchStatus" class="muted editor-search-status" role="status" aria-live="polite" hidden></p><div id="jsonTree" class="json-tree" aria-label="Поля настроек" hidden></div><textarea id="settingsText" wrap="off" spellcheck="false" aria-label="Редактор настроек YAML" placeholder="Загрузите текущий документ для редактирования"></textarea><p id="editorValidation" class="editor-validation" role="status" aria-live="polite"></p></div><div class="editor-footer"><span id="editorDraftStatus" class="editor-draft">Без изменений</span><div class="catalog-tools"><button id="editSettingsButton">Перечитать документ</button><button id="editorDiscardButton">Отменить изменения</button><button id="reviewEditButton" title="Проверить настройки и посмотреть изменения без записи">Посмотреть изменения</button><button id="applyButton" class="primary" title="Сохранить изменения (Ctrl+S / ⌘S)"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button></div></div><div id="editorReview"><div class="review-area" id="preview" hidden><h2>Проверенные изменения</h2><div class="row"><strong>Профиль</strong><span id="previewProfile"></span></div><div id="previewRoot" class="path"></div><ul id="repositories"></ul><div id="importEffects" class="muted"></div><div id="previewTextDiff"></div>
 <div class="row"><span>EDT</span><span id="edtStatus" class="muted"></span></div><div class="row"><span>v8std</span><span id="v8Status" class="muted"></span></div>
 <div class="row"><span>Транспорт OpenViking</span><span id="openvikingStatus" class="muted"></span></div>
-<label class="replace" id="replaceLabel" hidden><input id="replace" type="checkbox"><span>Заменить существующий профиль. Резервная копия будет сохранена.</span></label><div class="actions"><button id="applyButton" class="primary"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>Сохранить</button></div></div></div></div></div></div></section>
+</div></div></div></div></div></section>
 <section id="checkPanel" role="tabpanel" aria-labelledby="checkTab" hidden>
 <div class="catalog-toolbar"><div class="catalog-counts" role="group" aria-label="Сводка компонентов"><span class="catalog-count"><span>Всего</span><strong id="countAll">0</strong></span><span class="catalog-count ready"><span>Готовы</span><strong id="countReady">0</strong></span><span class="catalog-count issue"><span>Требуют внимания</span><strong id="countIssues">0</strong></span><span class="catalog-count"><span>Отключены</span><strong id="countDisabled">0</strong></span><span id="countCheckingGroup" class="catalog-count" hidden><span>Обновляются</span><strong id="countChecking">0</strong></span><span id="countStaleGroup" class="catalog-count issue" hidden><span>Устарели</span><strong id="countStale">0</strong></span></div><div class="catalog-tools" role="group" aria-label="Фильтр компонентов"><button id="componentsAll" aria-pressed="true">Все</button><button id="componentsIssues" aria-pressed="false">Требуют внимания</button></div></div><div id="readinessPanel" class="panel" hidden><details id="readinessDetails"><summary id="readinessTitle">Полная проверка окружения не выполнялась</summary><div class="actions"><button id="readinessButton">Подготовить и проверить</button></div><p>Подготовка может скачать компоненты и запустить включённые сервисы. Состояние обновляется каждую минуту или кнопкой в шапке.</p><p id="readinessDetail">Одна проверка всех подключений и компонентов для выбранного проекта.</p><div id="readinessChecks" hidden><ul id="readinessItems"></ul><p class="muted">Проверяются подключения, готовность EDT-проектов, индекс, политика и файлы навыков/защиты. Работу защиты при вызове инструментов в Codex эта проверка не подтверждает.</p></div></details></div><p id="staleChecksNotice" class="stale-notice" role="status" hidden></p><div id="componentCatalog"></div>
 <div id="managedControlsHolder" hidden><div id="managedControls">
@@ -157,7 +157,7 @@ dialog{color:var(--text);background:var(--bg);border:1px solid var(--line);borde
 let seq=0,hostOrigin="*",connected=false;
 const waiting=new Map(),$=id=>document.getElementById(id),status=$("status");
 const standalone=window.parent===window;
-let initialData=null,lastPreview=null,fileText="",editBaseRevision=null,editLayerScope=null,editorLayerPath=null,editorDocument="profile",pendingEditorSwitch=null,editorYaml=false,editorRawOriginal="",editorLineEnding="\n",checkTimer=null,activeOperation=null,inputRevision=0,polling=false,currentData=null,lastHeight=0,resizeTimer=null,containerDimensions={},initializing=true,entryProjectRoot=null,interacted=false,busyActive=false,diagnosticsBusy=false;
+let initialData=null,lastPreview=null,editBaseRevision=null,editLayerScope=null,editorLayerPath=null,editorDocument="profile",pendingEditorSwitch=null,editorYaml=false,editorRawOriginal="",editorLineEnding="\n",checkTimer=null,activeOperation=null,inputRevision=0,polling=false,currentData=null,lastHeight=0,resizeTimer=null,containerDimensions={},initializing=true,entryProjectRoot=null,interacted=false,busyActive=false,diagnosticsBusy=false;
 $("editorDocument").value=editorDocument;
 const dirtyFields=new Set(),pendingUnsets=new Set();let statusPolling=false,disposed=false,historySignature="",viewRevision=0,snapshotSequence=0,editorOriginal="",navigationMode="project",activeMode="profile",diagnosticsLoading=false,diagnosticsData=null,journalSignature="";const expandedLogs=new Set();let profilesOpen=false;
 let journalTimer=null,journalFollowing=true,journalFollowEnabled=true,journalUnread=0,journalLastKeys=new Set();
@@ -217,7 +217,7 @@ function defaultSettingsScopes(current){
 function defaultEditorScope(current){
   if(current?.profile?.status!=="loaded")return;
   const key=scopeContext(current,["editorDocument",testingComponent]);
-  if(defaultScopeContexts.get("editorDocument")===key||editorChanged()||lastPreview)return;
+  if(defaultScopeContexts.get("editorDocument")===key||editorChanged())return;
   const paths=current.localOverridePaths||Object.keys(current.layerValues?.project_local||{}).map(field=>[field]);
   const local=paths.some(path=>!testingComponent||path[0]==="testing"&&[testingComponent,testingComponent+"_config","commands"].includes(path[1]));
   const next=local?"project_local":"profile";defaultScopeContexts.set("editorDocument",key);
@@ -381,7 +381,7 @@ function show(mode){
   for(const key of modes)$(key+"Panel").hidden=key!==mode;
   const selected=["profile","check"].includes(mode)?"check":mode==="editor"?"editor":"support";
   for(const key of tabs){$(key+"Tab").setAttribute("aria-selected",String(key===selected));$(key+"Tab").tabIndex=key===selected?0:-1;}
-  $("preview").hidden=!lastPreview||mode!=="editor";
+  $("preview").hidden=!lastPreview?.showChanges||mode!=="editor";
   if(mode==="editor"&&!$("settingsText").value&&currentData?.values?.projectRoot)loadEditor();
   if(transferRequested&&connected&&currentData?.values?.projectRoot&&!currentData?.viewOnly)openTransfer(transferMode,mode==="editor"?$(transferMode==="export"?"openExportButton":"openImportButton"):$("openMissingTransfer"));
   resize();
@@ -739,14 +739,14 @@ function renderVanessaProfile(focusPath){
 function resetVanessaDraft(){if(!vanessaDraft)return;vanessaDraft=JSON.parse(vanessaOriginal);renderVanessaProfile(["id"]);$("vanessaProfileStatus").textContent="Изменения профиля отменены.";}
 $("vanessaProfileLoad").onclick=()=>busy("Открываем профиль Vanessa…",async()=>{
   if(vanessaDirty())throw new Error("Сохраните или отмените изменения профиля Vanessa.");
-  if(editorChanged()||lastPreview)throw new Error("Сохраните привязку Vanessa в профиле проекта перед открытием runtime-профиля.");
+  if(editorChanged())throw new Error("Сохраните привязку Vanessa в профиле проекта перед открытием runtime-профиля.");
   const root=currentData?.values?.projectRoot,instance=currentData?.instance,data=await tool("settings.vanessa_read");
   if(root!==currentData?.values?.projectRoot||instance!==currentData?.instance)throw new Error("Проект изменился. Откройте профиль заново.");
   vanessaDraft=data.profile;vanessaOriginal=JSON.stringify(data.profile);vanessaRevision=data.revision;vanessaRoot=root;vanessaInstance=instance;$("vanessaProfilePath").textContent=data.path;$("vanessaProfileStatus").textContent=data.exists?"Профиль открыт.":"Новый профиль: заполните обязательные поля и сохраните его.";renderVanessaProfile(["id"]);
 }).catch(()=>{});
 $("vanessaProfileDiscard").onclick=()=>{resetVanessaDraft();syncControls();};
 $("vanessaProfileSave").onclick=()=>busy("Сохраняем профиль Vanessa…",async()=>{
-  if(!vanessaDraft||!vanessaSameContext()||editorChanged()||lastPreview)throw new Error("Сначала сохраните привязку проекта и откройте профиль Vanessa заново.");
+  if(!vanessaDraft||!vanessaSameContext()||editorChanged())throw new Error("Сначала сохраните привязку проекта и откройте профиль Vanessa заново.");
   const result=await tool("settings.vanessa_save",{profile:vanessaDraft,expectedRevision:vanessaRevision});vanessaRevision=result.revision;vanessaOriginal=JSON.stringify(vanessaDraft);$("vanessaProfileStatus").textContent="Профиль сохранён. Проверьте менеджер.";await refresh();notice("Профиль Vanessa сохранён.");
 }).catch(()=>{});
 $("vanessaStartButton").onclick=()=>busy("Подготавливаем запуск менеджера…",async()=>{
@@ -894,6 +894,13 @@ function fieldSource(current,field){
   if(["edtUrl","v8stdUrl","openvikingUrl"].includes(field))return current?.connectionSources?.[field.slice(0,-3)]||"unconfigured";
   return (field.startsWith("openviking")?current?.valueSources?.[field]:current?.managedValueSources?.[field])||"settings";
 }
+function canSaveDetectedEdt(current=currentData){
+  const input=$("edtUrl"),scope=$("connectionScope").value,layer=current?.layerValues?.[scope];
+  return dialogComponent==="edt"&&["profile","project_local"].includes(scope)&&current?.connectionSources?.edt==="edt_workspace"&&
+    Boolean(layer)&&!Object.hasOwn(layer,"edtUrl")&&!current?.viewOnly&&!input.readOnly&&!current?.schema?.properties?.edtUrl?.readOnly&&
+    !dirtyFields.has("edtUrl")&&!pendingUnsets.has("edtUrl")&&Boolean(current?.values?.edtUrl?.trim())&&
+    !(document.activeElement===input&&!input.value.trim());
+}
 function fieldSourceText(current,field){
   if(pendingUnsets.has(field)&&dirtyFields.has(field))return "Переопределение будет удалено после сохранения. Действующее значение вычислит плагин.";
   const scope=fieldScope(field),layer=current?.layerValues?.[scope],source=fieldSource(current,field);
@@ -901,7 +908,7 @@ function fieldSourceText(current,field){
   const shown=dirtyFields.has(field)?"В поле: несохранённое изменение для "+scopeGenitive[scope]:inheritedField(current,field)?"":layer?Object.hasOwn(layer,field)?"В поле: значение из "+scopeGenitive[scope]:"В "+scopeNames[scope]+" значение не задано; в поле — действующее":"В поле: действующее значение";
   const value=checkboxField(field)?(current?.values?.[field]?"включено":"выключено"):savedField(current?.values,field)||"не задано";
   const locked=current?.schema?.properties?.[field]?.readOnly&&(source.startsWith("environment:")||source==="connections_file");
-  return (shown?shown+" · ":"")+"Действует: "+value+" — "+sourceLabel(source)+(sourceRank(source)>sourceRank(scope)?" (приоритет выше выбранной области)":"")+"."+(locked?" Измените действующее значение в его источнике.":"");
+  return (shown?shown+" · ":"")+"Действует: "+value+" — "+sourceLabel(source)+(sourceRank(source)>sourceRank(scope)?" (приоритет выше выбранной области)":"")+"."+(locked?" Измените действующее значение в его источнике.":"")+(field==="edtUrl"&&canSaveDetectedEdt(current)?" «Сохранить» запишет обнаруженный адрес в "+(scope==="profile"?"общий профиль":"локальные настройки проекта")+" вместо автоопределения.":"");
 }
 function renderSettingSources(current,fields=[...connectionFields,...componentFields,"bslLsJava"],{preserveInput=false,preserveInputs}={}){
   if(!current)return;
@@ -1117,7 +1124,7 @@ function syncControls(){
   for(const id of ["openvikingRecordLoad","openvikingRecordSave","openvikingRecordDiscard",...Object.values(ovRecordFields)])$(id).disabled||=!loaded||blocked;
   $("probeButton").disabled||=ovRecordDirty;
   $("openvikingRecordDiscard").disabled||=!ovRecordDirty;
-  $("saveButton").disabled||=!connectionFields.some(field=>dirtyFields.has(field)&&!$(field).readOnly);
+  $("saveButton").disabled||=!connectionFields.some(field=>dirtyFields.has(field)&&!$(field).readOnly)&&!canSaveDetectedEdt();
   $("saveComponentsButton").disabled||=!componentFields.some(field=>dirtyFields.has(field)&&!currentData?.schema?.properties?.[field]?.readOnly);
   for(const [button,id]of [["resetComponentsButton","componentScope"],["resetConnectionButton","connectionScope"]]){
     const fields=scopedFields(id),layer=currentData?.layerValues?.[$(id).value]||{};
@@ -1138,13 +1145,13 @@ function syncControls(){
   for(const id of ["readinessButton","rebuildIndexButton","rebuildAllIndexesButton","restartIndexButton"])$(id).disabled||=Boolean(hasProfileDraft());
   $("editorTab").disabled||=!loaded&&currentData?.profile?.status!=="invalid";
   for(const id of ["createButton","repairButton","applyButton","reviewEditButton","openMissingTransfer"])$(id).disabled||=blocked||!currentData?.values?.projectRoot;
-  $("applyButton").disabled||=!lastPreview||Boolean(lastPreview?.replacesProfile&&!$("replace").checked);
+  $("applyButton").disabled||=!editBaseRevision||!editLayerScope||!editorChanged()||Boolean(treeErrors.size)||Boolean(pendingFieldInputs.size);
   $("editSettingsButton").disabled||=!currentData?.values?.projectRoot||draftRoot||editorChanged();$("settingsText").disabled||=!currentData?.values?.projectRoot||draftRoot;$("settingsText").readOnly=Boolean(currentData?.viewOnly);
   $("editorDocument").disabled||=!currentData?.values?.projectRoot||draftRoot||(currentData?.profile?.status!=="loaded"&&!currentData?.configurationError);
   for(const input of jsonInputs){input.disabled=Boolean(fieldsPatchPending&&input.tagName==="SELECT"||$("settingsText").disabled&&!fieldsPatchPending||$("settingsText").readOnly||(editorYaml&&treeErrors.size&&!treeErrors.has(input)));input.readOnly=$("settingsText").readOnly;}
   $("editorMode").disabled||=fieldsPatchPending||!$("settingsText").value||draftRoot;
   $("editorSearch").disabled||=!$("settingsText").value||draftRoot;$("editorTransferActions").hidden=Boolean(testingComponent);
-  $("reviewEditButton").disabled||=Boolean(treeErrors.size);
+  $("reviewEditButton").disabled||=!editBaseRevision||!editLayerScope||Boolean(treeErrors.size)||Boolean(pendingFieldInputs.size);
   const portSuggestion=currentData?.edtPortSuggestion,portScopeBlocked=$("connectionScope").value!=="project_local"&&connectionScopeHasDraft();
   $("edtPortHint").hidden=!portSuggestion||currentData?.viewOnly||!loaded;
   $("edtPortText").textContent=portSuggestion?"В настройках workspace EDT порт "+portSuggestion.detectedPort+", в URL — "+portSuggestion.configuredPort+". Проверьте, что это нужный экземпляр EDT. Новый адрес будет сохранён в локальные настройки, и форма переключится на них."+(portScopeBlocked?" Сохраните или отмените черновик подключения перед обновлением порта.":""):"";
@@ -1156,7 +1163,7 @@ function syncControls(){
   $("editorFieldsButton").setAttribute("aria-pressed",String($("editorMode").value==="tree"));$("editorYamlButton").setAttribute("aria-pressed",String($("editorMode").value==="text"));
   $("editorTitle").textContent=editorDocument==="profile"?"Общий профиль проекта":"Локальные переопределения";
   $("editorDraftStatus").textContent=editorChanged()?"Есть изменения":"Без изменений";$("editorDraftStatus").classList.toggle("dirty",Boolean(editorChanged()));
-  $("editorDiscardButton").disabled=!editorChanged()||fieldsPatchPending;for(const id of ["openImportButton","openExportButton"])$(id).disabled||=!loaded||blocked;
+  $("editorDiscardButton").disabled||=!editorChanged()||fieldsPatchPending;for(const id of ["openImportButton","openExportButton"])$(id).disabled||=!loaded||blocked;
   $("unsavedHint").hidden=!pendingScope&&!hasProfileDraft()&&!dirtyFields.size;
   if(pendingScope){for(const id of ["saveButton","saveComponentsButton","resetComponentsButton","resetConnectionButton","saveJavaButton","renameSaveButton","pickJavaButton","checkJavaButton","createButton","repairButton","reviewEditButton","applyButton","pickDirectoryButton","selectProfileButton","probeButton","readinessButton","installUpdateButton","rebuildIndexButton","rebuildAllIndexesButton","restartIndexButton","openvikingRecordLoad","openvikingRecordSave","openvikingRecordDiscard"])$(id).disabled=true;$("discardDraftButton").disabled=false;}
   if(fieldsPatchPending)for(const id of ["settingsText","editorDocument","reviewEditButton","applyButton","editSettingsButton","discardDraftButton"])$(id).disabled=true;
@@ -1175,7 +1182,7 @@ async function busy(label,action,scope=null){
   finally{busyActive=false;syncControls();runComponentRefresh();resize();}
 }
 function invalidate(){inputRevision++;lastPreview=null;$("preview").hidden=true;}
-function editorChanged(){return fieldsPatchPending||Boolean(pendingFieldInputs.size)||Boolean(treeErrors.size)||$("settingsText").value!==editorOriginal;}
+function editorChanged(){return fieldsPatchPending||Boolean(pendingFieldInputs.size)||Boolean(treeErrors.size)||$("settingsText").value!==editorOriginal||Boolean(lastPreview?.textChanged||lastPreview?.gitignoreChange);}
 function yamlLineEnding(text){const endings=new Set(text.match(/\r\n|\r|\n/g)||[]);return endings.size>1?null:endings.values().next().value||"\n";}
 function editorText(){
   const text=$("settingsText").value;
@@ -1201,7 +1208,7 @@ function editorFeedback(message,error=false){$("editorValidation").textContent=e
 function validateJsonText(){
   const text=$("settingsText").value.trim();
   if(!text){editorFeedback("");return;}
-  editorFeedback("YAML и схема проверяются по кнопке «Проверить изменения».");
+  editorFeedback("При сохранении YAML и настройки проверяются автоматически.");
 }
 function clearEditorSearch(){ $("editorSearch").value="";applyEditorSearch(); }
 function applyEditorSearch(direction=0,navigate=false){
@@ -1284,7 +1291,7 @@ const fieldLabels={schema_version:"Версия схемы",profile_id:"Код �
 function configurationValue(path){let value=currentData?.configurationValues;for(const key of path){if(value===null||typeof value!=="object"||!Object.hasOwn(value,key))return {present:false};value=value[key];}return {present:value!==undefined,value};}
 function renderFieldOrigins(){
   const external=[...new Set(Object.values(currentData?.configurationSources||{}).filter(source=>source==="connections_file"||source.startsWith("environment:")))];
-  $("editorOriginNote").textContent="Редактируется только выбранный файл. Источники относятся к сохранённым значениям; черновик применяется после проверки. Удаление локального поля возвращает наследование."+(external.length?"\nВнешние переопределения: "+external.map(sourceLabel).join(", ")+". Параметры проекта могут сохраняться под ними.":"");
+  $("editorOriginNote").textContent="Редактируется только выбранный файл. Источники относятся к сохранённым значениям. «Сохранить» проверяет настройки и записывает блочный YAML. Итоговый текст можно увидеть по кнопке «Посмотреть изменения». Удаление локального поля возвращает наследование."+(external.length?"\nВнешние переопределения: "+external.map(sourceLabel).join(", ")+". Параметры проекта могут сохраняться под ними.":"");
   for(const entry of jsonRows.values()){
     if(!entry.origin)continue;
     const effective=configurationValue(entry.path),source=currentData?.configurationSources?.[JSON.stringify(entry.path)];
@@ -1483,12 +1490,13 @@ function renderYaxunitChoices(choices){
 function changeEditorMode(next){if(treeErrors.size||pendingFieldInputs.size){$("editorMode").value="tree";editorFeedback("Завершите ввод или исправьте значение поля.",true);return;}$("editorMode").value=next;renderJsonEditor();syncControls();}
 $("editorMode").addEventListener("change",()=>changeEditorMode($("editorMode").value));
 $("editorFieldsButton").onclick=()=>changeEditorMode("tree");$("editorYamlButton").onclick=()=>changeEditorMode("text");
-function hasProfileDraft(includeTransfer=true){return vanessaDirty()||ovRecordDirty||[...dirtyFields].some(field=>field!=="projectRoot")||editorChanged()||lastPreview||renameDirty||(includeTransfer&&Boolean(transferSelection||$("transferPath").value.trim()));}
+function hasProfileDraft(includeTransfer=true){return vanessaDirty()||ovRecordDirty||[...dirtyFields].some(field=>field!=="projectRoot")||editorChanged()||renameDirty||(includeTransfer&&Boolean(transferSelection||$("transferPath").value.trim()));}
 for(const field of ["projectRoot","edtUrl","v8stdUrl","codeIndexEnabled","bslLsEnabled","bslLsJava",...openvikingFields])$(field).addEventListener(checkboxField(field)?"change":"input",()=>{interacted=true;pendingUnsets.delete(field);fieldChanged(field)?dirtyFields.add(field):dirtyFields.delete(field);rememberSettingsRevision();if(field==="projectRoot")invalidate();if(field==="bslLsJava")$("javaResult").textContent="";if(field!=="projectRoot"){renderSettingSources(currentData,[field],{preserveInput:true});renderDestinations();}syncControls();});
 for(const field of [...connectionFields,"bslLsJava"])if(!checkboxField(field)){
   const input=$(field);
-  input.addEventListener("focus",()=>{if(!input.readOnly&&inheritedField(currentData,field)&&!dirtyFields.has(field))input.value=savedField(currentData?.values,field);});
-  input.addEventListener("blur",()=>{if(inheritedField(currentData,field)&&!dirtyFields.has(field))input.value="";});
+  const refreshDetectedEdt=()=>{if(field==="edtUrl"){renderSettingSources(currentData,[field],{preserveInput:true});syncControls();}};
+  input.addEventListener("focus",()=>{if(!input.readOnly&&inheritedField(currentData,field)&&!dirtyFields.has(field))input.value=savedField(currentData?.values,field);refreshDetectedEdt();});
+  input.addEventListener("blur",()=>{if(inheritedField(currentData,field)&&!dirtyFields.has(field))input.value="";refreshDetectedEdt();});
 }
 for(const id of Object.values(ovRecordFields))$(id).addEventListener("input",()=>{ovRecordDirty=true;ovDraftVersion++;$("openvikingRecordStatus").textContent="Есть несохранённые изменения общей записи.";syncControls();});
 for(const id of ["openvikingUrl","openvikingConnectionId"])$(id).addEventListener("change",()=>{if(ovRecordDirty&&ovRecordKey!==ovKey())$("openvikingRecordStatus").textContent="Ключ изменился. Сначала откройте нужную запись; текущий черновик будет заменён.";else maybeLoadOvRecord();});
@@ -1513,7 +1521,7 @@ $("headerStatus").onclick=()=>{componentFilter="issues";show("check");renderComp
 $("resolveChatButton").onclick=()=>busy("Запрашиваем проект текущего чата…",async()=>{await rpc("ui/message",{role:"user",content:[{type:"text",text:"Открой настройки 1C AI Core для проекта этого чата. Используй каталог текущего чата, не выбирай другой профиль из истории."}]});notice("Запрос отправлен в текущий чат. Настройки откроются с каталогом проекта.");}).catch(()=>{});
 $("historySearch").addEventListener("input",()=>{interacted=true;if(currentData){renderHistory(currentData);syncControls();}});
 function discardEditorDraft(){pendingEditorSwitch=null;$("settingsText").value=editorOriginal;resetJsonEditor();invalidate();renderJsonEditor();syncControls();}
-$("discardDraftButton").onclick=()=>{if((editorChanged()||lastPreview)&&!pendingScope){discardEditorDraft();notice("Изменения текущего документа отменены.");return;}const deferred=pendingScope;pendingScope=null;dirtyFields.clear();if(ovRecordDirty)discardOvRecord();resetVanessaDraft();settingsDraftRevision=null;renameBaseRevision=null;renameDirty=false;$("renameArea").hidden=true;discardEditorDraft();transferSelection=null;$("transferPath").value="";$("transferFilename").textContent="";clearTransferReview();if(deferred){renderCurrent(deferred);show("profile");}else if(currentData)renderCurrent(currentData);notice("Несохранённые изменения отменены.");};
+$("discardDraftButton").onclick=()=>{if(editorChanged()&&!pendingScope){discardEditorDraft();notice("Изменения текущего документа отменены.");return;}const deferred=pendingScope;pendingScope=null;dirtyFields.clear();if(ovRecordDirty)discardOvRecord();resetVanessaDraft();settingsDraftRevision=null;renameBaseRevision=null;renameDirty=false;$("renameArea").hidden=true;discardEditorDraft();transferSelection=null;$("transferPath").value="";$("transferFilename").textContent="";clearTransferReview();if(deferred){renderCurrent(deferred);show("profile");}else if(currentData)renderCurrent(currentData);notice("Несохранённые изменения отменены.");};
 $("pickDirectoryButton").onclick=()=>{if(navigationMode!=="profiles")return;if(hasProfileDraft()){notice("Сохраните изменения или отмените их перед выбором другого профиля.",true);return;}return busy("Выберите папку в открывшемся окне…",async()=>{
   const operation=await tool("settings.pick_directory",{projectRoot:$("projectRoot").value.trim()});
   activeOperation=operation;await pollOperation(operation.id);
@@ -1529,7 +1537,6 @@ for(const [id,buttons]of Object.entries(scopeButtons)){
   $(id).addEventListener("change",()=>changeSettingsScope(id,$(id).value));
   for(const [scope,button]of Object.entries(buttons))$(button).onclick=()=>changeSettingsScope(id,scope);
 }
-$("replace").addEventListener("change",syncControls);
 $("renameButton").onclick=()=>{if(hasProfileDraft()){notice("Сохраните или отмените изменения перед переименованием.",true);return;}profilesOpen=true;syncProfileNavigation();renameBaseRevision=currentData?.settingsRevision||null;$("renameArea").hidden=false;$("renameButton").parentElement?.append($("renameArea"));$("projectIdInput").value=currentData?.profile?.projectId||"";syncControls();$("projectIdInput").focus();};
 $("projectIdInput").addEventListener("input",()=>{renameDirty=$("projectIdInput").value.trim()!==(currentData?.profile?.projectId||"");syncControls();});
 $("renameCancelButton").onclick=()=>{renameDirty=false;renameBaseRevision=null;$("renameArea").hidden=true;syncControls();$("renameButton").focus();};
@@ -1607,7 +1614,9 @@ $("createButton").onclick=()=>busy("Создаём профиль…",async()=>{
   notice(messages.join(" "));
 }).catch(()=>{});
 $("saveButton").onclick=()=>busy("Сохраняем подключения…",async()=>{
-  const patch=settingsPatch(connectionFields),fields=[...Object.keys(patch.set),...(patch.unset||[])],scope=$("connectionScope").value,path=currentData?.writePaths?.[scope];
+  const patch=settingsPatch(connectionFields),scope=$("connectionScope").value,path=currentData?.writePaths?.[scope];
+  if(!Object.keys(patch.set).length&&!patch.unset?.length&&canSaveDetectedEdt())patch.set.edtUrl=currentData.values.edtUrl;
+  const fields=[...Object.keys(patch.set),...(patch.unset||[])];
   if(!fields.length){notice("Изменений нет.");return;}
   const result=await tool("settings.update",{...patch,scope,...expectedSettingsRevision()});settingsSaved(result,fields);await refresh();notice(settingsSaveMessage(result,patch,scope,path));
 }).catch(()=>{});
@@ -1702,53 +1711,65 @@ $("versionPicker").addEventListener("focusout",event=>{if(event.relatedTarget&&!
 $("moreVersionsButton").onclick=()=>{versionLimit+=50;renderVersionOptions();};$("refreshVersionsButton").onclick=()=>loadVersions($("updateComponent").value,true);
 document.addEventListener("pointerdown",event=>{if(versionOpen&&!$("versionPicker").contains(event.target))closeVersionPicker(false);});
 $("updateComponent").addEventListener("change",()=>{closeVersionPicker(false);renderVersion();renderUpdates();if(connected&&activeMode==="check")loadVersions($("updateComponent").value);});
-$("reviewEditButton").onclick=()=>busy("Проверяем изменения…",async()=>{
+async function validateEditorDraft(){
   if(treeErrors.size||pendingFieldInputs.size)throw new Error("Завершите ввод или исправьте значение поля перед проверкой.");
-  fileText=editorText();if(!fileText.trim()||!editBaseRevision||!editLayerScope)throw new Error("Загрузите документ редактора заново.");
-  if(new Blob([fileText]).size>2*1024*1024)throw new Error("Файл превышает 2 МиБ.");
-  const revision=inputRevision,args={text:fileText,mode:"layer",baseRevision:editBaseRevision,layerScope:editLayerScope};
+  const text=editorText();if(!text.trim()||!editBaseRevision||!editLayerScope)throw new Error("Загрузите документ редактора заново.");
+  if(new Blob([text]).size>2*1024*1024)throw new Error("Файл превышает 2 МиБ.");
+  inputRevision++;if(lastPreview)lastPreview.showChanges=false;$("preview").hidden=true;
+  const revision=inputRevision,args={text,mode:"layer",baseRevision:editBaseRevision,layerScope:editLayerScope};
   if($("projectRoot").value.trim())args.projectRoot=$("projectRoot").value.trim();let preview;try{preview=await tool("settings.preview",args);}catch(error){markFieldErrors(error.message);throw error;}
-  if(revision!==inputRevision)throw new Error("Документ или папка изменились во время проверки. Проверьте их заново.");lastPreview={...preview,request:args};$("projectRoot").value=preview.projectRoot;
+  if(revision!==inputRevision)throw new Error("Документ или папка изменились во время проверки. Повторите действие.");
+  editorFeedback("Проверка пройдена.");return {preview,args};
+}
+$("reviewEditButton").onclick=()=>busy("Проверяем изменения…",async()=>{
+  const {preview,args}=await validateEditorDraft();lastPreview={...preview,request:args,showChanges:true};
   $("previewProfile").textContent=preview.projectId?[preview.projectId,preview.profileId].filter(Boolean).join(" · "):preview.profileId||"Настройки плагина";$("previewRoot").textContent=preview.projectRoot||"Папка проекта не выбрана";
   $("repositories").replaceChildren(...preview.repositories.map(repo=>{const item=document.createElement("li");item.textContent=repo.id+" · "+repo.path;return item;}));
   $("edtStatus").textContent=preview.connectionUrls?.edt||"Адрес не указан";$("v8Status").textContent=preview.connectionUrls?.v8std||"Адрес не указан";
   $("openvikingStatus").textContent=(preview.openviking?.enabled?"Включён: ":"Выключен: ")+(preview.openviking?.url||"адрес не указан")+" · "+(preview.openviking?.timeout_seconds??20)+" с · "+(preview.openviking?.max_response_bytes??2097152)+" байт";
   $("importEffects").textContent=(preview.layerPath?"Файл записи: "+preview.layerPath+". Изменения: "+JSON.stringify(preview.layerChanges||[])+(preview.layerChangesTruncated?" (показаны первые 100)":"")+". ":"")+describeProjectImport(preview.projectSpecific);
   $("previewTextDiff").replaceChildren();
-  if(preview.textChanged){const details=document.createElement("details"),summary=document.createElement("summary"),before=document.createElement("pre"),after=document.createElement("pre"),beforeLabel=document.createElement("strong"),afterLabel=document.createElement("strong");summary.textContent="Сравнить исходный и изменённый текст YAML";beforeLabel.textContent="До";afterLabel.textContent="После";before.textContent=editorRawOriginal;after.textContent=fileText;details.append(summary,beforeLabel,before,afterLabel,after);$("previewTextDiff").append(details);}
+  if(typeof preview.formattedText==="string"||preview.textChanged){
+    const details=document.createElement("details"),summary=document.createElement("summary"),after=document.createElement("pre");
+    summary.textContent=preview.textChanged?"Сравнить исходный и изменённый текст YAML":"Итоговый YAML";details.append(summary);
+    if(preview.textChanged){const beforeLabel=document.createElement("strong"),before=document.createElement("pre"),afterLabel=document.createElement("strong");beforeLabel.textContent="До";before.textContent=editorRawOriginal;afterLabel.textContent="После";details.append(beforeLabel,before,afterLabel);}
+    after.textContent=preview.formattedText??args.text;details.append(after);$("previewTextDiff").append(details);
+  }
   showIgnoreChange($("previewTextDiff"),preview.gitignoreChange);
   showGitWarning($("previewTextDiff"),preview.gitWarning);
-  $("replaceLabel").hidden=!preview.replacesProfile;$("replace").checked=false;$("preview").hidden=false;notice("Изменения проверены. Проверьте каталог и состав изменений перед сохранением.");
+  $("preview").hidden=false;notice("Изменения проверены. Для записи нажмите «Сохранить».");
 }).catch(()=>{});
 $("settingsText").addEventListener("input",()=>{schemaChoices.clear();pendingEditorSwitch=null;interacted=true;invalidate();validateJsonText();applyEditorSearch();syncControls();});
 
 $("editSettingsButton").onclick=()=>loadEditor();
-function resetEditorDocument(next){pendingEditorSwitch=null;editorDocument=next;$("editorDocument").value=next;$("settingsText").value="";editorOriginal="";editBaseRevision=null;editLayerScope=null;editorLayerPath=null;resetJsonEditor();}
+function resetEditorDocument(next){pendingEditorSwitch=null;editorDocument=next;$("editorDocument").value=next;$("settingsText").value="";editorOriginal="";editBaseRevision=null;editLayerScope=null;editorLayerPath=null;invalidate();resetJsonEditor();}
 function switchEditorDocument(next){resetEditorDocument(next);renderDestinations();return loadEditor();}
 let editorSwitchChoice=null;
-function changeEditorDocument(next){if(next===editorDocument){$("editorDocument").value=editorDocument;return;}if(editorChanged()||lastPreview){$("editorDocument").value=editorDocument;editorSwitchChoice=next;$("editorSwitchDialog").showModal();$("editorSwitchStay").focus();return;}switchEditorDocument(next);syncControls();}
+function changeEditorDocument(next){if(next===editorDocument){$("editorDocument").value=editorDocument;return;}if(editorChanged()){$("editorDocument").value=editorDocument;editorSwitchChoice=next;$("editorSwitchDialog").showModal();$("editorSwitchStay").focus();return;}switchEditorDocument(next);syncControls();}
 $("editorDocument").addEventListener("change",()=>changeEditorDocument($("editorDocument").value));
 $("editorSharedButton").onclick=()=>changeEditorDocument("profile");$("editorLocalButton").onclick=()=>changeEditorDocument("project_local");
 $("editorDiscardButton").onclick=()=>{discardEditorDraft();notice("Изменения текущего документа отменены.");};
 $("editorSwitchStay").onclick=()=>{$("editorSwitchDialog").close();};
 $("editorSwitchDiscard").onclick=()=>{const next=editorSwitchChoice;$("editorSwitchDialog").close();discardEditorDraft();if(next)switchEditorDocument(next);};
-$("editorSwitchSave").onclick=()=>{pendingEditorSwitch=editorSwitchChoice;$("editorSwitchDialog").close();$("reviewEditButton").onclick();};
+$("editorSwitchSave").onclick=()=>{pendingEditorSwitch=editorSwitchChoice;$("editorSwitchDialog").close();return saveEditor();};
 $("editorSwitchDialog").addEventListener("close",()=>{editorSwitchChoice=null;$(editorDocument==="profile"?"editorSharedButton":"editorLocalButton").focus();});
 async function readEditor(){
   if(editorChanged())throw new Error("Сохраните или отмените изменения перед загрузкой документа.");
-  if(lastPreview)throw new Error("Сохраните или отмените текущий черновик перед загрузкой документа.");
   const exported=currentData?.viewOnly?await tool("settings.document",{projectRoot:currentData.values.projectRoot,layerScope:editorDocument}):await tool("settings.edit",{layerScope:editorDocument,...(["profile","project_local"].includes(editorDocument)?{format:"yaml"}:{})});
   const text=exported.text;
   editorYaml=exported.format==="yaml";editorRawOriginal=text;editorLineEnding=yamlLineEnding(text);
-  $("settingsText").value=text;editorOriginal=$("settingsText").value;editBaseRevision=exported.baseRevision;editLayerScope=exported.layerScope||null;editorLayerPath=exported.path||null;renderDestinations();resetJsonEditor();renderJsonEditor();invalidate();notice(currentData?.viewOnly?"Документ открыт для просмотра.":"Документ загружен. После правок нажмите «Проверить изменения».");
+  $("settingsText").value=text;editorOriginal=$("settingsText").value;editBaseRevision=exported.baseRevision;editLayerScope=exported.layerScope||null;editorLayerPath=exported.path||null;renderDestinations();resetJsonEditor();renderJsonEditor();invalidate();notice(currentData?.viewOnly?"Документ открыт для просмотра.":"Документ загружен. После правок нажмите «Сохранить».");
 }
 function loadEditor(){return busy("Читаем настройки…",readEditor).catch(()=>{});}
-$("applyButton").onclick=()=>busy("Сохраняем настройки…",async()=>{
-  if(!lastPreview)throw new Error("Сначала проверьте файл.");if(lastPreview.replacesProfile&&!$("replace").checked)throw new Error("Подтвердите замену существующего профиля.");
-  const applied=await tool("settings.apply",{...lastPreview.request,revision:lastPreview.revision,replace:$("replace").checked});
+function saveEditor(){return busy("Сохраняем настройки…",async()=>{
+  const {preview,args}=await validateEditorDraft();
+  lastPreview={...preview,request:args};
+  const applied=await tool("settings.apply",{...args,revision:preview.revision,replace:true});
   const next=pendingEditorSwitch;pendingEditorSwitch=null;$("settingsText").value="";editorOriginal="";editBaseRevision=null;editLayerScope=null;resetJsonEditor();
   invalidate();await refresh();if(next){editorDocument=next;$("editorDocument").value=next;}await readEditor();if(!testingComponent)show("editor");notice("Настройки сохранены. "+(applied.sessionGuidance||"")+gitNotice(applied.summary?.gitWarning));
-}).catch(()=>{});
+}).catch(()=>{pendingEditorSwitch=null;});}
+$("applyButton").onclick=saveEditor;
+$("editorControls").addEventListener("keydown",event=>{if((event.ctrlKey||event.metaKey)&&!event.altKey&&(event.code==="KeyS"||event.key.toLowerCase()==="s")){event.preventDefault();if(!$("applyButton").disabled)saveEditor();}});
 function scheduleJournal(){
   if(journalTimer)clearTimeout(journalTimer);journalTimer=null;
   if(connected&&!disposed&&!document.hidden&&activeMode==="support")journalTimer=setTimeout(loadDiagnostics,2000);

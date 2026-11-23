@@ -5,7 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { fixture, environment, session, ROOT } from "./helpers.mjs";
-import { dump, load, parse } from "../scripts/common.mjs";
+import { canonical_yaml, dump, load, parse } from "../scripts/common.mjs";
 import { McpClient } from "../scripts/mcp_client.mjs";
 import { remember_profile } from "../scripts/profile_history.mjs";
 import { profile_state } from "../scripts/profile.mjs";
@@ -15,6 +15,9 @@ import { save_component_checks } from "../scripts/setup_readiness.mjs";
 
 const html = fs.readFileSync(new URL("../ui/settings.html", import.meta.url), "utf8");
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const compiledScript = new vm.Script(script, { filename: "ui/settings.html" });
+const controlMarkup = [...html.matchAll(/<(\w+)[^>]*\bid="([^"]+)"/g)];
+const selectDefaults = [...html.matchAll(/<select\b[^>]*\bid="([^"]+)"[^>]*>\s*<option value="([^"]+)"/g)];
 const componentName = card => card.children[0].children[0].children[0].textContent;
 const componentButton = card => card.children[0].children.at(-1);
 const headerState = (ui,name) => ui.elements.get("headerComponentStatuses").children.find(item=>item.textContent.startsWith(name+": "))?.textContent.slice(name.length+2);
@@ -82,8 +85,8 @@ function screen(handler, options = {}) {
     focus() { document.activeElement = this; }
     getBoundingClientRect() { return { height: options.height?.() ?? 500 }; }
   }
-  for (const match of html.matchAll(/<(\w+)[^>]*\bid="([^"]+)"/g)) { const element = new Element(match[1]); element.id = match[2]; elements.set(match[2], element); }
-  for(const match of html.matchAll(/<select\b[^>]*\bid="([^"]+)"[^>]*>\s*<option value="([^"]+)"/g))elements.get(match[1]).value=match[2];
+  for (const [, tag, id] of controlMarkup) { const element = new Element(tag); element.id = id; elements.set(id, element); }
+  for (const [, id, value] of selectDefaults) elements.get(id).value = value;
   const parent = { postMessage(request) {
     calls.push(request);
     if (!request.id) return;
@@ -121,7 +124,7 @@ function screen(handler, options = {}) {
     getComputedStyle: () => ({ paddingTop: "20px", paddingBottom: "20px" }),
     ResizeObserver: class { constructor(callback) { observedResize = callback; } observe() {} },
     Blob, TextDecoder, URL: { createObjectURL: blob => { blobs.push(blob); return "blob:fixture"; }, revokeObjectURL() {} } });
-  vm.runInContext(script, context);
+  compiledScript.runInContext(context);
   vm.runInContext(`configureNavigation(${JSON.stringify(options.navigation || "profiles")})`, context);
   const flush = () => new Promise(resolve => setImmediate(resolve));
   return { context, elements, timers, calls, downloads, blobs, flush, document, lifecycle, documentEvents, media, resize: () => observedResize(),
@@ -879,7 +882,6 @@ test("YaXUnit and Vanessa save from their dialogs through the real YAML preview/
     assert.equal(toggle.type,"checkbox");assert.equal(toggle.attributes.role,"switch");
     toggle.checked=true;await toggle.onchange();
     await ui.elements.get("reviewEditButton").onclick(); assert.equal(ui.elements.get("preview").hidden, false);
-    ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
     await ui.elements.get("applyButton").onclick();
     assert.equal(load(path.join(f.root, ".ai/project.yaml")).testing[id], true, ui.elements.get("status").textContent + "\n" + ui.elements.get("editorValidation").textContent);
     assert.match(fs.readFileSync(path.join(f.root, ".ai/project.yaml"), "utf8"), /unrelated draft comment/);
@@ -986,9 +988,10 @@ test("settings UI saves, previews a local document, and renames through the real
   const comparison = ui.elements.get("previewTextDiff").children[0];
   assert.match(comparison.children[2].textContent, /connections:/);
   assert.match(comparison.children[4].textContent, /# keep this comment/);
+  assert.equal(comparison.children[4].textContent, canonical_yaml(updated));
   await ui.elements.get("applyButton").onclick();
   assert.equal(load(local).components["bsl-ls"].java, "fixture-java");
-  assert.equal(fs.readFileSync(local, "utf8"), updated.replace(/\n/g, "\r\n"));
+  assert.equal(fs.readFileSync(local, "utf8"), comparison.children[4].textContent);
 
   ui.elements.get("connectionSharedButton").onclick();
   ui.elements.get("componentSharedButton").onclick();
@@ -1015,7 +1018,9 @@ test("settings UI saves, previews a local document, and renames through the real
     assert.equal(ui.elements.get("profileHistory").children[0].children[0].children[0].textContent, projectId);
     const saved = parse(updated); saved.project = { id: projectId };
     assert.deepEqual(load(local), saved);
-    assert.match(fs.readFileSync(local, "utf8"), /# keep this comment\r\n/);
+    const renamedText = fs.readFileSync(local, "utf8");
+    assert.match(renamedText, /# keep this comment\n/);
+    assert.equal(renamedText, canonical_yaml(renamedText));
     const snapshot = (await client.call("settings.read", {})).structuredContent;
     assert.equal(snapshot.profileHistory.find(item => item.projectRoot === f.root).projectId, projectId);
     await ui.context.refresh();
@@ -1029,7 +1034,6 @@ test("settings UI saves, previews a local document, and renames through the real
   ui.elements.get("settingsText").value = JSON.stringify(sharedDocument, null, 2);
   ui.elements.get("settingsText").events.input();
   await ui.elements.get("reviewEditButton").onclick();
-  ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
   const localBefore = fs.readFileSync(local);
   await ui.elements.get("applyButton").onclick();
   assert.equal(load(shared).project.id, "explicit-shared-name");
@@ -1591,7 +1595,7 @@ test("discarding a document restores its loaded text without clearing other draf
   assert.equal(ui.elements.get("settingsText").value,original);assert.equal(vm.runInContext('dirtyFields.has("edtUrl")',ui.context),true);
 });
 
-test("scope switch saves only after preview and confirmation", async () => {
+test("scope switch saves and opens the requested document in one action", async () => {
   const backend=new SettingsBackend("unused-state","unused-settings"),edits=[];
   const ui=screen(async(name,args)=>{
     if(name==="settings.read"||name==="settings.status")return read;
@@ -1605,9 +1609,96 @@ test("scope switch saves only after preview and confirmation", async () => {
   ui.elements.get("settingsText").value="project:\n  id: changed\n";ui.elements.get("settingsText").events.input();
   ui.elements.get("editorDocument").value="project_local";ui.elements.get("editorDocument").events.change();
   ui.elements.get("editorSwitchSave").onclick();await ui.flush();await ui.flush();
-  assert.equal(ui.elements.get("preview").hidden,false);assert.equal(edits.length,0);assert.equal(ui.elements.get("editorDocument").value,"profile");
-  await ui.elements.get("applyButton").onclick();await ui.flush();
+  assert.equal(ui.elements.get("preview").hidden,true);
   assert.equal(edits.length,1);assert.equal(ui.elements.get("editorDocument").value,"project_local");assert.equal(ui.elements.get("settingsText").value,"{}\n");
+});
+
+for (const change of ["text", "gitignore", "none"]) test(`optional preview handles ${change} changes without a manual edit`, async () => {
+  const original = change === "text" ? "project: {id: old}\n" : "project:\n  id: \"old\"\n";
+  const formatted = canonical_yaml(original), applied = [];
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text: original, format: "yaml", baseRevision: "base", layerScope: args.layerScope };
+    if (name === "settings.document_fields") return { schema: { type: "object" }, value: parse(args.text) };
+    if (name === "settings.preview") return { repositories: [], revision: "preview", formattedText: formatted,
+      textChanged: change === "text", gitignoreChange: change === "gitignore" ? { beforeText: "", afterText: ".ai/project.local.yaml\n" } : null };
+    if (name === "settings.apply") { applied.push(args); return {}; }
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("editSettingsButton").onclick(); await ui.flush();
+  assert.equal(ui.elements.get("applyButton").disabled, true);
+  await ui.elements.get("reviewEditButton").onclick();
+  assert.equal(ui.elements.get("preview").hidden, false);
+  assert.equal(Boolean(ui.context.hasProfileDraft()), change !== "none");
+  assert.equal(ui.elements.get("applyButton").disabled, change === "none");
+  assert.equal(ui.elements.get("editorDiscardButton").disabled, change === "none");
+  if (change !== "none") {
+    await ui.elements.get("applyButton").onclick();
+    assert.equal(applied.length, 1); assert.equal(applied[0].text, original);
+    assert.equal(Boolean(ui.context.hasProfileDraft()), false);
+    await ui.elements.get("reviewEditButton").onclick();
+    ui.elements.get("editorDiscardButton").onclick();
+    assert.equal(ui.elements.get("preview").hidden, true);
+    assert.equal(Boolean(ui.context.hasProfileDraft()), false);
+  } else {
+    await ui.elements.get("editSettingsButton").onclick();
+    assert.equal(ui.elements.get("preview").hidden, true);
+    await ui.elements.get("reviewEditButton").onclick();
+    ui.elements.get("editorLocalButton").onclick(); await ui.flush(); await ui.flush();
+    assert.equal(Boolean(ui.elements.get("editorSwitchDialog").open), false);
+    assert.equal(ui.elements.get("editorDocument").value, "project_local");
+  }
+});
+
+for (const failure of ["preview", "apply"]) for (const change of ["text", "gitignore"]) test(`failed ${failure} preserves ${change} preview changes for retry or discard`, async () => {
+  const original = "project: {id: old}\n";
+  let failWrite = true, applied = 0, reviewed = false;
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text: original, format: "yaml", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return { schema: { type: "object" }, value: parse(args.text) };
+    if (name === "settings.preview") {
+      if (reviewed && failWrite && failure === "preview") throw new Error("Preview failed");
+      reviewed = true;
+      return { repositories: [], revision: "preview", formattedText: canonical_yaml(original),
+        textChanged: change === "text", gitignoreChange: change === "gitignore" ? { beforeText: "", afterText: "/project.local.yaml\n" } : null };
+    }
+    if (name === "settings.apply") { applied++; if (failWrite) throw new Error("Write failed"); return {}; }
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("editSettingsButton").onclick(); await ui.flush();
+  await ui.elements.get("reviewEditButton").onclick();
+  await ui.elements.get("applyButton").onclick();
+  assert.equal(applied, failure === "apply" ? 1 : 0); assert.equal(ui.elements.get("settingsText").value, original);
+  assert.equal(Boolean(ui.context.hasProfileDraft()), true);
+  assert.equal(ui.elements.get("applyButton").disabled, false);
+  assert.equal(ui.elements.get("editorDiscardButton").disabled, false);
+  ui.context.show("support"); ui.context.show("editor");
+  assert.equal(ui.elements.get("preview").hidden, true);
+  failWrite = false; await ui.elements.get("applyButton").onclick();
+  assert.equal(applied, failure === "apply" ? 2 : 1); assert.equal(Boolean(ui.context.hasProfileDraft()), false);
+});
+
+test("the save shortcut uses the physical key with a Russian keyboard layout and ignores repeats during a save", async () => {
+  let applied = 0, prevented = 0, release;
+  const ui = screen(async (name, args) => {
+    if (["settings.read", "settings.status"].includes(name)) return read;
+    if (name === "settings.edit") return { text: "project: {}\n", format: "yaml", baseRevision: "base", layerScope: "profile" };
+    if (name === "settings.document_fields") return { schema: {}, value: parse(args.text) };
+    if (name === "settings.preview") return new Promise(resolve => { release = () => resolve({ repositories: [], revision: "preview" }); });
+    if (name === "settings.apply") { applied++; return {}; }
+    throw new Error(name);
+  });
+  await ui.flush(); await ui.elements.get("editSettingsButton").onclick();
+  ui.elements.get("settingsText").value += "# edited\n"; ui.elements.get("settingsText").events.input();
+  const event = { key: "ы", code: "KeyS", ctrlKey: true, preventDefault() { prevented++; } };
+  ui.elements.get("editorControls").events.keydown(event); await ui.flush();
+  ui.elements.get("editorControls").events.keydown(event); await ui.flush();
+  assert.equal(prevented, 2);
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.preview").length, 1);
+  assert.equal(ui.elements.get("editorDiscardButton").disabled, true);
+  release(); await ui.flush(); await ui.flush();
+  assert.equal(applied, 1);
 });
 
 test("validation errors appear beside the affected field and in the general status", async () => {
@@ -2204,48 +2295,55 @@ function isolatedProbeScreen(source, { delayed = false, failed = false, startFai
   };
   const close = id => ui.elements.get(item(id).kind === "external" ? "componentDialogClose" : item(id).kind === "managed" ? "managedDialogClose" : "testingDialogClose").onclick();
   const diagnostic = id => ui.elements.get(item(id).kind === "external" ? "probeResult" : item(id).kind === "managed" ? "managedDialogStatus" : "testingDialogStatus").textContent;
+  const notice = id => ui.elements.get(item(id).kind === "external" ? "componentDialogStatus" : item(id).kind === "managed" ? "managedDialogNotice" : "testingDialogNotice");
   const probe = id => ui.elements.get(item(id).kind === "external" ? "probeButton" : item(id).kind === "managed" ? "managedProbeButton" : "testingProbeButton").onclick();
-  return { ui, current, ids, item, open, close, diagnostic, probe, finish: () => finish() };
+  return { ui, current, item, open, close, diagnostic, notice, probe, finish: () => finish() };
 }
 
-for (const source of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit", "vanessa"]) {
-  test(`a completed ${source} probe stays isolated when opening every other component`, async () => {
+// All component IDs are tested for probe routing above. The late-result handler
+// is shared, with distinct diagnostics and notices for the three dialog types.
+for (const [source, peer, other] of [
+  ["edt", "v8std", "code-index"],
+  ["code-index", "bsl-ls", "yaxunit"],
+  ["yaxunit", "vanessa", "edt"],
+]) {
+  test(`a completed ${source} probe stays isolated when opening ${peer} or ${other}`, async () => {
     const f = isolatedProbeScreen(source); await f.ui.flush(); await f.open(source); await f.probe(source);
     assert.match(f.diagnostic(source), new RegExp("Результат проверки " + source));
     f.close(source);
     assert.equal(f.ui.elements.get("probeResult").hidden, true);
     assert.equal(f.ui.elements.get("probeResult").textContent, "");
-    for (const target of f.ids.filter(id => id !== source)) {
+    for (const target of [peer, other]) {
       await f.open(target);
-      assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
-      assert.doesNotMatch(f.diagnostic(target), /Результат проверки/);
+      const expected = "Собственная диагностика " + target;
+      assert.equal(f.diagnostic(target), expected);
       await f.ui.context.refresh();
-      assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
+      assert.equal(f.diagnostic(target), expected);
       f.close(target);
     }
     await f.open(source); assert.match(f.diagnostic(source), new RegExp("Результат проверки " + source));
     assert.equal(f.ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
   });
 
-  for (const failed of [false, true]) test(`a late ${failed ? "failed" : "completed"} ${source} probe cannot overwrite another component dialog`, async () => {
-    const f = isolatedProbeScreen(source, { delayed: true, failed }), target = source === "v8std" ? "edt" : "v8std";
+  for (const [outcome, target, options, message] of [
+    ["completion", peer, { delayed: true }, "Результат проверки "],
+    ["operation error", other, { delayed: true, failed: true }, "Ошибка проверки "],
+    ["request error", peer, { startFailed: true }, "Ошибка проверки "],
+  ]) test(`a late ${source} probe ${outcome} cannot overwrite the ${target} dialog`, async () => {
+    const f = isolatedProbeScreen(source, options);
     await f.ui.flush(); await f.open(source); const checking = f.probe(source); await f.ui.flush();
-    f.close(source); await f.open(target); f.finish(); await checking;
-    assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
-    assert.doesNotMatch(f.ui.elements.get("componentDialogStatus").textContent, new RegExp("Ошибка проверки " + source));
-    f.close(target); await f.open(source);
-    assert.match(f.diagnostic(source), new RegExp((failed ? "Ошибка проверки " : "Результат проверки ") + source));
+    f.close(source); await f.open(target);
+    const notice = f.notice(target), previous = { text: notice.textContent, hidden: notice.hidden };
+    f.finish(); await checking;
+    assert.equal(f.diagnostic(target), "Собственная диагностика " + target);
+    assert.equal(notice.textContent, previous.text);
+    assert.equal(notice.hidden, previous.hidden);
+    f.close(target);
+    assert.equal(notice.hidden, true);
+    assert.equal(notice.textContent, "");
+    await f.open(source);
+    assert.match(f.diagnostic(source), new RegExp(message + source));
     assert.equal(f.ui.calls.filter(call => call.params?.name === "settings.probe_connections").length, 1);
-  });
-
-  test(`a late ${source} probe request error stays in its component`, async () => {
-    const f = isolatedProbeScreen(source, { startFailed: true }), target = source === "v8std" ? "edt" : "v8std";
-    await f.ui.flush(); await f.open(source); const checking = f.probe(source); await f.ui.flush();
-    f.close(source); await f.open(target); f.finish(); await checking;
-    assert.match(f.diagnostic(target), new RegExp("Собственная диагностика " + target));
-    assert.doesNotMatch(f.ui.elements.get("componentDialogStatus").textContent, new RegExp("Ошибка проверки " + source));
-    f.close(target); await f.open(source);
-    assert.match(f.diagnostic(source), new RegExp("Ошибка проверки " + source));
   });
 }
 
@@ -2281,13 +2379,13 @@ for (const startFailed of [false, true]) test(`a late probe ${startFailed ? "req
   assert.equal(f.ui.elements.get("componentDialogDiagnostic").textContent, "Проверка устарела");
 });
 
-test("manual settings require a fresh preview after editing and apply the reviewed text", async () => {
-  const text = "project: {}\n";
+test("saving validates the current draft even after an optional preview", async () => {
+  const text = "project: {}\n", edited = "project: {id: edited}\n";
   const ui = screen(async (name, args) => {
     if(name === "settings.read") return read;
     if(name === "settings.edit") return { text, format: "yaml", layerScope: "profile", baseRevision: "loaded" };
     if(name === "settings.preview") { assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); return { revision: "reviewed", projectRoot: read.values.projectRoot, repositories: [], openviking: { enabled: true, url: "https://knowledge.example/mcp", timeout_seconds: 4, max_response_bytes: 4096 } }; }
-    if(name === "settings.apply") { assert.equal(args.text, text); assert.equal(args.revision, "reviewed"); assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); return {}; }
+    if(name === "settings.apply") { assert.equal(args.text, edited); assert.equal(args.revision, "reviewed"); assert.equal(args.mode, "layer"); assert.equal(args.baseRevision, "loaded"); assert.equal(args.replace, true); return {}; }
     throw new Error(name);
   });
   await ui.flush();
@@ -2296,11 +2394,11 @@ test("manual settings require a fresh preview after editing and apply the review
   await ui.elements.get("reviewEditButton").onclick();
   assert.equal(ui.elements.get("preview").hidden, false);
   assert.equal(ui.elements.get("openvikingStatus").textContent, "Включён: https://knowledge.example/mcp · 4 с · 4096 байт");
-  ui.elements.get("settingsText").events.input();
+  ui.elements.get("settingsText").value = edited; ui.elements.get("settingsText").events.input();
+  assert.equal(ui.elements.get("preview").hidden, true);
+  assert.equal(ui.elements.get("applyButton").disabled, false);
   await ui.elements.get("applyButton").onclick();
-  assert.equal(ui.calls.filter(call => call.params?.name === "settings.apply").length, 0);
-  await ui.elements.get("reviewEditButton").onclick();
-  await ui.elements.get("applyButton").onclick();
+  assert.equal(ui.calls.filter(call => call.params?.name === "settings.preview").length, 2);
   assert.equal(ui.calls.filter(call => call.params?.name === "settings.apply").length, 1);
   assert.equal(ui.elements.get("settingsText").value, text);
 });
@@ -3784,6 +3882,23 @@ test("inherited URLs can be edited from their displayed value without saving unc
   ui.elements.get("connectionSharedButton").onclick();assert.equal(field.value,shared);
 });
 
+test("detected EDT saving responds immediately to clearing, blurring and refocusing the field", async () => {
+  const detected="http://127.0.0.1:8765/mcp",current={...read,instance:"first",settingsRevision:"saved",
+    values:{...read.values,edtUrl:detected},connectionSources:{edt:"edt_workspace"},layerValues:{profile:{},project_local:{}}};
+  const ui=screen(async name=>{if(["settings.read","settings.status"].includes(name))return current;throw new Error(name);});
+  await ui.flush();ui.context.openConnectionDialog(ui.context.catalogItems(current).find(item=>item.id==="edt"),null);
+  const field=ui.elements.get("edtUrl"),save=ui.elements.get("saveButton"),source=ui.elements.get("edtSource");
+  assert.equal(save.disabled,false);
+  field.value="";field.events.input();assert.equal(save.disabled,true);
+  ui.elements.get("connectionSharedButton").focus();field.events.blur();
+  assert.equal(save.disabled,false,"leaving the empty inherited field restores explicit saving without a timer");
+  assert.match(source.textContent,/«Сохранить» запишет обнаруженный адрес/);
+  field.focus();field.events.focus();assert.equal(field.value,detected);assert.equal(save.disabled,false);
+  assert.equal(ui.elements.get("componentDiscard").hidden,true);
+  assert.equal(ui.elements.get("unsavedHint").hidden,true);
+  assert.equal(ui.calls.some(call=>call.params?.name==="settings.update"),false);
+});
+
 test("inherited OpenViking fields preserve record identity and numeric probe values", async () => {
   const url="https://knowledge.example/mcp",current={...read,instance:"first",values:{...read.values,openvikingEnabled:true,openvikingUrl:url,openvikingTimeout:30,openvikingMaxResponseBytes:4096,openvikingConnectionId:"team"},
     connectionSources:{openviking:"profile"},valueSources:{openvikingEnabled:"profile",openvikingTimeout:"project_local",openvikingMaxResponseBytes:"settings",openvikingConnectionId:"settings"},
@@ -4329,7 +4444,6 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
     const input = treeInputs(ui).find(input => input.attributes?.["aria-label"] === "testing." + id);
     input.checked = true; await input.onchange();
     await ui.elements.get("reviewEditButton").onclick();
-    ui.elements.get("replace").checked = true; ui.elements.get("replace").events.change();
     save = ui.elements.get("applyButton"); notice = ui.elements.get("testingDialogNotice");
   }
   assert.equal(save.disabled, false);
@@ -4347,18 +4461,6 @@ for (const id of ["edt", "v8std", "openviking", "code-index", "bsl-ls", "yaxunit
   const next = structuredClone(current); next.values.projectRoot = "C:/fixture/other";
   ui.context.renderCurrent(next);
   assert.equal(notice.hidden, true); assert.equal(notice.textContent, "");
-});
-
-for (const [source, target, noticeId] of [["code-index", "bsl-ls", "managedDialogNotice"], ["yaxunit", "vanessa", "testingDialogNotice"]]) test(`a late ${source} error cannot replace the ${target} operation notice`, async () => {
-  const f = isolatedProbeScreen(source, { startFailed: true }); await f.ui.flush(); await f.open(source);
-  const checking = f.probe(source); await f.ui.flush();
-  f.close(source); await f.open(target);
-  const notice = f.ui.elements.get(noticeId);
-  assert.ok(notice);
-  const message = notice.textContent, hidden = notice.hidden;
-  f.finish(); await checking;
-  assert.equal(notice.textContent, message); assert.equal(notice.hidden, hidden);
-  f.close(target); assert.equal(notice.hidden, true); assert.equal(notice.textContent, "");
 });
 
 for (const expanded of [false, true]) test(`a rolling journal tail preserves the visible record with ancestor-relative offsets${expanded ? " in the full dialog" : ""}`, async () => {

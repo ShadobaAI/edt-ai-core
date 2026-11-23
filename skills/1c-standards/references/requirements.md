@@ -16,9 +16,7 @@ On revision, binding/identity, affected-code, publication/corpus changes, errors
 or contradictions, establish which facts depend on them. Refresh only those:
 unchanged normative text does not need retrieval after a local edit, and changed
 platform context does not invalidate unrelated facts of another artifact.
-Renew expired session refs in the current session; do not repeat the whole
-investigation for that reason. Do not retain stale target verification as
-economy; mandatory readiness, applicable write preconditions and post-validation remain.
+Mandatory readiness, applicable write preconditions and post-validation still apply.
 Keep bounded evidence in task context and native session refs, without a separate
 persistent reasoning database, transcript or normative-corpus copy. Accepted
 decisions may be recorded in existing owning SDD/ADR under project rules;
@@ -33,8 +31,9 @@ assessment truth.
 | Exact revision review | review | result |
 | Test execution/report only | run/report | authoring workflow not needed |
 
-Review/execution requests do not authorize fixes. Proposal is a specific
-in-memory proposal with authorized baseline facts, not a completed EDT write.
+Review/execution requests do not authorize fixes. Assess a specific proposal
+in memory using authorized baseline facts, including the owner of an absent
+create target. This requires no temporary EDT write.
 Result is the actual outcome or exact reviewed revision. Target includes the
 owning project/component; sourceRef binds baseline, phase and revision/hash.
 The current model does not replace historical revision. Read protected source
@@ -42,9 +41,10 @@ through assigned authorities, not generic filesystem.
 
 1. Obtain minimal sufficient source/context evidence. Assess baseline →
    proposal/result transition mechanisms, including additions, deletions and
-   enclosing invariants. The first planned query already means query_text: present;
-   deletion and rename remain transition mechanisms after writing. Exclude
-   unrelated module code.
+   enclosing invariants. The first planned query already means `query_text: present`;
+   processing query results alone does not imply query text in scope. Deletion,
+   rename and signature changes remain transition mechanisms after writing.
+   Exclude unrelated module code.
 2. Perform [v8std selection](discovery.md) for affected code/context.
    Check exact conditions of discovered requirements, corporate rules and framework
    patterns. Pass applicable requirements beyond baseline in additionalRequirements
@@ -63,7 +63,8 @@ through assigned authorities, not generic filesystem.
    through v8std. Check found, identity, truncation and necessary exceptions.
    Check each selector once; mandatory takes priority.
    Additional requirements do not weaken baseline or close missing mappings.
-5. Assess proposal/result and pass **policy.validate_compliance_ref**:
+5. For a retained selection ref, assess proposal/result and use
+   **policy.validate_compliance_ref**:
    selectionRef, phase, explicit current {target,artifact,operation,sourceRef,
    mechanisms,detectionRef,additionalRequirements} and rows
    [[selector,status,evidence,reason?]]. Each row binds a specific requirement
@@ -71,7 +72,7 @@ through assigned authorities, not generic filesystem.
    failed/unverified are allowed, while deviated with reason is allowed only for
    recommended. Missing rows, contradictions, different target/mechanisms/registry/
    sourceRef are rejected. The full equivalent validate_compliance remains
-   available; formats are defined in schema.
+   available under the [full-payload workflow](requirements-details.md).
 
 **Blocked** (including isError:false), unknown, unavailable/missing registry
 coverage, incomplete mandatory text, unavailable policy or violated mandatory
@@ -80,32 +81,33 @@ A partial read-only report with exact limits is allowed. Ledger_valid confirms
 only assessment-record consistency; it does not prove evidence true or authorize
 writing. Do not invent passed to satisfy validation.
 
-After writing, perform a separate result check on the current actual outcome.
-For M/H reassess detection; L may reuse applicability after verifying unchanged
-mechanisms and context. A new sourceRef requires current detection evidence and
-new row assessments. For new mechanisms, additions, artifact/operation changes,
-registry/corpus changes, relevant exceptions or contradictions, revise selection
-and obtain only new/invalidated text with a reason. References work only in their
-creating session and may expire; they are not proof tokens.
+## Assessment freshness
 
-Proposal does not replace result. If a new mandatory condition appears after
-writing, verify it and, if needed, perform a correction under the code-change workflow.
-EDT diagnostics, query validation and behavioral tests remain independent gates;
-L/M/H does not reduce normative strength. Do not repeat equivalent successful
-calls within a phase unless facts are invalidated.
-Reducing investigation does not merge proposal/result or remove the full set of
-applicable mandatory conditions. A new sourceRef, incompatible session ref or
-changed applicability requires current detection/selection/rows under the live
-policy contract; reuse unchanged confirmed contracts and text.
-Do not repeat full MCP/corpus traversal without a new basis.
+In either phase, a new `sourceRef` requires current detection evidence and
+new row assessments. Before writing, refresh the proposal assessment and ledger
+if a material edit changes the checked proposal.
+
+Reassess applicability after changes to mechanisms, additional requirements,
+artifact/operation, corpus, exceptions or relevant source/context. Reselect when
+scope, artifact/operation, registry version/schema, effective mechanisms or
+applicability changes, including any change to `additionalRequirements` or its
+`basis` values.
+Retrieve only newly required or invalidated normative text. If session refs
+expire or the session changes, use a still-valid full selection with current
+evidence or renew the necessary refs.
+
+After writing, check the actual result separately. For M/H reassess detection;
+L may reuse applicability after verifying unchanged mechanisms and context.
+
+Verify newly discovered mandatory conditions before acceptance. Any needed
+correction follows a new proposal under the code-change workflow. EDT diagnostics,
+query validation and behavioral tests retain their own checks. L/M/H does not
+reduce normative strength.
 
 ## YaXUnit
 
 For YaXUnit authoring also use select_yaxunit_requirements with actual test
 mechanisms and applicable additions → exact v8std patterns → the same ledger/phase
 contract through full validate_compliance. This selection is separate from general
-1C requirements. Run/report returns not_applicable without digest and does not
-authorize authoring; debug/migrate that fixes BSL uses general operation: change.
-
-The [detailed protocol](requirements-details.md) serves applicability conflicts,
-phase transitions and full API integration. It preserves the same guarantees.
+1C requirements. Run/report returns `not_applicable` without a digest.
+For BSL fixes during debug/migrate, the general operation is `change`.

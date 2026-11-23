@@ -429,6 +429,8 @@ test("native logs contribute metadata without copying untrusted runtime contents
 
 test("relay logs diagnose transport failures without recording tool arguments or results", async t => {
   const f = fixture(t), server = http.createServer(async (request, response) => {
+    // The final call must open a connection to a closed port on every OS.
+    response.setHeader("Connection", "close");
     let body = ""; for await (const chunk of request) body += chunk;
     if (!body) { response.writeHead(200); response.end(); return; }
     const message = JSON.parse(body);
@@ -456,8 +458,8 @@ test("relay logs diagnose transport failures without recording tool arguments or
   await assert.rejects(client.call("private_action", {}));
   const logs = read_diagnostic_logs(f.state), text = JSON.stringify(logs.events);
   assert.ok(logs.events.some(event => event.event === "request_started" && event.detail.toolId === diagnostic_id("private_action")));
-  assert.ok(logs.events.some(event => event.event === "request_failed"));
-  assert.match(text, /ECONNREFUSED/);
+  assert.ok(logs.events.some(event => event.event === "request_failed" &&
+    event.detail.failure?.category === "connection" && event.detail.failure.osCode === "ECONNREFUSED"));
   assert.equal(text.includes("PRIVATE-ARGUMENT"), false);
   assert.equal(text.includes("PRIVATE-RESULT"), false);
   assert.ok(text.includes("upstream failure"));

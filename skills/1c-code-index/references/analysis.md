@@ -1,26 +1,23 @@
 # 1C analysis and response budget
 
-These are capability selection rules, not a tool catalogue. Take names, parameters
-and availability from current MCP descriptions/schemas. Do not reconstruct unknown
-parameters from memory or enable bulk modes by changing user settings.
-Unknown/ignored parameters mean the claimed filter is not yet confirmed:
-correct the request before drawing scope or completeness conclusions.
+Use the current MCP schemas for availability and parameters. The tool names
+below identify candidates for targeted schema lookup. Keep bulk modes and server
+settings under their owner's control.
 
 ## From question to sufficient answer
 
 | Question | Preferred route and boundary |
 | --- | --- |
-| Where functionality is implemented | Short semantic search over names, owner synonyms and comments; then exact candidates. Literal grep does not replace this search; check verbose results against all required conditions. |
-| What a known module/procedure does | Symbol map, block skeleton or context of a given line, then required bodies/ranges. A large truncated body is not complete source. |
-| How an object is structured | Narrow structured overview of needed sections; names/counts before form, module and relationship details. Do not expand all sections by default. |
-| How a call executes | Targeted callers/callees and BSL-aware qualifier resolution; for a known pair, path search. For loops/exceptions, read call-site context rather than every module. |
-| What a change affects | Incoming reference summary across code, metadata and permissions; then only the affected section. Use a data graph for object relationships and a call graph for execution; they are not interchangeable. |
-| What launches a handler | Form bindings, subscriptions, extension interceptors and platform conventions; absence of direct calls does not prove unreachability. Check dynamic dispatch when a specific basis exists. |
-| Which register movements posting produces | Distinguish declared registers, reachable write sites and code mentions. No found write under heuristic/dynamic analysis does not prove no movements. |
-| How permissions are assigned | Targeted object or role overview with needed rights. Static permissions do not prove effective runtime access, RLS or current user privileges. |
-| How a report/DCS works | Parsed schema with needed datasets, relationships, parameters or settings; include query text only when the question needs it. |
-| Exact text is needed | Distinguish procedure bodies, all file code and text/XML. Narrow path and lines; use a short anchor or suitable regex for multiline chains. Oversize files may have an AST without stored text. |
-| No sufficient specialized answer | Narrow search/read first. Read-only SQL is the last route for a proven necessary join/aggregation: schema from the current contract, exact aliases/conditions, selected columns and LIMIT; no SELECT * or database dump. |
+| Where functionality is implemented | `find_symbol` for a known identifier with uncertain location, `search_function` for a likely name or comment, scoped grep for a code/text clue. `search_terms` ranks FTS matches in the procedure enrichment layer. Check coverage and evaluate candidate bodies before attributing purpose. |
+| What a known module/procedure does | `get_function` with the bare exact name and a file filter (`path_glob` or advertised `path`), or `read_file` for a known range. Use `get_file_summary`, `get_node_structure` or `get_line_context` when coordinates or surrounding blocks are needed. |
+| How an object is structured | `get_object_structure` for its fields or `get_object_profile` with only the needed sections for overview. Select the exact metadata type/name and applicable extension. |
+| How a call executes | `get_callers`/`get_callees` for immediate name-based relations. `get_callers.path_glob` filters caller files. For a BSL path between known definitions, use `find_path_bsl` with `<relative_path>::<name>` keys. `query_call_sites` locates calls in blocks such as loops or handlers. Expand a tree only to answer a remaining execution question. |
+| What a change affects | Start with `find_references` for metadata impact across structural links, code usages and roles. Read the affected section if samples are insufficient. Use `get_data_links` or `find_data_path` for object relationships and a call graph for execution. |
+| What launches a handler | Use specific form bindings and subscriptions. Check extension interceptors and platform conventions when relevant. Classify explicit, statically resolved and heuristic links. Verify plausible dynamic paths when they affect the conclusion. |
+| Which register movements posting produces | Use a posting map or register writers, distinguishing declared registers, reachable writes and code mentions. Dynamic writes can fall outside the index. |
+| How permissions or DCS are defined | Request scoped role rights or the parsed DCS schema. Include query text when needed. Effective access, RLS and user privileges require separate evidence. |
+| Exact text is needed | Choose `grep_body` for procedure bodies, `grep_code` for stored code and `grep_text` for text/XML. Use one criterion, a narrow file filter and minimal context. Oversize files can have an AST without stored text. |
+| Necessary join or aggregation is uncovered | Use `bsl_sql` only if bounded search, reads and specialized tools cannot answer the question. Verify the live read-only contract and use exact scope, selected columns and a limit. |
 
 Do not apply this table as a checklist to every task. One sufficient specialized
 answer is preferable to overlapping overviews. If the schema supports a small
@@ -33,33 +30,75 @@ A running process, ready base text and ready metadata/relationship enrichment ar
 distinct facts. Use the status of each required repository/layer and response;
 incomplete enrichment does not prohibit independent reads of ready text.
 Leave short-batch waiting to the server; do not loop broad requests while indexing
-continues. Do not trigger rebuild or enrichment merely to check capability availability.
+continues. Reuse the [shared daemon](../../edt-ai-core/references/runtime-contract.md#project-and-runtime-contract)
+across tasks. Close only the current reader on disconnect or root switch.
+A capability check needs neither a rebuild nor a new enrichment job.
 
-Connection checks confirm alias-to-path correspondence and declared freshness.
-They do not prove complete parsing, no exclusions, all templates/extensions or
-historical revision correspondence. A negative conclusion requires the appropriate
-layer, scope, freshness and absence of substantial omissions.
-On conflict with live EDT, invalidate dependent indexed evidence.
+Verify alias/path correspondence on first use or a binding change through an
+applicable settings observation or native health evidence. Reuse a verified
+mapping within that binding. `core_runtime_status.ready` confirms transport only.
+For external or federated repositories, confirm the expected mapping on the
+serving node. Treat checkout and file changes, including serialized EDT writes,
+as reasons to recheck affected evidence after the watcher applies updates. Use
+revision or file evidence for claims about a particular snapshot. A negative
+conclusion requires the right scope, layer, freshness and coverage of relevant
+files. Account for extensions, exclusions and parse failures when they matter.
 
 Check responses for truncation, omitted sections, incomplete prefilter/coverage,
-file/node/depth/time limits, heuristics and continuation. Counts may be partial;
-a complete page does not mean complete traversal. Use exact definition locators
-for same-named procedures. “No path found within the search” does not prove
-absence of a path.
+file/node/depth/time limits, heuristics and continuation. Counts may be partial.
+Establish exact definitions before attributing name-based hits to same-named
+procedures. A negative path result is bounded by the covered edges and limits.
 
-First use summary counts, brief fields, path/type/direction filters, section
-limits and server budgets. Then follow returned continuation/offset if needed;
-do not invent universal pagination for every response. Increase only the specific
-blocking limit and only for an unresolved question. Do not remove the overall cap
-or request every body to reduce call count.
+Inspect warnings in the response envelope and each selected repository's payload.
+
+- `data_version_stale` (or a stale version in health) limits extracted facts even
+  on successful reads. Distinguish format compatibility from watcher freshness.
+  Assess affected layers before using a documented, authorized rebuild action.
+- `unknown_params` means the advertised result may lack a requested filter.
+  `search_param_conflict` identifies which competing keys were used and ignored.
+  Correct the request before treating its intended scope as verified.
+- `other_category` describes a bounded probe, including lower-bound counts when
+  incomplete. Run the suggested matching-category query only when locations or
+  fuller coverage are needed.
+- `file_annotations` describes indexed headers. Treat `derived_status: "unknown"`
+  as unverified. Check provenance and the existing source protections before EDT
+  writes regardless of the annotation.
+
+Use brief fields, path/type/direction filters, section limits and server budgets
+on the first request. Ask for summary counts only when they resolve a scope or
+paging question. Follow a returned continuation/offset only for missing evidence.
+Increase only the limit preventing that answer. Keep the overall cap and read
+full bodies only for targets that need them.
+
+## Repository sets and history
+
+Use an explicit `repo` for a known repository. For a search that genuinely spans
+projects, pass exact profile aliases in `repos` only when the live schema offers
+it. Read each `result.repos` group's `status`, payload and warnings, including
+partial, skipped and failed groups. Shared result, byte, file and time limits can
+leave later groups unsearched. If a necessary group remains unresolved, query
+that alias directly with a narrower scope. A federation route or matching alias
+does not establish the same repository, revision or enrichment across servers.
+
+Use the Git layer for authorized committed reads it covers under the
+[branch workflow](../../1c-branch-review/references/workflow.md#read-only-mode).
+Retain exact SHAs and use its
+[comparison rules](../../1c-branch-review/references/workflow.md#comparing-saved-revisions).
+Choose a bounded log, changed files or object
+summary for scope, or a file diff or historical line range for evidence. Use the
+live contract's revision semantics, and verify the resolved hash and time zone
+for date inputs. Git reads need no checkout. `git_changes_by_object` can group
+historical paths using today's indexed metadata. Verify historical object identity
+against committed files when it matters. Apply other indexed facts to a historical
+revision only after establishing content correspondence.
 
 ## Repeated results and evidence
 
-The server may omit rows already delivered in this MCP session. A suppression
-marker does not mean zero matches. Reuse prior facts; after compaction retain
-alias, path/revision, locator, conclusion and substantial limits. If the actual
-data is lost, use a supported result-history reset or a new MCP session for only
-the current binding; do not restart the shared daemon or repeat empty calls.
+Where the transport supports session deduplication, `rows_elided_already_delivered`
+identifies rows already delivered in that MCP session. Reuse prior matching evidence.
+After compaction retain alias, path/revision, locator, conclusion and substantial
+limits. If data is lost, reopen only the current MCP session or use a reset with confirmed
+session scope. The HTTP reset can affect other readers' histories.
 
 Built-in caching and change tracking do not ensure indefinite freshness:
 do not assume results remain current after profile changes, checkout or relevant

@@ -71,6 +71,6 @@ export function setup_inspection(read, state) {
     detected: { edt: detected || null, projects, ...(directoryContext?.edt?.errors ? { errors: directoryContext.edt.errors } : {}) },
     issues, nextSteps: next, readiness: read.readiness, componentChecks: read.componentChecks, knowledge: read.knowledge, knowledgeSetup,
     environmentCompatibility: read.environmentCompatibility,
-    bindingGuidance: "When a runtime's selectedDirectory is empty, call its core_runtime_status with this projectRoot once. A new chat/restart does not supply missing roots. Do not spawn substitute relays or inspect plugin source for setup.",
+    bindingGuidance: "When a relay has no host directory, pass this projectRoot to its core_runtime_tools or core_runtime_call. The relay connects on demand. Use core_runtime_status for missing binding or connection facts. Keep this chat and its existing relay.",
   };
 }

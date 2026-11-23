@@ -5,37 +5,26 @@ description: Run repository-local BSL LS diagnostics or semantic navigation for 
 
 # BSL Language Server MCP
 
-Read core_runtime_status once for this chat's binding; supply its known
-projectRoot when the host supplied no directory. With existing project/instance
-preparation permission, this connects BSL LS for native operations.
-Use its returned detail for a connection failure. Do not open settings forms or
-repeat full environment preparation merely because native tools were initially
-absent; settings.inspect provides setup evidence without UI when needed.
+Interpret findings through the shared
+[diagnostic assessment](../1c-routing/references/diagnostics.md): relate them to
+the task, applicable requirements and the benefit/cost of a correction.
 
-Once status is connected, call
-`core_runtime_tools` for the needed live schemas (`names` limits the response),
-then `core_runtime_call` with `calls: [{name, arguments}]`. These controls are in
-the initial catalogue and do not require a host tools/list refresh. Use
-`detail: "names"` first if the needed native names are unknown. Supply this
-chat's projectRoot on each control when host roots are empty. A short sequential
-batch keeps registration and file analysis in one process even if the host uses
-separate connections, but use it only when it is safe to proceed without inspecting
-an earlier native result. Otherwise check the result before the dependent call and
-retain the same bound relay session; if that is unavailable, report the limitation.
-The relay stops on dispatch, transport or workflow failures and native top-level
-`isError`, not on arbitrary per-item errors in a successful envelope. Interpret
-results using the live contract; never repeat a failed batch blindly. Apply native
-annotations and action policy to every call; the envelope grants no permissions.
+Use the [relay controls](../1c-routing/references/toolsets.md#calling-the-relay)
+for schemas and calls in the prepared managed or configured external binding.
+If a connection fails, inspect its detail and use `settings.inspect` for missing
+setup evidence. An initially absent native tool does not require a form or
+new preparation. Registration and analysis belong to the same BSL LS session.
+Batch them only if analysis can proceed without inspecting registration first.
 
-Use the assigned mandatory EDT-MCP to discover exact configuration project names
-and filesystem paths (`list_projects` with structured output when available).
+Reuse verified configuration names and paths from the assigned EDT-MCP.
+For a missing path, use its `list_projects` with structured output when available.
 `list_configurations` describes launch configurations, not source folders.
 Do not scan for EDT projects or copy EDT discovery into the proxy.
 
-Within the selected project directory, call BSL LS `list_workspace_folders` and
-register the target configuration's project directory with
-`register_workspace_folder` if missing. Register the configuration project directory
-that holds sources, not an inner `src` or an individual module. A local config file
+Reuse a verified workspace registration in the selected BSL LS session. When
+registration is unknown, call `list_workspace_folders`. If the target is absent,
+register its configuration project directory with `register_workspace_folder`.
+Use the configuration project root that owns the sources. A local config file
 is optional and does not determine the registration root. Reuse the
 returned URI as `workspaceFolder` for tools that require it; file tools select
 their context from the exact file path. Several configurations can remain
@@ -79,15 +68,8 @@ workspace/file. General service readiness or JSON syntax alone is insufficient.
 If that API is unavailable, report the limit; do not add fallback copies of the
 configuration. Read the relevant source paragraphs once, not whole manuals.
 
-Analyze only the target symbol or changed BSL files. When a baseline exists,
-classify findings as new, pre-existing, resolved, not applicable, or coverage-limited.
-Re-analyze after a relevant correction; stop repeated unchanged failures and
-report their cause. This skill does not itself authorize a source correction.
-
-Stop when BSL LS answers the semantic/diagnostic question. Do not duplicate it in code-index. Use EDT only for a different authority: live state, metadata, platform truth, mutation, or primary validation.
-
-Report only material diagnostics, classification, configuration effects, and coverage limits.
-Use the shared [diagnostic assessment](../1c-routing/references/diagnostics.md)
-to distinguish a confirmed defect, false positive, configuration/coverage issue,
-and unresolved finding. BSL LS is not an unconditional correctness oracle;
-neither its silence nor another analyzer's disagreement settles the finding.
+Analyze the target symbol or changed BSL files. Re-analyze after a relevant
+correction and stop at a sufficient result or a repeated unchanged failure.
+Use code-index or EDT only for a distinct missing fact or a separately required
+check. Report material diagnostics, classification, configuration effects and
+coverage limits under the shared assessment contract.

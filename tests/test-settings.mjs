@@ -411,21 +411,13 @@ test("project YAML export imports into another repository without local override
   assert.equal((await backend.main({action:"read"})).values.edtUrl,"");
 });
 
-test("settings discovery negotiates legacy sessions and refuses stateless calls before configuration", async (t) => {
+test("settings use legacy sessions and reject unsupported stateless calls", async (t) => {
   const f = fixture(t),
     client = await session(t, "mcp/settings.mjs", [], f);
   const read = (await client.call("settings.read", {})).structuredContent;
   assert.equal(read.values.projectRoot, f.root);
   assert.equal(read.preparationScope, f.root + "#first");
   assert.equal(read.schema.properties.projectRoot.readOnly, true);
-  const discovery = await client.request("server/discover");
-  assert.equal(discovery.capabilities.extensions?.["openai/settings"], undefined);
-  const modernProbe = await client.request("server/discover", {
-      _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
-    });
-  assert.equal(modernProbe.resultType, "complete");
-  assert.equal(modernProbe.capabilities.extensions?.["openai/settings"], undefined);
-  assert.ok(modernProbe.supportedVersions.includes("2025-11-25"));
   await assert.rejects(
     client.request("tools/list", { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } }),
     /initialize handshake/,
@@ -444,14 +436,16 @@ test("settings discovery negotiates legacy sessions and refuses stateless calls 
   }
   assert.ok(!fs.existsSync(path.join(f.state, "settings.json")));
 });
-test("one global Settings app opens without a duplicate native section, chat or selected project", async (t) => {
+test("one global Settings app opens after discovery falls back to initialize without a selected project", async (t) => {
   const f = fixture(t);
   const client = new McpClient([process.execPath, path.join(ROOT, "mcp/settings.mjs")], ROOT, { ...f.env, EDT_AI_PROJECT_ROOT: "" }, 10);
   f.clients.push(client);
-  const discovery = await client.request("server/discover", { _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } });
-  assert.equal(discovery.resultType, "complete");
-  const initialized = await client.request("initialize", { protocolVersion: discovery.supportedVersions[0], capabilities: {} });
-  assert.equal(discovery.capabilities.extensions?.["openai/settings"], undefined);
+  await assert.rejects(client.request("server/discover", {
+    _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28" },
+  }), { code: -32601 });
+  client.roots = [];
+  const initialized = await client.initialize();
+  assert.equal(initialized.protocolVersion, "2025-11-25");
   assert.equal(initialized.capabilities.extensions?.["openai/settings"], undefined);
   assert.equal(initialized.capabilities.experimental?.["openai/settings"], undefined);
   const read = (await client.call("settings.read", {})).structuredContent;

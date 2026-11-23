@@ -341,6 +341,9 @@ export class RemoteMcp {
       throw error;
     }
   }
+  pendingResponses() {
+    return [...this.activeRequests].map(request => request.settled);
+  }
   close() {
     this.generation++;
     this.accepting = false;

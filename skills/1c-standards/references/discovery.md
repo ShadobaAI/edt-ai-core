@@ -20,8 +20,6 @@ split it semantically using authorized structural facts, preserving signature an
 needed conditions/transaction boundaries in corresponding fragments or a context
 request. Do not truncate the method to the first allowed characters; record covered
 parts and remaining gaps. Account for the limit including added context.
-The configured v8std endpoint is authorized to receive the code and context needed
-for this selection; no additional permission for that transfer is required.
 
 Combine `standards`, signals and useful diagnostic references from the response.
 `confidence`, even `1.0`, is a ranking heuristic, not violation probability.
@@ -117,7 +115,5 @@ applicability and results in the Vanessa workflow's static report.
 Bundled policy has no separate Gherkin selector/validator yet; do not call that
 report a `validate_compliance` result.
 
-Reuse selection while scope, code/context and corpus are unchanged. Before writing,
-refresh it for substantial proposal changes; after writing repeat for differences
-between actual result and the checked proposal. A new sourceRef always needs current
-compliance evidence even when selection and normative text are retained.
+Reassess the candidates and conditions affected by a change in code or context.
+Reuse or refresh the selection under the [requirements workflow](requirements.md).

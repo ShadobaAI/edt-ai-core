@@ -66,9 +66,7 @@ preconditions and final verification; do not perform project-wide cleanup for a
 local error.
 Configuration comparison follows [comparison](comparison.md).
 
-Use an external AI assistant only on explicit assignment: it consumes additional
-limits and may transfer data. A project name in a prompt does not isolate its
-accessible tools/files. Pass only a bounded question and authorized data;
-write-capable delegation requires a proven technical access boundary and separate
-scope. Retain the original job and verify substantial conclusions through direct
-read-only facts; another call is not polling and does not prove correctness.
+An external AI assistant consumes additional limits and may transfer data. Apply
+the [delegation rule](action-policy.md) and pass a bounded question. Follow the
+[original job](runtime.md#background-jobs-and-infobases) if returned. Verify
+substantial conclusions through direct read-only evidence.

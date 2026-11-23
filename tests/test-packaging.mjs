@@ -56,6 +56,23 @@ if (committed.status !== 0) throw committed.error || new Error(committed.stderr)
 const { package_plugin } = await import(pathToFileURL(path.join(packageRoot, "tools/package-plugin.mjs")));
 after(() => fs.rmSync(packageRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
+let stableBuild;
+function stable_build() {
+  if (!stableBuild) {
+    const { archives } = package_plugin();
+    // Keep these inputs for publication tests when the builder replaces .build.
+    const directory = path.join(packageRoot, "stable-build");
+    fs.renameSync(path.join(packageRoot, ".build"), directory);
+    const marketplace = path.join(directory, "marketplace");
+    stableBuild = {
+      marketplace,
+      plugin: path.join(marketplace, "plugins/1c-ai-core"),
+      archives: archives.map(file => path.join(directory, path.basename(file))),
+    };
+  }
+  return stableBuild;
+}
+
 test("CI entrypoint starts before dependencies and vendor are installed", t => {
   const f = fixture(t), script = path.join(f.base, "ci.mjs");
   fs.copyFileSync(path.join(ROOT, "tools/ci.mjs"), script);
@@ -68,7 +85,7 @@ test("CI entrypoint starts before dependencies and vendor are installed", t => {
 test("reproducible ZIPs include bundled dependencies, exclude state/tooling and survive Node-only extracted smoke", async (t) => {
   const f = fixture(t),
     manifest = fs.readFileSync(path.join(ROOT, "plugin.json")),
-    first = package_plugin(),
+    first = stable_build(),
     hash = first.archives.map((file) => sha256(fs.readFileSync(file)));
   assert.deepEqual(
     fs.readdirSync(path.join(first.plugin, "docs")).sort(),
@@ -125,21 +142,20 @@ test("reproducible ZIPs include bundled dependencies, exclude state/tooling and 
   assert.ok(!fs.existsSync(destination));
 });
 test("build validates all inputs before removing a previous build and refuses escaped output", (t) => {
-  const f = fixture(t),
-    previous = package_plugin(),
-    before = sha256(fs.readFileSync(previous.archives[0]));
-  assert.throws(
-    () => package_plugin(path.join(f.base, "outside")),
-    /Output must/,
-  );
-  assert.equal(sha256(fs.readFileSync(previous.archives[0])), before);
+  const f = fixture(t), outside = path.join(f.base, "outside");
+  const previous = path.join(packageRoot, ".build", "previous-build.txt");
+  fs.mkdirSync(path.dirname(previous), { recursive: true });
+  fs.writeFileSync(previous, "previous build");
+  assert.throws(() => package_plugin(outside), /Output must/);
+  assert.equal(fs.existsSync(outside), false);
+  assert.equal(fs.readFileSync(previous, "utf8"), "previous build");
   // Rename one required input only within this test and restore it even on failure.
   const file = path.join(packageRoot, "settings/local.example.yaml"),
     saved = file + ".test-backup";
   fs.renameSync(file, saved);
   try {
-    assert.throws(() => package_plugin());
-    assert.equal(sha256(fs.readFileSync(previous.archives[0])), before);
+    assert.throws(() => package_plugin(), /settings[\\/]local\.example\.yaml/);
+    assert.equal(fs.readFileSync(previous, "utf8"), "previous build");
   } finally {
     fs.renameSync(saved, file);
   }
@@ -255,9 +271,9 @@ test("preview package is checked and coexists with stable in the marketplace", a
   run(["git", "init", "--bare", bare]);
   const exec = (args, options) => run(args[0] === "git" && args[1] === "clone" ? ["git", "clone", bare, args.at(-1)] : args, options);
   clone_marketplace(checkout, process.env, exec);
-  const stable = package_plugin(), stableBuild = JSON.parse(fs.readFileSync(path.join(stable.plugin, "build-info.json")));
-  push_release(checkout, path.dirname(path.dirname(stable.plugin)), packageRoot, stableBuild, process.env, exec);
-  const result = package_plugin(undefined, `${base}-preview.1`, true);
+  const stable = stable_build(), stableInfo = JSON.parse(fs.readFileSync(path.join(stable.plugin, "build-info.json")));
+  push_release(checkout, stable.marketplace, packageRoot, stableInfo, process.env, exec);
+  package_plugin(undefined, `${base}-preview.1`, true);
   const extracted = path.join(f.base, "preview"), build = verify(path.join(packageRoot, ".build"), extracted);
   assert.equal(build.plugin, "1c-ai-core-preview");
   assert.equal((await check(path.join(extracted, "plugins/1c-ai-core-preview"))).runtime, "node-only");
@@ -360,9 +376,7 @@ test("publication Git authentication is per-command and requires no shell creden
   assert.equal(source.GIT_TERMINAL_PROMPT, "0");
 });
 test("catalog merging preserves unrelated plugins, order, interface and metadata", (t) => {
-  const f = fixture(t),
-    payload = package_plugin(),
-    incoming = path.dirname(path.dirname(payload.plugin));
+  const f = fixture(t), incoming = stable_build().marketplace;
   const catalog = path.join(f.root, ".agents/plugins/marketplace.json");
   fs.mkdirSync(path.dirname(catalog), { recursive: true });
   fs.writeFileSync(
@@ -402,10 +416,9 @@ test("publication pushes only a dedicated local catalog clone and handles an ini
       options,
     );
   clone_marketplace(checkout, process.env, exec);
-  const packaged = package_plugin(),
-    payload = path.dirname(path.dirname(packaged.plugin)),
+  const { marketplace: payload, plugin } = stable_build(),
     build = JSON.parse(
-      fs.readFileSync(path.join(packaged.plugin, "build-info.json")),
+      fs.readFileSync(path.join(plugin, "build-info.json")),
     );
   push_release(checkout, payload, packageRoot, build, process.env, exec);
   assert.equal(
@@ -438,10 +451,9 @@ test("publication bounded conflict recovery preserves a concurrently published p
       options,
     );
   clone_marketplace(checkout, process.env, exec);
-  const packaged = package_plugin(),
-    payload = path.dirname(path.dirname(packaged.plugin)),
+  const { marketplace: payload, plugin } = stable_build(),
     build = JSON.parse(
-      fs.readFileSync(path.join(packaged.plugin, "build-info.json")),
+      fs.readFileSync(path.join(plugin, "build-info.json")),
     );
   push_release(checkout, payload, packageRoot, build, process.env, exec);
   const newer = { ...build, version: "9.9.9" },

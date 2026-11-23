@@ -7,9 +7,9 @@ description: Implement or review a scoped 1C source or metadata change through t
 
 ## Scope and risk
 
-Read the project's `AGENTS.md`, `.ai/project.yaml` and `.ai/PROJECT.md`.
-The shared [action policy](../1c-routing/references/action-policy.md), not a local
-copy of its rules, governs agreement for actual effects.
+Use the effective profile from $1c-routing and the applicable [project instructions](../edt-ai-core/references/project-instructions.md).
+Reuse supplied context and read missing relevant project rules. Apply the
+[action policy](../1c-routing/references/action-policy.md) to actual effects.
 Establish the goal, acceptance criteria, repository, assigned EDT project and
 change boundaries. Confirm the exact project name, path and readiness through EDT
 before model-dependent operations. For historical code, read the exact revision
@@ -18,35 +18,44 @@ Do not infer routing from directory proximity. Do not read or modify protected
 source through shell/file tools; `code-index` and BSL LS are for authorized
 read-only analysis only. EDT is the sole writer and primary validation authority.
 
-Choose the mode from the assignment. **Review** checks exact source/diff,
-contracts and applicable requirements with `operation: review`, `phase: result`;
-proposal, write preconditions, pre-mutation diagnostic baseline and test execution are
-not prerequisites for ordinary review. Use relevant available diagnostics and
-state their limits; the write sections below apply only to implementation.
-Findings do not authorize fixes. **Implementation** follows proposal → EDT
-write → result and applicable checks. Do not affect others' changes or another
-component without the corresponding scope.
+Apply the shared [engineering quality criteria](references/quality.md) to the
+affected mechanisms and task criteria; read only the relevant sections. Prefer
+a readable, maintainable solution that meets the assignment and its necessary
+guarantees.
+
+Choose the mode from the assignment. **Review** checks the exact diff or source,
+contracts and applicable requirements with `operation: review`, `phase: result`.
+Use relevant available diagnostics and existing SDD/ADR where applicable.
+Report a missing project-required artifact as a gap. Apply the impact and
+independent review conditions below. Findings give no authority to implement.
+**Implementation** follows proposal → EDT write → result and applicable checks.
+Preserve unrelated and concurrent changes. The planning and write steps below
+apply to this mode.
 
 Classify by mechanisms, not diff size:
 
 - **L** — a proven local edit without changes to contracts, permissions, schema,
   external interaction or transactions, including test-only wrappers/helpers.
-  Queries, persistent state, transactions, privileges, client/server boundaries
-  and any H mechanism exclude L; placement in a test file alone does not establish L.
+  Changes to query behavior, persistent state, transactions, privileges,
+  client/server boundaries or any H mechanism exclude L. A test-file location
+  does not establish L.
 - **M** — a new semantic operation or local logic, ordinary behavior changes
   including queries, without H mechanisms. A project-owned module and unchanged
   public API do not make a new operation L.
 - **H** — public API, data schema, permissions/RLS, destructive operations,
-  nontrivial migration, architecture or cross-component behavior. Follow project
-  SDD/ADR gates, assess impact and obtain independent read-only review through
+  nontrivial migration, architecture or cross-component behavior. Assess impact,
+  apply project gates and obtain independent read-only result review through
   $task-orchestration. Self-review is not independent.
 
-Raise the level when uncertain. All levels retain the write checks below.
-The depth of specification, SDD, planning and verification depends on consequences:
-L needs a goal and completion criterion as a brief SDD, with an internal plan
-if needed; M needs a brief SDD with boundaries and a verifiable result, and a
-compact plan when several substantial decisions exist; H needs a separate agreed
-SDD and a plan of substantial stages, with an ADR if needed.
+Treat an unresolved mechanism at its higher plausible level until evidence
+settles it. Classify again if the scope or affected mechanisms change.
+For implementation, scale specification and planning to consequences. L needs
+a goal and completion criterion as a brief SDD. M needs a brief SDD with
+boundaries and a verifiable result, plus a compact plan when several substantial
+decisions exist. H needs an agreed task-level SDD and a plan of substantial
+stages, with an ADR when the project requires it or a substantial architecture
+decision needs recording. Seek independent design assessment for H or a
+substantially disputed architecture decision when available.
 Reuse existing project documents and decisions; a full template and new file
 are not required for each local edit.
 For a substantial change, identify affected objects and entry points, candidate
@@ -72,9 +81,6 @@ focused checks with gaps; M also presents behavior changes and applicable
 requirements; H presents consumer/data/permission impact, substantial risks,
 independent review and necessary user decisions. In every class, unperformed
 checks remain explicit.
-Raise the class on discovering a shared contract, external effect, permissions,
-data, transactions, migration, unknown ownership with substantial risk or new
-cross-component impact. A small diff and a test file do not prove low risk.
 
 ## Origin and supplier maintenance
 
@@ -100,52 +106,35 @@ Do not hardcode specific prefixes or comment formats in the core.
 
 ## Sufficiency check
 
-For nontrivial protection, `Попытка/Исключение`, fallback, wrappers,
-parameterization, new branches or API expansion, establish a specific basis:
-a requirement, contract, invariant or actually reachable substantial consequence.
-Explain added complexity briefly and concretely, without separately proving
-every imagined failure impossible. Low probability does not negate a reachable
-critical failure. Do not swallow exceptions without correct recovery, a contextual
-message or necessary compensation; fallback must not present failure as success
-or violate integrity and idempotency.
-Apply the check when choosing a solution and again against the actual diff:
-check every added nontrivial branch and abstraction against its basis.
-Do not turn a local task into a general framework; remove excess complexity
-introduced during implementation while retaining required guarantees.
-Do not duplicate type/value checks and backup algorithms when the current contract
-and call paths already establish the guarantee and no other substantial basis
-exists. Missing contract facts are not a guarantee: verify the needed fact instead
-of chaining invented fallbacks. Do not add generality, parameters or API expansion
-for hypothetical future consumers; one local consumer usually needs a direct call
-or small local composition, subject to mandatory project APIs from the reuse check.
-Sufficiency does not cancel mandatory checks for permissions/RLS, untrusted inputs,
-transaction boundaries and actually reachable substantial failures. Preserve
-client/server boundaries, lifecycle and data integrity. External HTTP/file input
-requires validation of the relevant format before use in writes; infrequent errors
-do not make it trusted. When substantial guarantees are unknown, verify the
-contract or retain necessary protection; do not remove it to reduce the diff.
+When choosing the solution and reviewing its diff, require a current requirement,
+contract, invariant or reachable substantial failure for each added nontrivial
+guard, exception handler, fallback, wrapper or API option. Reuse proven
+type/value guarantees. Verify material unknowns or retain needed protection.
+For one local consumer, prefer a direct call or small composition under the
+reuse check. Remove abstractions whose only basis is a hypothetical consumer.
+
+Preserve authorization/RLS, transaction and client/server boundaries, lifecycle
+and integrity. Validate relevant untrusted HTTP/file input before writes. Handle
+reachable critical failures even when rare. On failure, preserve integrity and
+idempotency and report the actual outcome. Recover or compensate where required.
+
+Choose optional reads, tests and refactoring only when they can change a material
+decision or verify a needed guarantee at proportionate cost. Stop at sufficient
+evidence, retaining all applicable mandatory checks.
 
 ## Before writing
 
 1. Read the minimal live target and directly affected contracts.
    For a new semantic operation, regardless of line count, perform the
    [reuse check](../1c-code-index/SKILL.md#reuse-gate).
-   Syntactic composition of already confirmed operations requires no separate search.
    Verify unknown platform APIs and restrictions through $1c-platform-docs.
-   Reuse already sufficient facts without searching again.
    Before creating forms, roles or rights, check the actual execution context,
    standard capabilities and suitable existing objects/permissions. Create only
    what the accepted behavior requires; do not assume privileged execution.
-2. Follow the shared [requirements workflow](../1c-standards/references/requirements.md)
-   from $1c-standards: full detection, `policy` selection, exact `v8std` requirements,
-   project conditions and `validate_compliance` with `phase: proposal` before writing.
-   Detection assesses baseline → specific proposal, including new mechanisms and
-   delete/rename effects, rather than only the old source. Retain baseline/proposal
-   references, selection/digest and normative text for the result.
-   Check specifically for `status: ledger_valid`; `blocked` blocks dependent writes
-   even with `isError: false`. Missing policy/coverage, unknown applicability or a
-   violated mandatory requirement block dependent writes; do not replace the
-   workflow with general standards search.
+2. Apply the shared [requirements workflow](../1c-standards/references/requirements.md)
+   to baseline → proposal. The policy check for `phase: proposal` must return
+   `ledger_valid` before the write. Retain the proposal evidence, applicable
+   selection and exact normative text for the result.
 3. Obtain focused EDT diagnostics of affected objects before the change; for
    creation use the available owning scope. Failure to obtain or incompleteness of
    the required baseline blocks writing. Existing findings alone do not prohibit
@@ -153,15 +142,10 @@ contract or retain necessary protection; do not remove it to reduce the diff.
    If the current API lacks a needed diagnostic check, state the coverage limit;
    stop writing when a required diagnostic guarantee cannot be ensured without it.
    Availability of a write precondition is handled separately in step 4.
-   Metadata-only changes do not require BSL checks but retain applicable EDT
-   metadata checks. Assess finding validity under the shared
-   [diagnostics contract](../1c-routing/references/diagnostics.md): primary validation
-   does not make EDT infallible, and BSL LS messages depend on the rule, settings
-   and context completeness.
    For changed BSL, use enabled and prepared BSL LS for focused complementary
-   diagnostics before and after the change; report unavailable checks and coverage.
-   It does not replace EDT validation or justify starting an unprepared service
-   without the applicable authorization.
+   diagnostics before and after the change. Metadata-only changes retain
+   applicable EDT metadata checks. Record unavailable checks and assess findings
+   under the [diagnostics contract](../1c-routing/references/diagnostics.md).
 4. Use the preconditions supported by the live contract for the actual write,
    target and mode. When a relevant hash/version is available, pass the current
    token if the check applies; use other preconditions according to their actual
@@ -189,15 +173,10 @@ change in the verified scope; prefer method/region/fragment operations.
 Do not replace a whole module for a local edit or bypass an unavailable operation
 by editing serialized files.
 
-Check `isError`, the structured result and the actual operation outcome. An ack or
-`jobId` does not mean completion: retain the ID and follow the same job with a
-supported status call.
-After timeout, connection loss or an ambiguous response, do not repeat the writer.
-Establish the target and existing job state through EDT. If the effect exists,
-verify it; if the outcome remains unknown, stop dependent writes and report the
-uncertainty. Confirmed absence of an effect does not allow retry while the old job
-may still run. A new call is allowed only after resolving the outcome, checking
-the target and refreshing any applicable preconditions.
+Apply the [relay outcome and retry rules](../1c-routing/references/toolsets.md#calling-the-relay)
+to each writer. Resolve the original operation through assigned EDT before any
+dependent write. Verify confirmed effects and refresh applicable preconditions
+before any justified retry.
 
 For a proven pre-write refusal, allow one correction based on the live schema/guide
 or explicit diagnostics, rechecking prerequisites without expanding scope.
@@ -214,13 +193,9 @@ policy and existing permission for the same scope.
 
 ## After writing and completion
 
-After each confirmed change, including recovery, perform the same focused EDT
-diagnostics and applicable artifact checks.
-Compare against the baseline by code, message, object and location, accounting
-for line shifts. Distinguish new, existing, resolved, proven false-positive,
-infrastructure and uncertain findings. Do not hide diagnostics; a false positive
-requires confirmation from current source/metadata context. New unresolved defects
-and unreliable mandatory post-validation block confirmation of completion.
+After each confirmed change, including recovery, repeat the applicable focused
+diagnostics and artifact checks. Compare with the task-start baseline under
+the [diagnostics contract](../1c-routing/references/diagnostics.md).
 
 Verify the actual result against retained requirements and task criteria;
 compare the diff against the reuse and sufficiency checks above.
@@ -231,8 +206,8 @@ check each relevant write path, including exchange/loading where applicable, and
 whether conversion can conceal duplicates. Record accepted path limitations and
 their consequences for review. Inspect the diff for unintended line-ending or
 format churn and distinguish it from semantic changes.
-Under the shared requirements workflow, run `validate_compliance` with
-`phase: result` and current mechanisms/evidence. Proposal, diagnostics and tests
+Under the shared requirements workflow, run the policy check with `phase: result`
+and current mechanisms/evidence. Proposal, diagnostics and tests
 do not replace this check. Changed applicability requires revising selection
 with a reason.
 Run the minimum necessary existing tests from the profile in the authorized
@@ -252,8 +227,10 @@ substantial findings, reused APIs/settings, why new code/adaptation was needed,
 actual checks with their kind and scope, remaining gaps and truly necessary user
 decisions. Do not list every statement or present a procedure log as the result;
 honor the user's requested brevity.
-Do not present partial validation, an unknown outcome or an unperformed check as
-confirmed completion.
+State `accepted`, `rework_required` or `unverified` under the shared diagnostic
+and quality criteria, with material remaining findings and verification limits.
+Do not present an unknown outcome, a missing mandatory check or a material
+unverified requirement as confirmed completion.
 Offer useful repeatable experience for separate team review/publish, without
 automatically writing to OpenViking or publishing. Reporting incorrect material
 needs only its ID/URI, revision/snapshot, verifiable discrepancy and evidence

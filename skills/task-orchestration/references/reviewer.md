@@ -11,6 +11,14 @@ rejected alternatives with their sources and conditions for reconsideration,
 including known write-path limitations. These decisions constrain the review but
 do not establish that implementation satisfies them.
 
+Apply the shared [engineering quality criteria](../../1c-code-change/references/quality.md)
+and the [diagnostics contract](../../1c-routing/references/diagnostics.md).
+For material retained findings verify applicability and the reason for retaining
+the code. Assess proposed alternatives by task benefit, readability and maintenance
+cost; an additional check should resolve a material decision or required guarantee.
+An adequate result may need no changes. Accepted tradeoffs do not waive mandatory
+conditions, and implementation-agent explanations do not prove them fulfilled.
+
 Assign explicit read-only work and, when supported by the host, a read-only
 sandbox/agent configuration. Role names do not prove technical access restriction;
 if no sandbox is available, state the enforcement boundary explicitly.
@@ -50,3 +58,5 @@ deployment and cutover are forbidden. Do not fix findings during review.
 Provide actionable findings: location, priority, scenario, consequence and evidence;
 list material unknowns/unperformed checks separately. State no findings within
 actual verification boundaries, not as full acceptance of unavailable gates.
+Use `accepted`, `rework_required` or `unverified` under the shared criteria;
+retained advisory warnings alone do not require rework.

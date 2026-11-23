@@ -99,8 +99,8 @@ const preparationAuthorization = {
 };
 const primitive = {
   projectRoot: { type: "string", title: "Папка проекта" },
-  edtUrl: { type: "string", title: "URL EDT MCP", description: "Override этого каталога и экземпляра. Пустое значение отключает подключение; окружение имеет высший приоритет." },
-  v8stdUrl: { type: "string", title: "URL v8std MCP", description: "Подключение разрешает операции v8std и передачу ему кода и контекста задачи. Override этого каталога и экземпляра. Пустое значение отключает подключение; окружение имеет высший приоритет." },
+  edtUrl: { type: "string", title: "URL EDT MCP", description: "Пустое значение отключает подключение. Переменные окружения имеют высший приоритет." },
+  v8stdUrl: { type: "string", title: "URL v8std MCP", description: "Подключение разрешает операции v8std и передачу ему кода и контекста задачи. Пустое значение отключает подключение. Переменные окружения имеют высший приоритет." },
   codeIndexEnabled: { type: "boolean", title: "Индекс кода" },
   bslLsEnabled: { type: "boolean", title: "BSL LS", description: "Включён по умолчанию; дополняет диагностику EDT." },
   codeIndexVersion: { type: "string", title: "Версия индекса кода", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
@@ -108,7 +108,7 @@ const primitive = {
   bslLsVersion: { type: "string", title: "Версия BSL LS", pattern: "^(latest|[A-Za-z0-9][A-Za-z0-9._+-]{0,127})$", description: "latest или точный тег, включая предварительный релиз. Общая настройка пользователя." },
   bslLsAllowPrerelease: { type: "boolean", title: "Предварительные релизы BSL LS", description: "При version=latest разрешить предварительные релизы. По умолчанию false. Общая настройка пользователя." },
   bslLsJava: { type: "string", minLength: 1, title: "Java для BSL LS" },
-  openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Включает подключение для текущего каталога и экземпляра. При выключении сохранённый URL остаётся; режим и обязательность знаний не изменяются." },
+  openvikingEnabled: { type: "boolean", title: "Транспорт OpenViking", description: "Управляет подключением к OpenViking. Выключение сохраняет URL, режим и обязательность знаний." },
   openvikingUrl: { type: "string", title: "URL OpenViking", description: "Пустое значение отключает транспорт." },
   openvikingTimeout: { type: "number", title: "Таймаут OpenViking, с", exclusiveMinimum: 0, maximum: 300 },
   openvikingMaxResponseBytes: { type: "integer", title: "Лимит ответа OpenViking, байт", minimum: 1024, maximum: 16777216 },
@@ -239,7 +239,9 @@ const tools = [
   { name: "settings.rename_profile", title: "Изменить локальное имя проекта", description: "Change only project.id in the selected project's .ai/project.local.yaml, independently of other panels' scopes. The local ID overrides .ai/project.yaml, which remains unchanged. Creates a minimal local document if absent; validates the merged profile, checks the revision, protects the local file from Git and backs up an existing local file outside the project and Git repositories. An unchanged ID causes no persistent writes. To change the shared ID explicitly, edit Configuration → Общий · Git. Vanessa permissions for the old ID are not transferred.", inputSchema: { type: "object", properties: { projectId: { type: "string", minLength: 1 }, expectedRevision: { type: "string", minLength: 1 } }, required: ["projectId", "expectedRevision"], additionalProperties: false }, annotations: annotations(false), _meta: appOnly },
   { name: "settings.open_directory", title: "Открыть папку проекта", description: "Open the selected project directory in the system file manager.",
     inputSchema: empty, annotations: annotations(false), _meta: appOnly },
-  { name: "settings.update", title: "Сохранить настройки", description: "Update changed plugin settings. With an explicit scope, unset removes the listed overrides and restores inheritance; set may be empty only when unset is nonempty.",
+  { name: "settings.update", title: "Сохранить настройки",
+    description: "Update changed plugin settings. With scope omitted, connection fields and Code Index/BSL LS enabled flags go to the project-local layer shared by this directory's instances. " +
+      "With an explicit scope, unset removes the listed overrides and restores inheritance. Set may be empty only when unset is nonempty.",
     inputSchema: { type: "object", required: ["set"], properties: { set: {
       type: "object", properties: primitive, additionalProperties: false },
       unset: { type: "array", minItems: 1, maxItems: Object.keys(primitive).length - 1, uniqueItems: true, items: { type: "string", enum: Object.keys(primitive).filter(key => key !== "projectRoot") } },
@@ -250,12 +252,12 @@ const tools = [
     name, title, description: `${title}. Open the project transfer dialog on explicit user request. This does not import or export by itself.`,
     inputSchema: inspectInput, annotations: annotations(), _meta: appTool,
   })),
-  { name: "settings.preview", title: "Проверить файл", description: "Preview one project YAML document without writing.",
+  { name: "settings.preview", title: "Проверить файл", description: "Preview one project YAML document without writing. The formatted YAML to be saved is returned only in app metadata.",
     inputSchema: { type: "object", required: ["text", "mode", "baseRevision", "layerScope"], properties: {
       ...editArguments,
       text: { type: "string", maxLength: 2097152 }, projectRoot: { type: "string" } }, additionalProperties: false },
     annotations: annotations(), _meta: shared },
-  { name: "settings.apply", title: "Сохранить профиль", description: "Apply a reviewed project YAML document.",
+  { name: "settings.apply", title: "Сохранить профиль", description: "Apply a reviewed project document in the canonical YAML block format.",
     inputSchema: { type: "object", required: ["text", "revision", "mode", "baseRevision", "layerScope"], properties: {
       ...editArguments,
       text: { type: "string", maxLength: 2097152 }, projectRoot: { type: "string" },
@@ -860,6 +862,10 @@ async function call(name, args, meta = {}, requestContext = {}) {
     if (selectedRoot !== (data.values.projectRoot || null)) await dropIndexObserver("project_changed");
     selectedRoot = data.values.projectRoot || null;
   }
+  if (name === "settings.preview") {
+    const { formattedText, ...summary } = data;
+    return { ...result(summary), _meta: { data: { ...summary, formattedText } } };
+  }
   return result({ ...data, ...(["settings.create", "settings.load"].includes(name) ? { mode: "profile" } : {}) },
     ["settings.create", "settings.load"].includes(name) ? JSON.stringify(data) : name === "settings.apply" ? args.mode === "layer" ? "Настройки сохранены." : "Настройки импортированы." : "Готово");
 }
@@ -943,11 +949,10 @@ async function dispatch(message) {
   }
   if (message.method === "notifications/roots/list_changed") { requestRoots(); return; }
   if (!Object.hasOwn(message, "id")) return;
-  // Discovery reports the supported legacy versions even to modern probes.
-  // Project selection and operation ownership still require the connection-
-  // scoped initialize handshake; no stateless tool calls are enabled.
+  // Reject discovery so clients retry with initialize, which establishes the
+  // session used for project selection and operation ownership.
   const requested = message.params?._meta?.["io.modelcontextprotocol/protocolVersion"];
-  if (message.method !== "server/discover" && requested && !protocols.includes(requested)) {
+  if (message.method === "server/discover" || (requested && !protocols.includes(requested))) {
     write({ id: message.id, error: { code: -32601,
       message: "Session-scoped settings require the initialize handshake." } });
     return;
@@ -958,10 +963,6 @@ async function dispatch(message) {
       data = { protocolVersion: protocols.includes(message.params?.protocolVersion) ? message.params.protocolVersion : protocols[0],
         instructions: "Start with settings.inspect; supply this chat's projectRoot if roots are empty. Forms and preparation require authorization.",
         serverInfo: { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version, icons: plugin_icons() },
-        capabilities: { tools: {}, resources: {} } };
-    } else if (message.method === "server/discover") {
-      data = { resultType: "complete", supportedVersions: protocols,
-        _meta: { "io.modelcontextprotocol/serverInfo": { name: "1c-ai-settings", title: "1c-ai-settings", version: core_version } },
         capabilities: { tools: {}, resources: {} } };
     } else if (message.method === "ping") data = {};
     else if (message.method === "tools/list") data = { tools };

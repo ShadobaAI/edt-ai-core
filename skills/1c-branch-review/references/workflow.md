@@ -1,22 +1,21 @@
 # Branch review modes
 
-## Read-only — default mode
+## Read-only mode
+
+Use the assigned EDT when project rules require it or Code Index Git cannot
+supply a needed fact. Use Code Index Git for authorized committed reads it covers.
 
 1. Establish the repository and existing base/target refs from the task and profile.
-   Obtain their exact SHAs through the assigned EDT; use SHAs for subsequent diff,
-   log and reads rather than movable branch names. A remote is needed only when
+   Resolve exact SHAs through the chosen revision-aware interface and reuse those
+   SHAs for diff, log and reads. A remote is needed only when
    the requested action actually contacts it. Dirty working trees and detached
    HEAD do not themselves prevent comparing saved revisions.
-2. Read the revision-aware Git interface and `baseSHA...targetSHA` diff with file
-   names and `log baseSHA..targetSHA`. Record the merge-base SHA: three-dot compares
-   its tree against target, not final base/target trees. If the user explicitly
-   requests tree differences, use two-dot and state the chosen semantics.
-   Complete truncated output with targeted reads of the same SHAs.
-3. Read target code and dependencies through the same EDT's revision-aware
-   interface. Live model and code-index may evidence that revision only with
-   confirmed revision/content correspondence, including no relevant unsaved/
-   working-tree changes. Static analysis of saved revisions does not require
-   artificial checkout or model readiness when the Git interface is model-independent.
+2. Follow [saved revision comparison](#comparing-saved-revisions) for the requested
+   diff and any required history.
+3. Read target code and dependencies by exact SHA. Live model and general index
+   results apply only with confirmed content correspondence, including absence
+   of relevant unsaved or working-tree changes. Model-independent Git reads
+   support static analysis of saved revisions without checkout or model readiness.
    Unsupported exact-revision reads limit conclusions; they do not authorize shell
    reads of protected source.
 4. Apply “Analysis and completion” to available evidence. Do not attribute another
@@ -30,6 +29,21 @@ perform the independent available portion first. Prepare a concrete plan for the
 remainder and obtain only missing permission under the shared action policy.
 Do not make optional remote refresh a prerequisite for local review.
 
+## Comparing saved revisions
+
+Use three-dot semantics for branch contribution. Compare base and target
+directly for a requested final-tree diff. For three-dot use an advertised EDT
+Git three-dot diff, or resolve one unambiguous merge base through an authorized
+revision-aware interface and compare its tree with target. Record the merge-base
+SHA when resolved. In EDT Git, supported `rev-parse baseSHA...targetSHA` returns
+excluded `^SHA` entries for merge bases. Code Index Git compares two trees.
+
+Request history only to answer a review question. Code Index `git_log` starts
+from one revision. For required `baseSHA..targetSHA` history use a supported
+range query such as EDT Git `log`. Report a gap if the comparison or needed
+range is unavailable. When the affected scope is unknown, start with a changed-file
+or object summary. Complete necessary truncated patches or reads at the same SHAs.
+
 ## Prepared review — only necessary authorized steps
 
 The preparation sections below apply to authorized Git preparation. Updating base,
@@ -42,8 +56,9 @@ the requested live check was performed.
 
 Establish repository, exact review branch, base branch/ref and needed remote from
 the task and project instructions; do not guess `develop`/`origin`. Check remote
-URLs without credentials. Git/source operations on serialized 1C artifacts use
-only the assigned EDT's current schema/guide. Ordinary scripts/docs use their own tools.
+URLs without credentials. Git preparation and source modifications on serialized
+1C artifacts use the assigned EDT's current schema/guide. Ordinary scripts/docs
+use their own tools.
 
 An explicit full-workflow request may already authorize commit/checkout/fetch/pull;
 do not seek agreement again. Simple review requests use read-only mode above.
@@ -86,10 +101,9 @@ automatic review continuations. Findings do not authorize fixes.
    `refs/heads/<branch>:refs/remotes/<remote>/<branch>`; otherwise use an existing
    exact local ref. Narrow fetch mappings must not hide target.
    Confirm SHA; failed ref updates do not authorize force.
-9. Retain name-status diff `baseSHA...targetSHA` and log `baseSHA..targetSHA`.
-   Three-dot diff concerns merge base rather than final-tree differences.
-   If live diagnostic comparison is requested, wait for base readiness and obtain
-   a focused baseline before target checkout. Skip for diff-only review.
+9. Use [saved revision comparison](#comparing-saved-revisions) for the diff and
+   any required history. If live diagnostic comparison is requested, wait for
+   base readiness and obtain a focused baseline before target checkout.
    Current-base diagnostics are not common-ancestor diagnostics.
 10. For authorized live target checks, create a new local review branch only at
     exact target SHA. If a local branch exists and needs refresh, compare both
@@ -115,14 +129,11 @@ Apply knowledge mode and shared reuse/sufficiency checks to the actual diff of
 your exact revisions. Bound conclusions when evidence is partial; do not substitute
 the current working copy or change code to “check” a historical decision.
 
-For live checks, wait for the required stage's readiness and confirm model/target
-correspondence; for read-only use saved SHAs without requiring checkout.
-Check the actual complete diff; finish truncation with needed objects from the
-same revision. Apply $1c-code-change/$1c-standards for review, requirements and
-enclosing contracts. A missing proposal does not need an invented proposal ledger.
-H needs impact and a fresh reviewer; SDD/ADR are mandatory only under applicable
-project gates. With valid baseline/target diagnostics, compare code/message/object
-and location accounting for shifts; account for base changes in attribution too.
+For live checks, use the [stage readiness contract](edt-ready.md) and confirm
+model/target correspondence. Apply $1c-code-change/$1c-standards to the actual
+diff and enclosing contracts in review mode. Use the
+[diagnostics contract](../../1c-routing/references/diagnostics.md#classification)
+to compare valid baseline/target diagnostics, accounting for base changes.
 Scoped revalidation is allowed when needed after readiness; whole-project is not.
 
 Run tests only with the needed scope/permission. Read-only review creates neither
